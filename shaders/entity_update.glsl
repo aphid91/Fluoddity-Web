@@ -174,7 +174,7 @@ void reset(uint index){
     float size=index<entities.length()?.0015/SQRT_WORLD_SIZE: 0;
     float cohort_val = get_cohort(index);
 
-    //set pos and vel to random values on a small disk
+    //set pos and vel to random values on a across the canvas
     vec2 pos=vec2(hash(vec2(cohort_val, 1.0)), hash(vec2(cohort_val, 2.0))) * 2.0 - 1.0;
     vec2 vel=0.01*.005*(vec2(hash(vec2(cohort_val,index)),hash(vec2(cohort_val,pos.y)))*2-1);
 
