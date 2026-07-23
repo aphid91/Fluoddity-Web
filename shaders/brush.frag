@@ -1,5 +1,23 @@
 #version 430
 
+struct ConfigData {
+    int cohorts;
+    float rule_seed;
+    float sensor_gain;
+    float sensor_angle;
+    float sensor_distance;
+    float mutation_scale;
+    float global_force_mult;
+    float drag;
+    float strafe_power;
+    float axial_force;
+    float lateral_force;
+    float hazard_rate;
+    float trail_persistence;
+    float trail_diffusion;
+};
+uniform ConfigData config;
+
 in vec2 uv;
 in vec4 pos_vel;
 out vec4 brush_out;
@@ -17,6 +35,11 @@ void main() {
     if (length(uv - 0.5) > 0.5 || frame_count == 0) {
         discard;
     }
+    // Splat directly into the canvas, premultiplied by (1-P)/P so that after the
+    // canvas pass's P decay the steady contribution matches the old (1-P)*brush mix.
+    // kernel_func*kernel_func reproduces the old SRC_ALPHA blend's quadratic weighting.
+    float P = clamp(config.trail_persistence, 1e-4, 0.999);
+    float premult = (1.0 - P) / P;
     vec2 vel = pos_vel.zw;
-    brush_out = vec4(vel, 0.01, 1.0) * kernel_func;
+    brush_out = vec4(vel * kernel_func * kernel_func * premult, 0.0, 0.0);
 }

@@ -11,7 +11,7 @@ SIZE_OF_ENTITY_STRUCT = 24
 
 
 class ParticleSystem:
-    def __init__(self, ctx, canvas_size=(CANVAS_DIM,CANVAS_DIM), config_path='9LeafClovers.json'):
+    def __init__(self, ctx, canvas_size=(CANVAS_DIM,CANVAS_DIM), config_path='Starcrossed.json'):
         
         self.ctx = ctx
         self.canvas_size = canvas_size
@@ -23,25 +23,20 @@ class ParticleSystem:
         self.brush_splat_program = None
         self.canvas_update_program = None
 
-        # Textures and framebuffers
-        self.brush_texture = self.ctx.texture(canvas_size, 4, dtype='f4')
-        self.brush_texture.repeat_x = True
-        self.brush_texture.repeat_y = True
-        self.brush_texture.filter = (moderngl.LINEAR,moderngl.LINEAR)
-        self.brush_fbo = self.ctx.framebuffer(color_attachments=[self.brush_texture])
-        
-
-        self.canvas_texture = self.ctx.texture(canvas_size, 4, dtype='f4')
+        # Textures and framebuffers.
+        # Canvas textures only ever use .xy (velocity flow field), so RG suffices.
+        # Particles are splatted directly into the canvas, so there is no separate brush texture.
+        self.canvas_texture = self.ctx.texture(canvas_size, 2, dtype='f4')
         self.canvas_texture.repeat_x = True
         self.canvas_texture.repeat_y = True
         self.canvas_texture.filter = (moderngl.LINEAR,moderngl.LINEAR)
         self.canvas_fbo = self.ctx.framebuffer(color_attachments=[self.canvas_texture])
 
         # Double buffer for canvas update (read from one, write to other)
-        self.canvas_texture_back = self.ctx.texture(canvas_size, 4, dtype='f4')
-        self.canvas_texture.repeat_x = True
-        self.canvas_texture.repeat_y = True
-        self.canvas_texture.filter = (moderngl.LINEAR,moderngl.LINEAR)
+        self.canvas_texture_back = self.ctx.texture(canvas_size, 2, dtype='f4')
+        self.canvas_texture_back.repeat_x = True
+        self.canvas_texture_back.repeat_y = True
+        self.canvas_texture_back.filter = (moderngl.LINEAR,moderngl.LINEAR)
         self.canvas_fbo_back = self.ctx.framebuffer(color_attachments=[self.canvas_texture_back])
 
         # Entity buffer
@@ -122,22 +117,22 @@ class ParticleSystem:
             print(f"Failed to reload canvas update shaders: {e}")
 
     def advance(self):
-        """Run one simulation step: update entities, create brush, update canvas."""
-        
-        #The ordering here is a little weird. It doesn't matter so much, 
+        """Run one simulation step: splat into canvas, update entities, update canvas."""
+
+        #The ordering here is a little weird. It doesn't matter so much,
         #but if I weren't trying to support legacy configs, the proper order would be:
         #update_entities()
-        #create_brush()
+        #splat_into_canvas()
         #update_canvas()
 
         #memory barriers make sure gpu memory writes are visible to subsequent steps
-        self.ctx.memory_barrier()
-        self.create_brush()
+
         self.ctx.memory_barrier()
         self.update_entities()
         self.ctx.memory_barrier()
         self.update_canvas()
-
+        self.ctx.memory_barrier()
+        self.splat_into_canvas()
         self.frame_count += 1
 
     def reset(self):
@@ -161,23 +156,27 @@ class ParticleSystem:
         self.entity_update_program.run(workgroups, 1, 1)
 
 
-    def create_brush(self):
-        """Splat all entities to brush texture as gaussian dots."""
+    def splat_into_canvas(self):
+        """Splat all entities directly into the canvas texture as gaussian dots.
+
+        The brush.frag output is premultiplied by (1-P)/P so that the subsequent
+        canvas pass's P decay leaves the intended (1-P)*brush contribution.
+        """
         if self.brush_splat_program is None:
             return
 
-        #clear the brush texture each frame
-        self.brush_fbo.use()
-        self.brush_fbo.clear(0.0, 0.0, 0.0, 0.0)
+        # Render into the front canvas WITHOUT clearing (clearing would erase trails).
+        self.canvas_fbo.use()
 
-        # Enable additive blending for overlapping particles
+        # Pure additive blending: brush.frag already carries the full per-splat weight.
         self.ctx.enable(moderngl.BLEND)
-        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE
+        self.ctx.blend_func = moderngl.ONE, moderngl.ONE
 
         # Bind entity buffer as SSBO
         self.entity_buffer.bind_to_storage_buffer(0)
 
-        # Set uniforms
+        # Set uniforms (config supplies trail_persistence for the (1-P)/P premultiply)
+        set_config_uniform(self.brush_splat_program, self.config)
         tryset(self.brush_splat_program, 'canvas_resolution',
                (float(self.canvas_size[0]), float(self.canvas_size[1])))
         tryset(self.brush_splat_program, 'frame_count', self.frame_count)
@@ -189,7 +188,7 @@ class ParticleSystem:
         self.ctx.disable(moderngl.BLEND)
 
     def update_canvas(self):
-        """Mix brush texture into canvas texture with trail persistence and diffusion."""
+        """Diffuse and decay the canvas by trail persistence (splats already mixed in)."""
         if self.canvas_update_program is None or self.canvas_vao is None:
             return
 
@@ -197,12 +196,10 @@ class ParticleSystem:
         self.canvas_fbo_back.use()
 
         set_config_uniform(self.canvas_update_program, self.config)
-        tryset(self.canvas_update_program, 'brush_texture', 0)
-        tryset(self.canvas_update_program, 'canvas_texture', 1)
+        tryset(self.canvas_update_program, 'canvas_texture', 0)
         tryset(self.canvas_update_program, 'frame_count', self.frame_count)
 
-        self.brush_texture.use(location=0)
-        self.canvas_texture.use(location=1)
+        self.canvas_texture.use(location=0)
 
         self.canvas_vao.render(moderngl.TRIANGLES)
 

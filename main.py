@@ -31,8 +31,8 @@ class App:
             self.ctx.screen.use()
             self.ctx.clear(0., 0., 0., 1.0)
             
-            #display brush texture with camera.frag
-            self.camera.render_texture(self.system.brush_texture, self.ctx.screen)
+            #display canvas texture with camera.frag
+            self.camera.render_texture(self.system.canvas_texture, self.ctx.screen)
 
             glfw.poll_events()
             glfw.swap_buffers(self.window)
