@@ -1,6 +1,13 @@
+from pathlib import Path
+
 import moderngl
 import numpy as np
-from gl_utils import read_shader, tryset
+
+from shared.gl_utils import read_shader, tryset
+
+# Shader paths resolved relative to this module, so the app is not CWD-dependent.
+_SHADER_DIR = Path(__file__).parent / "shaders"
+_SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
 
 #Simple camera for displaying a texture to the screen
 class Camera:
@@ -13,8 +20,8 @@ class Camera:
     def reload(self):
         """Reload shaders from disk. Safe to call mid-execution."""
         try:
-            vert_source = read_shader('shaders/fullscreen_quad.vert')
-            frag_source = read_shader('shaders/camera.frag')
+            vert_source = read_shader(str(_SHARED_SHADER_DIR / 'fullscreen_quad.vert'))
+            frag_source = read_shader(str(_SHADER_DIR / 'camera.frag'))
 
             new_program = self.ctx.program(
                 vertex_shader=vert_source,

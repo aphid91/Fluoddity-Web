@@ -1,7 +1,11 @@
 import math
+from pathlib import Path
+
 import numpy as np
 import moderngl
-from gl_utils import read_shader, tryset, load_config, set_config_uniform, set_rule_uniform
+
+from shared.gl_utils import read_shader, tryset
+from .config import SimulationConfig
 
 WORLD_SIZE = .25
 SQRT_WORLD_SIZE = 0.5
@@ -9,14 +13,21 @@ ENTITY_COUNT = int(600000*WORLD_SIZE)
 CANVAS_DIM = int(1024*SQRT_WORLD_SIZE)
 SIZE_OF_ENTITY_STRUCT = 24
 
+# Shader paths resolved relative to this module, so the app is not CWD-dependent.
+_SHADER_DIR = Path(__file__).parent / "shaders"
+_SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
+
 
 class ParticleSystem:
-    def __init__(self, ctx, canvas_size=(CANVAS_DIM,CANVAS_DIM), config_path='Starcrossed.json'):
-        
+    def __init__(self, ctx, canvas_size=(CANVAS_DIM,CANVAS_DIM), config_path=None):
+
+        if config_path is None:
+            config_path = str(Path(__file__).parent.parent / "configs" / "Starcrossed.json")
+
         self.ctx = ctx
         self.canvas_size = canvas_size
         self.config_path = config_path
-        self.config = load_config(config_path)
+        self.config = SimulationConfig.load(config_path)
 
         # Programs (initialized in reload)
         self.entity_update_program = None
@@ -62,7 +73,7 @@ class ParticleSystem:
     def _reload_entity_update(self):
         """Reload entity update compute shader."""
         try:
-            source = read_shader('shaders/entity_update.glsl')
+            source = read_shader(str(_SHADER_DIR / 'entity_update.glsl'))
             new_program = self.ctx.compute_shader(source)
             self.entity_update_program = new_program
             print("Entity update shader reloaded successfully")
@@ -72,8 +83,8 @@ class ParticleSystem:
     def _reload_brush_splat(self):
         """Reload brush splat shaders."""
         try:
-            vert_source = read_shader('shaders/brush.vert')
-            frag_source = read_shader('shaders/brush.frag')
+            vert_source = read_shader(str(_SHADER_DIR / 'brush.vert'))
+            frag_source = read_shader(str(_SHADER_DIR / 'brush.frag'))
             new_program = self.ctx.program(
                 vertex_shader=vert_source,
                 fragment_shader=frag_source
@@ -87,8 +98,8 @@ class ParticleSystem:
     def _reload_canvas_update(self):
         """Reload canvas update shaders."""
         try:
-            vert_source = read_shader('shaders/fullscreen_quad.vert')
-            frag_source = read_shader('shaders/canvas.frag')
+            vert_source = read_shader(str(_SHARED_SHADER_DIR / 'fullscreen_quad.vert'))
+            frag_source = read_shader(str(_SHADER_DIR / 'canvas.frag'))
             new_program = self.ctx.program(
                 vertex_shader=vert_source,
                 fragment_shader=frag_source
@@ -139,13 +150,27 @@ class ParticleSystem:
         """Reset simulation state."""
         self.frame_count = 0
 
+    def current_canvas_texture(self):
+        """Narrow accessor: the canvas texture to present this frame.
+
+        Returned by value each frame rather than held persistently by consumers,
+        because the double-buffer swap means the front texture changes identity.
+        """
+        return self.canvas_texture
+
+    def load_config(self, config_path):
+        """Command: switch to a different physics preset (does not touch GPU state)."""
+        self.config_path = config_path
+        self.config = SimulationConfig.load(config_path)
+        print(f"Loaded config: {config_path}")
+
     def update_entities(self):
         """Dispatch compute shader to update entity positions."""
 
         self.entity_buffer.bind_to_storage_buffer(0)
 
-        set_config_uniform(self.entity_update_program, self.config)
-        set_rule_uniform(self.entity_update_program, self.config['rule'])
+        self.config.set_config_uniform(self.entity_update_program)
+        self.config.set_rule_uniform(self.entity_update_program)
         tryset(self.entity_update_program, 'canvas_texture', 0)
         tryset(self.entity_update_program, 'frame_count', self.frame_count)
         self.canvas_texture.use(location=0)
@@ -176,7 +201,7 @@ class ParticleSystem:
         self.entity_buffer.bind_to_storage_buffer(0)
 
         # Set uniforms (config supplies trail_persistence for the (1-P)/P premultiply)
-        set_config_uniform(self.brush_splat_program, self.config)
+        self.config.set_config_uniform(self.brush_splat_program)
         tryset(self.brush_splat_program, 'canvas_resolution',
                (float(self.canvas_size[0]), float(self.canvas_size[1])))
         tryset(self.brush_splat_program, 'frame_count', self.frame_count)
@@ -195,7 +220,7 @@ class ParticleSystem:
         # Render to back buffer, reading from front
         self.canvas_fbo_back.use()
 
-        set_config_uniform(self.canvas_update_program, self.config)
+        self.config.set_config_uniform(self.canvas_update_program)
         tryset(self.canvas_update_program, 'canvas_texture', 0)
         tryset(self.canvas_update_program, 'frame_count', self.frame_count)
 
