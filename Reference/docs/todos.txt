@@ -1,0 +1,42 @@
+Brush and Canvas mode visuals still have aspect ratio issue with the drawing reticle
+Field overlay aspect ratio isn't perfect. Some combinations of narrow/wide window + narrow/wide canvas mess it up.
+ Canvas_resolution and screen aspect maybe the same thing in frame_assembly.frag? 
+CRITICAL - default name for videos should be current file name instead of "animation". The tooltip should reflect this change.
+
+Full text -> force field pipeline (sdf font?)
+
+particle follow cam. Cohort follow cam?
+
+cohort isolation view
+-Text entry box with absolute orientation -> Text
+-Threshold particles to be invisible.
+-position transform in cam_brush.vert like circle inversion or something
+
+Add new features to help menus
+-advanced drawing features
+-multiload
+-right click earaser
+-jitter
+-LOCK
+-config clipboard
+
+Particles (cohorts) are various sizes. Total area conserved between size groups.
+ so 100 times as many at 1/10th the size.
+  Forces etc. should be higher on smaller entities? 
+  Ie: area ~ mass and newtonian physics.
+
+Orientation mode: 
+    intrinsic
+        velocity
+        velocity field ahead or behind
+        time or phase
+    extrinsic
+        fixed
+        towards center.
+        away from edges
+        image based
+
+Symmetry mode:
+    local coord 1
+    local coord 2
+    both
