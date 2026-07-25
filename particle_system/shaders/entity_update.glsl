@@ -2,51 +2,27 @@
 
 layout(local_size_x = 256) in;
 
+// Structs (Entity, ConfigData, WorldData, Rule), their accessors, and all
+// coordinate math live in common.glsl -- the single source of truth for layout.
+#include "common.glsl"
 
-// Fourier Feature Network: 4D input -> 4D output
-struct FourierCenter {
-    vec4 frequency;  // 4D frequency vector
-    vec4 amplitude;  // 4D amplitude/weight vector
+// Per-particle-population settings: behavior (Rule) + physics parameters.
+// Each entity selects its own slot via config_index, so different particles
+// can obey entirely different configs.
+layout(std430, binding = 1) buffer ConfigBuffer {
+    ConfigData configs[];
 };
-//10 FourierCenters makes a Rule
-struct Rule {
-    FourierCenter centers[10];
-};
 
-//Rule coefficients loaded from config file. This governs how each particle responds to trails
-uniform Rule config_rule;
+// Settings that are properties of the world rather than of any particle.
+uniform WorldData world;
 
-//-------------Physics parameters from config file-----------------
-struct ConfigData {
-    int cohorts;
-    float rule_seed;
-    float sensor_gain;
-    float sensor_angle;
-    float sensor_distance;
-    float mutation_scale;
-    float global_force_mult;
-    float drag;
-    float strafe_power;
-    float axial_force;
-    float lateral_force;
-    float hazard_rate;
-    float trail_persistence;
-    float trail_diffusion;
-};
-uniform ConfigData config;
-
-#define PI 3.1415926
-#define SQRT_WORLD_SIZE .5 //Scaling parameter that resizes distances to have a constant size in pixels
+// rule_seed stays a uniform for now: it is a per-preset scalar consumed only
+// by the cohort mutation path, which is itself a deprecation candidate (the
+// ConfigBuffer supersedes it -- see the Phase 1 memo).
+uniform float rule_seed;
 
 uniform sampler2D canvas_texture;
 uniform int frame_count;
-
-struct Entity {
-    vec2 pos;
-    vec2 vel;
-    float size;
-    float padding;
-};  // Total: 24 bytes (6 floats)
 
 layout(std430, binding = 0) buffer EntityBuffer {
     Entity entities[];
@@ -151,10 +127,8 @@ void pR(inout vec2 p, float a) {
 
 //convert p from worldspace to texture coords and retrieve canvas
 vec4 get_can(vec2 p){
-    vec2 res=textureSize(canvas_texture,0);
-    vec2 aspect=vec2(1,res.x/res.y);
-    vec2 uv = p/2*aspect+.5;
-    return texture(canvas_texture, uv);
+    vec2 res = vec2(textureSize(canvas_texture, 0));
+    return texture(canvas_texture, world_to_uv(p, res));
 }
 
 //normalize vector that tolerates vec2(0)
@@ -162,24 +136,32 @@ vec2 safenorm(vec2 p){
     return length(p)==0?vec2(0):normalize(p);
 }
 
-//simply assigns each to a cohort based on its index. 
+//simply assigns each to a cohort based on its index.
 //floor(get_cohort(index)) should be used for cohort equality tests
-float get_cohort(uint index) {
-    return float(config.cohorts) * float(index) / float(entities.length());
+float get_cohort(uint index, ConfigData config) {
+    return float(cfg_cohorts(config)) * float(index) / float(entities.length());
+}
+
+//Decide which ConfigData slot an entity uses. Phase 1 puts everyone on slot 0,
+//which is behavior-identical to the old single-uniform setup. To split the
+//population across configs, this is the one place to change: assign by index
+//(cohort-style), by position, or however the feature calls for.
+int assign_config_index(uint index){
+    return 0;
 }
 
 //Return all entities to their initialization state
-void reset(uint index){
+void reset(uint index, ConfigData config){
 
-    float size=index<entities.length()?.0015/SQRT_WORLD_SIZE: 0;
-    float cohort_val = get_cohort(index);
+    float size=index<entities.length()?.0015/world_sqrt_world_size(world): 0;
+    float cohort_val = get_cohort(index, config);
 
     //set pos and vel to random values on a across the canvas
     vec2 pos=.019*vec2(hash(vec2(cohort_val)),hash(vec2(cohort_val+index+2.142)));//vec2(hash(vec2(cohort_val, 1.0)), hash(vec2(cohort_val, 2.0))) * 2.0 - 1.0;
     vec2 vel=0.00005*(vec2(hash(vec2(cohort_val,index)),hash(vec2(cohort_val,pos.y)))*2-1);
 
     //store to persistent entity buffer
-    entities[index]=Entity(pos,vel,size,0);
+    entities[index]=make_entity(pos,vel,size,assign_config_index(index));
 }
 
 //randomly change noise function parameters, scaled by parameter 'amount'. 
@@ -216,7 +198,7 @@ vec4 black_box(vec2 L,vec2 R,Rule rule){
 //RETURNS (via out parameters):
 //--force: A "push" vector that will be added to entity.vel
 //--strafe: A "hop" vector that will be added to entity.pos and have no effect on velocity
-void calculate_entity_behavior( vec2 L,vec2 R, vec2 axis, Rule rule, out vec2 force, out vec2 strafe){
+void calculate_entity_behavior( vec2 L,vec2 R, vec2 axis, Rule rule, ConfigData config, out vec2 force, out vec2 strafe){
 
     //build a local coordinate frame where "axis" is forward.
     vec2 forward = safenorm(axis);
@@ -236,8 +218,8 @@ void calculate_entity_behavior( vec2 L,vec2 R, vec2 axis, Rule rule, out vec2 fo
     strafe = baseterm.zw + y_reflect(mirrorterm.zw);
 
     //Convert force and strafe back to world coordinates
-    force = (forward * force.x * config.axial_force) + (left * force.y * config.lateral_force);
-    strafe = (forward * strafe.x * config.axial_force) + (left * strafe.y * config.lateral_force);
+    force = (forward * force.x * cfg_axial_force(config)) + (left * force.y * cfg_lateral_force(config));
+    strafe = (forward * strafe.x * cfg_axial_force(config)) + (left * strafe.y * cfg_lateral_force(config));
 
     return;
 }
@@ -247,60 +229,73 @@ void main() {
     if (index >= entities.length()) return;
 
     Entity e=entities[index];
-    float cohort = get_cohort(index);
-    Rule rule = config_rule;
+
+    //Select this entity's config. On a reset frame the entity's stored
+    //config_index is not yet meaningful (nothing has been written), so ask
+    //assign_config_index() directly rather than reading it back.
+    int config_index = frame_count==0 ? assign_config_index(index) : e_config_index(e);
+    ConfigData config = configs[clamp(config_index, 0, world_config_count(world)-1)];
+
+    float sqrt_world_size = world_sqrt_world_size(world);
+    vec2 canvas_res = vec2(textureSize(canvas_texture, 0));
+
+    float cohort = get_cohort(index, config);
+    Rule rule = config.rule;
     //Hazard Rate == probability each frame to reset this particle
-    bool hazard_reset = config.hazard_rate > hash(vec2(float(index)/float(entities.length()),frame_count));
-    
+    bool hazard_reset = cfg_hazard_rate(config) > hash(vec2(float(index)/float(entities.length()),frame_count));
+
     //frame_count == 0 signals a simulation reset
-    if (frame_count==0||hazard_reset){reset(index);return;}
+    if (frame_count==0||hazard_reset){reset(index, config);return;}
+
+    vec2 pos = e_pos(e);
+    vec2 vel = e_vel(e);
 
     //Calculate position offsets for the two sensors.
-    float sample_dist = 1./SQRT_WORLD_SIZE*.005 * config.sensor_distance;
-    vec2 orientation = safenorm(e.vel);//vector facing the same direction as velocity, with length==sample_dist
+    float sample_dist = 1./sqrt_world_size*.005 * cfg_sensor_distance(config);
+    vec2 orientation = safenorm(vel);//vector facing the same direction as velocity, with length==sample_dist
 
     vec2 left_sensor_offset = orientation*sample_dist;
     vec2 right_sensor_offset = orientation*sample_dist;
-    pR(left_sensor_offset,config.sensor_angle*PI);//rotate them opposite directions
-    pR(right_sensor_offset,-config.sensor_angle*PI);
+    pR(left_sensor_offset,cfg_sensor_angle(config)*PI);//rotate them opposite directions
+    pR(right_sensor_offset,-cfg_sensor_angle(config)*PI);
 
     //read the trails from canvas
-    vec4 ltap = get_can(e.pos+left_sensor_offset);
-    vec4 rtap = get_can(e.pos+right_sensor_offset);
+    vec4 ltap = get_can(pos+left_sensor_offset);
+    vec4 rtap = get_can(pos+right_sensor_offset);
 
     //if a few arbitrary coefficients are exactly 0, then assume target_rule is all 0s (no target) and generate a random rule instead.
     if(rule.centers[0].frequency==vec4(0) && rule.centers[5].amplitude==vec4(0)){
-        rule = Rule(generate_random_centers(config.rule_seed+floor(cohort)));
+        rule = Rule(generate_random_centers(rule_seed+floor(cohort)));
     }
     //Each cohort gets a random mutation
-    mutate_rule(rule,config.mutation_scale,config.rule_seed+floor(cohort));
+    mutate_rule(rule,cfg_mutation_scale(config),rule_seed+floor(cohort));
 
     //rescale sensor values
-    float sensor_scaling = SQRT_WORLD_SIZE*38.855*config.sensor_gain;
+    float sensor_scaling = sqrt_world_size*38.855*cfg_sensor_gain(config);
     ltap *= sensor_scaling;
     rtap *= sensor_scaling;
 
     //compute entity action
     vec2 strafe =vec2(0);//set by calculate_...
     vec2 force = vec2(0);//set by calculate_...
-    calculate_entity_behavior(ltap.xy,rtap.xy,orientation,rule,force,strafe);
+    calculate_entity_behavior(ltap.xy,rtap.xy,orientation,rule,config,force,strafe);
 
     //rescale output forces
-    force *= 1./SQRT_WORLD_SIZE*config.global_force_mult/400.;
-    strafe *= 1./SQRT_WORLD_SIZE*config.global_force_mult/20.;
+    force *= 1./sqrt_world_size*cfg_global_force_mult(config)/400.;
+    strafe *= 1./sqrt_world_size*cfg_global_force_mult(config)/20.;
 
 
 
     //Accelerate: Apply drag and add force to e.vel,
-    e.vel = e.vel*config.drag + force;
-    
-    //Move: add e.vel and strafe to e.pos
-    e.pos += e.vel;
-    e.pos += strafe*config.strafe_power;
+    vel = vel*cfg_drag(config) + force;
 
-    //wrap from from -1 to 1
-    e.pos = 2*(fract(e.pos/2-.5)-.5);
+    //Move: add vel and strafe to pos
+    pos += vel;
+    pos += strafe*cfg_strafe_power(config);
+
+    //wrap into the toroidal world bounds
+    pos = world_wrap(pos, canvas_res);
 
     //Commit new entity state to buffers
-    entities[index]=e;
+    entities[index]=make_entity(pos,vel,e_size(e),config_index);
 }

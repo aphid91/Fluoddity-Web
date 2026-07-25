@@ -1,22 +1,11 @@
 #version 430
 
-struct ConfigData {
-    int cohorts;
-    float rule_seed;
-    float sensor_gain;
-    float sensor_angle;
-    float sensor_distance;
-    float mutation_scale;
-    float global_force_mult;
-    float drag;
-    float strafe_power;
-    float axial_force;
-    float lateral_force;
-    float hazard_rate;
-    float trail_persistence;
-    float trail_diffusion;
-};
-uniform ConfigData config;
+// Structs come from common.glsl. This shader used to carry a full duplicate of
+// ConfigData purely to reach trail_persistence -- which is a world property,
+// not a per-particle one, and now lives in WorldData.
+#include "common.glsl"
+
+uniform WorldData world;
 
 in vec2 uv;
 in vec4 pos_vel;
@@ -38,7 +27,7 @@ void main() {
     // Splat directly into the canvas, premultiplied by (1-P)/P so that after the
     // canvas pass's P decay the steady contribution matches the old (1-P)*brush mix.
     // kernel_func*kernel_func reproduces the old SRC_ALPHA blend's quadratic weighting.
-    float P = clamp(config.trail_persistence, 1e-4, 0.999);
+    float P = clamp(world_trail_persistence(world), 1e-4, 0.999);
     float premult = (1.0 - P) / P;
     vec2 vel = pos_vel.zw;
     brush_out = vec4(vel * kernel_func * kernel_func * premult, 0.0, 0.0);

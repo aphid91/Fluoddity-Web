@@ -1,13 +1,10 @@
 #version 430
 
-uniform vec2 canvas_resolution;
+// Entity and the coordinate math come from common.glsl -- this shader used to
+// carry its own copy of the struct, which had to be kept in sync by hand.
+#include "common.glsl"
 
-struct Entity {
-    vec2 pos;
-    vec2 vel;
-    float size;
-    float padding;
-};  // Total: 24 bytes (6 floats)
+uniform vec2 canvas_resolution;
 
 layout(std430, binding = 0) buffer EntityBuffer {
     Entity entities[];
@@ -20,9 +17,10 @@ void main() {
     int instance_id = gl_InstanceID;
     int vertex_id = gl_VertexID;
 
-    vec2 entity_pos = entities[instance_id].pos;
-    vec2 entity_vel = entities[instance_id].vel;
-    float size = entities[instance_id].size;
+    Entity e = entities[instance_id];
+    vec2 entity_pos = e_pos(e);
+    vec2 entity_vel = e_vel(e);
+    float size = e_size(e);
 
     vec2 offsets[4] = vec2[](
         vec2(-size, -size),
@@ -40,7 +38,7 @@ void main() {
     vec2 particle_uv = uv_coords[vertex_id];
     vec2 vertex_pos = entity_pos + offsets[vertex_id];
 
-    gl_Position = vec4(vertex_pos, 0.0, 1.0) * vec4(1, canvas_resolution.x / canvas_resolution.y, 1, 1);
+    gl_Position = vec4(world_to_ndc(vertex_pos, canvas_resolution), 0.0, 1.0);
 
     uv = particle_uv;
     pos_vel = vec4(entity_pos, entity_vel);

@@ -5,13 +5,17 @@ import numpy as np
 import moderngl
 
 from shared.gl_utils import read_shader, tryset
-from .config import SimulationConfig
+from .config import SimulationConfig, pack_configs
+from .layout import SIZE_OF_CONFIG_DATA, SIZE_OF_ENTITY_STRUCT
 
 WORLD_SIZE = .25
 SQRT_WORLD_SIZE = 0.5
 ENTITY_COUNT = int(600000*WORLD_SIZE)
 CANVAS_DIM = int(1024*SQRT_WORLD_SIZE)
-SIZE_OF_ENTITY_STRUCT = 24
+
+# SSBO binding points. Mirrored in common.glsl's header table.
+ENTITY_BUFFER_BINDING = 0
+CONFIG_BUFFER_BINDING = 1
 
 # Shader paths resolved relative to this module, so the app is not CWD-dependent.
 _SHADER_DIR = Path(__file__).parent / "shaders"
@@ -50,8 +54,17 @@ class ParticleSystem:
         self.canvas_texture_back.filter = (moderngl.LINEAR,moderngl.LINEAR)
         self.canvas_fbo_back = self.ctx.framebuffer(color_attachments=[self.canvas_texture_back])
 
-        # Entity buffer
+        # Entity buffer. Contents are written entirely GPU-side by the reset
+        # path in entity_update.glsl, so reserve is all that is needed here.
         self.entity_buffer = self.ctx.buffer(reserve=ENTITY_COUNT * SIZE_OF_ENTITY_STRUCT)
+
+        # Config buffer: one ConfigData slot per particle population. Sized as a
+        # variable from the start -- Phase 1 runs a single slot (every entity on
+        # config 0, behavior-identical to the old uniform setup), but growing it
+        # is the supported path to heterogeneous particles.
+        self.configs = [self.config]
+        self.config_buffer = None
+        self._upload_configs()
 
         # Fullscreen quad for canvas update (initialized in reload)
         self.quad_vbo = None
@@ -69,6 +82,35 @@ class ParticleSystem:
         self._reload_entity_update()
         self._reload_brush_splat()
         self._reload_canvas_update()
+
+    # --- config buffer / world uniform ---
+
+    def _upload_configs(self):
+        """(Re)allocate and fill the ConfigBuffer from self.configs.
+
+        Reallocates only when the slot count changes, so a plain edit-and-push
+        of existing configs does not churn GPU memory.
+        """
+        needed = len(self.configs) * SIZE_OF_CONFIG_DATA
+        if self.config_buffer is None or self.config_buffer.size != needed:
+            if self.config_buffer is not None:
+                self.config_buffer.release()
+            self.config_buffer = self.ctx.buffer(reserve=needed)
+        self.config_buffer.write(pack_configs(self.configs))
+
+    def _world_config(self):
+        """WorldData for the current frame.
+
+        Trail settings come from config 0 by convention: they are world
+        properties, so when multiple configs exist the first one supplies them.
+        """
+        return self.configs[0].world_config(
+            sqrt_world_size=SQRT_WORLD_SIZE,
+            config_count=len(self.configs),
+        )
+
+    def _set_world_uniform(self, program):
+        tryset(program, 'world.trail', self._world_config().as_uniform_value())
 
     def _reload_entity_update(self):
         """Reload entity update compute shader."""
@@ -159,18 +201,21 @@ class ParticleSystem:
         return self.canvas_texture
 
     def load_config(self, config_path):
-        """Command: switch to a different physics preset (does not touch GPU state)."""
+        """Command: switch to a different physics preset."""
         self.config_path = config_path
         self.config = SimulationConfig.load(config_path)
+        self.configs = [self.config]
+        self._upload_configs()
         print(f"Loaded config: {config_path}")
 
     def update_entities(self):
         """Dispatch compute shader to update entity positions."""
 
-        self.entity_buffer.bind_to_storage_buffer(0)
+        self.entity_buffer.bind_to_storage_buffer(ENTITY_BUFFER_BINDING)
+        self.config_buffer.bind_to_storage_buffer(CONFIG_BUFFER_BINDING)
 
-        self.config.set_config_uniform(self.entity_update_program)
-        self.config.set_rule_uniform(self.entity_update_program)
+        self._set_world_uniform(self.entity_update_program)
+        tryset(self.entity_update_program, 'rule_seed', float(self.config.rule_seed))
         tryset(self.entity_update_program, 'canvas_texture', 0)
         tryset(self.entity_update_program, 'frame_count', self.frame_count)
         self.canvas_texture.use(location=0)
@@ -198,10 +243,10 @@ class ParticleSystem:
         self.ctx.blend_func = moderngl.ONE, moderngl.ONE
 
         # Bind entity buffer as SSBO
-        self.entity_buffer.bind_to_storage_buffer(0)
+        self.entity_buffer.bind_to_storage_buffer(ENTITY_BUFFER_BINDING)
 
-        # Set uniforms (config supplies trail_persistence for the (1-P)/P premultiply)
-        self.config.set_config_uniform(self.brush_splat_program)
+        # Set uniforms (world supplies trail_persistence for the (1-P)/P premultiply)
+        self._set_world_uniform(self.brush_splat_program)
         tryset(self.brush_splat_program, 'canvas_resolution',
                (float(self.canvas_size[0]), float(self.canvas_size[1])))
         tryset(self.brush_splat_program, 'frame_count', self.frame_count)
@@ -220,7 +265,7 @@ class ParticleSystem:
         # Render to back buffer, reading from front
         self.canvas_fbo_back.use()
 
-        self.config.set_config_uniform(self.canvas_update_program)
+        self._set_world_uniform(self.canvas_update_program)
         tryset(self.canvas_update_program, 'canvas_texture', 0)
         tryset(self.canvas_update_program, 'frame_count', self.frame_count)
 

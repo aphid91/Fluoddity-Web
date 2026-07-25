@@ -1,22 +1,11 @@
 #version 430
 
-struct ConfigData {
-    int cohorts;
-    float rule_seed;
-    float sensor_gain;
-    float sensor_angle;
-    float sensor_distance;
-    float mutation_scale;
-    float global_force_mult;
-    float drag;
-    float strafe_power;
-    float axial_force;
-    float lateral_force;
-    float hazard_rate;
-    float trail_persistence;
-    float trail_diffusion;
-};
-uniform ConfigData config;
+// Structs come from common.glsl. This shader used to carry a full duplicate of
+// ConfigData purely to reach the two trail settings, which are world
+// properties rather than per-particle ones and now live in WorldData.
+#include "common.glsl"
+
+uniform WorldData world;
 
 uniform sampler2D canvas_texture;
 uniform int frame_count;
@@ -45,8 +34,8 @@ vec4 getBlur(vec2 pos, sampler2D sam,float diffusion_constant) {
 void main() {
     if(frame_count==0){canvas_out=vec4(0,0,0,0);return;}
     vec4 canvas_color;
-    float TRAIL_DIFFUSION = clamp(config.trail_diffusion,0.001,1.0);
-    float TRAIL_PERSISTENCE = clamp(config.trail_persistence,1e-4,0.999);
+    float TRAIL_DIFFUSION = clamp(world_trail_diffusion(world),0.001,1.0);
+    float TRAIL_PERSISTENCE = clamp(world_trail_persistence(world),1e-4,0.999);
     if(TRAIL_DIFFUSION>0){
         TRAIL_DIFFUSION= TRAIL_DIFFUSION*TRAIL_DIFFUSION;//better scaling for slider
         TRAIL_DIFFUSION = 4./(pow(5,(TRAIL_DIFFUSION))-1);//better scaling for slider
