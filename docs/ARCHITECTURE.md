@@ -21,7 +21,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | Module            | Owns                                                                 |
 |-------------------|----------------------------------------------------------------------|
 | `app_window/`     | GLFW init, the window, and the moderngl **context** (`ctx`). Per-frame windowing (should_close / begin_frame / end_frame). |
-| `camera/`         | The display/present pass: blits a texture to the screen. (Despite the name, this is a *presentation* module, not a movable viewpoint — `camera.frag` is a passthrough colorizer.) Owns `camera.frag`. |
+| `camera/`         | The viewpoint: pan/zoom/mode state, and both ways of drawing the world (TRAIL present pass, PARTICLES instanced sprites). Owns `camera.frag`, `cam_brush.vert/frag`, and `CameraState`. Holds no simulation state. |
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
 | `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. |
 | `orchestrator/`   | Owns one of each module above. Drives the main loop. Sole broker of inter-module commands and data. |
@@ -107,10 +107,10 @@ These are the load-bearing constraints. Follow them when extending the project.
    `[-1,1]^2`.
 
    **Only `common.glsl` and `particle_system/coords.py` may write aspect-ratio
-   math.** Everything else calls `world_to_uv` / `uv_to_world` / `world_to_ndc`
-   / `world_wrap`. The reference had six divergent copies of this math, at least
-   one contradicting the others, and the resulting drift between overlays and
-   the simulation was never fully fixed.
+   or camera math.** Everything else composes the functions they provide. The
+   reference had six divergent copies of this math, at least one contradicting
+   the others, and the resulting drift between overlays and the simulation was
+   never fully fixed. See "The view transform" below.
 
 10. **Simulation truth lives in the ConfigBuffer, not in the UI.** When a UI
     module lands, it reads config state and issues commands; it does not own a
@@ -165,6 +165,64 @@ the same job more generally. They are kept because existing presets depend on
 them, but they should not be extended. Migration when the time comes: *N cohorts
 -> N config slots pre-populated with the mutated rules, computed host-side.*
 
+## The view transform
+
+### Three independent aspect quantities
+
+Conflating these is the biggest source of confusion in this domain, and doing so
+is what made the reference's aspect handling unfixable. They are named
+distinctly everywhere:
+
+| Name | What it is |
+|------|------------|
+| `canvas_size` | The simulation texture's dimensions. **Defines world space.** Changing it changes the shape of the simulated world. |
+| `window_size` | The framebuffer's dimensions in pixels. Changes on resize. **Must never move a particle.** |
+| letterbox | How the canvas fits into the window when their aspects disagree. *Derived* from the two above — never stored. |
+
+### The chain
+
+```
+world                                   entity coordinates
+  |  / world_half_extent                normalize to the canvas box
+canvas ndc
+  |  - pan, * zoom                      camera
+view ndc
+  |  * letterbox_scale                  fit canvas into window
+screen ndc  [-1,1]
+  |  * 0.5 + 0.5, flip y, * window_size
+screen pixels                           GLFW convention, origin top-left
+```
+
+Every step is invertible; `screen_to_world` walks it backwards. **Compose new
+conversions from these — never write a fresh one.** The chain exists in exactly
+two places, `coords.py` and the bottom of `common.glsl`, and they are verified
+against each other by running the GLSL on the GPU and comparing outputs.
+
+### Conventions
+
+- **zoom: bigger = zoomed IN**, a magnification factor. `zoom=1` fits the
+  world. The original inverted this (its "zoom" was really a view size), which
+  made the math read backwards as `scale /= zoom`.
+- **pan: world units** — the world point at the center of the view. The
+  original stored pan in "ndc x zoom" units with a negated y, so a pan value was
+  meaningless without also knowing the zoom.
+- **Letterbox is fit, not fill.** The whole canvas is always visible; the slack
+  becomes black bars. Nothing is ever cropped, and a circle stays a circle.
+
+### Camera modes
+
+`CameraMode.TRAIL` samples the canvas texture through the **inverse** transform:
+the quad is always fullscreen, and each screen pixel asks "what world point do I
+show?". That inverse is what places the letterbox bars correctly.
+
+`CameraMode.PARTICLES` draws one instanced sprite per entity, transformed to
+screen ndc **in the vertex shader** — so the camera is baked into the vertices
+and the present pass must not apply it again. Particles are world-sized (they
+grow as you zoom in), matching the original's feel.
+
+Both modes consume the same transform, so they agree pixel-for-pixel about where
+a world point lands and toggling between them does not shift the image.
+
 ## Input & the UI layer
 
 `ui/` owns **every** GLFW callback. A second module installing callbacks on the
@@ -199,18 +257,21 @@ where the mouse is.
 Orchestrator.run() loop:
        UI.begin_frame()                  # poll events, snapshot InputState,
                                          #   imgui.new_frame(), fire hotkeys
+       _apply_camera_input(state)        # drag -> pan, scroll -> zoom
   30x  ParticleSystem.advance()          # GPU sim sub-steps
        AppWindow.begin_frame()           # bind + clear default framebuffer
-       Camera.render_texture(
-           ParticleSystem.current_canvas_texture(),   # data pulled...
-           AppWindow.ctx.screen)                       # ...and handed to Camera
+       Camera.render(                    # data pulled from modules...
+           canvas_texture, entity_buffer,#   ...and handed to Camera, which
+           canvas_size, window_size)     #   holds no persistent reference
        Orchestrator._report_status()     # push display-only values to UI
        UI.end_frame()                    # build panels, imgui.render(), draw
        AppWindow.end_frame()             # swap buffers
 
 UI -> named command -> Orchestrator handler
      R = reload | SPACE = reset | LEFT/RIGHT = prev/next preset
-     (same commands also exposed as buttons in the Debug panel)
+     TAB = toggle camera mode | HOME = reset view
+     drag = pan | scroll = zoom (anchored at the cursor)
+     (commands also exposed as buttons in the Debug panel)
 ```
 
 **Why input is polled at the top.** Events are gathered before the physics and
@@ -226,18 +287,17 @@ it only swaps.
   are still module-level globals. Folding them into config is an optional future
   step; they're sizing constants, not per-preset physics, so they were left out
   of `SimulationConfig`.
-- `Camera` is really "present/display" — see the note in the module table. Rename
-  is possible but was left to avoid churn. Expect this to be resolved when real
-  pan/zoom camera work lands.
-- The canvas is square today, so the area-preserving world convention (rule 9)
-  reduces to `[-1,1]^2` and its non-square behavior is **not yet exercised**.
-  The convention is implemented and unit-checked on both sides; making
-  non-square canvases work end to end (window aspect, present pass, picking) is
-  its own piece of work.
+- `CANVAS_ASPECT` is a module-level constant in `particle_system.py`. Non-square
+  canvases are implemented and verified, but there is no UI to change the aspect
+  at runtime — doing so requires reallocating the canvas textures and resetting
+  the sim, which wants a deliberate command rather than a slider.
 - `config_index` is treated as **mutable entity state** written by
   `assign_config_index()` at reset. A future "paint particles into config N"
   tool would change it at runtime, so the host must not assume it knows the
   entity->config mapping without a readback.
+- PARTICLES mode draws every entity with no culling. Off-screen sprites still
+  cost a vertex-shader invocation; at 150k entities that is fine, but a visible
+  cost if the entity count grows a lot.
 - `rule_seed` remains a uniform rather than a `ConfigData` lane, because it is
   consumed only by the cohort-mutation path that rule-9's deprecation note
   covers. If cohorts go, it goes with them.

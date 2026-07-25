@@ -13,6 +13,25 @@ SQRT_WORLD_SIZE = 0.5
 ENTITY_COUNT = int(600000*WORLD_SIZE)
 CANVAS_DIM = int(1024*SQRT_WORLD_SIZE)
 
+#: Canvas aspect (width:height). 1.0 is square. Changing this changes the SHAPE
+#: of the simulated world -- world space is area-preserving, so the canvas keeps
+#: roughly the same pixel count and the same particle density; it just gets
+#: wider and shorter. This is independent of the window: resizing the window
+#: letterboxes, it does not reshape the world.
+CANVAS_ASPECT = .250
+
+
+def canvas_dimensions(aspect=CANVAS_ASPECT, dim=CANVAS_DIM):
+    """Canvas (width, height) for an aspect, preserving total pixel count.
+
+    Area-preserving to match world space: dim*dim pixels regardless of shape,
+    so changing aspect does not silently change simulation cost or the
+    effective resolution of the trails.
+    """
+    import math
+    s = math.sqrt(aspect)
+    return (max(1, int(round(dim * s))), max(1, int(round(dim / s))))
+
 # SSBO binding points. Mirrored in common.glsl's header table.
 ENTITY_BUFFER_BINDING = 0
 CONFIG_BUFFER_BINDING = 1
@@ -23,7 +42,10 @@ _SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
 
 
 class ParticleSystem:
-    def __init__(self, ctx, canvas_size=(CANVAS_DIM,CANVAS_DIM), config_path=None):
+    def __init__(self, ctx, canvas_size=None, config_path=None):
+
+        if canvas_size is None:
+            canvas_size = canvas_dimensions()
 
         if config_path is None:
             config_path = str(Path(__file__).parent.parent / "configs" / "Starcrossed.json")

@@ -31,6 +31,24 @@ class AppWindow:
         self.ctx = moderngl.create_context()
         self.ctx.enable(moderngl.BLEND)
 
+        # Cached so the render path never syscalls per frame. GLFW reports the
+        # framebuffer size, which is what pixel coordinates refer to and which
+        # differs from window size on HiDPI displays.
+        self._size = glfw.get_framebuffer_size(self.window)
+        glfw.set_framebuffer_size_callback(self.window, self._on_resize)
+
+    def _on_resize(self, window, width, height):
+        """Track framebuffer size and keep the GL viewport in step.
+
+        Resizing must not disturb the simulation: the canvas texture and world
+        space are independent of window size, and the letterbox transform
+        absorbs the new aspect. Only the viewport changes here.
+        """
+        self._size = (width, height)
+        # Minimizing reports 0x0; setting a zero viewport is invalid.
+        if width > 0 and height > 0:
+            self.ctx.viewport = (0, 0, width, height)
+
     def should_close(self) -> bool:
         return glfw.window_should_close(self.window)
 
@@ -47,7 +65,7 @@ class AppWindow:
     def size(self):
         """Framebuffer size in pixels. Differs from window size on HiDPI
         displays, and it is the framebuffer that pixel coordinates refer to."""
-        return glfw.get_framebuffer_size(self.window)
+        return self._size
 
     def terminate(self):
         glfw.terminate()

@@ -1,27 +1,78 @@
-"""The Python mirror of the coordinate convention in common.glsl.
+"""The Python mirror of the coordinate math in common.glsl.
 
-World space is AREA-PRESERVING. With ca = canvas_res.x / canvas_res.y:
+THIS MODULE AND common.glsl ARE THE ONLY TWO PLACES ALLOWED TO WRITE
+ASPECT-RATIO OR CAMERA MATH. Everything else calls these functions. The
+reference implementation had six divergent copies of this transform, at least
+one contradicting the others, and the resulting drift between overlays and the
+simulation was never fully fixed. That is the failure this rule prevents.
+
+Keep these functions in lockstep with the ones at the bottom of common.glsl.
+
+===========================================================================
+THREE INDEPENDENT ASPECT QUANTITIES
+===========================================================================
+Conflating these is the single biggest source of confusion in this domain, so
+they are named distinctly everywhere:
+
+  canvas_size   The simulation texture's dimensions. Defines WORLD SPACE.
+                Changing it changes the shape of the simulated world.
+
+  window_size   The framebuffer's dimensions in pixels. Changes when the user
+                resizes the window. Must NOT move a particle.
+
+  letterbox     How the canvas is fitted into the window when their aspects
+                disagree. Derived from the two above; never stored.
+
+===========================================================================
+WORLD SPACE (area-preserving)
+===========================================================================
+With ca = canvas_size.x / canvas_size.y:
 
     world = [-sqrt(ca), +sqrt(ca)]  x  [-1/sqrt(ca), +1/sqrt(ca)]
 
-so the world always has area 4 regardless of canvas aspect, and a circle in
-world space stays a circle on screen. On a square canvas ca == 1 and this
-reduces exactly to the familiar [-1,1] x [-1,1].
+so world area is always 4 and a circle stays a circle. On a square canvas
+ca == 1 and this reduces to the familiar [-1,1] x [-1,1].
 
-THIS MODULE AND common.glsl ARE THE ONLY TWO PLACES ALLOWED TO WRITE
-ASPECT-RATIO MATH. Anything that needs a coordinate conversion calls one of
-these functions. The reference implementation had six divergent copies of this
-math, at least one of which contradicted the others, and the resulting drift
-between overlays and the simulation was never fully fixed. That is the specific
-failure this rule exists to prevent.
+===========================================================================
+THE VIEW TRANSFORM  (world -> screen)
+===========================================================================
+    world                                     entity coordinates
+      |  / world_half_extent                  normalize to [-1,1] canvas box
+    canvas ndc
+      |  - pan, * zoom                        camera
+    view ndc
+      |  * letterbox_scale                    fit canvas into window
+    screen ndc  [-1,1]
+      |  * 0.5 + 0.5, flip y, * window_size
+    screen pixels                             GLFW convention, origin top-left
 
-Keep these functions in lockstep with the ones at the bottom of common.glsl.
+Every step is invertible and `screen_to_world` walks it backwards. If you ever
+need a new conversion, compose it from these -- do not write a fresh one.
+
+ZOOM CONVENTION: bigger zoom = zoomed IN (a magnification factor).
+zoom=1 fits the world in the window; zoom=2 shows half of it. This is the
+opposite of the original Fluoddity, whose "zoom" was really a view size and
+made the math read backwards (`scale /= zoom`).
+
+PAN UNITS: world units. pan is the world point at the center of the view, so
+`pan = (0.5, 0)` puts world x=0.5 in the middle of the screen. The original
+stored pan in "ndc x zoom" units with a negated y, which meant pan values were
+meaningless without also knowing the zoom.
 """
 
 from __future__ import annotations
 
 import math
 
+#: Camera state that produces an untransformed view. Handy as a default and
+#: for the trail-view present pass, which bakes no camera in.
+IDENTITY_PAN = (0.0, 0.0)
+IDENTITY_ZOOM = 1.0
+
+
+# ---------------------------------------------------------------------------
+# World space
+# ---------------------------------------------------------------------------
 
 def world_half_extent(canvas_size) -> tuple[float, float]:
     """Half-extent of world space on each axis, from canvas (width, height)."""
@@ -43,9 +94,19 @@ def uv_to_world(uv, canvas_size) -> tuple[float, float]:
 
 
 def world_to_ndc(p, canvas_size) -> tuple[float, float]:
-    """World position -> normalized device coords [-1,1]."""
+    """World position -> canvas-normalized device coords [-1,1].
+
+    This is the *canvas* box, before any camera or letterboxing. It is what a
+    shader rasterizing into the canvas texture wants.
+    """
     ex, ey = world_half_extent(canvas_size)
     return (p[0] / ex, p[1] / ey)
+
+
+def ndc_to_world(ndc, canvas_size) -> tuple[float, float]:
+    """Canvas ndc [-1,1] -> world position."""
+    ex, ey = world_half_extent(canvas_size)
+    return (ndc[0] * ex, ndc[1] * ey)
 
 
 def world_wrap(p, canvas_size) -> tuple[float, float]:
@@ -59,21 +120,99 @@ def world_wrap(p, canvas_size) -> tuple[float, float]:
     return (wrap(p[0], ex), wrap(p[1], ey))
 
 
-def screen_to_world(pixel, window_size, canvas_size) -> tuple[float, float]:
-    """Screen pixel (GLFW: origin top-left, y down) -> world position.
+# ---------------------------------------------------------------------------
+# Letterboxing
+# ---------------------------------------------------------------------------
 
-    The present pass currently stretches the canvas across the whole window, so
-    this inverts exactly that. It takes `window_size` and `canvas_size`
-    separately because they are genuinely independent -- resizing the window
-    must not move a particle.
+def letterbox_scale(canvas_size, window_size) -> tuple[float, float]:
+    """Scale factors fitting the canvas box into the window, preserving shape.
 
-    NOTE: this does not yet account for camera pan/zoom or letterboxing,
-    because neither exists yet. When the camera lands, its inverse belongs
-    HERE, in this function -- not in the caller. That is rule 9, and the
-    reference's six drifting copies of this transform are what it is for.
+    Returns multipliers applied to canvas-ndc to reach screen-ndc. The axis
+    that would overflow is shrunk; the other stays 1.0. The unused margin is
+    the letterbox bar.
+
+    Fit (not fill): the whole canvas is always visible. A circle stays a
+    circle in any window shape.
     """
     if window_size[0] <= 0 or window_size[1] <= 0:
+        return (1.0, 1.0)
+    canvas_aspect = canvas_size[0] / canvas_size[1]
+    window_aspect = window_size[0] / window_size[1]
+    if window_aspect > canvas_aspect:
+        # Window is wider than the canvas: bars on the left and right.
+        return (canvas_aspect / window_aspect, 1.0)
+    # Window is taller: bars on top and bottom.
+    return (1.0, window_aspect / canvas_aspect)
+
+
+# ---------------------------------------------------------------------------
+# The view transform
+# ---------------------------------------------------------------------------
+
+def world_to_screen_ndc(p, canvas_size, window_size,
+                        pan=IDENTITY_PAN, zoom=IDENTITY_ZOOM) -> tuple[float, float]:
+    """World position -> screen ndc [-1,1], through camera and letterbox."""
+    # Camera acts in world units, so pan is subtracted before normalizing.
+    cx, cy = world_to_ndc((p[0] - pan[0], p[1] - pan[1]), canvas_size)
+    cx *= zoom
+    cy *= zoom
+    sx, sy = letterbox_scale(canvas_size, window_size)
+    return (cx * sx, cy * sy)
+
+
+def screen_ndc_to_world(ndc, canvas_size, window_size,
+                        pan=IDENTITY_PAN, zoom=IDENTITY_ZOOM) -> tuple[float, float]:
+    """Screen ndc [-1,1] -> world position. Exact inverse of the above."""
+    sx, sy = letterbox_scale(canvas_size, window_size)
+    cx = ndc[0] / sx if sx else 0.0
+    cy = ndc[1] / sy if sy else 0.0
+    if zoom:
+        cx /= zoom
+        cy /= zoom
+    wx, wy = ndc_to_world((cx, cy), canvas_size)
+    return (wx + pan[0], wy + pan[1])
+
+
+def screen_to_ndc(pixel, window_size) -> tuple[float, float]:
+    """Screen pixel (GLFW: origin top-left, y down) -> screen ndc [-1,1]."""
+    if window_size[0] <= 0 or window_size[1] <= 0:
         return (0.0, 0.0)
-    # Pixel -> uv, flipping y: GLFW counts down from the top, GL counts up.
-    uv = (pixel[0] / window_size[0], 1.0 - pixel[1] / window_size[1])
-    return uv_to_world(uv, canvas_size)
+    return (2.0 * pixel[0] / window_size[0] - 1.0,
+            1.0 - 2.0 * pixel[1] / window_size[1])
+
+
+def ndc_to_screen(ndc, window_size) -> tuple[float, float]:
+    """Screen ndc [-1,1] -> screen pixel (GLFW convention)."""
+    return ((ndc[0] + 1.0) * 0.5 * window_size[0],
+            (1.0 - ndc[1]) * 0.5 * window_size[1])
+
+
+def screen_to_world(pixel, window_size, canvas_size,
+                    pan=IDENTITY_PAN, zoom=IDENTITY_ZOOM) -> tuple[float, float]:
+    """Screen pixel -> world position. The full inverse chain.
+
+    This is what picking, drawing and cursor readouts want.
+    """
+    ndc = screen_to_ndc(pixel, window_size)
+    return screen_ndc_to_world(ndc, canvas_size, window_size, pan, zoom)
+
+
+def world_to_screen(p, canvas_size, window_size,
+                    pan=IDENTITY_PAN, zoom=IDENTITY_ZOOM) -> tuple[float, float]:
+    """World position -> screen pixel. The full forward chain."""
+    ndc = world_to_screen_ndc(p, canvas_size, window_size, pan, zoom)
+    return ndc_to_screen(ndc, window_size)
+
+
+def visible_world_bounds(canvas_size, window_size,
+                         pan=IDENTITY_PAN, zoom=IDENTITY_ZOOM):
+    """World-space rect currently visible: (min_x, min_y, max_x, max_y).
+
+    Useful for culling and for showing the user what the camera covers. Note
+    that with letterboxing the visible region never exceeds the canvas box on
+    the fitted axis.
+    """
+    lo = screen_to_world((0, window_size[1]), window_size, canvas_size, pan, zoom)
+    hi = screen_to_world((window_size[0], 0), window_size, canvas_size, pan, zoom)
+    return (min(lo[0], hi[0]), min(lo[1], hi[1]),
+            max(lo[0], hi[0]), max(lo[1], hi[1]))

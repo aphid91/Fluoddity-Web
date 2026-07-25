@@ -276,6 +276,14 @@ class UI:
         imgui.text(f"keys held   {self._describe_keys(s.keys_held)}")
         imgui.separator()
 
+        pan = self._status.get('cam_pan', (0.0, 0.0))
+        imgui.text(f"cam mode    {self._status.get('cam_mode', '-')}")
+        imgui.text(f"cam pan     ({pan[0]:7.3f}, {pan[1]:7.3f})")
+        imgui.text(f"cam zoom    {self._status.get('cam_zoom', 1.0):.3f}x")
+        imgui.text(f"canvas      {self._status.get('canvas_size', '-')}")
+        imgui.text(f"window      {self._status.get('window_size', '-')}")
+        imgui.separator()
+
         imgui.text(f"preset      {self._status.get('preset', '-')}")
         imgui.text(f"entities    {self._status.get('entity_count', '-')}")
         imgui.text(f"configs     {self._status.get('config_count', '-')}")
@@ -294,6 +302,13 @@ class UI:
         if imgui.button("Next >"):
             self._dispatch('next_preset')
 
+        if imgui.button("Toggle View"):
+            self._dispatch('toggle_camera_mode')
+        imgui.same_line()
+        if imgui.button("Reset View"):
+            self._dispatch('reset_camera')
+
+        imgui.text_disabled("drag: pan   scroll: zoom   TAB: view   HOME: reset")
         imgui.end()
 
     @staticmethod
@@ -333,6 +348,8 @@ class UI:
             (glfw.KEY_SPACE, 'reset'),
             (glfw.KEY_RIGHT, 'next_preset'),
             (glfw.KEY_LEFT, 'prev_preset'),
+            (glfw.KEY_TAB, 'toggle_camera_mode'),
+            (glfw.KEY_HOME, 'reset_camera'),
         ):
             if key in state.keys_pressed:
                 self._dispatch(command)

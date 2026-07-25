@@ -51,22 +51,30 @@ class Orchestrator:
             'reset': self._cmd_reset,
             'next_preset': self._cmd_next_preset,
             'prev_preset': self._cmd_prev_preset,
+            'toggle_camera_mode': self._cmd_toggle_camera_mode,
+            'reset_camera': self._cmd_reset_camera,
         })
 
     def run(self):
         while not self.window.should_close():
             # Poll + snapshot input, open the imgui frame. Everything below
             # sees this frame's input.
-            self.ui.begin_frame()
+            state = self.ui.begin_frame()
+            self._apply_camera_input(state)
 
             for _ in range(PHYSICS_STEPS_PER_FRAME):
                 self.system.advance()
 
             self.window.begin_frame()
-            # Pull data from one module, hand it to another. No persistent link.
-            self.camera.render_texture(
-                self.system.current_canvas_texture(),
-                self.window.ctx.screen,
+            # Pull data from modules, hand them to Camera. No persistent link:
+            # the canvas double-buffer swap stays invisible to the Camera.
+            self.camera.render(
+                framebuffer=self.window.ctx.screen,
+                canvas_texture=self.system.current_canvas_texture(),
+                entity_buffer=self.system.entity_buffer,
+                entity_count=self.system.entity_count(),
+                canvas_size=self.system.canvas_size,
+                window_size=self.window.size(),
             )
 
             # Hand the UI display-only values; it owns no simulation truth.
@@ -78,12 +86,41 @@ class Orchestrator:
         self.ui.shutdown()
         self.window.terminate()
 
+    def _apply_camera_input(self, state):
+        """Translate canvas input into camera motion.
+
+        The UI reports *what happened* (a drag, a scroll); deciding that this
+        means "move the camera" is the Orchestrator's job. Both fields are
+        already filtered for imgui capture, so dragging a panel never pans the
+        view and scrolling a slider never zooms.
+        """
+        window_size = self.window.size()
+        canvas_size = self.system.canvas_size
+
+        if state.left_dragging and state.mouse_delta != (0.0, 0.0):
+            self.camera.state.pan_by_pixels(state.mouse_delta, window_size, canvas_size)
+
+        if state.scroll:
+            self.camera.state.zoom_at_pixel(state.scroll, state.mouse_pos,
+                                            window_size, canvas_size)
+
     def _report_status(self):
         """Push read-only status into the UI for display (ARCHITECTURE rule 10)."""
         state = self.ui.state
+        cam = self.camera.state
+        window_size = self.window.size()
+        canvas_size = self.system.canvas_size
         self.ui.set_status(
+            # Through the full inverse chain, so the readout accounts for pan,
+            # zoom and letterboxing -- it is the world point actually under the
+            # cursor, not an approximation.
             mouse_world=coords.screen_to_world(
-                state.mouse_pos, self.window.size(), self.system.canvas_size),
+                state.mouse_pos, window_size, canvas_size, cam.pan, cam.zoom),
+            cam_mode=cam.mode.value,
+            cam_pan=cam.pan,
+            cam_zoom=cam.zoom,
+            canvas_size=f"{canvas_size[0]}x{canvas_size[1]}",
+            window_size=f"{window_size[0]}x{window_size[1]}",
             preset=Path(self.system.config_path).stem,
             entity_count=self.system.entity_count(),
             config_count=len(self.system.configs),
@@ -98,6 +135,12 @@ class Orchestrator:
 
     def _cmd_reset(self):
         self.system.reset()
+
+    def _cmd_toggle_camera_mode(self):
+        self.camera.state.toggle_mode()
+
+    def _cmd_reset_camera(self):
+        self.camera.state.reset()
 
     def _cmd_next_preset(self):
         self._switch_preset(self.preset_index + 1)

@@ -167,3 +167,54 @@ vec2 world_wrap(vec2 p, vec2 canvas_res) {
     vec2 size = 2.0 * extent;
     return size * (fract(p / size - 0.5) - 0.5);
 }
+
+// ---------------------------------------------------------------------------
+// THE VIEW TRANSFORM -- world to screen, through camera and letterbox.
+//
+//     world  --/half_extent-->  canvas ndc
+//            --(-pan, *zoom)->  view ndc
+//            --*letterbox---->  screen ndc [-1,1]
+//
+// THREE INDEPENDENT ASPECT QUANTITIES, never conflate them:
+//   canvas_res  simulation texture size; defines world space
+//   window_res  framebuffer size in pixels; changes on resize
+//   letterbox   derived fit of one into the other; never stored
+//
+// ZOOM: bigger = zoomed IN (a magnification factor). zoom=1 fits the world.
+// PAN:  world units. pan is the world point at the center of the view.
+// ---------------------------------------------------------------------------
+
+// Scale fitting the canvas box into the window, preserving shape. The axis
+// that would overflow shrinks; the other stays 1.0, and the slack is the
+// letterbox bar. Fit, not fill: the whole canvas is always visible.
+vec2 letterbox_scale(vec2 canvas_res, vec2 window_res) {
+    if (window_res.x <= 0.0 || window_res.y <= 0.0) return vec2(1.0);
+    float canvas_aspect = canvas_res.x / canvas_res.y;
+    float window_aspect = window_res.x / window_res.y;
+    return window_aspect > canvas_aspect
+        ? vec2(canvas_aspect / window_aspect, 1.0)   // bars left/right
+        : vec2(1.0, window_aspect / canvas_aspect);  // bars top/bottom
+}
+
+vec2 world_to_screen_ndc(vec2 p, vec2 canvas_res, vec2 window_res,
+                         vec2 pan, float zoom) {
+    vec2 ndc = world_to_ndc(p - pan, canvas_res) * zoom;
+    return ndc * letterbox_scale(canvas_res, window_res);
+}
+
+vec2 screen_ndc_to_world(vec2 ndc, vec2 canvas_res, vec2 window_res,
+                         vec2 pan, float zoom) {
+    vec2 v = ndc / letterbox_scale(canvas_res, window_res);
+    if (zoom != 0.0) v /= zoom;
+    return uv_to_world(v * 0.5 + 0.5, canvas_res) + pan;
+}
+
+// Screen ndc -> canvas uv, for the present pass sampling the canvas texture.
+// Values outside [0,1] fall in the letterbox bars; the caller decides whether
+// to clamp, wrap (tiling) or paint them black.
+vec2 screen_ndc_to_canvas_uv(vec2 ndc, vec2 canvas_res, vec2 window_res,
+                             vec2 pan, float zoom) {
+    return world_to_uv(
+        screen_ndc_to_world(ndc, canvas_res, window_res, pan, zoom),
+        canvas_res);
+}
