@@ -1,3 +1,4 @@
+import dataclasses
 import math
 from pathlib import Path
 
@@ -30,9 +31,18 @@ def canvas_dimensions(aspect=CANVAS_ASPECT, dim=CANVAS_DIM):
     so changing aspect does not silently change simulation cost or the
     effective resolution of the trails.
     """
-    import math
     s = math.sqrt(aspect)
     return (max(1, int(round(dim * s))), max(1, int(round(dim / s))))
+
+
+def sizing_for(world_size):
+    """(entity_count, canvas_dim) for a world size.
+
+    World size scales particle count and canvas resolution together, so
+    density stays constant as the world grows -- the same simulation, larger.
+    """
+    return (max(1, int(600000 * world_size)),
+            max(16, int(1024 * math.sqrt(world_size))))
 
 # SSBO binding points. Mirrored in common.glsl's header table.
 ENTITY_BUFFER_BINDING = 0
@@ -49,7 +59,7 @@ _SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
 
 
 class ParticleSystem:
-    def __init__(self, ctx, canvas_size=None, config_path=None):
+    def __init__(self, ctx, canvas_size=None, config_path=None, entity_count=None):
 
         if canvas_size is None:
             canvas_size = canvas_dimensions()
@@ -59,6 +69,13 @@ class ParticleSystem:
 
         self.ctx = ctx
         self.canvas_size = canvas_size
+        # Injectable so World Size can rebuild the system at a different scale;
+        # defaults to the module constant for callers that do not care.
+        self.entity_count_value = entity_count or ENTITY_COUNT
+        # Derived from the ACTUAL entity count, not the module default, so a
+        # rebuilt system scales distances correctly. This feeds WorldData and
+        # is the single source of truth the shader reads.
+        self.sqrt_world_size = math.sqrt(self.entity_count_value / 600000.0)
         self.config_path = str(config_path)
         # One code path for reading configs, so v7/v8 handling never diverges
         # between startup and a later load.
@@ -87,7 +104,8 @@ class ParticleSystem:
 
         # Entity buffer. Contents are written entirely GPU-side by the reset
         # path in entity_update.glsl, so reserve is all that is needed here.
-        self.entity_buffer = self.ctx.buffer(reserve=ENTITY_COUNT * SIZE_OF_ENTITY_STRUCT)
+        self.entity_buffer = self.ctx.buffer(
+            reserve=self.entity_count_value * SIZE_OF_ENTITY_STRUCT)
 
         # Config buffer: one ConfigData slot per particle population. Sized as a
         # variable from the start -- Phase 1 runs a single slot (every entity on
@@ -140,7 +158,7 @@ class ParticleSystem:
         properties, so when multiple configs exist the first one supplies them.
         """
         return self.configs[0].world_config(
-            sqrt_world_size=SQRT_WORLD_SIZE,
+            sqrt_world_size=self.sqrt_world_size,
             config_count=len(self.configs),
         )
 
@@ -229,7 +247,7 @@ class ParticleSystem:
 
     def entity_count(self):
         """Narrow accessor: how many entities the simulation is running."""
-        return ENTITY_COUNT
+        return self.entity_count_value
 
     def pick(self, target_world, radius_world):
         """Nearest entity to a world position, within `radius_world`.
@@ -242,7 +260,7 @@ class ParticleSystem:
         Returns a PickResult; check `.hit` before using `.index`.
         """
         result = self.picker.retrieve(self.entity_buffer, ENTITY_DTYPE)
-        self.picker.request(self.entity_buffer, ENTITY_COUNT, target_world,
+        self.picker.request(self.entity_buffer, self.entity_count_value, target_world,
                             self.canvas_size, radius_world)
         return result
 
@@ -254,7 +272,7 @@ class ParticleSystem:
         and does NOT translate to WebGPU, so it must not be used in the render
         loop.
         """
-        self.picker.request(self.entity_buffer, ENTITY_COUNT, target_world,
+        self.picker.request(self.entity_buffer, self.entity_count_value, target_world,
                             self.canvas_size, radius_world)
         self.ctx.finish()
         return self.picker.retrieve(self.entity_buffer, ENTITY_DTYPE)
@@ -310,6 +328,31 @@ class ParticleSystem:
             self.apply_configs(self.configs + accepted)
         return len(accepted), rejected
 
+    def edit_config(self, index, field, value):
+        """Change one field of one config and push it to the GPU.
+
+        SimulationConfig is frozen, so this replaces the entry rather than
+        mutating it -- which also means snapshots taken earlier are unaffected,
+        exactly what the clipboard needs.
+        """
+        if not (0 <= index < len(self.configs)):
+            return False
+        if not hasattr(self.configs[index], field):
+            return False
+        updated = list(self.configs)
+        updated[index] = dataclasses.replace(updated[index], **{field: value})
+        self.apply_configs(updated)
+        return True
+
+    def edit_world(self, field, value):
+        """Change one WorldData field.
+
+        Trail settings live on every SimulationConfig (the preset JSON carries
+        them) but are world properties: config 0 supplies the live value, so
+        that is what gets edited.
+        """
+        return self.edit_config(0, field, value)
+
     def duplicate_config(self, index):
         """Append a copy of config `index`. Returns the new index, or None."""
         if not (0 <= index < len(self.configs)):
@@ -348,8 +391,8 @@ class ParticleSystem:
         self.canvas_texture.use(location=0)
 
         # Dispatch enough workgroups to cover all entities
-        # local_size_x = 256, so we need ceil(ENTITY_COUNT / 256) workgroups
-        workgroups = math.ceil(ENTITY_COUNT / 256)
+        # local_size_x = 256, so we need ceil(entity_count / 256) workgroups
+        workgroups = math.ceil(self.entity_count_value / 256)
         self.entity_update_program.run(workgroups, 1, 1)
 
 
@@ -378,8 +421,9 @@ class ParticleSystem:
                (float(self.canvas_size[0]), float(self.canvas_size[1])))
         tryset(self.brush_splat_program, 'frame_count', self.frame_count)
 
-        # Instanced rendering: 4 vertices per entity with ENTITY_COUNT instances
-        self.brush_vao.render(moderngl.TRIANGLE_FAN, vertices=4, instances=ENTITY_COUNT)
+        # Instanced rendering: 4 vertices per entity
+        self.brush_vao.render(moderngl.TRIANGLE_FAN, vertices=4,
+                              instances=self.entity_count_value)
 
         # Restore default blend mode
         self.ctx.disable(moderngl.BLEND)

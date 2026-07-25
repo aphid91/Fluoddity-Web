@@ -76,6 +76,8 @@ class ConfigMenu:
             if imgui.menu_item_simple("Reset View", "HOME"):
                 self._dispatch('reset_camera')
             imgui.separator()
+            _, self.show_settings = imgui.menu_item(
+                "Settings", "", self.show_settings)
             _, self.show_config_manager = imgui.menu_item(
                 "Config Manager", "", self.show_config_manager)
             _, self.show_config_clipboard = imgui.menu_item(

@@ -25,6 +25,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
 | `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `config_manager`, `config_clipboard`), composed onto `UI` as mixins; `hover_preview.py` holds the shared preview state machine. |
 | `orchestrator/`   | Owns one of each module above. Drives the main loop. Sole broker of inter-module commands and data. |
+| `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect). Persisted to `preferences.json`. |
 | `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
 | `configs/`        | Physics preset JSONs (`Starcrossed.json`, `9LeafClovers.json`, `Angles.json`). |
 
@@ -275,6 +276,48 @@ particles are untouched, so unhovering is a single buffer upload — instant, an
 never jumps the view. On a committed load the camera *is* applied, but only if
 the file recorded one (v7 files did not, and snapping to a default would be
 worse than staying put).
+
+## Settings, and the three kinds of state
+
+Every tunable belongs to exactly one of three homes, and the difference is
+about **what happens when you load someone else's config**:
+
+| Source | Lives in | Saved? | Why |
+|--------|----------|--------|-----|
+| `CONFIG` | ConfigBuffer, per-particle | yes | It *is* the config — loading one should change these. |
+| `WORLD` | `WorldData` uniform, global | yes | Defines how the piece looks (trail decay). |
+| `PREFS` | `preferences/`, `preferences.json` | **no** | How *your* editor is set up. Loading a downloaded config must not dim your screen or resize your canvas. |
+
+`preferences.json` is gitignored and loaded at startup; a corrupt or partial
+file falls back to defaults rather than stopping the app, and unknown keys are
+ignored so a downgrade does not break on a field a newer build wrote.
+
+### The settings registry
+
+`ui/settings_spec.py` declares every control once — tier, bounds, source, kind,
+help text. `ui/settings_window.py` renders whatever the registry says, so
+**adding a control is a one-line registry entry, not a UI edit**.
+
+Two tiers: **Basic** is deliberately short (the knobs that most change the
+result, mutation scale first); **Advanced** reveals the rest. The original's
+undifferentiated wall of sliders is what this exists to avoid.
+
+Entries with `implemented=False` are registered but rendered greyed. This
+records the tier layout for controls whose underlying feature does not exist
+yet, without pretending the knob works.
+
+**Slider bounds are fixed and generous.** User-adjustable ranges were cut; a
+config needing a value outside a bound is handled by ctrl+clicking the slider
+to type an exact value, which imgui supports natively.
+
+**Disruptive settings are typed inputs, not sliders.** World size and canvas
+aspect reallocate GPU buffers and reset the simulation, so they commit on
+Enter — a slider would rebuild the system on every frame of a drag.
+`Preferences.requires_restart` decides this, and `_rebuild_system` carries the
+live configs across so a resize never discards unsaved edits.
+
+**Undo is the Config Clipboard.** Set a checkpoint, experiment, hover to A/B,
+click to revert. A second, weaker undo next to it would be redundant.
 
 ## The config windows
 

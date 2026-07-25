@@ -20,6 +20,8 @@ frame spans the whole loop body -- opened before the simulation runs, closed
 after all GL drawing -- so the interface composites on top of the sim.
 """
 
+import dataclasses
+import random
 from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
@@ -30,12 +32,14 @@ from app_window import AppWindow
 from camera import Camera, CameraMode
 from particle_system import ParticleSystem
 from particle_system import coords, persistence
-from particle_system.particle_system import MAX_CONFIGS
+from particle_system.particle_system import (MAX_CONFIGS, canvas_dimensions,
+                                             sizing_for)
 from particle_system.picker import DEFAULT_PICK_RADIUS_PX, radius_px_to_world, MISS
+from preferences import Preferences
 from ui import UI
+from ui import settings_spec as spec
 
-# How many physics sub-steps per rendered frame (physics ~180Hz).
-PHYSICS_STEPS_PER_FRAME = 30
+# Physics sub-steps per frame is now a live preference (Preferences.physics_steps).
 
 _CONFIG_DIR = Path(__file__).parent.parent / "configs"
 
@@ -60,8 +64,11 @@ class Orchestrator:
         self.window = AppWindow()
         ctx = self.window.ctx
 
+        # Editor state, distinct from anything saved with a config.
+        self.prefs = Preferences.load()
+
         self.camera = Camera(ctx)
-        self.system = ParticleSystem(ctx)
+        self.system = self._build_system()
 
         # Preset list for LEFT/RIGHT cycling, and the categorized view the load
         # menu shows. Both are rebuilt by _refresh_config_list() below.
@@ -102,6 +109,9 @@ class Orchestrator:
             'clipboard_snapshot': self._cmd_clipboard_snapshot,
             'clipboard_restore': self._cmd_clipboard_restore,
             'clipboard_apply': self._cmd_clipboard_apply,
+            # settings
+            'edit_setting': self._cmd_edit_setting,
+            'randomize_seed': self._cmd_randomize_seed,
         })
 
         #: Which ConfigData subsequent controls will edit. Config 0 by default,
@@ -130,7 +140,8 @@ class Orchestrator:
             # they will be after 30 more sub-steps.
             #self._update_pick(state)
 
-            for _ in range(PHYSICS_STEPS_PER_FRAME):
+            # Physics rate is a live preference, read each frame.
+            for _ in range(self.prefs.physics_steps):
                 self.system.advance()
 
             self.window.begin_frame()
@@ -143,6 +154,7 @@ class Orchestrator:
                 entity_count=self.system.entity_count(),
                 canvas_size=self.system.canvas_size,
                 window_size=self.window.size(),
+                brightness=self.prefs.brightness,
             )
 
             # Hand the UI display-only values; it owns no simulation truth.
@@ -215,6 +227,12 @@ class Orchestrator:
             save_error=self._save_error,
             selected_config=self.selected_config,
             max_configs=MAX_CONFIGS,
+            # The three settings sources, as plain dicts the window reads by
+            # field name. Snapshots, not references: the UI never holds live
+            # simulation objects (rule 10).
+            edit_config=self._editable_config(),
+            edit_world=dataclasses.asdict(self.system._world_config()),
+            edit_prefs=dataclasses.asdict(self.prefs),
             manager_message=self._manager_message,
             checkpoints=self.checkpoints,
             preset=Path(self.system.config_path).stem,
@@ -242,6 +260,43 @@ class Orchestrator:
         glfw.set_window_should_close(self.window.window, True)
 
     # --- save / load ---
+
+    def _build_system(self, config_path=None):
+        """Construct a ParticleSystem sized by the current preferences.
+
+        World size and canvas aspect determine GPU allocation, so changing
+        either means building a new system rather than adjusting this one.
+        """
+        entity_count, dim = sizing_for(self.prefs.world_size)
+        return ParticleSystem(
+            self.window.ctx,
+            canvas_size=canvas_dimensions(self.prefs.canvas_aspect, dim),
+            config_path=config_path,
+            entity_count=entity_count,
+        )
+
+    def _rebuild_system(self):
+        """Rebuild after a disruptive preference change, preserving configs.
+
+        The simulation restarts -- that is inherent to reallocating the entity
+        buffer -- but the LIVE configs carry over, so a world-size change does
+        not discard edits the user has made.
+
+        Deliberately does not reload from config_path: those in-memory configs
+        may contain unsaved edits, and the path itself may no longer exist (the
+        file could have been deleted since it was loaded). The new system is
+        built from the default preset purely to get a valid initial state, then
+        immediately overwritten with the configs we carried across.
+        """
+        configs = self.system.snapshot_configs()
+        path = self.system.config_path
+        self.system = self._build_system()
+        self.system.apply_configs(configs)
+        # Keep the reported preset name pointing at wherever these configs came
+        # from, even though we did not re-read the file.
+        self.system.config_path = path
+        self.selected_config = min(self.selected_config,
+                                   len(self.system.configs) - 1)
 
     def _refresh_config_list(self):
         """Rescan configs/ so the load menu reflects the filesystem."""
@@ -419,6 +474,41 @@ class Orchestrator:
 
     def _cmd_clipboard_apply(self, checkpoint):
         self.system.apply_configs(checkpoint.configs)
+
+    # --- settings ---
+
+    def _cmd_edit_setting(self, setting, value):
+        """Route an edit to whichever of the three sources owns the field."""
+        if setting.source == spec.CONFIG:
+            self.system.edit_config(self.selected_config, setting.field, value)
+        elif setting.source == spec.WORLD:
+            self.system.edit_world(setting.field, value)
+        elif setting.source == spec.PREFS:
+            self._edit_preference(setting, value)
+
+    def _edit_preference(self, setting, value):
+        updated = self.prefs.with_value(setting.field, value)
+        if updated == self.prefs:
+            return
+        needs_rebuild = self.prefs.requires_restart(updated)
+        self.prefs = updated
+        self.prefs.save()
+        if needs_rebuild:
+            # World size / canvas aspect changed: the GPU allocation depends on
+            # them, so the system is rebuilt. This is why those controls are
+            # typed inputs rather than sliders.
+            self._rebuild_system()
+
+    def _cmd_randomize_seed(self, setting):
+        """New mutation seed. Only meaningful while Mutation Scale > 0."""
+        self._cmd_edit_setting(setting, random.randint(0, 9999))
+
+    def _editable_config(self):
+        """The selected config as a plain dict, for the settings window."""
+        if not self.system.configs:
+            return {}
+        index = min(self.selected_config, len(self.system.configs) - 1)
+        return dataclasses.asdict(self.system.configs[index])
 
     def _apply_saved_camera(self, cam_data):
         state = self.camera.state

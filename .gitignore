@@ -27,3 +27,4 @@ build/
 # Application specific
 *.log
 preferences.config
+preferences.json

@@ -14,6 +14,7 @@ uniform vec2 canvas_resolution;
 uniform vec2 window_resolution;
 uniform vec2 cam_pan;
 uniform float cam_zoom;
+uniform float brightness;
 
 in vec2 uv;          // fullscreen quad uv [0,1]
 out vec4 fragColor;
@@ -43,4 +44,7 @@ void main() {
     if (len > 0.0) {
         fragColor.xyz /= pow(len, 0.575);
     }
+    // Applied last, after tone shaping, so it scales the final image rather
+    // than feeding back into the curve.
+    fragColor.xyz *= brightness;
 }

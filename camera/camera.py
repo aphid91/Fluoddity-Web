@@ -100,7 +100,7 @@ class Camera:
     # ------------------------------------------------------------------
 
     def render(self, framebuffer, canvas_texture, entity_buffer,
-               entity_count, canvas_size, window_size):
+               entity_count, canvas_size, window_size, brightness=1.0):
         """Draw the current view. Dispatches on mode.
 
         Everything needed is passed per frame -- Camera keeps no reference to
@@ -109,21 +109,24 @@ class Camera:
         """
         if self.state.mode is CameraMode.PARTICLES:
             self._render_particles(framebuffer, entity_buffer, entity_count,
-                                   canvas_size, window_size)
+                                   canvas_size, window_size, brightness)
         else:
-            self._render_trail(framebuffer, canvas_texture, canvas_size, window_size)
+            self._render_trail(framebuffer, canvas_texture, canvas_size,
+                               window_size, brightness)
 
-    def _render_trail(self, framebuffer, canvas_texture, canvas_size, window_size):
+    def _render_trail(self, framebuffer, canvas_texture, canvas_size, window_size,
+                      brightness=1.0):
         if self.present_program is None or self.present_vao is None:
             return
         framebuffer.use()
         self._set_view_uniforms(self.present_program, canvas_size, window_size)
+        tryset(self.present_program, 'brightness', float(brightness))
         tryset(self.present_program, 'tex', 0)
         canvas_texture.use(location=0)
         self.present_vao.render(moderngl.TRIANGLES)
 
     def _render_particles(self, framebuffer, entity_buffer, entity_count,
-                          canvas_size, window_size):
+                          canvas_size, window_size, brightness=1.0):
         if self.particle_program is None or self.particle_vao is None:
             return
         framebuffer.use()
@@ -131,7 +134,10 @@ class Camera:
 
         self._set_view_uniforms(self.particle_program, canvas_size, window_size)
         tryset(self.particle_program, 'sprite_size', SPRITE_SIZE)
-        tryset(self.particle_program, 'particle_alpha', PARTICLE_ALPHA)
+        # Brightness folds into per-particle alpha: the sprites are additively
+        # blended, so scaling their contribution is the same operation.
+        tryset(self.particle_program, 'particle_alpha',
+               PARTICLE_ALPHA * float(brightness))
 
         # Additive: overlapping sprites accumulate into brighter regions, which
         # is what makes density legible.
