@@ -23,7 +23,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | `app_window/`     | GLFW init, the window, and the moderngl **context** (`ctx`). Per-frame windowing (should_close / begin_frame / end_frame). |
 | `camera/`         | The display/present pass: blits a texture to the screen. (Despite the name, this is a *presentation* module, not a movable viewpoint — `camera.frag` is a passthrough colorizer.) Owns `camera.frag`. |
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
-| `input/`          | GLFW keyboard handling. Translates raw key events into *named commands*; does not know what the commands do. |
+| `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. |
 | `orchestrator/`   | Owns one of each module above. Drives the main loop. Sole broker of inter-module commands and data. |
 | `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
 | `configs/`        | Physics preset JSONs (`Starcrossed.json`, `9LeafClovers.json`, `Angles.json`). |
@@ -165,20 +165,60 @@ the same job more generally. They are kept because existing presets depend on
 them, but they should not be extended. Migration when the time comes: *N cohorts
 -> N config slots pre-populated with the mutated rules, computed host-side.*
 
+## Input & the UI layer
+
+`ui/` owns **every** GLFW callback. A second module installing callbacks on the
+same window would mean chaining between our own modules and ambiguity about who
+sees a click first — the exact fragility the reference suffered from.
+
+**Capture is resolved once, at the callback.** Every handler forwards to imgui
+first, then consults `io.want_capture_mouse` / `want_capture_keyboard` to decide
+whether the event also belongs to the canvas. By the time input reaches
+`InputState`, the plain fields (`left_pressed`, `scroll`, `keys_pressed`, …)
+already mean *"meant for the canvas"*. **No consumer downstream should ever
+check a capture flag** — if you find yourself doing that, the filtering belongs
+in `ui.py` instead. Unfiltered variants (`any_left_pressed`) exist for the rare
+case that genuinely wants every click.
+
+Two deliberate asymmetries, both learned from how drags actually behave:
+
+- **Releases are never capture-filtered.** A button that went down on the canvas
+  must be able to come up even if the cursor is over a panel — otherwise the
+  drag never ends and the canvas stays grabbed forever.
+- **A drag belongs to whoever received the press.** `left_dragging` stays true
+  while the cursor wanders over imgui windows, so dragging does not break when
+  the pointer crosses a panel.
+
+`InputState` is frozen and rebuilt once per frame, so every consumer in a frame
+sees identical input — the physics step and the UI can never disagree about
+where the mouse is.
+
 ## Control & data flow (per frame)
 
 ```
 Orchestrator.run() loop:
+       UI.begin_frame()                  # poll events, snapshot InputState,
+                                         #   imgui.new_frame(), fire hotkeys
   30x  ParticleSystem.advance()          # GPU sim sub-steps
        AppWindow.begin_frame()           # bind + clear default framebuffer
        Camera.render_texture(
            ParticleSystem.current_canvas_texture(),   # data pulled...
            AppWindow.ctx.screen)                       # ...and handed to Camera
-       AppWindow.end_frame()             # poll events + swap buffers
+       Orchestrator._report_status()     # push display-only values to UI
+       UI.end_frame()                    # build panels, imgui.render(), draw
+       AppWindow.end_frame()             # swap buffers
 
-Input (async, via GLFW key callback) -> named command -> Orchestrator handler
+UI -> named command -> Orchestrator handler
      R = reload | SPACE = reset | LEFT/RIGHT = prev/next preset
+     (same commands also exposed as buttons in the Debug panel)
 ```
+
+**Why input is polled at the top.** Events are gathered before the physics and
+rendering that consume them, so a frame acts on its own input rather than the
+previous frame's. Polling used to sit next to the buffer swap at the bottom,
+which cost a frame of latency — invisible for keyboard shortcuts, but plainly
+visible when dragging. `AppWindow` therefore no longer pumps the event queue;
+it only swaps.
 
 ## Deferred / known follow-ups
 
@@ -201,3 +241,11 @@ Input (async, via GLFW key callback) -> named command -> Orchestrator handler
 - `rule_seed` remains a uniform rather than a `ConfigData` lane, because it is
   consumed only by the cohort-mutation path that rule-9's deprecation note
   covers. If cohorts go, it goes with them.
+- `coords.screen_to_world()` currently assumes the present pass stretches the
+  canvas across the whole window, because that is what `Camera` does today. When
+  pan/zoom and letterboxing land, **their inverse belongs inside that function**
+  — not in its callers. The reference's six drifting copies of this transform
+  are what rule 9 exists to prevent.
+- The UI is one debug panel and the input layer. Physics sliders, GUI detail
+  tiers, tooltips, the menu bar and the config editor are each their own design
+  conversation; the input plumbing they need is already in place.

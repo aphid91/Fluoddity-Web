@@ -192,6 +192,10 @@ class ParticleSystem:
         """Reset simulation state."""
         self.frame_count = 0
 
+    def entity_count(self):
+        """Narrow accessor: how many entities the simulation is running."""
+        return ENTITY_COUNT
+
     def current_canvas_texture(self):
         """Narrow accessor: the canvas texture to present this frame.
 

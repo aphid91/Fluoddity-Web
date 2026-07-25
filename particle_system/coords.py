@@ -57,3 +57,23 @@ def world_wrap(p, canvas_size) -> tuple[float, float]:
         return size * (math.fmod(math.fmod(v / size - 0.5, 1.0) + 1.0, 1.0) - 0.5)
 
     return (wrap(p[0], ex), wrap(p[1], ey))
+
+
+def screen_to_world(pixel, window_size, canvas_size) -> tuple[float, float]:
+    """Screen pixel (GLFW: origin top-left, y down) -> world position.
+
+    The present pass currently stretches the canvas across the whole window, so
+    this inverts exactly that. It takes `window_size` and `canvas_size`
+    separately because they are genuinely independent -- resizing the window
+    must not move a particle.
+
+    NOTE: this does not yet account for camera pan/zoom or letterboxing,
+    because neither exists yet. When the camera lands, its inverse belongs
+    HERE, in this function -- not in the caller. That is rule 9, and the
+    reference's six drifting copies of this transform are what it is for.
+    """
+    if window_size[0] <= 0 or window_size[1] <= 0:
+        return (0.0, 0.0)
+    # Pixel -> uv, flipping y: GLFW counts down from the top, GL counts up.
+    uv = (pixel[0] / window_size[0], 1.0 - pixel[1] / window_size[1])
+    return uv_to_world(uv, canvas_size)
