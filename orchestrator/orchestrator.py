@@ -22,10 +22,12 @@ after all GL drawing -- so the interface composites on top of the sim.
 
 from pathlib import Path
 
+import glfw
+
 from app_window import AppWindow
-from camera import Camera
+from camera import Camera, CameraMode
 from particle_system import ParticleSystem
-from particle_system import coords
+from particle_system import coords, persistence
 from particle_system.picker import DEFAULT_PICK_RADIUS_PX, radius_px_to_world, MISS
 from ui import UI
 
@@ -43,9 +45,11 @@ class Orchestrator:
         self.camera = Camera(ctx)
         self.system = ParticleSystem(ctx)
 
-        # Preset list, for LEFT/RIGHT cycling. Ordered by filename.
-        self.presets = sorted(_CONFIG_DIR.glob("*.json"))
-        self.preset_index = self._index_of(self.system.config_path)
+        # Preset list for LEFT/RIGHT cycling, and the categorized view the load
+        # menu shows. Both are rebuilt by _refresh_config_list() below.
+        self.config_categories = {}
+        self.presets = []
+        self.preset_index = 0
 
         #: Entity currently under the cursor (one frame stale -- see picker.py).
         self.hovered = MISS
@@ -59,7 +63,21 @@ class Orchestrator:
             'prev_preset': self._cmd_prev_preset,
             'toggle_camera_mode': self._cmd_toggle_camera_mode,
             'reset_camera': self._cmd_reset_camera,
+            'quit': self._cmd_quit,
+            # save / load
+            'save_config': self._cmd_save_config,
+            'load_config': self._cmd_load_config,
+            'delete_config': self._cmd_delete_config,
+            'preview_config': self._cmd_preview_config,
+            'snapshot_configs': self._cmd_snapshot_configs,
+            'restore_configs': self._cmd_restore_configs,
         })
+
+        #: ConfigBuffer contents from before the load menu opened, so a
+        #: hover-preview can be undone. None when nothing is snapshotted.
+        self._config_snapshot = None
+        self._save_error = ""
+        self._refresh_config_list()
 
     def run(self):
         while not self.window.should_close():
@@ -153,6 +171,8 @@ class Orchestrator:
             window_size=f"{window_size[0]}x{window_size[1]}",
             hovered=self.hovered,
             selected=self.selected,
+            config_categories=self.config_categories,
+            save_error=self._save_error,
             preset=Path(self.system.config_path).stem,
             entity_count=self.system.entity_count(),
             config_count=len(self.system.configs),
@@ -173,6 +193,96 @@ class Orchestrator:
 
     def _cmd_reset_camera(self):
         self.camera.state.reset()
+
+    def _cmd_quit(self):
+        glfw.set_window_should_close(self.window.window, True)
+
+    # --- save / load ---
+
+    def _refresh_config_list(self):
+        """Rescan configs/ so the load menu reflects the filesystem."""
+        self.config_categories = persistence.discover(_CONFIG_DIR)
+        # Keep the LEFT/RIGHT preset cycle in step with what is on disk.
+        self.presets = [e.path for entries in self.config_categories.values()
+                        for e in entries]
+        self.preset_index = self._index_of(self.system.config_path)
+
+    def _cmd_save_config(self, name, save_all):
+        """Write the current config(s) to configs/custom/<name>.json."""
+        self._save_error = ""
+        safe = persistence.sanitize_filename(name)
+        if not safe:
+            self._save_error = "That name has no usable characters."
+            return
+
+        configs = (self.system.snapshot_configs() if save_all
+                   else [self.system.configs[0]])
+        cam = self.camera.state
+        path = persistence.custom_dir(_CONFIG_DIR) / f"{safe}.json"
+        try:
+            persistence.save(
+                path, configs, self.system._world_config(),
+                camera={'pan': list(cam.pan), 'zoom': cam.zoom,
+                        'mode': cam.mode.value},
+            )
+        except OSError as e:
+            self._save_error = f"Could not write {path.name}: {e}"
+            return
+
+        self.system.config_path = str(path)
+        self._refresh_config_list()
+        print(f"Saved config: {path}")
+
+    def _cmd_load_config(self, entry):
+        """Commit a load. The menu has already dropped its snapshot."""
+        self._config_snapshot = None
+        try:
+            saved = self.system.load_config(entry.path)
+        except Exception as e:
+            print(f"Failed to load {entry.path}: {e}")
+            return
+        # Only move the camera if the file actually recorded one -- v7 presets
+        # did not, and snapping to a default would be worse than staying put.
+        if saved.camera:
+            self._apply_saved_camera(saved.camera)
+        self.preset_index = self._index_of(str(entry.path))
+
+    def _cmd_preview_config(self, entry):
+        """Apply a config for hover-preview: settings only, no camera, no reset."""
+        try:
+            saved = persistence.load(entry.path)
+        except Exception as e:
+            print(f"Failed to preview {entry.path}: {e}")
+            return
+        self.system.apply_configs(saved.configs)
+
+    def _cmd_snapshot_configs(self):
+        self._config_snapshot = self.system.snapshot_configs()
+
+    def _cmd_restore_configs(self):
+        if self._config_snapshot is not None:
+            self.system.apply_configs(self._config_snapshot)
+
+    def _cmd_delete_config(self, entry):
+        try:
+            entry.path.unlink()
+            print(f"Deleted config: {entry.path}")
+        except OSError as e:
+            print(f"Could not delete {entry.path}: {e}")
+        self._refresh_config_list()
+
+    def _apply_saved_camera(self, cam_data):
+        state = self.camera.state
+        pan = cam_data.get('pan')
+        if pan and len(pan) == 2:
+            state.pan = (float(pan[0]), float(pan[1]))
+        if 'zoom' in cam_data:
+            state.set_zoom(float(cam_data['zoom']))
+        mode = cam_data.get('mode')
+        for candidate in CameraMode:
+            if candidate.value == mode:
+                state.mode = candidate
+                break
 
     def _cmd_next_preset(self):
         self._switch_preset(self.preset_index + 1)

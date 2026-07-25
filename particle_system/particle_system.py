@@ -5,7 +5,8 @@ import numpy as np
 import moderngl
 
 from shared.gl_utils import read_shader, tryset
-from .config import SimulationConfig, pack_configs
+from . import persistence
+from .config import pack_configs
 from .layout import SIZE_OF_CONFIG_DATA, SIZE_OF_ENTITY_STRUCT, ENTITY_DTYPE
 from .picker import EntityPicker, MISS
 
@@ -53,8 +54,10 @@ class ParticleSystem:
 
         self.ctx = ctx
         self.canvas_size = canvas_size
-        self.config_path = config_path
-        self.config = SimulationConfig.load(config_path)
+        self.config_path = str(config_path)
+        # One code path for reading configs, so v7/v8 handling never diverges
+        # between startup and a later load.
+        self.config = persistence.load(config_path).configs[0]
 
         # Programs (initialized in reload)
         self.entity_update_program = None
@@ -260,12 +263,32 @@ class ParticleSystem:
         return self.canvas_texture
 
     def load_config(self, config_path):
-        """Command: switch to a different physics preset."""
-        self.config_path = config_path
-        self.config = SimulationConfig.load(config_path)
-        self.configs = [self.config]
-        self._upload_configs()
+        """Command: switch to a different preset (v8 or legacy v7)."""
+        saved = persistence.load(config_path)
+        self.apply_configs(saved.configs)
+        self.config_path = str(config_path)
         print(f"Loaded config: {config_path}")
+        return saved
+
+    def apply_configs(self, configs):
+        """Replace the ConfigBuffer contents. Does not touch entities.
+
+        Used by both loading and hover-preview: the particles keep moving and
+        simply start obeying different rules, so a preview can be applied and
+        undone with a single buffer upload and no visual discontinuity.
+        """
+        if not configs:
+            return
+        self.configs = list(configs)
+        self.config = self.configs[0]
+        self._upload_configs()
+
+    def snapshot_configs(self):
+        """Copy of the current ConfigBuffer contents, for restoring later.
+
+        SimulationConfig is frozen, so a shallow list copy is a real snapshot.
+        """
+        return list(self.configs)
 
     def update_entities(self):
         """Dispatch compute shader to update entity positions."""

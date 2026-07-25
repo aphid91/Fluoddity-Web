@@ -18,7 +18,6 @@ byte layout can never drift from the shader's view of it.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -56,32 +55,9 @@ class SimulationConfig:
     # 80 floats -> 10 FourierCenters, each frequency(4) + amplitude(4)
     rule: tuple = field(default_factory=tuple)
 
-    @classmethod
-    def load(cls, path: str) -> "SimulationConfig":
-        """Load a preset JSON file into a SimulationConfig."""
-        with open(path, 'r') as f:
-            data = json.load(f)
-
-        physics = data['physics']
-        settings = data['settings']
-
-        return cls(
-            cohorts=settings['num_cohorts'],
-            rule_seed=settings['rule_seed'],
-            sensor_gain=physics['sensor_gain'],
-            sensor_angle=physics['sensor_angle'],
-            sensor_distance=physics['sensor_distance'],
-            mutation_scale=physics['mutation_scale'],
-            global_force_mult=physics['global_force_mult'],
-            drag=physics['drag'],
-            strafe_power=physics['strafe_power'],
-            axial_force=physics['axial_force'],
-            lateral_force=physics['lateral_force'],
-            hazard_rate=physics['hazard_rate'],
-            trail_persistence=physics['trail_persistence'],
-            trail_diffusion=physics['trail_diffusion'],
-            rule=tuple(data['rule']),
-        )
+    # Reading and writing config FILES lives in persistence.py, which handles
+    # both the current format and the legacy one. This class is just the typed
+    # value and how it packs into GPU memory.
 
     def to_record(self) -> np.ndarray:
         """Pack into a single ConfigData record (a 0-d structured array).

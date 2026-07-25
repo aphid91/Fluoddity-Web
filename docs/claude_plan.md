@@ -341,13 +341,16 @@ Prefer GPU-side reduction into a small result buffer over the reference's
 19 MB-per-click readback — and note WebGPU readbacks are async, so a synchronous
 mid-frame design will not port.
 
-**Save/Load + menu bar.** File→Save/Load. Save dialog carries options: a "save
-current simulation state" checkbox, radio buttons for "save Config 0" vs "save
-entire ConfigBuffer". Load menu follows the reference's UX: list with red (X)
-delete, **hover to preview-load, unhover or close restores the cached pre-menu
-state, clicking an already-hovered entry closes without restoring.** (The
-reference implements this across `menu_bar.py`/`config_browser.py`/
-`command_handler.py` — the UX is worth copying, the structure is not.)
+**Save/Load + menu bar.** ✅ DONE. Format v8 (writes only live fields), legacy
+v7 reader, `Core`/subfolder categories with user saves in `configs/custom/`,
+delete with confirmation, and the hover-preview load menu. See ARCHITECTURE.md
+"Saving & loading" for the preview state machine.
+
+*Scope change from this memo:* the "save current simulation state" checkbox was
+**cut and relocated** to OUT FOR NOW (below). Saving the entity buffer is
+multiple megabytes of binary, a poor fit for the browser port, and a clean
+retrofit later — nothing in the v8 format precludes adding it. The save dialog
+therefore offers filename + "Config 0 vs entire ConfigBuffer" only.
 
 **Trail drawing and field drawing.** Needs detailed discussion.
 
@@ -379,3 +382,8 @@ watercolor mode.
 Only revisited if the chassis translation completes and we still want to grow
 the Python version: parameter locks, video recording service, plotting service,
 generics, shader-driven field, lottery system.
+
+**Saving simulation state** (the entity buffer / canvas trails) joined this list
+during the save/load work. It is megabytes of binary per save, awkward in the
+browser, and unnecessary for the chassis — the v8 format can gain a `sim_state`
+key later without breaking existing files.

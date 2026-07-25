@@ -33,13 +33,14 @@ import glfw
 from imgui_bundle import imgui
 from imgui_bundle.python_backends import glfw_backend
 
+from .config_menu import ConfigMenu
 from .input_state import InputState
 
 _MOUSE_BUTTONS = (glfw.MOUSE_BUTTON_LEFT, glfw.MOUSE_BUTTON_RIGHT,
                   glfw.MOUSE_BUTTON_MIDDLE)
 
 
-class UI:
+class UI(ConfigMenu):
     def __init__(self, window, commands=None):
         """
         window:   the GLFW window handle (from AppWindow).
@@ -96,6 +97,7 @@ class UI:
         # via set_status(). The UI renders these; it does not source them.
         self._status = {}
         self.show_debug_panel = True
+        self._init_config_menu()
 
     # ------------------------------------------------------------------
     # GLFW callbacks. Each forwards to imgui first, then records what the
@@ -237,6 +239,8 @@ class UI:
         self._status.update(values)
 
     def _build_ui(self):
+        self._menu_bar()
+        self._save_dialog()
         if self.show_debug_panel:
             self._debug_panel()
 
@@ -367,7 +371,7 @@ class UI:
             if key in state.keys_pressed:
                 self._dispatch(command)
 
-    def _dispatch(self, name):
+    def _dispatch(self, name, *args):
         handler = self.commands.get(name)
         if handler is not None:
-            handler()
+            handler(*args)

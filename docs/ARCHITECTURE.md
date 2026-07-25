@@ -36,6 +36,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | `coords.py`  | The Python mirror of the coordinate math in `common.glsl`. One of only two places allowed to write aspect-ratio or camera math. |
 | `config.py`  | `SimulationConfig` (-> `ConfigData`, per-population) and `WorldConfig` (-> `WorldData`, per-world). |
 | `picker.py`  | `EntityPicker`: nearest-entity-to-a-world-point, reduced on the GPU. Lives here because it reads the entity buffer. |
+| `persistence.py` | Reading/writing config files (v8), the legacy v7 reader, and categorized discovery of `configs/`. |
 
 ## Design rules
 
@@ -223,6 +224,49 @@ grow as you zoom in), matching the original's feel.
 
 Both modes consume the same transform, so they agree pixel-for-pixel about where
 a world point lands and toggling between them does not shift the image.
+
+## Saving & loading
+
+**Format v8** writes what this codebase actually has: a `world` block, a
+`configs` list, and optionally a `camera`. Fields the project cut —
+`slider_ranges`, `sweeps`, `jitters`, `parameter_sweeps_enabled`, most of
+`appearance` — are **not written**. A save format that carries dead features
+teaches the next reader those features exist.
+
+Multiple configs are supported from the start, because the ConfigBuffer is a
+list. "Save Config 0" writes a one-element list and loads through the identical
+path as a many-config file.
+
+**Legacy v7 files still load** — the three shipped presets are v7. The reader
+takes what survived and ignores the rest. Writing v7 is not supported;
+migration is one-way on purpose.
+
+**Layout.** `configs/*.json` is the "Core" category; every subfolder becomes its
+own collapsible category; user saves go to `configs/custom/`. Categories are
+ordered Core-first then alphabetically, so shipped presets stay predictable as
+user folders accumulate.
+
+### The load menu's hover-preview contract
+
+Hovering an entry applies it live, so browsing auditions each config on the
+running simulation. The state machine:
+
+| Event | Effect |
+|-------|--------|
+| menu opens | snapshot the current ConfigBuffer |
+| hover an entry | apply that config (previewing) |
+| hover elsewhere | restore the snapshot |
+| close without clicking | restore the snapshot |
+| **click an entry** | **commit** — drop the snapshot, so the close does *not* undo it |
+
+That last row is the one that is easy to get wrong: a naive implementation
+restores on close and silently discards the user's selection.
+
+Preview applies **configs and world settings only**. The camera and the
+particles are untouched, so unhovering is a single buffer upload — instant, and
+never jumps the view. On a committed load the camera *is* applied, but only if
+the file recorded one (v7 files did not, and snapping to a default would be
+worse than staying put).
 
 ## Entity picking
 

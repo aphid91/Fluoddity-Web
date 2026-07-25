@@ -1,0 +1,287 @@
+"""Saving and loading simulation configurations.
+
+FORMAT v8
+Writes exactly what this codebase actually has: a WorldData block, a list of
+ConfigData entries, and the camera. Fields the project has explicitly cut --
+slider_ranges, sweeps, jitters, parameter_sweeps_enabled -- are not written,
+because a save format that carries dead features teaches the next reader that
+those features exist.
+
+Multiple configs are supported from the start: the ConfigBuffer is a list, so a
+save is a list. Saving "just config 0" writes a one-element list, which loads
+through exactly the same path as a many-config file.
+
+READING v7
+The legacy presets in configs/ are Fluoddity v7 files. They still load: the
+reader takes the fields that survived and ignores the rest. Writing v7 is not
+supported -- migration is one-way on purpose.
+
+NOT SAVED (yet): simulation state -- the entity buffer and canvas trails.
+Deferred deliberately: it is multiple megabytes of binary, a poor fit for the
+browser port, and a clean retrofit later since nothing about this format
+precludes adding it.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+from .config import SimulationConfig, WorldConfig
+
+FORMAT_VERSION = 8
+
+#: Subfolder of configs/ where user saves land, keeping them separate from the
+#: shipped presets without needing a second top-level directory.
+CUSTOM_DIRNAME = "custom"
+
+#: Category shown for configs sitting directly in configs/.
+CORE_CATEGORY = "Core"
+
+
+class ConfigFormatError(Exception):
+    """Raised when a file is not a config we can read."""
+
+
+# ---------------------------------------------------------------------------
+# The saved document
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SavedConfig:
+    """A loaded config file: the configs, the world, and optionally a camera.
+
+    `camera` is None when the file did not record one (all v7 files, and v8
+    files saved before a camera existed). Callers should leave the camera alone
+    in that case rather than snapping it to a default.
+    """
+
+    configs: list[SimulationConfig]
+    world: WorldConfig
+    camera: dict | None = None
+    notes: str = ""
+
+
+def _config_to_dict(config: SimulationConfig) -> dict:
+    """One ConfigData entry. Grouped to mirror the GLSL struct's vec4 lanes, so
+    a reader can line the file up against common.glsl."""
+    return {
+        "rule": list(config.rule),
+        "sensor": {
+            "gain": config.sensor_gain,
+            "angle": config.sensor_angle,
+            "distance": config.sensor_distance,
+            "mutation_scale": config.mutation_scale,
+        },
+        "force": {
+            "global_mult": config.global_force_mult,
+            "drag": config.drag,
+            "strafe": config.strafe_power,
+            "axial": config.axial_force,
+        },
+        "misc": {
+            "lateral": config.lateral_force,
+            "hazard_rate": config.hazard_rate,
+            "cohorts": config.cohorts,
+            "rule_seed": config.rule_seed,
+        },
+    }
+
+
+def _config_from_dict(data: dict, world: dict) -> SimulationConfig:
+    sensor = data["sensor"]
+    force = data["force"]
+    misc = data["misc"]
+    return SimulationConfig(
+        cohorts=int(misc["cohorts"]),
+        rule_seed=int(misc["rule_seed"]),
+        sensor_gain=float(sensor["gain"]),
+        sensor_angle=float(sensor["angle"]),
+        sensor_distance=float(sensor["distance"]),
+        mutation_scale=float(sensor["mutation_scale"]),
+        global_force_mult=float(force["global_mult"]),
+        drag=float(force["drag"]),
+        strafe_power=float(force["strafe"]),
+        axial_force=float(force["axial"]),
+        lateral_force=float(misc["lateral"]),
+        hazard_rate=float(misc["hazard_rate"]),
+        # Trail settings are world properties, but SimulationConfig still
+        # carries them so world_config() can hand them over. Read from world.
+        trail_persistence=float(world["trail_persistence"]),
+        trail_diffusion=float(world["trail_diffusion"]),
+        rule=tuple(float(v) for v in data["rule"]),
+    )
+
+
+def to_dict(configs, world: WorldConfig, camera: dict | None = None,
+            notes: str = "") -> dict:
+    doc = {
+        "version": FORMAT_VERSION,
+        "world": {
+            "trail_persistence": world.trail_persistence,
+            "trail_diffusion": world.trail_diffusion,
+        },
+        "configs": [_config_to_dict(c) for c in configs],
+    }
+    if camera is not None:
+        doc["camera"] = camera
+    if notes:
+        doc["notes"] = notes
+    return doc
+
+
+def from_dict(data: dict) -> SavedConfig:
+    """Parse either a v8 or a legacy v7 document."""
+    version = data.get("version")
+    if version == FORMAT_VERSION:
+        return _from_v8(data)
+    if isinstance(version, int) and version <= 7:
+        return _from_v7(data)
+    raise ConfigFormatError(
+        f"unrecognized config version {version!r}; "
+        f"expected {FORMAT_VERSION} or a legacy version <= 7"
+    )
+
+
+def _from_v8(data: dict) -> SavedConfig:
+    world_raw = data["world"]
+    configs = [_config_from_dict(c, world_raw) for c in data["configs"]]
+    if not configs:
+        raise ConfigFormatError("config file contains an empty 'configs' list")
+    world = WorldConfig(
+        trail_persistence=float(world_raw["trail_persistence"]),
+        trail_diffusion=float(world_raw["trail_diffusion"]),
+        # Supplied by the running system, not the file: these describe the
+        # simulation's sizing, not the preset's look.
+        sqrt_world_size=0.0,
+        config_count=len(configs),
+    )
+    return SavedConfig(configs=configs, world=world,
+                       camera=data.get("camera"), notes=data.get("notes", ""))
+
+
+def _from_v7(data: dict) -> SavedConfig:
+    """Legacy Fluoddity format. Takes what survived; ignores the rest.
+
+    Dropped on purpose: slider_ranges, sweeps, jitters,
+    parameter_sweeps_enabled (all subsumed by the ConfigBuffer or cut), and
+    most of `appearance` (unimplemented here).
+    """
+    physics = data["physics"]
+    settings = data["settings"]
+    config = SimulationConfig(
+        cohorts=int(settings["num_cohorts"]),
+        rule_seed=int(settings["rule_seed"]),
+        sensor_gain=float(physics["sensor_gain"]),
+        sensor_angle=float(physics["sensor_angle"]),
+        sensor_distance=float(physics["sensor_distance"]),
+        mutation_scale=float(physics["mutation_scale"]),
+        global_force_mult=float(physics["global_force_mult"]),
+        drag=float(physics["drag"]),
+        strafe_power=float(physics["strafe_power"]),
+        axial_force=float(physics["axial_force"]),
+        lateral_force=float(physics["lateral_force"]),
+        hazard_rate=float(physics["hazard_rate"]),
+        trail_persistence=float(physics["trail_persistence"]),
+        trail_diffusion=float(physics["trail_diffusion"]),
+        rule=tuple(float(v) for v in data["rule"]),
+    )
+    world = WorldConfig(
+        trail_persistence=config.trail_persistence,
+        trail_diffusion=config.trail_diffusion,
+        sqrt_world_size=0.0,
+        config_count=1,
+    )
+    return SavedConfig(configs=[config], world=world, camera=None,
+                       notes=data.get("notes", ""))
+
+
+# ---------------------------------------------------------------------------
+# Files
+# ---------------------------------------------------------------------------
+
+def save(path, configs, world: WorldConfig, camera=None, notes=""):
+    """Write a v8 config file, creating parent directories as needed."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = to_dict(configs, world, camera, notes)
+    path.write_text(json.dumps(doc, indent=2))
+    return path
+
+
+def load(path) -> SavedConfig:
+    """Read a config file (v8 or legacy v7)."""
+    path = Path(path)
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        raise ConfigFormatError(f"{path.name} is not valid JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise ConfigFormatError(f"{path.name}: expected a JSON object")
+    return from_dict(data)
+
+
+def sanitize_filename(name: str) -> str:
+    """Make a user-typed name safe to use as a filename.
+
+    Strips path separators and characters Windows rejects, so a typed name can
+    never escape the configs directory or produce an unopenable file.
+    """
+    cleaned = "".join(c for c in name.strip() if c not in '\\/:*?"<>|').strip()
+    cleaned = cleaned.rstrip('.')          # Windows dislikes trailing dots
+    return cleaned[:120]
+
+
+# ---------------------------------------------------------------------------
+# Discovery
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ConfigEntry:
+    """One config file found on disk."""
+
+    name: str        # filename without extension, shown in the menu
+    path: Path
+    category: str
+
+    @property
+    def key(self) -> tuple[str, str]:
+        """Stable identity for hover tracking, independent of Path equality."""
+        return (self.category, self.name)
+
+
+def discover(config_dir) -> dict[str, list[ConfigEntry]]:
+    """Find every config, grouped into collapsible categories.
+
+    Files directly in configs/ are "Core"; each subfolder becomes its own
+    category named after the folder. Categories are ordered with Core first,
+    then alphabetically, so the shipped presets stay predictable while user
+    folders accumulate below.
+    """
+    config_dir = Path(config_dir)
+    categories: dict[str, list[ConfigEntry]] = {}
+    if not config_dir.is_dir():
+        return categories
+
+    for path in sorted(config_dir.glob("*.json")):
+        categories.setdefault(CORE_CATEGORY, []).append(
+            ConfigEntry(name=path.stem, path=path, category=CORE_CATEGORY))
+
+    for sub in sorted(p for p in config_dir.iterdir() if p.is_dir()):
+        entries = [ConfigEntry(name=p.stem, path=p, category=sub.name)
+                   for p in sorted(sub.glob("*.json"))]
+        if entries:
+            categories[sub.name] = entries
+
+    ordered = {}
+    if CORE_CATEGORY in categories:
+        ordered[CORE_CATEGORY] = categories.pop(CORE_CATEGORY)
+    for name in sorted(categories):
+        ordered[name] = categories[name]
+    return ordered
+
+
+def custom_dir(config_dir) -> Path:
+    """Where user saves go."""
+    return Path(config_dir) / CUSTOM_DIRNAME
