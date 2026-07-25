@@ -120,6 +120,22 @@ def world_wrap(p, canvas_size) -> tuple[float, float]:
     return (wrap(p[0], ex), wrap(p[1], ey))
 
 
+def world_delta(a, b, canvas_size) -> tuple[float, float]:
+    """Shortest offset from a to b across the wrap.
+
+    The world is a torus, so a particle just past the right edge is adjacent to
+    one at the left edge -- straight-line distance would call them maximally far
+    apart.
+    """
+    return world_wrap((b[0] - a[0], b[1] - a[1]), canvas_size)
+
+
+def world_dist_sq(a, b, canvas_size) -> float:
+    """Squared toroidal distance between two world points."""
+    dx, dy = world_delta(a, b, canvas_size)
+    return dx * dx + dy * dy
+
+
 # ---------------------------------------------------------------------------
 # Letterboxing
 # ---------------------------------------------------------------------------

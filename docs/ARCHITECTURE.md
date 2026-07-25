@@ -33,8 +33,9 @@ Every file belongs to a module folder. Each folder is a Python package
 | File | Role |
 |------|------|
 | `layout.py`  | Parses `common.glsl` struct declarations into numpy dtypes. The host packing can never drift from the shader's view of memory. Strict: raises `LayoutError` on any non-vec4 member. |
-| `coords.py`  | The Python mirror of the coordinate math in `common.glsl`. One of only two places allowed to write aspect-ratio math. |
+| `coords.py`  | The Python mirror of the coordinate math in `common.glsl`. One of only two places allowed to write aspect-ratio or camera math. |
 | `config.py`  | `SimulationConfig` (-> `ConfigData`, per-population) and `WorldConfig` (-> `WorldData`, per-world). |
+| `picker.py`  | `EntityPicker`: nearest-entity-to-a-world-point, reduced on the GPU. Lives here because it reads the entity buffer. |
 
 ## Design rules
 
@@ -223,6 +224,50 @@ grow as you zoom in), matching the original's feel.
 Both modes consume the same transform, so they agree pixel-for-pixel about where
 a world point lands and toggling between them does not shift the image.
 
+## Entity picking
+
+`ParticleSystem.pick(world_pos, radius)` returns the nearest entity, or a miss.
+Three design points are load-bearing:
+
+**Reduced on the GPU, not read back.** A compute shader dispatches over every
+entity and reduces to a single 4-byte result. The reference instead copied the
+whole entity buffer to the host (~19 MB) and ran argmin in numpy, stalling the
+pipeline on every click.
+
+The reduction uses `atomicMin` over a packed key, because GLSL has no atomic
+float min:
+
+```
+key = (quantized_distance << 20) | entity_index
+```
+
+Minimizing that key minimizes distance first and breaks ties by lowest index —
+so the same click always selects the same particle. The winner's *position* is
+deliberately not written to the result buffer: a thread that loses the atomic
+could still write afterwards. The index in the key is authoritative, and the
+host looks the position up from it.
+
+**The result is one frame old.** `pick()` dispatches for the current cursor and
+returns the *previous* frame's answer. Reading a buffer the same frame you wrote
+it forces a GPU sync, and WebGPU has no synchronous readback at all — so the
+deferred shape is both faster now and the one that ports. The ~16ms of latency
+is invisible for hovering and clicking. `pick_blocking()` exists for host-side
+tooling and tests; it stalls and does not port, so it must not be used in the
+render loop.
+
+**Distance is toroidal.** The world wraps, so a particle just past one edge is
+adjacent to the cursor near the opposite edge. `world_delta` / `world_dist_sq`
+in `coords.py` and `common.glsl` implement this; straight-line distance would
+disagree with the simulation's own topology.
+
+The pick radius is specified in **screen pixels** and converted through the view
+transform, so the tolerance feels identical at any zoom — a world-space radius
+would shrink on screen as you zoom out.
+
+Picking happens **before** `advance()` in the frame, so the cursor is tested
+against the entity positions the user can actually see rather than positions 30
+sub-steps in the future.
+
 ## Input & the UI layer
 
 `ui/` owns **every** GLFW callback. A second module installing callbacks on the
@@ -298,6 +343,12 @@ it only swaps.
 - PARTICLES mode draws every entity with no culling. Off-screen sprites still
   cost a vertex-shader invocation; at 150k entities that is fine, but a visible
   cost if the entity count grows a lot.
+- The pick key encodes the entity index in 20 bits, capping picking at ~1.05M
+  entities. Well above the current 150k, but it is a hard limit, not a soft
+  one — raising it means trading bits against distance precision.
+- The picked entity is reported in the debug panel but not yet drawn
+  differently. Highlighting it on the canvas needs a render-side channel (the
+  Entity struct has reserved lanes for exactly this).
 - `rule_seed` remains a uniform rather than a `ConfigData` lane, because it is
   consumed only by the cohort-mutation path that rule-9's deprecation note
   covers. If cohorts go, it goes with them.

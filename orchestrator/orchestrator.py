@@ -26,6 +26,7 @@ from app_window import AppWindow
 from camera import Camera
 from particle_system import ParticleSystem
 from particle_system import coords
+from particle_system.picker import DEFAULT_PICK_RADIUS_PX, radius_px_to_world, MISS
 from ui import UI
 
 # How many physics sub-steps per rendered frame (physics ~180Hz).
@@ -46,6 +47,11 @@ class Orchestrator:
         self.presets = sorted(_CONFIG_DIR.glob("*.json"))
         self.preset_index = self._index_of(self.system.config_path)
 
+        #: Entity currently under the cursor (one frame stale -- see picker.py).
+        self.hovered = MISS
+        #: Entity the user last clicked. Persists until the next click.
+        self.selected = MISS
+
         self.ui = UI(self.window.window, commands={
             'reload': self._cmd_reload,
             'reset': self._cmd_reset,
@@ -61,6 +67,10 @@ class Orchestrator:
             # sees this frame's input.
             state = self.ui.begin_frame()
             self._apply_camera_input(state)
+            # Before advancing: the pick must test the cursor against the
+            # entity positions the user can currently SEE, not against where
+            # they will be after 30 more sub-steps.
+            self._update_pick(state)
 
             for _ in range(PHYSICS_STEPS_PER_FRAME):
                 self.system.advance()
@@ -104,6 +114,26 @@ class Orchestrator:
             self.camera.state.zoom_at_pixel(state.scroll, state.mouse_pos,
                                             window_size, canvas_size)
 
+    def _update_pick(self, state):
+        """Track the entity under the cursor, and latch it on click.
+
+        The pick radius is specified in screen pixels and converted through the
+        view transform, so the tolerance feels identical at any zoom -- a
+        world-space radius would shrink on screen as you zoom out.
+        """
+        cam = self.camera.state
+        window_size = self.window.size()
+        canvas_size = self.system.canvas_size
+
+        target = coords.screen_to_world(state.mouse_pos, window_size,
+                                        canvas_size, cam.pan, cam.zoom)
+        radius = radius_px_to_world(DEFAULT_PICK_RADIUS_PX, window_size,
+                                    canvas_size, cam.pan, cam.zoom)
+        self.hovered = self.system.pick(target, radius)
+
+        if state.left_pressed:
+            self.selected = self.hovered
+
     def _report_status(self):
         """Push read-only status into the UI for display (ARCHITECTURE rule 10)."""
         state = self.ui.state
@@ -121,6 +151,8 @@ class Orchestrator:
             cam_zoom=cam.zoom,
             canvas_size=f"{canvas_size[0]}x{canvas_size[1]}",
             window_size=f"{window_size[0]}x{window_size[1]}",
+            hovered=self.hovered,
+            selected=self.selected,
             preset=Path(self.system.config_path).stem,
             entity_count=self.system.entity_count(),
             config_count=len(self.system.configs),

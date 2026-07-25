@@ -6,7 +6,8 @@ import moderngl
 
 from shared.gl_utils import read_shader, tryset
 from .config import SimulationConfig, pack_configs
-from .layout import SIZE_OF_CONFIG_DATA, SIZE_OF_ENTITY_STRUCT
+from .layout import SIZE_OF_CONFIG_DATA, SIZE_OF_ENTITY_STRUCT, ENTITY_DTYPE
+from .picker import EntityPicker, MISS
 
 WORLD_SIZE = .25
 SQRT_WORLD_SIZE = 0.5
@@ -95,6 +96,9 @@ class ParticleSystem:
         # Frame counter
         self.frame_count = 0
 
+        # Nearest-entity picking. Owned here because it reads the entity buffer.
+        self.picker = EntityPicker(ctx)
+
         # Initialize gpu resources
         self.reload()
 
@@ -104,6 +108,7 @@ class ParticleSystem:
         self._reload_entity_update()
         self._reload_brush_splat()
         self._reload_canvas_update()
+        self.picker.reload()
 
     # --- config buffer / world uniform ---
 
@@ -217,6 +222,34 @@ class ParticleSystem:
     def entity_count(self):
         """Narrow accessor: how many entities the simulation is running."""
         return ENTITY_COUNT
+
+    def pick(self, target_world, radius_world):
+        """Nearest entity to a world position, within `radius_world`.
+
+        Deferred by one frame: this dispatches a pick for the given target and
+        returns the result of the PREVIOUS call. Reading the current frame's
+        result would stall the GPU, and WebGPU has no synchronous readback at
+        all -- see picker.py for the full reasoning.
+
+        Returns a PickResult; check `.hit` before using `.index`.
+        """
+        result = self.picker.retrieve(self.entity_buffer, ENTITY_DTYPE)
+        self.picker.request(self.entity_buffer, ENTITY_COUNT, target_world,
+                            self.canvas_size, radius_world)
+        return result
+
+    def pick_blocking(self, target_world, radius_world):
+        """Pick the CURRENT frame's answer, stalling until it is ready.
+
+        Prefer `pick()`. This exists for one-shot host-side queries (tests,
+        tooling) where a frame of latency is unacceptable. It forces a GPU sync
+        and does NOT translate to WebGPU, so it must not be used in the render
+        loop.
+        """
+        self.picker.request(self.entity_buffer, ENTITY_COUNT, target_world,
+                            self.canvas_size, radius_world)
+        self.ctx.finish()
+        return self.picker.retrieve(self.entity_buffer, ENTITY_DTYPE)
 
     def current_canvas_texture(self):
         """Narrow accessor: the canvas texture to present this frame.

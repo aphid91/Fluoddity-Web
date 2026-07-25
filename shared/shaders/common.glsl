@@ -168,6 +168,20 @@ vec2 world_wrap(vec2 p, vec2 canvas_res) {
     return size * (fract(p / size - 0.5) - 0.5);
 }
 
+// Shortest offset from a to b across the wrap. The world is a torus, so a
+// particle just past the right edge is adjacent to one at the left edge --
+// straight-line distance would call them maximally far apart.
+vec2 world_delta(vec2 a, vec2 b, vec2 canvas_res) {
+    return world_wrap(b - a, canvas_res);
+}
+
+// Squared toroidal distance. Squared because callers compare distances, and
+// skipping the sqrt in an inner loop over every entity is worth it.
+float world_dist_sq(vec2 a, vec2 b, vec2 canvas_res) {
+    vec2 d = world_delta(a, b, canvas_res);
+    return dot(d, d);
+}
+
 // ---------------------------------------------------------------------------
 // THE VIEW TRANSFORM -- world to screen, through camera and letterbox.
 //

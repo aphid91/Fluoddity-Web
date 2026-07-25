@@ -284,6 +284,10 @@ class UI:
         imgui.text(f"window      {self._status.get('window_size', '-')}")
         imgui.separator()
 
+        imgui.text(f"hovered     {self._describe_pick(self._status.get('hovered'))}")
+        imgui.text(f"selected    {self._describe_pick(self._status.get('selected'))}")
+        imgui.separator()
+
         imgui.text(f"preset      {self._status.get('preset', '-')}")
         imgui.text(f"entities    {self._status.get('entity_count', '-')}")
         imgui.text(f"configs     {self._status.get('config_count', '-')}")
@@ -310,6 +314,15 @@ class UI:
 
         imgui.text_disabled("drag: pan   scroll: zoom   TAB: view   HOME: reset")
         imgui.end()
+
+    @staticmethod
+    def _describe_pick(result) -> str:
+        """Format a PickResult. Structural duck-typing rather than importing
+        the type, so the UI stays free of simulation modules (rule 10)."""
+        if result is None or not getattr(result, 'hit', False):
+            return "-"
+        return (f"#{result.index}  ({result.pos[0]:.3f}, {result.pos[1]:.3f})"
+                f"  d={result.distance:.4f}")
 
     @staticmethod
     def _describe_keys(keys) -> str:
