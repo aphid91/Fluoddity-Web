@@ -10,8 +10,8 @@ from .config import pack_configs
 from .layout import SIZE_OF_CONFIG_DATA, SIZE_OF_ENTITY_STRUCT, ENTITY_DTYPE
 from .picker import EntityPicker, MISS
 
-WORLD_SIZE = .25
-SQRT_WORLD_SIZE = 0.5
+WORLD_SIZE = 1.
+SQRT_WORLD_SIZE = math.sqrt(WORLD_SIZE)
 ENTITY_COUNT = int(600000*WORLD_SIZE)
 CANVAS_DIM = int(1024*SQRT_WORLD_SIZE)
 
@@ -20,7 +20,7 @@ CANVAS_DIM = int(1024*SQRT_WORLD_SIZE)
 #: roughly the same pixel count and the same particle density; it just gets
 #: wider and shorter. This is independent of the window: resizing the window
 #: letterboxes, it does not reshape the world.
-CANVAS_ASPECT = .250
+CANVAS_ASPECT = 1.
 
 
 def canvas_dimensions(aspect=CANVAS_ASPECT, dim=CANVAS_DIM):

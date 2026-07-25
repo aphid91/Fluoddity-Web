@@ -240,6 +240,9 @@ class UI(ConfigMenu):
 
     def _build_ui(self):
         self._menu_bar()
+        # After the menu bar: the delete confirmation is a top-level modal so it
+        # survives the menu closing (a popup nested in a menu dies with it).
+        self._delete_dialog()
         self._save_dialog()
         if self.show_debug_panel:
             self._debug_panel()

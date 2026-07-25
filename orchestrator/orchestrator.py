@@ -88,7 +88,7 @@ class Orchestrator:
             # Before advancing: the pick must test the cursor against the
             # entity positions the user can currently SEE, not against where
             # they will be after 30 more sub-steps.
-            self._update_pick(state)
+            #self._update_pick(state)
 
             for _ in range(PHYSICS_STEPS_PER_FRAME):
                 self.system.advance()

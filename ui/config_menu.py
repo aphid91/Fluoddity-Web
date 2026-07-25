@@ -39,6 +39,10 @@ class ConfigMenu:
         self._save_all_configs = False
         self._save_error = ""
 
+        #: Entry awaiting delete confirmation, or None. Held at UI level rather
+        #: than inside the menu so the dialog survives the menu closing.
+        self._pending_delete = None
+
         #: (category, name) currently being previewed, or None.
         self._previewing = None
         #: True while the load submenu is open, so open/close edges are visible.
@@ -127,44 +131,54 @@ class ConfigMenu:
         imgui.end_menu()
 
     def _load_entry(self, entry) -> bool:
-        """One row. Returns True if it is hovered."""
+        """One row: a name to load, and an X to delete. Returns True if hovered.
+
+        LAYOUT MATTERS HERE. A default imgui.selectable() spans the full width
+        of the menu, so a button placed after it with same_line() sits ON TOP of
+        the selectable's click area -- the selectable is submitted first, wins
+        the click, and pressing X silently loads the config instead of deleting
+        it. The selectable is therefore given an explicit width that stops short
+        of the button.
+        """
         imgui.push_id(f"{entry.category}/{entry.name}")
 
-        clicked = imgui.selectable(entry.name, False)[0]
+        button_w = imgui.get_frame_height()      # square-ish X button
+        spacing = imgui.get_style().item_spacing.x
+        # Menus size to their content, so there is no meaningful "available
+        # width" to subtract from. Derive a row width from the text instead, and
+        # keep a floor so short names still leave a comfortable target.
+        text_w = imgui.calc_text_size(entry.name).x
+        name_w = max(text_w + spacing * 2.0, 120.0)
+
+        clicked = imgui.selectable(entry.name, False, 0,
+                                   imgui.ImVec2(name_w, 0.0))[0]
         hovered = imgui.is_item_hovered()
 
-        imgui.same_line()
-        # Red X, right-aligned-ish. Deleting is destructive and permanent, so
-        # it is guarded by a confirmation popup rather than firing on click.
+        imgui.same_line(0.0, spacing)
+        # Deleting is destructive and permanent, so it opens a confirmation
+        # popup rather than firing on click.
         imgui.push_style_color(imgui.Col_.button.value, imgui.ImVec4(0.6, 0.15, 0.15, 1.0))
-        if imgui.small_button("X"):
-            imgui.open_popup("confirm_delete")
-        imgui.pop_style_color()
+        imgui.push_style_color(imgui.Col_.button_hovered.value, imgui.ImVec4(0.85, 0.2, 0.2, 1.0))
+        delete_clicked = imgui.button("X", imgui.ImVec2(button_w, 0.0))
+        imgui.pop_style_color(2)
         if imgui.is_item_hovered():
             hovered = True
-
-        if imgui.begin_popup("confirm_delete"):
-            imgui.text(f"Delete '{entry.name}'?")
-            imgui.text_disabled("This cannot be undone.")
-            if imgui.button("Delete"):
-                # Restore first: the previewed config may be the one being
-                # deleted, and we must not leave it applied afterwards.
-                self._restore_snapshot()
-                self._previewing = None
-                self._dispatch('delete_config', entry)
-                imgui.close_current_popup()
-            imgui.same_line()
-            if imgui.button("Cancel"):
-                imgui.close_current_popup()
-            imgui.end_popup()
-            hovered = True   # the popup counts as still being on this entry
+        if delete_clicked:
+            # Confirmation is a top-level modal, NOT a popup nested in this
+            # menu: a popup opened inside a menu dies with the menu, so the
+            # dialog would vanish the moment the user moved the cursor. The
+            # modal outlives the menu and is rendered by _build_ui.
+            self._pending_delete = entry
+            # Deleting the previewed config must not leave it applied.
+            self._restore_snapshot()
+            self._previewing = None
 
         if clicked:
             # Commit: drop the snapshot so closing does not undo this.
+            # imgui closes the menu itself when a selectable is activated.
             self._load_committed = True
             self._previewing = entry.key
             self._dispatch('load_config', entry)
-            imgui.close_current_popup()
 
         imgui.pop_id()
         return hovered
@@ -182,6 +196,41 @@ class ConfigMenu:
 
     def _restore_snapshot(self):
         self._dispatch('restore_configs')
+
+    def _delete_dialog(self):
+        """Confirm a deletion. Rendered at top level, outside the menu.
+
+        Deleting is permanent and the X sits right beside the load target, so a
+        misclick must not destroy a config.
+        """
+        if self._pending_delete is None:
+            return
+        entry = self._pending_delete
+
+        imgui.open_popup("Delete Config?")
+        # Centre on the viewport so it is never off-screen or under the cursor.
+        center = imgui.get_main_viewport().get_center()
+        imgui.set_next_window_pos(center, imgui.Cond_.appearing.value,
+                                  imgui.ImVec2(0.5, 0.5))
+        opened, _ = imgui.begin_popup_modal(
+            "Delete Config?", None, imgui.WindowFlags_.always_auto_resize.value)
+        if not opened:
+            return
+
+        imgui.text(f"Delete '{entry.name}'?")
+        imgui.text_disabled(f"{entry.category}  --  this cannot be undone.")
+        imgui.spacing()
+
+        if imgui.button("Delete", imgui.ImVec2(110, 0)):
+            self._dispatch('delete_config', entry)
+            self._pending_delete = None
+            imgui.close_current_popup()
+        imgui.same_line()
+        if imgui.button("Cancel", imgui.ImVec2(110, 0)) or imgui.is_key_pressed(
+                imgui.Key.escape):
+            self._pending_delete = None
+            imgui.close_current_popup()
+        imgui.end_popup()
 
     # ------------------------------------------------------------------
     # Save
