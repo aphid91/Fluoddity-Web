@@ -29,6 +29,8 @@ from __future__ import annotations
 
 from imgui_bundle import imgui
 
+from .hover_preview import PreviewSession
+
 
 class ConfigMenu:
     """Mixin providing the File menu. Expects the host to supply `_dispatch`."""
@@ -43,12 +45,14 @@ class ConfigMenu:
         #: than inside the menu so the dialog survives the menu closing.
         self._pending_delete = None
 
-        #: (category, name) currently being previewed, or None.
-        self._previewing = None
-        #: True while the load submenu is open, so open/close edges are visible.
-        self._load_menu_open = False
-        #: Set when a click commits a load, suppressing the close-restore.
-        self._load_committed = False
+        #: Hover-preview for the Load submenu. Its own session (and therefore
+        #: its own snapshot), so the Config Clipboard's previewing cannot
+        #: clobber it or vice versa.
+        self._load_preview = PreviewSession(
+            on_snapshot=lambda: self._dispatch_result('snapshot_configs'),
+            on_restore=lambda snap: self._dispatch('restore_configs', snap),
+            on_apply=lambda entry: self._dispatch('preview_config', entry),
+        )
 
     # ------------------------------------------------------------------
     # Menu bar
@@ -72,6 +76,10 @@ class ConfigMenu:
             if imgui.menu_item_simple("Reset View", "HOME"):
                 self._dispatch('reset_camera')
             imgui.separator()
+            _, self.show_config_manager = imgui.menu_item(
+                "Config Manager", "", self.show_config_manager)
+            _, self.show_config_clipboard = imgui.menu_item(
+                "Config Clipboard", "", self.show_config_clipboard)
             _, self.show_debug_panel = imgui.menu_item(
                 "Debug Panel", "", self.show_debug_panel)
             imgui.end_menu()
@@ -94,18 +102,11 @@ class ConfigMenu:
         opened = imgui.begin_menu("Load")
 
         # Opening edge: snapshot what we may need to restore.
-        if opened and not self._load_menu_open:
-            self._load_menu_open = True
-            self._load_committed = False
-            self._dispatch('snapshot_configs')
-
-        if not opened:
+        if opened:
+            self._load_preview.begin()
+        else:
             # Closing edge: undo any preview, unless a click committed one.
-            if self._load_menu_open:
-                self._load_menu_open = False
-                if not self._load_committed:
-                    self._restore_snapshot()
-                self._previewing = None
+            self._load_preview.end()
             return
 
         categories = self._status.get('config_categories') or {}
@@ -127,7 +128,7 @@ class ConfigMenu:
                     hovered_now = entry
             imgui.tree_pop()
 
-        self._sync_preview(hovered_now)
+        self._load_preview.sync(hovered_now, key_of=lambda e: e.key)
         imgui.end_menu()
 
     def _load_entry(self, entry) -> bool:
@@ -170,32 +171,17 @@ class ConfigMenu:
             # modal outlives the menu and is rendered by _build_ui.
             self._pending_delete = entry
             # Deleting the previewed config must not leave it applied.
-            self._restore_snapshot()
-            self._previewing = None
+            self._load_preview.restore_now()
+            self._load_preview.forget()
 
         if clicked:
             # Commit: drop the snapshot so closing does not undo this.
             # imgui closes the menu itself when a selectable is activated.
-            self._load_committed = True
-            self._previewing = entry.key
+            self._load_preview.commit(entry.key)
             self._dispatch('load_config', entry)
 
         imgui.pop_id()
         return hovered
-
-    def _sync_preview(self, hovered):
-        """Apply/undo previews as the hovered entry changes."""
-        key = hovered.key if hovered is not None else None
-        if key == self._previewing:
-            return
-        if hovered is None:
-            self._restore_snapshot()
-        else:
-            self._dispatch('preview_config', hovered)
-        self._previewing = key
-
-    def _restore_snapshot(self):
-        self._dispatch('restore_configs')
 
     def _delete_dialog(self):
         """Confirm a deletion. Rendered at top level, outside the menu.

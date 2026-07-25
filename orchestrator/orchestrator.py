@@ -20,6 +20,8 @@ frame spans the whole loop body -- opened before the simulation runs, closed
 after all GL drawing -- so the interface composites on top of the sim.
 """
 
+from dataclasses import dataclass, field
+from itertools import count
 from pathlib import Path
 
 import glfw
@@ -28,6 +30,7 @@ from app_window import AppWindow
 from camera import Camera, CameraMode
 from particle_system import ParticleSystem
 from particle_system import coords, persistence
+from particle_system.particle_system import MAX_CONFIGS
 from particle_system.picker import DEFAULT_PICK_RADIUS_PX, radius_px_to_world, MISS
 from ui import UI
 
@@ -35,6 +38,21 @@ from ui import UI
 PHYSICS_STEPS_PER_FRAME = 30
 
 _CONFIG_DIR = Path(__file__).parent.parent / "configs"
+
+_checkpoint_ids = count()
+
+
+@dataclass(frozen=True)
+class Checkpoint:
+    """An in-session snapshot of the entire ConfigBuffer.
+
+    `key` is an opaque id rather than the name, so the hover-preview machinery
+    keeps tracking the right entry even if two checkpoints ever share a name.
+    """
+
+    name: str
+    configs: list
+    key: int = field(default_factory=lambda: next(_checkpoint_ids))
 
 
 class Orchestrator:
@@ -71,11 +89,33 @@ class Orchestrator:
             'preview_config': self._cmd_preview_config,
             'snapshot_configs': self._cmd_snapshot_configs,
             'restore_configs': self._cmd_restore_configs,
+            # config manager
+            'select_config': self._cmd_select_config,
+            'duplicate_config': self._cmd_duplicate_config,
+            'remove_config': self._cmd_remove_config,
+            'append_config_file': self._cmd_append_config_file,
+            # config clipboard
+            'set_checkpoint': self._cmd_set_checkpoint,
+            'delete_checkpoint': self._cmd_delete_checkpoint,
+            'load_checkpoint': self._cmd_load_checkpoint,
+            'load_latest_checkpoint': self._cmd_load_latest_checkpoint,
+            'clipboard_snapshot': self._cmd_clipboard_snapshot,
+            'clipboard_restore': self._cmd_clipboard_restore,
+            'clipboard_apply': self._cmd_clipboard_apply,
         })
 
-        #: ConfigBuffer contents from before the load menu opened, so a
-        #: hover-preview can be undone. None when nothing is snapshotted.
-        self._config_snapshot = None
+        #: Which ConfigData subsequent controls will edit. Config 0 by default,
+        #: so a single-config buffer needs no interaction.
+        self.selected_config = 0
+        #: In-session ConfigBuffer checkpoints, newest first. Not persisted:
+        #: File > Save is the route for anything worth keeping.
+        self.checkpoints = []
+        self._checkpoint_serial = 0
+        self._manager_message = ""
+
+        # Hover-preview snapshots are owned by each UI surface's PreviewSession
+        # (see ui/hover_preview.py), not stored here -- one shared slot would
+        # let two open surfaces clobber each other.
         self._save_error = ""
         self._refresh_config_list()
 
@@ -173,6 +213,10 @@ class Orchestrator:
             selected=self.selected,
             config_categories=self.config_categories,
             save_error=self._save_error,
+            selected_config=self.selected_config,
+            max_configs=MAX_CONFIGS,
+            manager_message=self._manager_message,
+            checkpoints=self.checkpoints,
             preset=Path(self.system.config_path).stem,
             entity_count=self.system.entity_count(),
             config_count=len(self.system.configs),
@@ -234,8 +278,7 @@ class Orchestrator:
         print(f"Saved config: {path}")
 
     def _cmd_load_config(self, entry):
-        """Commit a load. The menu has already dropped its snapshot."""
-        self._config_snapshot = None
+        """Commit a load. The menu's session has already marked it committed."""
         try:
             saved = self.system.load_config(entry.path)
         except Exception as e:
@@ -246,6 +289,9 @@ class Orchestrator:
         if saved.camera:
             self._apply_saved_camera(saved.camera)
         self.preset_index = self._index_of(str(entry.path))
+        # A load replaces the buffer, which may be smaller than before.
+        self.selected_config = min(self.selected_config,
+                                   len(self.system.configs) - 1)
 
     def _cmd_preview_config(self, entry):
         """Apply a config for hover-preview: settings only, no camera, no reset."""
@@ -257,11 +303,18 @@ class Orchestrator:
         self.system.apply_configs(saved.configs)
 
     def _cmd_snapshot_configs(self):
-        self._config_snapshot = self.system.snapshot_configs()
+        """Snapshot for the Load menu's hover-preview session.
 
-    def _cmd_restore_configs(self):
-        if self._config_snapshot is not None:
-            self.system.apply_configs(self._config_snapshot)
+        Returns it rather than storing it: each hover surface owns its own
+        snapshot, so two of them open at once cannot clobber each other.
+        """
+        return self.system.snapshot_configs()
+
+    def _cmd_restore_configs(self, snapshot=None):
+        if snapshot is not None:
+            self.system.apply_configs(snapshot)
+            self.selected_config = min(self.selected_config,
+                                       len(self.system.configs) - 1)
 
     def _cmd_delete_config(self, entry):
         try:
@@ -270,6 +323,102 @@ class Orchestrator:
         except OSError as e:
             print(f"Could not delete {entry.path}: {e}")
         self._refresh_config_list()
+
+    # --- config manager ---
+
+    def _cmd_select_config(self, index):
+        if 0 <= index < len(self.system.configs):
+            self.selected_config = index
+
+    def _cmd_duplicate_config(self, index):
+        self._manager_message = ""
+        new_index = self.system.duplicate_config(index)
+        if new_index is None:
+            self._manager_message = f"Cannot duplicate: buffer is full ({MAX_CONFIGS})."
+            return
+        self.selected_config = new_index
+
+    def _cmd_remove_config(self, index):
+        self._manager_message = ""
+        if not self.system.remove_config(index):
+            self._manager_message = "Cannot remove the last config."
+            return
+        # Keep the selection in range after the list shrinks.
+        self.selected_config = min(self.selected_config, len(self.system.configs) - 1)
+
+    def _cmd_append_config_file(self, entry):
+        """Append every config in a saved file to the buffer."""
+        self._manager_message = ""
+        try:
+            saved = persistence.load(entry.path)
+        except Exception as e:
+            self._manager_message = f"Could not load {entry.name}: {e}"
+            return
+        added, rejected = self.system.append_configs(saved.configs)
+        if added:
+            # Select the first appended config: the user just asked for it, so
+            # it is almost certainly what they want to work on.
+            self.selected_config = len(self.system.configs) - added
+        if rejected:
+            self._manager_message = (
+                f"Added {added} of {added + rejected} configs; "
+                f"buffer is full ({MAX_CONFIGS}).")
+        elif not added:
+            self._manager_message = f"Buffer is full ({MAX_CONFIGS})."
+
+    # --- config clipboard ---
+
+    def _checkpoint_name(self):
+        """Unique '<preset><NN>' name, numbering per preset.
+
+        Numbering scans existing checkpoints rather than using a global counter,
+        so deleting entries frees their numbers back up and the list does not
+        drift into high numbers after a lot of churn.
+        """
+        stem = Path(self.system.config_path).stem or "Config"
+        taken = {cp.name for cp in self.checkpoints}
+        for n in range(100):
+            candidate = f"{stem}{n:02d}"
+            if candidate not in taken:
+                return candidate
+        # Past 100 of the same name, fall back to something guaranteed unique.
+        self._checkpoint_serial += 1
+        return f"{stem}_{self._checkpoint_serial}"
+
+    def _cmd_set_checkpoint(self):
+        """Capture the whole ConfigBuffer. Newest goes on top."""
+        cp = Checkpoint(name=self._checkpoint_name(),
+                        configs=self.system.snapshot_configs())
+        self.checkpoints.insert(0, cp)
+
+    def _cmd_delete_checkpoint(self, checkpoint):
+        self.checkpoints = [c for c in self.checkpoints if c.key != checkpoint.key]
+
+    def _cmd_load_checkpoint(self, checkpoint):
+        self.system.apply_configs(checkpoint.configs)
+        self.selected_config = min(self.selected_config,
+                                   len(self.system.configs) - 1)
+
+    def _cmd_load_latest_checkpoint(self):
+        if self.checkpoints:
+            self._cmd_load_checkpoint(self.checkpoints[0])
+
+    def _cmd_clipboard_snapshot(self):
+        """Snapshot for the clipboard's own hover-preview session.
+
+        Separate from the load menu's snapshot: two independent hover surfaces
+        must not share one slot, or hovering in one would clobber the other.
+        """
+        return self.system.snapshot_configs()
+
+    def _cmd_clipboard_restore(self, snapshot):
+        if snapshot is not None:
+            self.system.apply_configs(snapshot)
+            self.selected_config = min(self.selected_config,
+                                       len(self.system.configs) - 1)
+
+    def _cmd_clipboard_apply(self, checkpoint):
+        self.system.apply_configs(checkpoint.configs)
 
     def _apply_saved_camera(self, cam_data):
         state = self.camera.state

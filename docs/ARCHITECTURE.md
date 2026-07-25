@@ -23,7 +23,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | `app_window/`     | GLFW init, the window, and the moderngl **context** (`ctx`). Per-frame windowing (should_close / begin_frame / end_frame). |
 | `camera/`         | The viewpoint: pan/zoom/mode state, and both ways of drawing the world (TRAIL present pass, PARTICLES instanced sprites). Owns `camera.frag`, `cam_brush.vert/frag`, and `CameraState`. Holds no simulation state. |
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
-| `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. |
+| `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `config_manager`, `config_clipboard`), composed onto `UI` as mixins; `hover_preview.py` holds the shared preview state machine. |
 | `orchestrator/`   | Owns one of each module above. Drives the main loop. Sole broker of inter-module commands and data. |
 | `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
 | `configs/`        | Physics preset JSONs (`Starcrossed.json`, `9LeafClovers.json`, `Angles.json`). |
@@ -246,10 +246,11 @@ own collapsible category; user saves go to `configs/custom/`. Categories are
 ordered Core-first then alphabetically, so shipped presets stay predictable as
 user folders accumulate.
 
-### The load menu's hover-preview contract
+### The hover-preview contract
 
-Hovering an entry applies it live, so browsing auditions each config on the
-running simulation. The state machine:
+Two surfaces browse config collections by hovering — the **File > Load** menu
+and the **Config Clipboard**. Both use the same state machine, implemented once
+in `ui/hover_preview.py` as `PreviewSession`:
 
 | Event | Effect |
 |-------|--------|
@@ -262,11 +263,55 @@ running simulation. The state machine:
 That last row is the one that is easy to get wrong: a naive implementation
 restores on close and silently discards the user's selection.
 
+**Each surface owns its own `PreviewSession`, and therefore its own snapshot.**
+An earlier version kept a single snapshot slot on the Orchestrator; with two
+independent hover surfaces that breaks — hovering a clipboard entry while the
+Load menu is open overwrites the menu's snapshot, and unhovering restores the
+wrong state. `snapshot_configs` therefore *returns* the snapshot rather than
+storing it, and `restore_configs` takes one back.
+
 Preview applies **configs and world settings only**. The camera and the
 particles are untouched, so unhovering is a single buffer upload — instant, and
 never jumps the view. On a committed load the camera *is* applied, but only if
 the file recorded one (v7 files did not, and snapping to a default would be
 worse than staying put).
+
+## The config windows
+
+Two windows in `ui/`, both toggled from the **View** menu.
+
+**Config Manager** (`config_manager.py`) selects which `ConfigData` subsequent
+controls will edit — Config 0 by default, so a single-config buffer needs no
+interaction. Selection is *state only* today; per-config sliders will consume it
+when they land. It grows the buffer three ways: **Duplicate Selected**,
+**Load...** (appends every config in a saved file), and **Remove**.
+
+Its Load... browser is deliberately plain — no hover-preview, no delete. Those
+belong to File > Load, whose job is *replacing* the buffer. This one *appends*,
+so previewing would mean repeatedly growing and shrinking the buffer under the
+cursor.
+
+**Config Clipboard** (`config_clipboard.py`) holds in-session checkpoints of the
+**entire** ConfigBuffer — a scratch space for experimenting without committing
+to disk. Checkpoints are named `<preset><NN>` (`Starcrossed00`, `Starcrossed01`,
+…), numbered per preset, and numbering *reuses freed gaps* so heavy churn does
+not drift into high numbers. Newest is on top. Deleting has no confirmation:
+unlike a saved file, a checkpoint is a cheap scratch copy.
+
+Session-only by design — they vanish on quit. File > Save is the route for
+anything worth keeping.
+
+`MAX_CONFIGS` (64) caps the buffer. The GPU would take far more, but a hard cap
+keeps the manager UI bounded and makes overflow a reportable condition rather
+than silent growth — appending a 3-config file with 2 slots free reports
+"Added 2 of 3".
+
+### imgui gotcha: `end_child()` is unconditional
+
+`begin_child()` must **always** be paired with `end_child()`, even when it
+returns false (clipped or collapsed) — unlike `begin_menu`/`tree_node`, where
+the close call is conditional. Getting this wrong corrupts imgui's window stack
+and asserts on a later frame, far from the cause.
 
 ## Entity picking
 
@@ -393,6 +438,14 @@ it only swaps.
 - The picked entity is reported in the debug panel but not yet drawn
   differently. Highlighting it on the canvas needs a render-side channel (the
   Entity struct has reserved lanes for exactly this).
+- `remove_config` does **not** renumber entities' `config_index`. An entity
+  pointing past the end is clamped in the shader, so removal degrades
+  gracefully rather than corrupting — but entities pointing at the removed slot
+  silently inherit whatever config took its place. Reassigning them belongs
+  with the feature that lets a user paint config assignments.
+- The Config Manager's selection has no visual effect yet. Highlighting the
+  selected config's entities is the natural companion to the picker's
+  highlight work.
 - `rule_seed` remains a uniform rather than a `ConfigData` lane, because it is
   consumed only by the cohort-mutation path that rule-9's deprecation note
   covers. If cohorts go, it goes with them.

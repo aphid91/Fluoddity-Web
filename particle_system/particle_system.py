@@ -38,6 +38,11 @@ def canvas_dimensions(aspect=CANVAS_ASPECT, dim=CANVAS_DIM):
 ENTITY_BUFFER_BINDING = 0
 CONFIG_BUFFER_BINDING = 1
 
+#: Upper bound on ConfigBuffer slots. The GPU side would happily take far more
+#: (up to the entity count), but a hard cap keeps the manager UI bounded and
+#: makes overflow a clear, reportable condition rather than silent growth.
+MAX_CONFIGS = 64
+
 # Shader paths resolved relative to this module, so the app is not CWD-dependent.
 _SHADER_DIR = Path(__file__).parent / "shaders"
 _SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
@@ -289,6 +294,46 @@ class ParticleSystem:
         SimulationConfig is frozen, so a shallow list copy is a real snapshot.
         """
         return list(self.configs)
+
+    def append_configs(self, configs):
+        """Append configs to the buffer, up to MAX_CONFIGS.
+
+        Returns (added, rejected) so the caller can tell the user when a
+        multi-config file did not fit rather than silently dropping entries.
+        """
+        room = MAX_CONFIGS - len(self.configs)
+        if room <= 0:
+            return 0, len(configs)
+        accepted = list(configs)[:room]
+        rejected = len(configs) - len(accepted)
+        if accepted:
+            self.apply_configs(self.configs + accepted)
+        return len(accepted), rejected
+
+    def duplicate_config(self, index):
+        """Append a copy of config `index`. Returns the new index, or None."""
+        if not (0 <= index < len(self.configs)):
+            return None
+        if len(self.configs) >= MAX_CONFIGS:
+            return None
+        self.apply_configs(self.configs + [self.configs[index]])
+        return len(self.configs) - 1
+
+    def remove_config(self, index):
+        """Remove config `index`. Refuses to empty the buffer.
+
+        Entities hold a config_index that is NOT renumbered here: an entity
+        pointing past the end is clamped in the shader, so removal degrades
+        gracefully rather than corrupting. Reassigning entities is a separate
+        concern the caller can address when that feature exists.
+        """
+        if len(self.configs) <= 1:
+            return False
+        if not (0 <= index < len(self.configs)):
+            return False
+        remaining = self.configs[:index] + self.configs[index + 1:]
+        self.apply_configs(remaining)
+        return True
 
     def update_entities(self):
         """Dispatch compute shader to update entity positions."""

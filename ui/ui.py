@@ -33,6 +33,8 @@ import glfw
 from imgui_bundle import imgui
 from imgui_bundle.python_backends import glfw_backend
 
+from .config_clipboard import ConfigClipboardWindow
+from .config_manager import ConfigManagerWindow
 from .config_menu import ConfigMenu
 from .input_state import InputState
 
@@ -40,7 +42,7 @@ _MOUSE_BUTTONS = (glfw.MOUSE_BUTTON_LEFT, glfw.MOUSE_BUTTON_RIGHT,
                   glfw.MOUSE_BUTTON_MIDDLE)
 
 
-class UI(ConfigMenu):
+class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow):
     def __init__(self, window, commands=None):
         """
         window:   the GLFW window handle (from AppWindow).
@@ -98,6 +100,8 @@ class UI(ConfigMenu):
         self._status = {}
         self.show_debug_panel = True
         self._init_config_menu()
+        self._init_config_manager()
+        self._init_config_clipboard()
 
     # ------------------------------------------------------------------
     # GLFW callbacks. Each forwards to imgui first, then records what the
@@ -244,6 +248,8 @@ class UI(ConfigMenu):
         # survives the menu closing (a popup nested in a menu dies with it).
         self._delete_dialog()
         self._save_dialog()
+        self._config_manager_window()
+        self._config_clipboard_window()
         if self.show_debug_panel:
             self._debug_panel()
 
@@ -297,7 +303,9 @@ class UI(ConfigMenu):
 
         imgui.text(f"preset      {self._status.get('preset', '-')}")
         imgui.text(f"entities    {self._status.get('entity_count', '-')}")
-        imgui.text(f"configs     {self._status.get('config_count', '-')}")
+        imgui.text(f"configs     {self._status.get('config_count', '-')}"
+                   f"  (sel {self._status.get('selected_config', 0)})")
+        imgui.text(f"checkpoints {len(self._status.get('checkpoints') or [])}")
         imgui.text(f"frame       {self._status.get('frame_count', '-')}")
         imgui.separator()
 
@@ -378,3 +386,12 @@ class UI(ConfigMenu):
         handler = self.commands.get(name)
         if handler is not None:
             handler(*args)
+
+    def _dispatch_result(self, name, *args):
+        """Dispatch and return the handler's value.
+
+        Most commands are fire-and-forget, but a few (taking a snapshot) need
+        an answer back. Returns None when the command is not wired up.
+        """
+        handler = self.commands.get(name)
+        return handler(*args) if handler is not None else None
