@@ -133,10 +133,15 @@ class SettingsWindow:
             self._dispatch('edit_setting', setting, float(new))
 
     def _draw_seed(self, setting, value, interactive):
-        """Seed + Randomize. Both greyed when mutation scale is zero.
+        """A Randomize button with the current seed shown beside it.
 
-        With no mutation there is no variation for a seed to select, so an
-        active control would imply an effect it cannot have.
+        Not an editable field: the seed is an opaque selector into the space of
+        rule variations, so a specific value is only ever worth reading (to
+        note it down or compare), never worth typing.
+
+        Greyed when Mutation Scale is zero -- with no mutation there is no
+        variation for a seed to select, so an active control would imply an
+        effect it cannot have.
         """
         config = self._status.get('edit_config') or {}
         inert = float(config.get('mutation_scale', 0.0)) <= 0.0
@@ -144,17 +149,10 @@ class SettingsWindow:
         if inert:
             imgui.begin_disabled()
 
-        width = imgui.get_content_region_avail().x
-        imgui.set_next_item_width(max(width - 100.0, 80.0))
-        changed, new = imgui.input_int(
-            f"##{setting.field}", int(value), 0, 0)
-        if changed and interactive and not inert:
-            self._dispatch('edit_setting', setting, int(new))
-        imgui.same_line()
-        if imgui.button("Randomize") and interactive and not inert:
+        if imgui.button(f"Randomize {setting.label}") and interactive and not inert:
             self._dispatch('randomize_seed', setting)
         imgui.same_line()
-        imgui.text(setting.label)
+        imgui.text(f"{float(value):.4f}")
 
         if inert:
             imgui.end_disabled()

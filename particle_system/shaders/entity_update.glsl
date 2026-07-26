@@ -16,11 +16,6 @@ layout(std430, binding = 1) buffer ConfigBuffer {
 // Settings that are properties of the world rather than of any particle.
 uniform WorldData world;
 
-// rule_seed stays a uniform for now: it is a per-preset scalar consumed only
-// by the cohort mutation path, which is itself a deprecation candidate (the
-// ConfigBuffer supersedes it -- see the Phase 1 memo).
-uniform float rule_seed;
-
 uniform sampler2D canvas_texture;
 uniform int frame_count;
 
@@ -265,10 +260,10 @@ void main() {
 
     //if a few arbitrary coefficients are exactly 0, then assume target_rule is all 0s (no target) and generate a random rule instead.
     if(rule.centers[0].frequency==vec4(0) && rule.centers[5].amplitude==vec4(0)){
-        rule = Rule(generate_random_centers(rule_seed+floor(cohort)));
+        rule = Rule(generate_random_centers(cfg_mutation_seed(config)+floor(cohort)));
     }
     //Each cohort gets a random mutation
-    mutate_rule(rule,cfg_mutation_scale(config),rule_seed+floor(cohort));
+    mutate_rule(rule,cfg_mutation_scale(config),cfg_mutation_seed(config)+floor(cohort));
 
     //rescale sensor values
     float sensor_scaling = sqrt_world_size*38.855*cfg_sensor_gain(config);

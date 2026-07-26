@@ -385,7 +385,6 @@ class ParticleSystem:
         self.config_buffer.bind_to_storage_buffer(CONFIG_BUFFER_BINDING)
 
         self._set_world_uniform(self.entity_update_program)
-        tryset(self.entity_update_program, 'rule_seed', float(self.config.rule_seed))
         tryset(self.entity_update_program, 'canvas_texture', 0)
         tryset(self.entity_update_program, 'frame_count', self.frame_count)
         self.canvas_texture.use(location=0)

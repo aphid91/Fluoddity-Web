@@ -82,7 +82,7 @@ SETTINGS = [
             "the same rule, higher values fan the population out into "
             "distinct behaviours.",
             group='Behaviour'),
-    Setting('rule_seed', 'Mutation Seed', BASIC, CONFIG, SEED, 0, 9999,
+    Setting('mutation_seed', 'Mutation Seed', BASIC, CONFIG, SEED, 0.0, 1.0,
             "Which random variation the mutation uses. Only has an effect when "
             "Mutation Scale is above zero. Randomize to explore alternatives "
             "at the same mutation strength."),

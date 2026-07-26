@@ -65,7 +65,7 @@ struct ConfigData {
     Rule rule;      // 320 B -- behavior coefficients
     vec4 sensor;    // x: gain          y: angle       z: distance    w: mutation_scale
     vec4 force;     // x: global_mult   y: drag        z: strafe      w: axial
-    vec4 misc;      // x: lateral       y: hazard_rate z: cohorts(i)  w: reserved
+    vec4 misc;      // x: lateral       y: hazard_rate z: cohorts(i)  w: mutation_seed
 };  // 368 bytes
 
 float cfg_sensor_gain(ConfigData c)     { return c.sensor.x; }
@@ -81,6 +81,9 @@ float cfg_axial_force(ConfigData c)       { return c.force.w; }
 float cfg_lateral_force(ConfigData c) { return c.misc.x; }
 float cfg_hazard_rate(ConfigData c)   { return c.misc.y; }
 int   cfg_cohorts(ConfigData c)       { return floatBitsToInt(c.misc.z); }
+// Which random variation the rule mutation uses. Per-config rather than a
+// uniform, so different particle populations can mutate differently.
+float cfg_mutation_seed(ConfigData c) { return c.misc.w; }
 
 // ---------------------------------------------------------------------------
 // WorldData -- settings that are properties of the world, not of a particle.

@@ -84,7 +84,7 @@ def _config_to_dict(config: SimulationConfig) -> dict:
             "lateral": config.lateral_force,
             "hazard_rate": config.hazard_rate,
             "cohorts": config.cohorts,
-            "rule_seed": config.rule_seed,
+            "mutation_seed": config.mutation_seed,
         },
     }
 
@@ -95,7 +95,7 @@ def _config_from_dict(data: dict, world: dict) -> SimulationConfig:
     misc = data["misc"]
     return SimulationConfig(
         cohorts=int(misc["cohorts"]),
-        rule_seed=int(misc["rule_seed"]),
+        mutation_seed=float(misc["mutation_seed"]),
         sensor_gain=float(sensor["gain"]),
         sensor_angle=float(sensor["angle"]),
         sensor_distance=float(sensor["distance"]),
@@ -172,7 +172,7 @@ def _from_v7(data: dict) -> SavedConfig:
     settings = data["settings"]
     config = SimulationConfig(
         cohorts=int(settings["num_cohorts"]),
-        rule_seed=int(settings["rule_seed"]),
+        mutation_seed=float(settings["mutation_seed"]),
         sensor_gain=float(physics["sensor_gain"]),
         sensor_angle=float(physics["sensor_angle"]),
         sensor_distance=float(physics["sensor_distance"]),

@@ -36,7 +36,9 @@ class SimulationConfig:
 
     # settings
     cohorts: int
-    rule_seed: int
+    #: Which random variation the rule mutation uses. A float in [0,1] -- it is
+    #: fed straight into the hash function, so fractional values are meaningful.
+    mutation_seed: float
     # physics
     sensor_gain: float
     sensor_angle: float
@@ -84,9 +86,9 @@ class SimulationConfig:
         # force: global_mult, drag, strafe, axial
         record['force'] = (self.global_force_mult, self.drag,
                            self.strafe_power, self.axial_force)
-        # misc: lateral, hazard_rate, cohorts(int bits), reserved
+        # misc: lateral, hazard_rate, cohorts(int bits), mutation_seed
         record['misc'] = (self.lateral_force, self.hazard_rate,
-                          _int_lane(self.cohorts), 0.0)
+                          _int_lane(self.cohorts), self.mutation_seed)
         return record
 
     def world_config(self, sqrt_world_size: float, config_count: int) -> "WorldConfig":

@@ -500,8 +500,12 @@ class Orchestrator:
             self._rebuild_system()
 
     def _cmd_randomize_seed(self, setting):
-        """New mutation seed. Only meaningful while Mutation Scale > 0."""
-        self._cmd_edit_setting(setting, random.randint(0, 9999))
+        """New mutation seed. Only meaningful while Mutation Scale > 0.
+
+        Drawn from [0,1) to match the convention the legacy configs use -- the
+        value is fed straight into the hash, so any float in range is valid.
+        """
+        self._cmd_edit_setting(setting, random.random())
 
     def _editable_config(self):
         """The selected config as a plain dict, for the settings window."""
