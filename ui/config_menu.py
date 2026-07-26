@@ -78,6 +78,8 @@ class ConfigMenu:
             imgui.separator()
             _, self.show_settings = imgui.menu_item(
                 "Settings", "", self.show_settings)
+            _, self.show_preferences = imgui.menu_item(
+                "Preferences", "", self.show_preferences)
             _, self.show_config_manager = imgui.menu_item(
                 "Config Manager", "", self.show_config_manager)
             _, self.show_config_clipboard = imgui.menu_item(

@@ -295,12 +295,25 @@ ignored so a downgrade does not break on a field a newer build wrote.
 ### The settings registry
 
 `ui/settings_spec.py` declares every control once — tier, bounds, source, kind,
-help text. `ui/settings_window.py` renders whatever the registry says, so
-**adding a control is a one-line registry entry, not a UI edit**.
+help text. **Adding a control is a one-line registry entry, not a UI edit.**
+
+The registry drives two windows, split on `source`:
+
+| Window | Renders | Edits |
+|--------|---------|-------|
+| **Settings** | `CONFIG` + `WORLD` | the selected config and the world — the things a save file contains |
+| **Preferences** | `PREFS` | editor state — never written to a config |
+
+The split is exhaustive and disjoint: every setting appears in exactly one
+window.
 
 Two tiers: **Basic** is deliberately short (the knobs that most change the
 result, mutation scale first); **Advanced** reveals the rest. The original's
 undifferentiated wall of sliders is what this exists to avoid.
+
+The tier toggle lives in **Preferences** and governs *both* windows — it is
+itself an editor preference. It is not persisted: it is a view mode, and
+starting simple each session is the useful default.
 
 Entries with `implemented=False` are registered but rendered greyed. This
 records the tier layout for controls whose underlying feature does not exist

@@ -1,7 +1,13 @@
-"""Settings window: live controls over the selected config, world and prefs.
+"""Settings window: live controls over the selected config and the world.
 
-Renders whatever `settings_spec.SETTINGS` declares, so adding a control is a
+Renders whatever `settings_spec.SETTINGS` declares (minus the PREFS-sourced
+entries, which belong to the Preferences window), so adding a control is a
 registry entry rather than a UI change.
+
+This window edits the things a config SAVES: per-particle behaviour and the
+shared world properties. Editor preferences -- brightness, world size, display
+post-processing -- are a different kind of state and live in Preferences,
+together with the Basic/Advanced toggle that governs both windows.
 
 WHICH CONFIG DOES THIS EDIT?
 The one selected in the Config Manager. That is the manager's entire purpose:
@@ -31,6 +37,8 @@ class SettingsWindow:
 
     def _init_settings_window(self):
         self.show_settings = True
+        # Tier state is shared with the Preferences window, whose radio buttons
+        # own it -- switching there reveals advanced controls in both.
         self.show_advanced = False
         #: Pending text for INPUT controls, keyed by field. These commit on
         #: Enter rather than per-keystroke, because they reset the simulation.
@@ -53,17 +61,15 @@ class SettingsWindow:
             imgui.same_line()
             imgui.text_disabled(f"of {config_count}")
 
-        # Tier toggle. Basic is deliberately short; Advanced reveals the rest.
-        if imgui.radio_button("Basic", not self.show_advanced):
-            self.show_advanced = False
-        imgui.same_line()
-        if imgui.radio_button("Advanced", self.show_advanced):
-            self.show_advanced = True
-
         imgui.separator()
 
+        # Config and world settings only. Editor preferences (brightness, world
+        # size, display post-processing) live in the Preferences window, along
+        # with the Basic/Advanced toggle that governs both.
         current_group = None
         for setting in spec.visible(self.show_advanced):
+            if setting.source == spec.PREFS:
+                continue
             if setting.group and setting.group != current_group:
                 current_group = setting.group
                 imgui.spacing()
