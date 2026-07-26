@@ -13,6 +13,20 @@ here. Two examples of the pattern:
 The moderngl `ctx` is the one sanctioned shared substrate: created by AppWindow
 and injected once into Camera and ParticleSystem at construction.
 
+THIS FILE HOLDS THE LOOP, THE WIRING AND THE STATE -- NOT THE HANDLERS.
+"Sole broker" means it routes, not that it implements. As features landed the
+class grew to 24 handlers in 574 lines, and its own section comments were
+marking the seams; those groups are now mixins:
+
+    project_commands         save / load / preview / preset cycling
+    clipboard_commands       in-session checkpoints
+    settings_commands        slider edits, preference edits
+    config_manager_commands  multi-config editing (scoped for removal)
+
+The mixins own no state. They read and replace the attributes defined here,
+which keeps the state in one readable place while the behaviour lives next to
+the feature it serves.
+
 FRAME ORDER
 Input is polled at the TOP of the frame, so the physics and rendering that
 follow act on this frame's input rather than the previous frame's. The imgui
@@ -21,70 +35,76 @@ after all GL drawing -- so the interface composites on top of the sim.
 """
 
 import dataclasses
-import random
-from dataclasses import dataclass, field
-from itertools import count
 from pathlib import Path
 
 import glfw
 
 from app_window import AppWindow
-from camera import Camera, CameraMode
-from particle_system import ParticleSystem
-from particle_system import coords, persistence
-from particle_system.particle_system import (MAX_CONFIGS, canvas_dimensions,
-                                             sizing_for)
+from camera import Camera
+from particle_system import coords
+from particle_system.particle_system import MAX_CONFIGS
 from particle_system.picker import DEFAULT_PICK_RADIUS_PX, radius_px_to_world, MISS
 from preferences import Preferences
 from project import Project
 from ui import UI
-from ui import settings_spec as spec
 
-# Physics sub-steps per frame is now a live preference (Preferences.physics_steps).
+from .clipboard_commands import ClipboardCommands, Checkpoint
+from .config_manager_commands import ConfigManagerCommands
+from .project_commands import ProjectCommands
+from .settings_commands import SettingsCommands
+
+# Physics sub-steps per frame is a live preference (Preferences.physics_steps).
 
 _CONFIG_DIR = Path(__file__).parent.parent / "configs"
 
-_checkpoint_ids = count()
+__all__ = ['Orchestrator', 'Checkpoint']
 
 
-@dataclass(frozen=True)
-class Checkpoint:
-    """An in-session snapshot of the whole project.
+class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
+                   ConfigManagerCommands):
 
-    Holds a Project rather than a bare config list, so restoring a checkpoint
-    restores the name and selection too -- the thing that had to be bolted on
-    when these were separate.
+    #: Where configs live. An attribute so the command mixins can reach it.
+    _config_dir = _CONFIG_DIR
 
-    `key` is an opaque id rather than the name, so the hover-preview machinery
-    keeps tracking the right entry even if two checkpoints ever share a name.
-    """
-
-    name: str
-    project: Project
-    key: int = field(default_factory=lambda: next(_checkpoint_ids))
-
-
-class Orchestrator:
     def __init__(self):
         self.window = AppWindow()
         ctx = self.window.ctx
 
-        # Editor state, distinct from anything saved with a config.
+        # Editor state, distinct from anything saved with a project.
         self.prefs = Preferences.load()
 
         self.camera = Camera(ctx)
         self.system = self._build_system()
 
-        # Preset list for LEFT/RIGHT cycling, and the categorized view the load
-        # menu shows. Both are rebuilt by _refresh_config_list() below.
+        # --- state the command mixins read and replace ---
+
+        #: The current project: configs + name + selection, as one immutable
+        #: value. Replaced wholesale rather than mutated, so its invariants
+        #: (selection in range, name tracks contents) hold by construction --
+        #: see project/project.py for why that matters.
+        self.project = Project(
+            configs=tuple(self.system.configs),
+            name=Path(self.system.config_path).stem,
+        )
+
+        #: In-session project checkpoints, newest first. Not persisted:
+        #: File > Save is the route for anything worth keeping.
+        self.checkpoints = []
+        self._checkpoint_serial = 0
+
+        #: Config list on disk, grouped into load-menu categories.
         self.config_categories = {}
         self.presets = []
         self.preset_index = 0
 
-        #: Entity currently under the cursor (one frame stale -- see picker.py).
+        #: Entity under the cursor / last clicked. Picking is on-demand, so
+        #: these only change when the user asks -- see run().
         self.hovered = MISS
-        #: Entity the user last clicked. Persists until the next click.
         self.selected = MISS
+
+        #: Transient UI messages.
+        self._manager_message = ""
+        self._save_error = ""
 
         self.ui = UI(self.window.window, commands={
             'reload': self._cmd_reload,
@@ -119,26 +139,11 @@ class Orchestrator:
             'randomize_seed': self._cmd_randomize_seed,
         })
 
-        #: The current project: configs + name + selection, as one immutable
-        #: value. Replaced wholesale rather than mutated, so its invariants
-        #: (selection in range, name tracks contents) hold by construction --
-        #: see project/project.py for why that matters.
-        self.project = Project(
-            configs=tuple(self.system.configs),
-            name=Path(self.system.config_path).stem,
-        )
-
-        #: In-session ConfigBuffer checkpoints, newest first. Not persisted:
-        #: File > Save is the route for anything worth keeping.
-        self.checkpoints = []
-        self._checkpoint_serial = 0
-        self._manager_message = ""
-
-        # Hover-preview snapshots are owned by each UI surface's PreviewSession
-        # (see ui/hover_preview.py), not stored here -- one shared slot would
-        # let two open surfaces clobber each other.
-        self._save_error = ""
         self._refresh_config_list()
+
+    # ------------------------------------------------------------------
+    # The frame loop
+    # ------------------------------------------------------------------
 
     def run(self):
         while not self.window.should_close():
@@ -146,6 +151,7 @@ class Orchestrator:
             # sees this frame's input.
             state = self.ui.begin_frame()
             self._apply_camera_input(state)
+
             # PICKING IS DELIBERATELY NOT RUN PER FRAME. A pick dispatches over
             # every entity, which measured in the tens of milliseconds per
             # frame at large world sizes -- far too much for something whose
@@ -180,6 +186,10 @@ class Orchestrator:
 
         self.ui.shutdown()
         self.window.terminate()
+
+    # ------------------------------------------------------------------
+    # Per-frame plumbing
+    # ------------------------------------------------------------------
 
     def _set_project(self, project):
         """Adopt a new project and push it to the GPU.
@@ -257,21 +267,27 @@ class Orchestrator:
             project_name=self.project.name,
             selected_config=self.project.selected,
             max_configs=MAX_CONFIGS,
+            manager_message=self._manager_message,
+            checkpoints=self.checkpoints,
             # The three settings sources, as plain dicts the window reads by
             # field name. Snapshots, not references: the UI never holds live
             # simulation objects (rule 10).
             edit_config=self._editable_config(),
             edit_world=dataclasses.asdict(self.system.current_world_config()),
             edit_prefs=dataclasses.asdict(self.prefs),
-            manager_message=self._manager_message,
-            checkpoints=self.checkpoints,
             preset=Path(self.system.config_path).stem,
             entity_count=self.system.entity_count(),
             config_count=self.project.count,
             frame_count=self.system.frame_count,
         )
 
-    # --- command handlers (invoked by UI via the commands map) ---
+    def _editable_config(self):
+        """The selected config as a plain dict, for the settings window."""
+        return dataclasses.asdict(self.project.config)
+
+    # ------------------------------------------------------------------
+    # Simple commands. Feature groups live in the command mixins.
+    # ------------------------------------------------------------------
 
     def _cmd_reload(self):
         self.camera.reload()
@@ -288,285 +304,3 @@ class Orchestrator:
 
     def _cmd_quit(self):
         glfw.set_window_should_close(self.window.window, True)
-
-    # --- save / load ---
-
-    def _build_system(self, config_path=None):
-        """Construct a ParticleSystem sized by the current preferences.
-
-        World size and canvas aspect determine GPU allocation, so changing
-        either means building a new system rather than adjusting this one.
-        """
-        entity_count, dim = sizing_for(self.prefs.world_size)
-        return ParticleSystem(
-            self.window.ctx,
-            canvas_size=canvas_dimensions(self.prefs.canvas_aspect, dim),
-            config_path=config_path,
-            entity_count=entity_count,
-        )
-
-    def _rebuild_system(self):
-        """Rebuild after a disruptive preference change, preserving configs.
-
-        The simulation restarts -- that is inherent to reallocating the entity
-        buffer -- but the LIVE configs carry over, so a world-size change does
-        not discard edits the user has made.
-
-        Deliberately does not reload from config_path: those in-memory configs
-        may contain unsaved edits, and the path itself may no longer exist (the
-        file could have been deleted since it was loaded). The new system is
-        built from the default preset purely to get a valid initial state, then
-        immediately overwritten with the configs we carried across.
-        """
-        path = self.system.config_path
-        self.system = self._build_system()
-        self.system.apply_project(self.project)
-        # Keep the reported preset name pointing at wherever these configs came
-        # from, even though we did not re-read the file.
-        self.system.config_path = path
-
-    def _refresh_config_list(self):
-        """Rescan configs/ so the load menu reflects the filesystem."""
-        self.config_categories = persistence.discover(_CONFIG_DIR)
-        # Keep the LEFT/RIGHT preset cycle in step with what is on disk.
-        self.presets = [e.path for entries in self.config_categories.values()
-                        for e in entries]
-        self.preset_index = self._index_of(self.system.config_path)
-
-    def _cmd_save_config(self, name, save_all):
-        """Write the current config(s) to configs/custom/<name>.json."""
-        self._save_error = ""
-        safe = persistence.sanitize_filename(name)
-        if not safe:
-            self._save_error = "That name has no usable characters."
-            return
-
-        configs = (list(self.project.configs) if save_all
-                   else [self.project.configs[0]])
-        cam = self.camera.state
-        path = persistence.custom_dir(_CONFIG_DIR) / f"{safe}.json"
-        try:
-            persistence.save(
-                path, configs, self.system.current_world_config(),
-                camera={'pan': list(cam.pan), 'zoom': cam.zoom,
-                        'mode': cam.mode.value},
-            )
-        except OSError as e:
-            self._save_error = f"Could not write {path.name}: {e}"
-            return
-
-        self.system.config_path = str(path)
-        self.project = self.project.renamed(safe)
-        self._refresh_config_list()
-        print(f"Saved config: {path}")
-
-    def _cmd_load_config(self, entry):
-        """Commit a load. The menu's session has already marked it committed."""
-        try:
-            saved = persistence.load(entry.path)
-        except Exception as e:
-            print(f"Failed to load {entry.path}: {e}")
-            return
-        self._set_project(self.project.with_configs(saved.configs,
-                                                    name=entry.name))
-        self.system.config_path = str(entry.path)
-        # Only move the camera if the file actually recorded one -- v7 presets
-        # did not, and snapping to a default would be worse than staying put.
-        if saved.camera:
-            self._apply_saved_camera(saved.camera)
-        self.preset_index = self._index_of(str(entry.path))
-        print(f"Loaded config: {entry.path}")
-
-    def _cmd_preview_config(self, entry):
-        """Apply a config for hover-preview: settings only, no camera, no reset.
-
-        The title tracks what is applied, previews included -- so browsing the
-        load list renames the Project window as you go.
-        """
-        try:
-            saved = persistence.load(entry.path)
-        except Exception as e:
-            print(f"Failed to preview {entry.path}: {e}")
-            return
-        self._set_project(self.project.with_configs(saved.configs,
-                                                    name=entry.name))
-
-    # Hover-preview snapshot/restore. A Project IS the snapshot -- it is
-    # immutable, so holding a reference is enough and there is nothing to copy.
-    # Each hover surface keeps its own, so two open at once cannot clobber
-    # each other (see ui/hover_preview.py).
-
-    def _cmd_snapshot_configs(self):
-        return self.project
-
-    def _cmd_restore_configs(self, snapshot=None):
-        if snapshot is not None:
-            self._set_project(snapshot)
-
-    def _cmd_delete_config(self, entry):
-        try:
-            entry.path.unlink()
-            print(f"Deleted config: {entry.path}")
-        except OSError as e:
-            print(f"Could not delete {entry.path}: {e}")
-        self._refresh_config_list()
-
-    # --- config manager ---
-
-    def _cmd_select_config(self, index):
-        if 0 <= index < self.project.count:
-            self.project = self.project.selecting(index)
-
-    def _cmd_duplicate_config(self, index):
-        self._manager_message = ""
-        project, ok = self.project.duplicated(index, MAX_CONFIGS)
-        if not ok:
-            self._manager_message = f"Cannot duplicate: buffer is full ({MAX_CONFIGS})."
-            return
-        self._set_project(project)
-
-    def _cmd_remove_config(self, index):
-        self._manager_message = ""
-        project, ok = self.project.removed(index)
-        if not ok:
-            self._manager_message = "Cannot remove the last config."
-            return
-        self._set_project(project)
-
-    def _cmd_append_config_file(self, entry):
-        """Append every config in a saved file to the buffer."""
-        self._manager_message = ""
-        try:
-            saved = persistence.load(entry.path)
-        except Exception as e:
-            self._manager_message = f"Could not load {entry.name}: {e}"
-            return
-        project, added, rejected = self.project.appended(saved.configs, MAX_CONFIGS)
-        if added:
-            self._set_project(project)
-        if rejected:
-            self._manager_message = (
-                f"Added {added} of {added + rejected} configs; "
-                f"buffer is full ({MAX_CONFIGS}).")
-        elif not added:
-            self._manager_message = f"Buffer is full ({MAX_CONFIGS})."
-
-    # --- config clipboard ---
-
-    def _checkpoint_name(self):
-        """Unique '<preset><NN>' name, numbering per preset.
-
-        Numbering scans existing checkpoints rather than using a global counter,
-        so deleting entries frees their numbers back up and the list does not
-        drift into high numbers after a lot of churn.
-        """
-        stem = self.project.name or "Project"
-        taken = {cp.name for cp in self.checkpoints}
-        for n in range(100):
-            candidate = f"{stem}{n:02d}"
-            if candidate not in taken:
-                return candidate
-        # Past 100 of the same name, fall back to something guaranteed unique.
-        self._checkpoint_serial += 1
-        return f"{stem}_{self._checkpoint_serial}"
-
-    def _cmd_set_checkpoint(self):
-        """Capture the whole project. Newest goes on top."""
-        name = self._checkpoint_name()
-        self.checkpoints.insert(
-            0, Checkpoint(name=name, project=self.project.renamed(name)))
-
-    def _cmd_delete_checkpoint(self, checkpoint):
-        self.checkpoints = [c for c in self.checkpoints if c.key != checkpoint.key]
-
-    def _cmd_load_checkpoint(self, checkpoint):
-        self._set_project(checkpoint.project)
-
-    def _cmd_load_latest_checkpoint(self):
-        if self.checkpoints:
-            self._cmd_load_checkpoint(self.checkpoints[0])
-
-    def _cmd_clipboard_snapshot(self):
-        """Snapshot for the clipboard's own hover-preview session.
-
-        Separate from the load menu's: two independent hover surfaces must not
-        share one slot, or hovering in one would clobber the other.
-        """
-        return self.project
-
-    def _cmd_clipboard_restore(self, snapshot):
-        if snapshot is not None:
-            self._set_project(snapshot)
-
-    def _cmd_clipboard_apply(self, checkpoint):
-        self._set_project(checkpoint.project)
-
-    # --- settings ---
-
-    def _cmd_edit_setting(self, setting, value):
-        """Route an edit to whichever of the three sources owns the field."""
-        if setting.source == spec.CONFIG:
-            self._set_project(self.project.edit_selected(setting.field, value))
-        elif setting.source == spec.WORLD:
-            self._set_project(self.project.edit_world(setting.field, value))
-        elif setting.source == spec.PREFS:
-            self._edit_preference(setting, value)
-
-    def _edit_preference(self, setting, value):
-        updated = self.prefs.with_value(setting.field, value)
-        if updated == self.prefs:
-            return
-        needs_rebuild = self.prefs.requires_restart(updated)
-        self.prefs = updated
-        self.prefs.save()
-        if needs_rebuild:
-            # World size / canvas aspect changed: the GPU allocation depends on
-            # them, so the system is rebuilt. This is why those controls are
-            # typed inputs rather than sliders.
-            self._rebuild_system()
-
-    def _cmd_randomize_seed(self, setting):
-        """New mutation seed. Only meaningful while Mutation Scale > 0.
-
-        Drawn from [0,1) to match the convention the legacy configs use -- the
-        value is fed straight into the hash, so any float in range is valid.
-        """
-        self._cmd_edit_setting(setting, random.random())
-
-    def _editable_config(self):
-        """The selected config as a plain dict, for the settings window."""
-        return dataclasses.asdict(self.project.config)
-
-    def _apply_saved_camera(self, cam_data):
-        state = self.camera.state
-        pan = cam_data.get('pan')
-        if pan and len(pan) == 2:
-            state.pan = (float(pan[0]), float(pan[1]))
-        if 'zoom' in cam_data:
-            state.set_zoom(float(cam_data['zoom']))
-        mode = cam_data.get('mode')
-        for candidate in CameraMode:
-            if candidate.value == mode:
-                state.mode = candidate
-                break
-
-    def _cmd_next_preset(self):
-        self._switch_preset(self.preset_index + 1)
-
-    def _cmd_prev_preset(self):
-        self._switch_preset(self.preset_index - 1)
-
-    # --- preset helpers ---
-
-    def _switch_preset(self, index):
-        if not self.presets:
-            return
-        self.preset_index = index % len(self.presets)
-        self.system.load_config(str(self.presets[self.preset_index]))
-
-    def _index_of(self, config_path):
-        target = Path(config_path).resolve()
-        for i, p in enumerate(self.presets):
-            if p.resolve() == target:
-                return i
-        return 0
