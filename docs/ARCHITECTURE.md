@@ -23,9 +23,9 @@ Every file belongs to a module folder. Each folder is a Python package
 | `app_window/`     | GLFW init, the window, and the moderngl **context** (`ctx`). Per-frame windowing (should_close / begin_frame / end_frame). |
 | `camera/`         | The viewpoint: pan/zoom/mode state, and both ways of drawing the world (TRAIL present pass, PARTICLES instanced sprites). Owns `camera.frag`, `cam_brush.vert/frag`, and `CameraState`. Holds no simulation state. |
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
-| `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `config_manager`, `config_clipboard`), composed onto `UI` as mixins; `hover_preview.py` holds the shared preview state machine. |
+| `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `settings_window`, `preferences_window`, `config_manager`, `config_clipboard`), composed onto `UI` as mixins; `settings_spec.py` is the control registry and `hover_preview.py` the shared preview state machine. |
 | `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`). |
-| `project/`        | The `Project` value type: the ConfigBuffer contents + name + selection, immutable, with its invariants enforced in one place. |
+| `project/`        | The `Project` value type: ConfigBuffer contents + world settings + name + selection, immutable, with its invariants enforced in one place. |
 | `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect). Persisted to `preferences.json`. |
 | `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
 | `configs/`        | Physics preset JSONs (`Starcrossed.json`, `9LeafClovers.json`, `Angles.json`). |
@@ -36,7 +36,7 @@ Every file belongs to a module folder. Each folder is a Python package
 |------|------|
 | `layout.py`  | Parses `common.glsl` struct declarations into numpy dtypes. The host packing can never drift from the shader's view of memory. Strict: raises `LayoutError` on any non-vec4 member. |
 | `coords.py`  | The Python mirror of the coordinate math in `common.glsl`. One of only two places allowed to write aspect-ratio or camera math. |
-| `config.py`  | `SimulationConfig` (-> `ConfigData`, per-population) and `WorldConfig` (-> `WorldData`, per-world). |
+| `config.py`  | `SimulationConfig` (-> `ConfigData`, per-population), `WorldSettings` (saved world state) and `WorldConfig` (-> `WorldData`, settings + runtime sizing). |
 | `picker.py`  | `EntityPicker`: nearest-entity-to-a-world-point, reduced on the GPU. Lives here because it reads the entity buffer. |
 | `persistence.py` | Reading/writing config files (v8), the legacy v7 reader, and categorized discovery of `configs/`. |
 
@@ -60,8 +60,8 @@ These are the load-bearing constraints. Follow them when extending the project.
    the Orchestrator. Example (data): each frame the Orchestrator pulls the current
    canvas texture from ParticleSystem and passes it to Camera — Camera never holds
    a persistent reference to it, so the double-buffer swap stays invisible to it.
-   Example (commands): Input reports `'next_preset'`; the Orchestrator turns that
-   into `ParticleSystem.load_config(...)`.
+   Example (commands): the UI reports `'next_preset'`; the Orchestrator loads the
+   file, builds a new `Project`, and hands it to `ParticleSystem.apply_project()`.
 
 4. **The moderngl `ctx` is the one sanctioned shared substrate.** It is created by
    AppWindow and injected once into each module at construction. You *cannot* pass
