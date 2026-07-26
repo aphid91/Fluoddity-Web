@@ -1,4 +1,3 @@
-import dataclasses
 import math
 from pathlib import Path
 
@@ -151,8 +150,12 @@ class ParticleSystem:
             self.config_buffer = self.ctx.buffer(reserve=needed)
         self.config_buffer.write(pack_configs(self.configs))
 
-    def _world_config(self):
-        """WorldData for the current frame.
+    def current_world_config(self):
+        """WorldData for whatever is currently uploaded.
+
+        Public: the save path and the settings window both need it, and reaching
+        into a private helper across a module boundary is exactly what the
+        narrow-accessor rule exists to prevent.
 
         Trail settings come from config 0 by convention: they are world
         properties, so when multiple configs exist the first one supplies them.
@@ -163,7 +166,8 @@ class ParticleSystem:
         )
 
     def _set_world_uniform(self, program):
-        tryset(program, 'world.trail', self._world_config().as_uniform_value())
+        tryset(program, 'world.trail',
+               self.current_world_config().as_uniform_value())
 
     def _reload_entity_update(self):
         """Reload entity update compute shader."""
@@ -285,98 +289,27 @@ class ParticleSystem:
         """
         return self.canvas_texture
 
-    def load_config(self, config_path):
-        """Command: switch to a different preset (v8 or legacy v7)."""
-        saved = persistence.load(config_path)
-        self.apply_configs(saved.configs)
-        self.config_path = str(config_path)
-        print(f"Loaded config: {config_path}")
-        return saved
+    def apply_project(self, project):
+        """Upload a Project's configs to the GPU. Does not touch entities.
+
+        The ONE point where project state reaches the GPU. Loading,
+        hover-preview and every slider edit all funnel through here: the
+        particles keep moving and simply start obeying different rules, so a
+        change can be applied and undone with a single buffer upload and no
+        visual discontinuity.
+
+        Deciding *what* the configs should be is the Project type's job (see
+        project/project.py); this only ships them to the device.
+        """
+        self.apply_configs(project.configs)
 
     def apply_configs(self, configs):
-        """Replace the ConfigBuffer contents. Does not touch entities.
-
-        Used by both loading and hover-preview: the particles keep moving and
-        simply start obeying different rules, so a preview can be applied and
-        undone with a single buffer upload and no visual discontinuity.
-        """
+        """Replace the ConfigBuffer contents. Does not touch entities."""
         if not configs:
             return
         self.configs = list(configs)
         self.config = self.configs[0]
         self._upload_configs()
-
-    def snapshot_configs(self):
-        """Copy of the current ConfigBuffer contents, for restoring later.
-
-        SimulationConfig is frozen, so a shallow list copy is a real snapshot.
-        """
-        return list(self.configs)
-
-    def append_configs(self, configs):
-        """Append configs to the buffer, up to MAX_CONFIGS.
-
-        Returns (added, rejected) so the caller can tell the user when a
-        multi-config file did not fit rather than silently dropping entries.
-        """
-        room = MAX_CONFIGS - len(self.configs)
-        if room <= 0:
-            return 0, len(configs)
-        accepted = list(configs)[:room]
-        rejected = len(configs) - len(accepted)
-        if accepted:
-            self.apply_configs(self.configs + accepted)
-        return len(accepted), rejected
-
-    def edit_config(self, index, field, value):
-        """Change one field of one config and push it to the GPU.
-
-        SimulationConfig is frozen, so this replaces the entry rather than
-        mutating it -- which also means snapshots taken earlier are unaffected,
-        exactly what the clipboard needs.
-        """
-        if not (0 <= index < len(self.configs)):
-            return False
-        if not hasattr(self.configs[index], field):
-            return False
-        updated = list(self.configs)
-        updated[index] = dataclasses.replace(updated[index], **{field: value})
-        self.apply_configs(updated)
-        return True
-
-    def edit_world(self, field, value):
-        """Change one WorldData field.
-
-        Trail settings live on every SimulationConfig (the preset JSON carries
-        them) but are world properties: config 0 supplies the live value, so
-        that is what gets edited.
-        """
-        return self.edit_config(0, field, value)
-
-    def duplicate_config(self, index):
-        """Append a copy of config `index`. Returns the new index, or None."""
-        if not (0 <= index < len(self.configs)):
-            return None
-        if len(self.configs) >= MAX_CONFIGS:
-            return None
-        self.apply_configs(self.configs + [self.configs[index]])
-        return len(self.configs) - 1
-
-    def remove_config(self, index):
-        """Remove config `index`. Refuses to empty the buffer.
-
-        Entities hold a config_index that is NOT renumbered here: an entity
-        pointing past the end is clamped in the shader, so removal degrades
-        gracefully rather than corrupting. Reassigning entities is a separate
-        concern the caller can address when that feature exists.
-        """
-        if len(self.configs) <= 1:
-            return False
-        if not (0 <= index < len(self.configs)):
-            return False
-        remaining = self.configs[:index] + self.configs[index + 1:]
-        self.apply_configs(remaining)
-        return True
 
     def update_entities(self):
         """Dispatch compute shader to update entity positions."""
