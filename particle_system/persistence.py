@@ -95,7 +95,8 @@ def _config_from_dict(data: dict, world: dict) -> SimulationConfig:
     misc = data["misc"]
     return SimulationConfig(
         cohorts=int(misc["cohorts"]),
-        mutation_seed=float(misc["mutation_seed"]),
+        # LEGACY: v8 files written before the rename spell this "rule_seed".
+        mutation_seed=float(misc.get("mutation_seed", misc.get("rule_seed", 0.0))),
         sensor_gain=float(sensor["gain"]),
         sensor_angle=float(sensor["angle"]),
         sensor_distance=float(sensor["distance"]),
@@ -161,6 +162,38 @@ def _from_v8(data: dict) -> SavedConfig:
                        camera=data.get("camera"), notes=data.get("notes", ""))
 
 
+# ===========================================================================
+# LEGACY COMPATIBILITY -- DELETE THIS BLOCK TO DROP v7 SUPPORT
+#
+# This exists ONLY to read configs authored by the original Fluoddity while
+# this rebuild is being tested against them. It is not part of the design and
+# must not appear in the WebGPU port: the spec that port follows is the v8
+# format alone.
+#
+# Everything legacy lives between these markers plus the two call sites marked
+# `LEGACY`, so removing it is: delete this block, delete those calls, and
+# delete the `version <= 7` branch in from_dict().
+# ---------------------------------------------------------------------------
+
+#: Field renames from v7 to current. v7 spelled the mutation seed "rule_seed"
+#: and kept it under "settings"; it is now "mutation_seed" on ConfigData.
+_V7_RENAMES = {'rule_seed': 'mutation_seed'}
+
+
+def _v7_seed(settings: dict) -> float:
+    """Read the mutation seed from a v7 `settings` block.
+
+    v7 values are already floats in [0,1], the same convention used now, so
+    this is a rename rather than a conversion.
+    """
+    for old, new in _V7_RENAMES.items():
+        if old in settings:
+            return float(settings[old])
+    return float(settings.get('mutation_seed', 0.0))
+
+# ------------------------- END LEGACY COMPATIBILITY -------------------------
+
+
 def _from_v7(data: dict) -> SavedConfig:
     """Legacy Fluoddity format. Takes what survived; ignores the rest.
 
@@ -172,7 +205,7 @@ def _from_v7(data: dict) -> SavedConfig:
     settings = data["settings"]
     config = SimulationConfig(
         cohorts=int(settings["num_cohorts"]),
-        mutation_seed=float(settings["mutation_seed"]),
+        mutation_seed=_v7_seed(settings),   # LEGACY
         sensor_gain=float(physics["sensor_gain"]),
         sensor_angle=float(physics["sensor_angle"]),
         sensor_distance=float(physics["sensor_distance"]),
