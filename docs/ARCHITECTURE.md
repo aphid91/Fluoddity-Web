@@ -24,7 +24,8 @@ Every file belongs to a module folder. Each folder is a Python package
 | `camera/`         | The viewpoint: pan/zoom/mode state, and both ways of drawing the world (TRAIL present pass, PARTICLES instanced sprites). Owns `camera.frag`, `cam_brush.vert/frag`, and `CameraState`. Holds no simulation state. |
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
 | `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `config_manager`, `config_clipboard`), composed onto `UI` as mixins; `hover_preview.py` holds the shared preview state machine. |
-| `orchestrator/`   | Owns one of each module above. Drives the main loop. Sole broker of inter-module commands and data. |
+| `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`). |
+| `project/`        | The `Project` value type: the ConfigBuffer contents + name + selection, immutable, with its invariants enforced in one place. |
 | `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect). Persisted to `preferences.json`. |
 | `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
 | `configs/`        | Physics preset JSONs (`Starcrossed.json`, `9LeafClovers.json`, `Angles.json`). |
@@ -159,6 +160,20 @@ per-entity: `trail_persistence`, `trail_diffusion`, `sqrt_world_size`,
 `config_count`. `sqrt_world_size` is passed from the host constant of the same
 name; it used to be a `#define` in the shader *and* a Python global, two
 sources of truth that would silently disagree if either moved.
+
+### Features scoped for removal before the web port
+
+Some machinery earns its place while building the chassis but should not reach
+the port. Each is kept **isolated enough that removing it is a revert or a file
+deletion**, not surgery:
+
+| Feature | Lives in | Why it goes |
+|---------|----------|-------------|
+| Legacy v7 config reading | marked block in `persistence.py`, own commit | The port's spec is the v8 format alone. |
+| Multi-config editing | `orchestrator/config_manager_commands.py`, `ui/config_manager.py`, the save dialog's "entire ConfigBuffer" radio | The initial port exposes only the primary config. The ConfigBuffer *system* stays; only its editing UI goes. |
+
+When adding something in this category, give it its own file or its own commit
+up front. Retrofitting the isolation later is the expensive path.
 
 ### Legacy config support
 
@@ -324,17 +339,31 @@ empty headers.
 ### The project
 
 The **project** is the state the save/load system stores and restores: the
-whole ConfigBuffer plus the world settings. `Orchestrator.project_name` tracks
-it and titles the window (`Project: Starcrossed`).
+ConfigBuffer contents, the project name, and which config is selected for
+editing. It is a single immutable value (`project/project.py`).
 
-It updates on load, on save, **and on hover-preview** — the title says what is
-actually applied, so browsing the Load menu renames as you go. Preview
-snapshots therefore carry the name alongside the configs (`_snapshot_project` /
-`_restore_project`), or unhovering would restore the configs but leave the
-wrong title.
+**Why a type rather than three attributes.** Those three always move together.
+Before, every operation touching the buffer had to remember all three by hand —
+apply the configs, fix the name, re-clamp the selection — at seventeen separate
+sites. Forgetting the clamp indexes past the end of the buffer; forgetting the
+rename leaves the window titled after a project that is no longer loaded.
+Exactly that bug shipped once, in the clipboard. `Project` enforces both
+invariants in `__post_init__`, so they hold by construction and the seventeen
+sites collapsed to twelve calls to `Orchestrator._set_project()`.
 
-The imgui window ID is pinned with `###project_window` so the changing title
-does not make the window forget its position and docking.
+**Immutability is load-bearing**, not stylistic. A hover-preview snapshot is
+just a reference to a `Project` — nothing to copy, and no risk the captured
+state mutates underneath. The same property is what lets the history/undo
+system keep a stack of them.
+
+`ParticleSystem.apply_project()` is the one place project state reaches the
+GPU. Deciding *what* the configs should be belongs to `Project`; the system
+only ships them to the device.
+
+The title updates on load, on save, **and on hover-preview** — it says what is
+actually applied, so browsing the Load menu renames as you go. The imgui window
+ID is pinned with `###project_window` so the changing title does not make the
+window forget its position and docking.
 
 Two tiers: **Basic** is deliberately short (the knobs that most change the
 result, mutation scale first); **Advanced** reveals the rest. The original's
@@ -402,6 +431,12 @@ and asserts on a later frame, far from the cause.
 
 `ParticleSystem.pick(world_pos, radius)` returns the nearest entity, or a miss.
 Three design points are load-bearing:
+
+**On-demand, never per frame.** A pick dispatches over every entity, which
+measured in the tens of milliseconds per frame at large world sizes — far too
+much for an answer only wanted when the user acts. `_update_pick()` is called
+from user actions (a click, an explicit inspect request), not from the frame
+loop.
 
 **Reduced on the GPU, not read back.** A compute shader dispatches over every
 entity and reduces to a single 4-byte result. The reference instead copied the
