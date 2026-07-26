@@ -83,39 +83,33 @@ class SelectionCommands:
         rule = mutation.entity_rule(config, result.index,
                                     self.system.entity_count())
 
-        self._push_history(f"select particle #{result.index}")
+        before = self.project
         self._set_project(self.project.adopt_rule(rule))
+        self._record_history(before, f"select particle #{result.index}")
 
     def _cmd_toggle_mouse_mode(self):
         self.mouse_mode = self.mouse_mode.next()
 
     def _cmd_undo(self):
-        """Placeholder until history lands (next commit).
+        """Step back along the history timeline.
 
-        Right-click in SELECT mode already routes here, so the binding exists
-        from the moment selection does.
+        Bound to Ctrl+Z and to right-click while in SELECT mode, mirroring the
+        original's binding.
         """
-        history = getattr(self, 'history', None)
-        if history is None:
-            return
-        previous = history.undo()
+        previous = self.history.undo()
         if previous is not None:
             self._set_project(previous)
 
     def _cmd_redo(self):
-        history = getattr(self, 'history', None)
-        if history is None:
-            return
-        nxt = history.redo()
+        nxt = self.history.redo()
         if nxt is not None:
             self._set_project(nxt)
 
-    def _push_history(self, label):
-        """Record the current project so the coming change can be undone.
+    def _record_history(self, before, label):
+        """Record an undoable step from `before` to the current project.
 
-        Defined here as a no-op hook until the history system lands, so the
-        selection path already has its call site in the right place.
+        Called from the only two places that record: selection here, and seed
+        randomization. Deliberately NOT from _set_project, which every slider
+        frame and hover-preview also flows through -- see project/history.py.
         """
-        history = getattr(self, 'history', None)
-        if history is not None:
-            history.push(self.project, label)
+        self.history.record(before, self.project, label)

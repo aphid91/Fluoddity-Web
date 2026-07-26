@@ -316,6 +316,8 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
         imgui.text(f"configs     {self._status.get('config_count', '-')}"
                    f"  (sel {self._status.get('selected_config', 0)})")
         imgui.text(f"checkpoints {len(self._status.get('checkpoints') or [])}")
+        imgui.text(f"history     {self._status.get('history_cursor', -1) + 1}"
+                   f"/{self._status.get('history_depth', 0)}")
         imgui.text(f"frame       {self._status.get('frame_count', '-')}")
         imgui.separator()
 

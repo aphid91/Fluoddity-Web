@@ -45,7 +45,7 @@ from particle_system import coords
 from particle_system.particle_system import MAX_CONFIGS
 from particle_system.picker import DEFAULT_PICK_RADIUS_PX, radius_px_to_world, MISS
 from preferences import Preferences
-from project import Project
+from project import Project, History
 from ui import UI
 
 from .clipboard_commands import ClipboardCommands, Checkpoint
@@ -107,6 +107,13 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         #: What a left-click on the canvas does. Camera by default; selection
         #: needs its own mode because left-drag already pans.
         self.mouse_mode = MouseMode.CAMERA
+
+        #: Undo/redo timeline. Seeded with the startup state so the first
+        #: undo has somewhere to return to. Only selection and seed
+        #: randomization record entries -- see project/history.py for why the
+        #: obvious hook (_set_project) would be wrong.
+        self.history = History()
+        self.history.seed(self.project)
 
         #: Transient UI messages.
         self._manager_message = ""
@@ -278,6 +285,11 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
                 state.mouse_pos, window_size, canvas_size, cam.pan, cam.zoom),
             cam_mode=cam.mode.value,
             mouse_mode=self.mouse_mode.value,
+            can_undo=self.history.can_undo,
+            can_redo=self.history.can_redo,
+            undo_label=self.history.undo_label(),
+            history_depth=self.history.depth,
+            history_cursor=self.history.cursor,
             cam_pan=cam.pan,
             cam_zoom=cam.zoom,
             canvas_size=f"{canvas_size[0]}x{canvas_size[1]}",

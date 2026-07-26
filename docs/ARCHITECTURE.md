@@ -25,7 +25,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
 | `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `settings_window`, `preferences_window`, `config_manager`, `config_clipboard`), composed onto `UI` as mixins; `settings_spec.py` is the control registry and `hover_preview.py` the shared preview state machine. |
 | `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`). |
-| `project/`        | The `Project` value type: ConfigBuffer contents + world settings + name + selection, immutable, with its invariants enforced in one place. |
+| `project/`        | The `Project` value type (ConfigBuffer + world settings + name + selection, immutable) and `History`, the undo/redo timeline over those values. |
 | `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect). Persisted to `preferences.json`. |
 | `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
 | `configs/`        | Physics preset JSONs (`Starcrossed.json`, `9LeafClovers.json`, `Angles.json`). |
@@ -466,6 +466,50 @@ Python cost of `advance()` (52,201 → 30,601 calls per 300 sub-steps).
 The same reasoning applies one level up: `_report_status()` runs per *frame*,
 and `asdict` on a config deep-copies its 80-float rule tuple, so the settings
 payloads are built only when a window that reads them is open.
+
+## Particle selection and history
+
+**Selection** adopts a clicked particle's rule as the config's base rule --
+"that variant, do more of that" -- and the population then re-mutates around
+it. `mutation_scale` is deliberately untouched, so exactly one field changes
+and undo stays unambiguous.
+
+The particle's rule is **recomputed host-side** (`particle_system/mutation.py`),
+not read back from the GPU. The mutation is deterministic in
+`(rule, scale, seed, cohort)`, so Python can reproduce it -- avoiding the extra
+buffer and readback the original needed, and avoiding async readback in the
+port. The price is that the mirror must stay bit-exact with the shader; a probe
+test runs the simulation's own `mutate_rule` and compares. **Edit one side,
+edit both, and re-run that test.**
+
+**Mouse modes** exist because left-drag pans and left-click selects -- without a
+mode, every attempt to pan would select on the way down. `CAMERA` (default)
+drags to pan; `SELECT` clicks to adopt and right-clicks to undo. `S` toggles.
+
+### What history records, and why so little
+
+Only **particle selection** and **mutation seed randomization**. Not slider
+edits, loads, previews, or config add/remove.
+
+The tempting hook is `Orchestrator._set_project()` -- every project change goes
+through it. That is exactly why it would be wrong: two of its callers are
+hover-preview (fires as the cursor crosses rows in the Load menu) and two are
+slider edits (fires per drag-frame). Hooking there buries the few entries a user
+wants under hundreds from browsing a list for a few seconds.
+
+The two recorded operations share a shape: **a single discrete act with a
+randomised, non-obvious result**. Sliders are their own undo -- drag them back.
+The Config Clipboard covers "return to a state I chose to remember".
+
+`History.record(before, after, label)` takes **both** states. Because most
+changes do not record, the live state has usually drifted from the timeline by
+the time an undoable action happens; re-seating the current entry on `before`
+preserves those un-recorded edits. Recording only `after` looked simpler and was
+wrong -- undoing a seed randomize silently discarded any slider edits made since
+the previous undoable action.
+
+Entries hold references to immutable `Project`s, so a snapshot costs a pointer.
+Bounded at 100, session-only.
 
 ## Entity picking
 

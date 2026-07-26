@@ -45,5 +45,12 @@ class SettingsCommands:
 
         Drawn from [0,1) to match the convention the legacy configs use -- the
         value is fed straight into the hash, so any float in range is valid.
+
+        One of only two operations that record history: a single click with a
+        randomised, non-obvious result is exactly what undo is for. Plain
+        slider edits share this code path via _cmd_edit_setting but do NOT
+        record -- dragging a slider back is its own undo.
         """
+        before = self.project
         self._cmd_edit_setting(setting, random.random())
+        self._record_history(before, "randomize mutation seed")

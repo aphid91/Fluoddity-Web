@@ -75,7 +75,9 @@ class ConfigMenu:
             # entries grey out rather than silently doing nothing.
             can_undo = bool(self._status.get('can_undo'))
             can_redo = bool(self._status.get('can_redo'))
-            if imgui.menu_item_simple("Undo", "Ctrl+Z", False, can_undo):
+            label = self._status.get('undo_label') or ''
+            undo_text = f"Undo {label}" if label else "Undo"
+            if imgui.menu_item_simple(undo_text, "Ctrl+Z", False, can_undo):
                 self._dispatch('undo')
             if imgui.menu_item_simple("Redo", "Ctrl+Shift+Z", False, can_redo):
                 self._dispatch('redo')
