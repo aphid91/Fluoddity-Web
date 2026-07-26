@@ -339,8 +339,22 @@ empty headers.
 ### The project
 
 The **project** is the state the save/load system stores and restores: the
-ConfigBuffer contents, the project name, and which config is selected for
-editing. It is a single immutable value (`project/project.py`).
+ConfigBuffer contents, the world settings, the project name, and which config
+is selected for editing. It is a single immutable value
+(`project/project.py`).
+
+**Three kinds of settings, three homes.** `SimulationConfig` is per-particle
+and there are many; `WorldSettings` is shared by every particle and there is
+exactly one; `Preferences` is editor state and is not saved at all. Trail decay
+used to be carried on *every* `SimulationConfig` because the preset format put
+it beside the physics parameters � which made config 0 secretly authoritative,
+made `edit_world()` a disguised `edit_config(0)`, and left slots 1+ holding
+values that were silently ignored. `WorldSettings` is now its own type on the
+project.
+
+`WorldSettings` holds only what a file saves. Runtime sizing
+(`sqrt_world_size`, `config_count`) joins at upload time in `WorldConfig`,
+because no save file should dictate how big the running simulation is.
 
 **Why a type rather than three attributes.** Those three always move together.
 Before, every operation touching the buffer had to remember all three by hand —
@@ -581,12 +595,6 @@ it only swaps.
 - The pick key encodes the entity index in 20 bits, capping picking at ~1.05M
   entities. Well above the current 150k, but it is a hard limit, not a soft
   one — raising it means trading bits against distance precision.
-- **Trail settings sit on `SimulationConfig`, not `WorldConfig`.** They are
-  world properties, but the preset format put them on each config, so config 0
-  is the one that counts and `Project.edit_world()` is really
-  `edit_config(0)`. With several configs loaded, slots 1+ carry trail values
-  that are silently ignored. Fixing it touches the save format on both read and
-  write paths (~18 sites) and deserves its own change.
 - The picked entity is reported in the debug panel but not yet drawn
   differently. Highlighting it on the canvas needs a render-side channel (the
   Entity struct has reserved lanes for exactly this).

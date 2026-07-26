@@ -2,9 +2,11 @@
 
 WHY THIS TYPE EXISTS
 
-A project is three things that must always move together:
+A project is what a save file contains, and its parts must always move
+together:
 
     configs          the ConfigBuffer contents
+    world            settings shared by every particle (trail decay)
     name             what the file is called
     selected_config  which config the Project window is editing
 
@@ -38,7 +40,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field, replace
 
-from particle_system.config import SimulationConfig, WorldConfig
+from particle_system.config import SimulationConfig, WorldSettings
 
 #: Name used before anything has been saved or loaded.
 UNTITLED = "Untitled"
@@ -50,6 +52,7 @@ class Project:
     config is being edited."""
 
     configs: tuple[SimulationConfig, ...] = ()
+    world: WorldSettings = field(default_factory=WorldSettings)
     name: str = UNTITLED
     selected: int = 0
 
@@ -75,28 +78,22 @@ class Project:
     def count(self) -> int:
         return len(self.configs)
 
-    def world(self, sqrt_world_size: float) -> WorldConfig:
-        """The WorldData for this project.
-
-        Trail settings are world properties but are carried on every
-        SimulationConfig (the preset format puts them there), so config 0
-        supplies them by convention.
-        """
-        return self.configs[0].world_config(
-            sqrt_world_size=sqrt_world_size,
-            config_count=len(self.configs),
-        )
+    def world_for_upload(self, sqrt_world_size: float):
+        """The GPU-facing WorldData: saved settings + runtime sizing."""
+        return self.world.for_upload(sqrt_world_size, len(self.configs))
 
     # ------------------------------------------------------------------
     # Writes -- each returns a NEW Project
     # ------------------------------------------------------------------
 
-    def with_configs(self, configs, name=None) -> "Project":
-        """Replace the buffer. `selected` is re-clamped automatically.
+    def with_configs(self, configs, name=None, world=None) -> "Project":
+        """Replace the buffer, and optionally the world settings.
 
-        This is the operation that used to need three hand-written lines.
+        `selected` is re-clamped automatically. This is the operation that used
+        to need three hand-written lines.
         """
         return Project(configs=tuple(configs),
+                       world=self.world if world is None else world,
                        name=self.name if name is None else name,
                        selected=self.selected)
 
@@ -121,8 +118,15 @@ class Project:
         return self.edited(self.selected, field_name, value)
 
     def edit_world(self, field_name: str, value) -> "Project":
-        """World settings live on config 0 -- see `world()`."""
-        return self.edited(0, field_name, value)
+        """Change one world setting.
+
+        A real edit of the project's single WorldSettings -- not, as it once
+        was, a disguised edit of config 0.
+        """
+        if not hasattr(self.world, field_name):
+            return self
+        return replace(self,
+                       world=replace(self.world, **{field_name: value}))
 
     def appended(self, configs, limit: int):
         """Append configs up to `limit` slots.

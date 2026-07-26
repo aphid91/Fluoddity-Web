@@ -78,7 +78,10 @@ class ParticleSystem:
         self.config_path = str(config_path)
         # One code path for reading configs, so v7/v8 handling never diverges
         # between startup and a later load.
-        self.config = persistence.load(config_path).configs[0]
+        _saved = persistence.load(config_path)
+        self.config = _saved.configs[0]
+        #: World settings currently uploaded. Replaced by apply_project().
+        self.world = _saved.world
 
         # Programs (initialized in reload)
         self.entity_update_program = None
@@ -174,11 +177,8 @@ class ParticleSystem:
         Public: the save path and the settings window both need it, and reaching
         into a private helper across a module boundary is exactly what the
         narrow-accessor rule exists to prevent.
-
-        Trail settings come from config 0 by convention: they are world
-        properties, so when multiple configs exist the first one supplies them.
         """
-        return self.configs[0].world_config(
+        return self.world.for_upload(
             sqrt_world_size=self.sqrt_world_size,
             config_count=len(self.configs),
         )
@@ -186,7 +186,7 @@ class ParticleSystem:
     def _refresh_world_uniform(self):
         """Recompute the cached WorldData payload.
 
-        Called when the configs change -- NOT per sub-step. Building it walks a
+        Called when the project changes -- NOT per sub-step. Building it walks a
         dataclass, allocates a numpy record and builds a tuple; at 30 sub-steps
         per frame across three programs that was ~32k allocations a second for a
         value that only changes when the user moves a slider.
@@ -317,7 +317,7 @@ class ParticleSystem:
         return self.canvas_texture
 
     def apply_project(self, project):
-        """Upload a Project's configs to the GPU. Does not touch entities.
+        """Upload a project's configs and world settings. Does not touch entities.
 
         The ONE point where project state reaches the GPU. Loading,
         hover-preview and every slider edit all funnel through here: the
@@ -325,9 +325,10 @@ class ParticleSystem:
         change can be applied and undone with a single buffer upload and no
         visual discontinuity.
 
-        Deciding *what* the configs should be is the Project type's job (see
-        project/project.py); this only ships them to the device.
+        Deciding *what* the state should be is the Project type's job (see
+        project/project.py); this only ships it to the device.
         """
+        self.world = project.world
         self.apply_configs(project.configs)
 
     def apply_configs(self, configs):
@@ -337,9 +338,9 @@ class ParticleSystem:
         self.configs = list(configs)
         self.config = self.configs[0]
         self._upload_configs()
-        # WorldData is derived from config 0, so it is stale until refreshed.
-        # Doing it here -- the one place configs change -- is what keeps it out
-        # of the per-sub-step path.
+        # config_count is part of WorldData, so the cached uniform is stale
+        # until refreshed. Doing it here -- the one place the count changes --
+        # is what keeps it out of the per-sub-step path.
         self._refresh_world_uniform()
 
     def update_entities(self):

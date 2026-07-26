@@ -84,6 +84,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         #: see project/project.py for why that matters.
         self.project = Project(
             configs=tuple(self.system.configs),
+            world=self.system.world,
             name=Path(self.system.config_path).stem,
         )
 

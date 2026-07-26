@@ -50,19 +50,6 @@ class SimulationConfig:
     axial_force: float
     lateral_force: float
     hazard_rate: float
-    # WORLD SETTINGS ON A PER-CONFIG TYPE -- a known wart.
-    #
-    # These are world properties (one canvas, one decay rate), but they live on
-    # every SimulationConfig because that is where the preset format put them.
-    # Config 0 is the one that counts: world_config() reads from it, and
-    # Project.edit_world() is really edit_config(0). With several configs in the
-    # buffer, slots 1+ carry trail values that are silently ignored.
-    #
-    # Straightening this out means moving them onto WorldConfig alone, which
-    # touches the save format on both the read and write paths (~18 sites).
-    # Worth doing, but as its own change rather than folded into something else.
-    trail_persistence: float
-    trail_diffusion: float
     # 80 floats -> 10 FourierCenters, each frequency(4) + amplitude(4)
     rule: tuple = field(default_factory=tuple)
 
@@ -100,13 +87,25 @@ class SimulationConfig:
                           _int_lane(self.cohorts), self.mutation_seed)
         return record
 
-    def world_config(self, sqrt_world_size: float, config_count: int) -> "WorldConfig":
-        """The WorldData half of this preset.
+@dataclass(frozen=True)
+class WorldSettings:
+    """The world half of a project: settings shared by every particle.
 
-        trail_persistence/diffusion come from the preset; the sizing values are
-        supplied by the caller because they are properties of the running
-        system, not of the saved config.
-        """
+    One canvas, one decay rate -- these are properties of the world, not of any
+    config, and there is exactly one instance per project. They used to be
+    carried on every SimulationConfig because the preset format put them beside
+    the physics parameters, which made config 0 secretly authoritative and left
+    slots 1+ holding values that were silently ignored.
+
+    Saved with the project. Sizing values (sqrt_world_size, config_count) are
+    NOT here: they are properties of the running system, so they join at
+    upload time in WorldConfig.
+    """
+
+    trail_persistence: float = 0.94
+    trail_diffusion: float = 1.0
+
+    def for_upload(self, sqrt_world_size: float, config_count: int) -> "WorldConfig":
         return WorldConfig(
             trail_persistence=self.trail_persistence,
             trail_diffusion=self.trail_diffusion,
@@ -117,7 +116,11 @@ class SimulationConfig:
 
 @dataclass(frozen=True)
 class WorldConfig:
-    """Typed, immutable world settings. Mirrors the GLSL WorldData struct."""
+    """WorldSettings plus runtime sizing. Mirrors the GLSL WorldData struct.
+
+    The GPU-facing value: saved settings combined with properties of the
+    running system that no save file should dictate.
+    """
 
     trail_persistence: float
     trail_diffusion: float

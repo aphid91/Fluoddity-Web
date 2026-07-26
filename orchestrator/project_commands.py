@@ -93,7 +93,7 @@ class ProjectCommands:
         path = persistence.custom_dir(self._config_dir) / f"{safe}.json"
         try:
             persistence.save(
-                path, configs, self.system.current_world_config(),
+                path, configs, self.project.world,
                 camera={'pan': list(cam.pan), 'zoom': cam.zoom,
                         'mode': cam.mode.value},
             )
@@ -114,7 +114,8 @@ class ProjectCommands:
             print(f"Failed to load {entry.path}: {e}")
             return
         self._set_project(self.project.with_configs(saved.configs,
-                                                    name=entry.name))
+                                                    name=entry.name,
+                                                    world=saved.world))
         self.system.config_path = str(entry.path)
         # Only move the camera if the file actually recorded one -- v7 presets
         # did not, and snapping to a default would be worse than staying put.
@@ -135,7 +136,8 @@ class ProjectCommands:
             print(f"Failed to preview {entry.path}: {e}")
             return
         self._set_project(self.project.with_configs(saved.configs,
-                                                    name=entry.name))
+                                                    name=entry.name,
+                                                    world=saved.world))
 
     # Hover-preview snapshot/restore. A Project IS the snapshot -- immutable, so
     # holding a reference is enough. Each hover surface keeps its own, so two
@@ -177,7 +179,8 @@ class ProjectCommands:
             print(f"Failed to load {path}: {e}")
             return
         self._set_project(self.project.with_configs(saved.configs,
-                                                    name=Path(path).stem))
+                                                    name=Path(path).stem,
+                                                    world=saved.world))
         self.system.config_path = str(path)
         print(f"Loaded config: {path}")
 

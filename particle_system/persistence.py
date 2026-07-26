@@ -28,7 +28,7 @@ import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .config import SimulationConfig, WorldConfig
+from .config import SimulationConfig, WorldSettings
 
 FORMAT_VERSION = 8
 
@@ -58,7 +58,7 @@ class SavedConfig:
     """
 
     configs: list[SimulationConfig]
-    world: WorldConfig
+    world: WorldSettings
     camera: dict | None = None
     notes: str = ""
 
@@ -89,7 +89,7 @@ def _config_to_dict(config: SimulationConfig) -> dict:
     }
 
 
-def _config_from_dict(data: dict, world: dict) -> SimulationConfig:
+def _config_from_dict(data: dict) -> SimulationConfig:
     sensor = data["sensor"]
     force = data["force"]
     misc = data["misc"]
@@ -107,15 +107,11 @@ def _config_from_dict(data: dict, world: dict) -> SimulationConfig:
         axial_force=float(force["axial"]),
         lateral_force=float(misc["lateral"]),
         hazard_rate=float(misc["hazard_rate"]),
-        # Trail settings are world properties, but SimulationConfig still
-        # carries them so world_config() can hand them over. Read from world.
-        trail_persistence=float(world["trail_persistence"]),
-        trail_diffusion=float(world["trail_diffusion"]),
         rule=tuple(float(v) for v in data["rule"]),
     )
 
 
-def to_dict(configs, world: WorldConfig, camera: dict | None = None,
+def to_dict(configs, world: WorldSettings, camera: dict | None = None,
             notes: str = "") -> dict:
     doc = {
         "version": FORMAT_VERSION,
@@ -147,16 +143,12 @@ def from_dict(data: dict) -> SavedConfig:
 
 def _from_v8(data: dict) -> SavedConfig:
     world_raw = data["world"]
-    configs = [_config_from_dict(c, world_raw) for c in data["configs"]]
+    configs = [_config_from_dict(c) for c in data["configs"]]
     if not configs:
         raise ConfigFormatError("config file contains an empty 'configs' list")
-    world = WorldConfig(
+    world = WorldSettings(
         trail_persistence=float(world_raw["trail_persistence"]),
         trail_diffusion=float(world_raw["trail_diffusion"]),
-        # Supplied by the running system, not the file: these describe the
-        # simulation's sizing, not the preset's look.
-        sqrt_world_size=0.0,
-        config_count=len(configs),
     )
     return SavedConfig(configs=configs, world=world,
                        camera=data.get("camera"), notes=data.get("notes", ""))
@@ -216,15 +208,13 @@ def _from_v7(data: dict) -> SavedConfig:
         axial_force=float(physics["axial_force"]),
         lateral_force=float(physics["lateral_force"]),
         hazard_rate=float(physics["hazard_rate"]),
-        trail_persistence=float(physics["trail_persistence"]),
-        trail_diffusion=float(physics["trail_diffusion"]),
         rule=tuple(float(v) for v in data["rule"]),
     )
-    world = WorldConfig(
-        trail_persistence=config.trail_persistence,
-        trail_diffusion=config.trail_diffusion,
-        sqrt_world_size=0.0,
-        config_count=1,
+    # v7 keeps the trail settings beside the physics parameters, but they are
+    # world settings all the same -- one per file, not one per config.
+    world = WorldSettings(
+        trail_persistence=float(physics["trail_persistence"]),
+        trail_diffusion=float(physics["trail_diffusion"]),
     )
     return SavedConfig(configs=[config], world=world, camera=None,
                        notes=data.get("notes", ""))
@@ -234,7 +224,7 @@ def _from_v7(data: dict) -> SavedConfig:
 # Files
 # ---------------------------------------------------------------------------
 
-def save(path, configs, world: WorldConfig, camera=None, notes=""):
+def save(path, configs, world: WorldSettings, camera=None, notes=""):
     """Write a v8 config file, creating parent directories as needed."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
