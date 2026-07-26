@@ -112,7 +112,11 @@ class ParticleSystem:
         # is the supported path to heterogeneous particles.
         self.configs = [self.config]
         self.config_buffer = None
+        #: Cached WorldData uniform payload. Rebuilt only when configs change --
+        #: see _refresh_world_uniform().
+        self._world_uniform = None
         self._upload_configs()
+        self._refresh_world_uniform()
 
         # Fullscreen quad for canvas update (initialized in reload)
         self.quad_vbo = None
@@ -134,6 +138,20 @@ class ParticleSystem:
         self._reload_brush_splat()
         self._reload_canvas_update()
         self.picker.reload()
+        self._set_constant_uniforms()
+
+    def _set_constant_uniforms(self):
+        """Push uniforms that never change while a program lives.
+
+        Texture units and the canvas resolution are fixed for the lifetime of a
+        compiled program, so setting them per sub-step was pure overhead at
+        ~1800 dispatches a second. Re-run after every shader reload, because a
+        freshly compiled program starts with its uniforms unset.
+        """
+        resolution = (float(self.canvas_size[0]), float(self.canvas_size[1]))
+        tryset(self.entity_update_program, 'canvas_texture', 0)
+        tryset(self.canvas_update_program, 'canvas_texture', 0)
+        tryset(self.brush_splat_program, 'canvas_resolution', resolution)
 
     # --- config buffer / world uniform ---
 
@@ -165,9 +183,18 @@ class ParticleSystem:
             config_count=len(self.configs),
         )
 
+    def _refresh_world_uniform(self):
+        """Recompute the cached WorldData payload.
+
+        Called when the configs change -- NOT per sub-step. Building it walks a
+        dataclass, allocates a numpy record and builds a tuple; at 30 sub-steps
+        per frame across three programs that was ~32k allocations a second for a
+        value that only changes when the user moves a slider.
+        """
+        self._world_uniform = self.current_world_config().as_uniform_value()
+
     def _set_world_uniform(self, program):
-        tryset(program, 'world.trail',
-               self.current_world_config().as_uniform_value())
+        tryset(program, 'world.trail', self._world_uniform)
 
     def _reload_entity_update(self):
         """Reload entity update compute shader."""
@@ -310,6 +337,10 @@ class ParticleSystem:
         self.configs = list(configs)
         self.config = self.configs[0]
         self._upload_configs()
+        # WorldData is derived from config 0, so it is stale until refreshed.
+        # Doing it here -- the one place configs change -- is what keeps it out
+        # of the per-sub-step path.
+        self._refresh_world_uniform()
 
     def update_entities(self):
         """Dispatch compute shader to update entity positions."""
@@ -317,8 +348,9 @@ class ParticleSystem:
         self.entity_buffer.bind_to_storage_buffer(ENTITY_BUFFER_BINDING)
         self.config_buffer.bind_to_storage_buffer(CONFIG_BUFFER_BINDING)
 
+        # Only frame_count varies per sub-step; the world uniform is cached and
+        # canvas_texture's unit is set once at reload.
         self._set_world_uniform(self.entity_update_program)
-        tryset(self.entity_update_program, 'canvas_texture', 0)
         tryset(self.entity_update_program, 'frame_count', self.frame_count)
         self.canvas_texture.use(location=0)
 
@@ -347,10 +379,9 @@ class ParticleSystem:
         # Bind entity buffer as SSBO
         self.entity_buffer.bind_to_storage_buffer(ENTITY_BUFFER_BINDING)
 
-        # Set uniforms (world supplies trail_persistence for the (1-P)/P premultiply)
+        # World supplies trail_persistence for the (1-P)/P premultiply.
+        # canvas_resolution is constant and set at reload.
         self._set_world_uniform(self.brush_splat_program)
-        tryset(self.brush_splat_program, 'canvas_resolution',
-               (float(self.canvas_size[0]), float(self.canvas_size[1])))
         tryset(self.brush_splat_program, 'frame_count', self.frame_count)
 
         # Instanced rendering: 4 vertices per entity
@@ -369,7 +400,6 @@ class ParticleSystem:
         self.canvas_fbo_back.use()
 
         self._set_world_uniform(self.canvas_update_program)
-        tryset(self.canvas_update_program, 'canvas_texture', 0)
         tryset(self.canvas_update_program, 'frame_count', self.frame_count)
 
         self.canvas_texture.use(location=0)

@@ -427,6 +427,32 @@ returns false (clipped or collapsed) — unlike `begin_menu`/`tree_node`, where
 the close call is conditional. Getting this wrong corrupts imgui's window stack
 and asserts on a later frame, far from the cause.
 
+## The per-sub-step budget
+
+`advance()` runs `physics_steps` times per frame — 30 by default, so **~1800 Hz
+at 60fps**. Anything done there is done nearly two thousand times a second, and
+work that belongs to a slower cadence must not leak in.
+
+Two rules keep it honest:
+
+- **Uniforms that only change when the user acts are cached, not rebuilt.**
+  `WorldData` is derived from config 0 via a dataclass, a numpy record and a
+  tuple. Building it per sub-step across three programs was ~32k allocations a
+  second for a value that changes when a slider moves. It is now computed in
+  `_refresh_world_uniform()`, called from `apply_configs()` — the one place
+  configs change.
+- **Uniforms constant for a program's lifetime are set at reload.** Texture
+  units and `canvas_resolution` go in `_set_constant_uniforms()`, re-run after
+  every shader reload because a freshly compiled program starts with its
+  uniforms unset.
+
+Only `frame_count` genuinely varies per sub-step. Together these halved the
+Python cost of `advance()` (52,201 → 30,601 calls per 300 sub-steps).
+
+The same reasoning applies one level up: `_report_status()` runs per *frame*,
+and `asdict` on a config deep-copies its 80-float rule tuple, so the settings
+payloads are built only when a window that reads them is open.
+
 ## Entity picking
 
 `ParticleSystem.pick(world_pos, radius)` returns the nearest entity, or a miss.
@@ -555,6 +581,12 @@ it only swaps.
 - The pick key encodes the entity index in 20 bits, capping picking at ~1.05M
   entities. Well above the current 150k, but it is a hard limit, not a soft
   one — raising it means trading bits against distance precision.
+- **Trail settings sit on `SimulationConfig`, not `WorldConfig`.** They are
+  world properties, but the preset format put them on each config, so config 0
+  is the one that counts and `Project.edit_world()` is really
+  `edit_config(0)`. With several configs loaded, slots 1+ carry trail values
+  that are silently ignored. Fixing it touches the save format on both read and
+  write paths (~18 sites) and deserves its own change.
 - The picked entity is reported in the debug panel but not yet drawn
   differently. Highlighting it on the canvas needs a render-side channel (the
   Entity struct has reserved lanes for exactly this).

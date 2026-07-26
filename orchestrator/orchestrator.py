@@ -271,19 +271,33 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             checkpoints=self.checkpoints,
             # The three settings sources, as plain dicts the window reads by
             # field name. Snapshots, not references: the UI never holds live
-            # simulation objects (rule 10).
-            edit_config=self._editable_config(),
-            edit_world=dataclasses.asdict(self.system.current_world_config()),
-            edit_prefs=dataclasses.asdict(self.prefs),
+            # simulation objects (rule 10). Built only when a window that reads
+            # them is open -- see _settings_dicts().
+            **self._settings_dicts(),
             preset=Path(self.system.config_path).stem,
             entity_count=self.system.entity_count(),
             config_count=self.project.count,
             frame_count=self.system.frame_count,
         )
 
-    def _editable_config(self):
-        """The selected config as a plain dict, for the settings window."""
-        return dataclasses.asdict(self.project.config)
+    #: Empty payload reused when no settings window is open, so the common case
+    #: allocates nothing at all.
+    _NO_SETTINGS = {'edit_config': {}, 'edit_world': {}, 'edit_prefs': {}}
+
+    def _settings_dicts(self):
+        """Settings payloads for the UI, built only when something reads them.
+
+        `asdict` on a SimulationConfig deep-copies its 80-float rule tuple. Doing
+        that every frame for a window that is closed is pure garbage; with both
+        windows shut this returns a shared empty payload instead.
+        """
+        if not (self.ui.show_settings or self.ui.show_preferences):
+            return self._NO_SETTINGS
+        return {
+            'edit_config': dataclasses.asdict(self.project.config),
+            'edit_world': dataclasses.asdict(self.system.current_world_config()),
+            'edit_prefs': dataclasses.asdict(self.prefs),
+        }
 
     # ------------------------------------------------------------------
     # Simple commands. Feature groups live in the command mixins.

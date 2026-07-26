@@ -50,8 +50,17 @@ class SimulationConfig:
     axial_force: float
     lateral_force: float
     hazard_rate: float
-    # world settings -- kept on the dataclass because the preset JSON carries
-    # them, but they pack into WorldData, not ConfigData. See world_config().
+    # WORLD SETTINGS ON A PER-CONFIG TYPE -- a known wart.
+    #
+    # These are world properties (one canvas, one decay rate), but they live on
+    # every SimulationConfig because that is where the preset format put them.
+    # Config 0 is the one that counts: world_config() reads from it, and
+    # Project.edit_world() is really edit_config(0). With several configs in the
+    # buffer, slots 1+ carry trail values that are silently ignored.
+    #
+    # Straightening this out means moving them onto WorldConfig alone, which
+    # touches the save format on both the read and write paths (~18 sites).
+    # Worth doing, but as its own change rather than folded into something else.
     trail_persistence: float
     trail_diffusion: float
     # 80 floats -> 10 FourierCenters, each frequency(4) + amplitude(4)
