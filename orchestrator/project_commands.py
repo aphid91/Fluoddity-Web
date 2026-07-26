@@ -113,9 +113,12 @@ class ProjectCommands:
         except Exception as e:
             print(f"Failed to load {entry.path}: {e}")
             return
+        before = self._pre_preview_project(self.project)
         self._set_project(self.project.with_configs(saved.configs,
                                                     name=entry.name,
                                                     world=saved.world))
+        self._record_history(before, f"load {entry.name}")
+        self._preview_origin = None
         self.system.config_path = str(entry.path)
         # Only move the camera if the file actually recorded one -- v7 presets
         # did not, and snapping to a default would be worse than staying put.
@@ -129,6 +132,10 @@ class ProjectCommands:
 
         The title tracks what is applied, previews included -- so browsing the
         load list renames the Project window as you go.
+
+        DOES NOT RECORD HISTORY. A preview is a transient state the user never
+        chose; browsing forty configs would otherwise leave forty undo entries.
+        Only a committed load records.
         """
         try:
             saved = persistence.load(entry.path)
@@ -144,11 +151,16 @@ class ProjectCommands:
     # open at once cannot clobber each other (see ui/hover_preview.py).
 
     def _cmd_snapshot_configs(self):
+        # Remember where browsing started, so a committed load records against
+        # it rather than against whatever preview happened to be showing.
+        self._preview_origin = self.project
         return self.project
 
     def _cmd_restore_configs(self, snapshot=None):
+        # The other half of hover-preview; likewise never recorded.
         if snapshot is not None:
             self._set_project(snapshot)
+        self._preview_origin = None
 
     def _cmd_delete_config(self, entry):
         try:
@@ -178,9 +190,11 @@ class ProjectCommands:
         except Exception as e:
             print(f"Failed to load {path}: {e}")
             return
+        before = self.project
         self._set_project(self.project.with_configs(saved.configs,
                                                     name=Path(path).stem,
                                                     world=saved.world))
+        self._record_history(before, f"load {Path(path).stem}")
         self.system.config_path = str(path)
         print(f"Loaded config: {path}")
 

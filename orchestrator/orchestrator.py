@@ -115,6 +115,11 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         self.history = History()
         self.history.seed(self.project)
 
+        #: Project state from before a hover-preview began, so a committed
+        #: load records against it rather than against the preview showing at
+        #: click time. None when no browse session is open.
+        self._preview_origin = None
+
         #: Transient UI messages.
         self._manager_message = ""
         self._save_error = ""

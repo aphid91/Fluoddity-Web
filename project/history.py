@@ -1,22 +1,34 @@
 """Undo/redo over whole projects.
 
-WHAT IS UNDOABLE, AND WHY SO LITTLE
+WHAT IS UNDOABLE
 
-Only two operations record history: **particle selection** and **mutation seed
-randomization**. Deliberately not slider edits, config loads, previews, or
-config add/remove.
+Every deliberate act: slider edits, particle selection, seed randomization,
+committed loads, preset cycling, checkpoint restores, and config
+add/duplicate/remove.
 
-The temptation is to hook `Orchestrator._set_project()` -- every project change
-funnels through it, so one line would capture everything. That is exactly why
-it would be wrong: two of its callers are hover-preview (fires as the cursor
-crosses rows in the Load menu) and two are slider edits (fires per drag-frame).
-Hooking there would bury the handful of entries a user actually wants under
-hundreds of spurious ones from browsing a list for a few seconds.
+TWO THINGS ARE DELIBERATELY EXCLUDED, and neither is an oversight:
 
-The two operations here share a shape: a single discrete act with a
-non-obvious, randomised result. Those are the ones worth taking back. Sliders
-are their own undo -- drag them back -- and the Config Clipboard covers "I want
-to return to a state I chose to remember".
+  HOVER-PREVIEW (and its restore). The Load menu and Config Clipboard apply a
+  config as the cursor crosses each row, then put it back when you move away.
+  These are transient states the user never chose -- browsing a list of forty
+  configs would otherwise leave forty entries and evict real work. Only the
+  COMMITTED load records. Coalescing cannot help here: previews are not rapid
+  edits to merge, they revert themselves.
+
+  UNDO AND REDO. They call the same _set_project() everything else does, so
+  recording them would make undo push a history entry -- history about history.
+
+COALESCING
+
+A slider drag fires an edit per frame; without merging, two seconds of dragging
+would be a hundred entries. Consecutive records sharing a `coalesce_key` within
+COALESCE_WINDOW seconds collapse into one: the entry's *end* state is updated
+in place while its start state stays put, so undo jumps over the whole gesture.
+
+Keying on the field means moving to a different slider starts a new entry, and
+pausing does too. Deliberate one-shot acts pass no key, so they never merge --
+randomizing the seed twice in a row is two undo steps, which is what you want
+from a button.
 
 HOW IT WORKS
 
@@ -28,14 +40,19 @@ its stack popped entries away.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from .project import Project
 
-#: Entries kept before the oldest is dropped. The original used 200; entries
-#: are cheap references, so the bound is about predictable memory rather than
-#: cost.
+#: Entries kept before the oldest is dropped. The original used 200; with
+#: coalescing a drag is one entry, so 100 covers a long session of real actions.
 MAX_HISTORY = 100
+
+#: Seconds within which same-key records merge. Long enough to bridge the gaps
+#: in a slider drag, short enough that a deliberate second adjustment is its
+#: own undo step.
+COALESCE_WINDOW = 0.5
 
 
 @dataclass(frozen=True)
@@ -62,30 +79,44 @@ class History:
     startup (see `record`).
     """
 
-    def __init__(self, max_entries: int = MAX_HISTORY):
+    def __init__(self, max_entries: int = MAX_HISTORY,
+                 coalesce_window: float = COALESCE_WINDOW):
         #: The timeline, oldest first. Entry 0 has no label -- nothing produced
         #: it, it is simply where the session started.
         self._states: list[HistoryEntry] = []
         #: Index of the live state within _states; -1 while empty.
         self._cursor = -1
         self._max = max_entries
+        self._window = coalesce_window
+        #: (key, timestamp) of the last record, for merging a run of edits.
+        self._last_key = None
+        self._last_time = 0.0
 
     # ------------------------------------------------------------------
 
-    def record(self, before: Project, after: Project, label: str = "") -> None:
+    def record(self, before: Project, after: Project, label: str = "",
+               coalesce_key=None, now: float | None = None) -> None:
         """Record an undoable step from `before` to `after`.
 
-        BOTH states are needed, and this is the subtle part. Most changes --
-        slider drags especially -- do not record at all, so by the time an
-        undoable action happens the live state has usually drifted away from
-        whatever is on the timeline. Rewriting the current entry with `before`
-        keeps those un-recorded edits: undo returns you to the moment just
-        before you clicked, not to the last thing history happened to notice.
+        `coalesce_key` identifies a continuous gesture -- pass the field name
+        for a slider so a drag merges into one entry. Pass None for one-shot
+        acts, which then never merge.
 
-        Recording only `after` looked simpler and was wrong -- undoing a seed
-        randomize silently threw away any slider edits made since the previous
-        undoable action.
+        BOTH states are needed. Recording only `after` is wrong when anything
+        reaches the project without recording (previews do), because the
+        timeline would still hold a stale start state; re-seating the current
+        entry on `before` means undo returns you to the moment just before you
+        acted.
         """
+        now = time.monotonic() if now is None else now
+
+        if self._can_coalesce(coalesce_key, now):
+            # Extend the gesture in place: the start state stays put, so undo
+            # still jumps over the whole drag, and only the end moves.
+            self._states[self._cursor] = HistoryEntry(project=after, label=label)
+            self._last_time = now
+            return
+
         if self._states and self._cursor >= 0:
             # A new action invalidates any redo entries ahead of the cursor.
             del self._states[self._cursor + 1:]
@@ -96,6 +127,25 @@ class History:
             self._cursor = 0
         self._states.append(HistoryEntry(project=after, label=label))
         self._trim()
+
+        self._last_key = coalesce_key
+        self._last_time = now
+
+    def _can_coalesce(self, key, now: float) -> bool:
+        """True if this record should extend the previous entry."""
+        return (key is not None
+                and key == self._last_key
+                and self._cursor > 0            # never merge into the seed
+                and (now - self._last_time) <= self._window)
+
+    def break_coalescing(self) -> None:
+        """End the current gesture, so the next record starts a new entry.
+
+        Anything that is not a continuation should call this -- undo/redo most
+        of all, since resuming a drag after undoing must not rewrite the entry
+        the user just stepped back to.
+        """
+        self._last_key = None
 
     def seed(self, project: Project) -> None:
         """Put the session's starting state on the timeline."""

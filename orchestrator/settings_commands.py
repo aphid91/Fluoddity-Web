@@ -18,14 +18,31 @@ from ui import settings_spec as spec
 class SettingsCommands:
     """Settings handlers. Expects the Orchestrator's attributes."""
 
-    def _cmd_edit_setting(self, setting, value):
-        """Route an edit to whichever of the three sources owns the field."""
+    def _cmd_edit_setting(self, setting, value, record=True):
+        """Route an edit to whichever of the three sources owns the field.
+
+        Records history, coalescing by field so a slider drag becomes one undo
+        step rather than one per frame. `record=False` lets a caller that will
+        record the step itself avoid a duplicate entry.
+
+        Preference edits are NOT recorded: they are editor state, outside the
+        project entirely, so there is nothing for undo to restore.
+        """
+        before = self.project
+
         if setting.source == spec.CONFIG:
             self._set_project(self.project.edit_selected(setting.field, value))
         elif setting.source == spec.WORLD:
             self._set_project(self.project.edit_world(setting.field, value))
         elif setting.source == spec.PREFS:
             self._edit_preference(setting, value)
+            return
+
+        if record:
+            # Key on source+field: moving to a different slider ends the
+            # gesture, as does pausing longer than the coalesce window.
+            self._record_history(before, f"edit {setting.label}",
+                                 coalesce_key=(setting.source, setting.field))
 
     def _edit_preference(self, setting, value):
         updated = self.prefs.with_value(setting.field, value)
@@ -46,11 +63,10 @@ class SettingsCommands:
         Drawn from [0,1) to match the convention the legacy configs use -- the
         value is fed straight into the hash, so any float in range is valid.
 
-        One of only two operations that record history: a single click with a
-        randomised, non-obvious result is exactly what undo is for. Plain
-        slider edits share this code path via _cmd_edit_setting but do NOT
-        record -- dragging a slider back is its own undo.
+        Records as a one-shot (no coalesce key), so hitting Randomize three
+        times gives three undo steps -- a button press is a discrete act, not a
+        gesture to merge.
         """
         before = self.project
-        self._cmd_edit_setting(setting, random.random())
+        self._cmd_edit_setting(setting, random.random(), record=False)
         self._record_history(before, "randomize mutation seed")

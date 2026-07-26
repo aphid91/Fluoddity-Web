@@ -63,7 +63,10 @@ class ClipboardCommands:
         self.checkpoints = [c for c in self.checkpoints if c.key != checkpoint.key]
 
     def _cmd_load_checkpoint(self, checkpoint):
+        before = self._pre_preview_project(self.project)
         self._set_project(checkpoint.project)
+        self._record_history(before, f"restore {checkpoint.name}")
+        self._preview_origin = None
 
     def _cmd_load_latest_checkpoint(self):
         if self.checkpoints:
@@ -74,11 +77,15 @@ class ClipboardCommands:
     # other (see ui/hover_preview.py).
 
     def _cmd_clipboard_snapshot(self):
+        self._preview_origin = self.project
         return self.project
 
     def _cmd_clipboard_restore(self, snapshot):
+        # Half of hover-preview -- transient, so never recorded.
         if snapshot is not None:
             self._set_project(snapshot)
+        self._preview_origin = None
 
     def _cmd_clipboard_apply(self, checkpoint):
+        # Hover-preview of a checkpoint; the committed load records instead.
         self._set_project(checkpoint.project)

@@ -96,20 +96,39 @@ class SelectionCommands:
         Bound to Ctrl+Z and to right-click while in SELECT mode, mirroring the
         original's binding.
         """
+        # Undo is not a continuation of whatever gesture preceded it: without
+        # this, resuming a drag afterwards would rewrite the entry just
+        # stepped back to.
+        self.history.break_coalescing()
         previous = self.history.undo()
         if previous is not None:
             self._set_project(previous)
 
     def _cmd_redo(self):
+        self.history.break_coalescing()
         nxt = self.history.redo()
         if nxt is not None:
             self._set_project(nxt)
 
-    def _record_history(self, before, label):
+    def _record_history(self, before, label, coalesce_key=None):
         """Record an undoable step from `before` to the current project.
 
-        Called from the only two places that record: selection here, and seed
-        randomization. Deliberately NOT from _set_project, which every slider
-        frame and hover-preview also flows through -- see project/history.py.
+        Called by every deliberate act. Deliberately NOT from _set_project --
+        hover-preview and undo/redo flow through there too, and neither belongs
+        in history (see project/history.py).
+
+        `coalesce_key` merges a continuous gesture into one entry; pass None
+        for one-shot acts so they always stand alone.
         """
-        self.history.record(before, self.project, label)
+        if before is not self.project:
+            self.history.record(before, self.project, label, coalesce_key)
+
+    def _pre_preview_project(self, fallback):
+        """The state from before any hover-preview began, or `fallback`.
+
+        A committed load arrives with the project ALREADY moved by the preview
+        that was showing when the user clicked. Recording `before = live` would
+        see no change and skip the entry, so commits record against what was
+        live before browsing started.
+        """
+        return self._preview_origin if self._preview_origin is not None else fallback

@@ -486,27 +486,52 @@ edit both, and re-run that test.**
 mode, every attempt to pan would select on the way down. `CAMERA` (default)
 drags to pan; `SELECT` clicks to adopt and right-clicks to undo. `S` toggles.
 
-### What history records, and why so little
+### What history records
 
-Only **particle selection** and **mutation seed randomization**. Not slider
-edits, loads, previews, or config add/remove.
+Every deliberate act: slider edits, particle selection, seed randomization,
+committed loads, preset cycling, checkpoint restores, and config
+add/duplicate/remove.
 
-The tempting hook is `Orchestrator._set_project()` -- every project change goes
-through it. That is exactly why it would be wrong: two of its callers are
-hover-preview (fires as the cursor crosses rows in the Load menu) and two are
-slider edits (fires per drag-frame). Hooking there buries the few entries a user
-wants under hundreds from browsing a list for a few seconds.
+**Two exclusions, neither an oversight:**
 
-The two recorded operations share a shape: **a single discrete act with a
-randomised, non-obvious result**. Sliders are their own undo -- drag them back.
-The Config Clipboard covers "return to a state I chose to remember".
+*Hover-preview and its restore.* The Load menu and Config Clipboard apply a
+config as the cursor crosses each row, then put it back. These are transient
+states the user never chose — browsing forty configs would leave forty entries
+and evict real work. Only the **committed** load records. Coalescing cannot help
+here: previews are not rapid edits to merge, they revert themselves.
 
-`History.record(before, after, label)` takes **both** states. Because most
-changes do not record, the live state has usually drifted from the timeline by
-the time an undoable action happens; re-seating the current entry on `before`
-preserves those un-recorded edits. Recording only `after` looked simpler and was
-wrong -- undoing a seed randomize silently discarded any slider edits made since
-the previous undoable action.
+*Undo and redo.* They call the same `_set_project()` as everything else, so
+recording them would make undo push an entry — history about history.
+
+Because recording happens at each command rather than at `_set_project()`, the
+exclusions are the default: a new command records only if it asks to.
+
+### Coalescing
+
+A slider drag fires an edit per frame; without merging, two seconds of dragging
+would be a hundred entries. Records sharing a `coalesce_key` within
+`COALESCE_WINDOW` (0.5s) collapse into one — the entry's *end* state updates in
+place while its start stays put, so undo jumps the whole gesture.
+
+Keying on `(source, field)` means moving to a different slider starts a new
+entry, and so does pausing. One-shot acts pass no key and never merge:
+randomizing the seed three times is three undo steps, which is what a button
+press should be.
+
+`undo`/`redo` call `break_coalescing()` — without it, resuming a drag after
+undoing would rewrite the entry just stepped back to.
+
+### Recording against the right state
+
+`History.record(before, after, label, coalesce_key)` takes **both** states,
+because the live project can drift from the timeline: previews move it without
+recording. Re-seating the current entry on `before` means undo returns you to
+the moment before you acted.
+
+A committed load needs more care still: by click time the preview has *already*
+moved the project, so `before` would equal the live state and the entry would be
+skipped. `_preview_origin` captures where browsing started, and commits record
+against that.
 
 Entries hold references to immutable `Project`s, so a snapshot costs a pointer.
 Bounded at 100, session-only.
