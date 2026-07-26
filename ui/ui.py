@@ -299,6 +299,8 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
 
         pan = self._status.get('cam_pan', (0.0, 0.0))
         imgui.text(f"cam mode    {self._status.get('cam_mode', '-')}")
+        imgui.text(f"mouse mode  {self._status.get('mouse_mode', '-')}"
+                   f"   (S toggles)")
         imgui.text(f"cam pan     ({pan[0]:7.3f}, {pan[1]:7.3f})")
         imgui.text(f"cam zoom    {self._status.get('cam_zoom', 1.0):.3f}x")
         imgui.text(f"canvas      {self._status.get('canvas_size', '-')}")
@@ -336,6 +338,7 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
             self._dispatch('reset_camera')
 
         imgui.text_disabled("drag: pan   scroll: zoom   TAB: view   HOME: reset")
+        imgui.text_disabled("S: mouse mode   ctrl+Z/ctrl+shift+Z: undo/redo")
         imgui.end()
 
     @staticmethod
@@ -378,7 +381,21 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
 
     def _dispatch_hotkeys(self, state: InputState):
         """Keyboard shortcuts. Already capture-filtered by the callback, so
-        typing 'r' into a future text field will not reload the shaders."""
+        typing 'r' into a text field will not reload the shaders -- and Ctrl+Z
+        in a filename box edits the text rather than undoing a selection."""
+        ctrl = bool(state.mods & glfw.MOD_CONTROL)
+        shift = bool(state.mods & glfw.MOD_SHIFT)
+
+        # Ctrl-modified first: plain 'z' must not also fire when Ctrl is held.
+        if ctrl and glfw.KEY_Z in state.keys_pressed:
+            self._dispatch('redo' if shift else 'undo')
+            return
+        if ctrl and glfw.KEY_Y in state.keys_pressed:
+            self._dispatch('redo')
+            return
+        if ctrl:
+            return
+
         for key, command in (
             (glfw.KEY_R, 'reload'),
             (glfw.KEY_SPACE, 'reset'),
@@ -386,6 +403,7 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
             (glfw.KEY_LEFT, 'prev_preset'),
             (glfw.KEY_TAB, 'toggle_camera_mode'),
             (glfw.KEY_HOME, 'reset_camera'),
+            (glfw.KEY_S, 'toggle_mouse_mode'),
         ):
             if key in state.keys_pressed:
                 self._dispatch(command)

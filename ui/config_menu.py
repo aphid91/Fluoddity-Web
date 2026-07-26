@@ -70,6 +70,20 @@ class ConfigMenu:
                 self._dispatch('quit')
             imgui.end_menu()
 
+        if imgui.begin_menu("Edit"):
+            # Enabled state comes from the Orchestrator; with no history the
+            # entries grey out rather than silently doing nothing.
+            can_undo = bool(self._status.get('can_undo'))
+            can_redo = bool(self._status.get('can_redo'))
+            if imgui.menu_item_simple("Undo", "Ctrl+Z", False, can_undo):
+                self._dispatch('undo')
+            if imgui.menu_item_simple("Redo", "Ctrl+Shift+Z", False, can_redo):
+                self._dispatch('redo')
+            imgui.separator()
+            if imgui.menu_item_simple("Toggle Mouse Mode", "S"):
+                self._dispatch('toggle_mouse_mode')
+            imgui.end_menu()
+
         if imgui.begin_menu("View"):
             if imgui.menu_item_simple("Toggle Camera Mode", "TAB"):
                 self._dispatch('toggle_camera_mode')

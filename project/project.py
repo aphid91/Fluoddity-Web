@@ -117,6 +117,18 @@ class Project:
     def edit_selected(self, field_name: str, value) -> "Project":
         return self.edited(self.selected, field_name, value)
 
+    def adopt_rule(self, rule) -> "Project":
+        """Make `rule` the selected config's base rule.
+
+        What particle selection does: the picked particle's mutated rule
+        becomes the rule the whole population now varies around.
+
+        Only the rule changes. mutation_scale is deliberately left alone, so
+        the population re-mutates around the adopted rule rather than locking
+        to it -- and undo has exactly one field to restore.
+        """
+        return self.edit_selected('rule', tuple(rule))
+
     def edit_world(self, field_name: str, value) -> "Project":
         """Change one world setting.
 

@@ -51,6 +51,7 @@ from ui import UI
 from .clipboard_commands import ClipboardCommands, Checkpoint
 from .config_manager_commands import ConfigManagerCommands
 from .project_commands import ProjectCommands
+from .selection_commands import SelectionCommands, MouseMode
 from .settings_commands import SettingsCommands
 
 # Physics sub-steps per frame is a live preference (Preferences.physics_steps).
@@ -61,7 +62,7 @@ __all__ = ['Orchestrator', 'Checkpoint']
 
 
 class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
-                   ConfigManagerCommands):
+                   ConfigManagerCommands, SelectionCommands):
 
     #: Where configs live. An attribute so the command mixins can reach it.
     _config_dir = _CONFIG_DIR
@@ -103,6 +104,10 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         self.hovered = MISS
         self.selected = MISS
 
+        #: What a left-click on the canvas does. Camera by default; selection
+        #: needs its own mode because left-drag already pans.
+        self.mouse_mode = MouseMode.CAMERA
+
         #: Transient UI messages.
         self._manager_message = ""
         self._save_error = ""
@@ -114,6 +119,9 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             'prev_preset': self._cmd_prev_preset,
             'toggle_camera_mode': self._cmd_toggle_camera_mode,
             'reset_camera': self._cmd_reset_camera,
+            'toggle_mouse_mode': self._cmd_toggle_mouse_mode,
+            'undo': self._cmd_undo,
+            'redo': self._cmd_redo,
             'quit': self._cmd_quit,
             # save / load
             'save_config': self._cmd_save_config,
@@ -151,7 +159,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # Poll + snapshot input, open the imgui frame. Everything below
             # sees this frame's input.
             state = self.ui.begin_frame()
-            self._apply_camera_input(state)
+            self._apply_canvas_input(state)
 
             # PICKING IS DELIBERATELY NOT RUN PER FRAME. A pick dispatches over
             # every entity, which measured in the tens of milliseconds per
@@ -203,20 +211,32 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         self.project = project
         self.system.apply_project(project)
 
-    def _apply_camera_input(self, state):
-        """Translate canvas input into camera motion.
+    def _apply_canvas_input(self, state):
+        """Translate canvas input into camera motion and selection.
 
-        The UI reports *what happened* (a drag, a scroll); deciding that this
-        means "move the camera" is the Orchestrator's job. Both fields are
-        already filtered for imgui capture, so dragging a panel never pans the
-        view and scrolling a slider never zooms.
+        The UI reports *what happened* (a drag, a click); deciding what it means
+        is the Orchestrator's job. Every field consulted here is already
+        filtered for imgui capture, so dragging a panel never pans the view and
+        clicking a button never selects a particle.
+
+        LEFT-DRAG PANS AND LEFT-CLICK SELECTS, so they must not both fire. The
+        mouse mode arbitrates: panning is always available in CAMERA mode, and
+        in SELECT mode a click selects instead. Without the mode, every attempt
+        to pan would select a particle on the way down.
         """
         window_size = self.window.size()
         canvas_size = self.system.canvas_size
 
-        if state.left_dragging and state.mouse_delta != (0.0, 0.0):
+        if self.mouse_mode is MouseMode.SELECT:
+            if state.left_pressed:
+                self._cmd_select_particle(state.mouse_pos)
+            # Right-click undoes, mirroring the original's binding.
+            if state.right_pressed:
+                self._cmd_undo()
+        elif state.left_dragging and state.mouse_delta != (0.0, 0.0):
             self.camera.state.pan_by_pixels(state.mouse_delta, window_size, canvas_size)
 
+        # Zoom works in both modes: it is navigation, not a tool.
         if state.scroll:
             self.camera.state.zoom_at_pixel(state.scroll, state.mouse_pos,
                                             window_size, canvas_size)
@@ -257,6 +277,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             mouse_world=coords.screen_to_world(
                 state.mouse_pos, window_size, canvas_size, cam.pan, cam.zoom),
             cam_mode=cam.mode.value,
+            mouse_mode=self.mouse_mode.value,
             cam_pan=cam.pan,
             cam_zoom=cam.zoom,
             canvas_size=f"{canvas_size[0]}x{canvas_size[1]}",
