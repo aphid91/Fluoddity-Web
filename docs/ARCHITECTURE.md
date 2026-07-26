@@ -160,6 +160,15 @@ per-entity: `trail_persistence`, `trail_diffusion`, `sqrt_world_size`,
 name; it used to be a `#define` in the shader *and* a Python global, two
 sources of truth that would silently disagree if either moved.
 
+### Legacy config support
+
+`persistence.py` contains a clearly marked `LEGACY COMPATIBILITY` block that
+lets the original Fluoddity's v7 files load. **It is not part of the design**
+and must not reach the WebGPU port, whose spec is the v8 format alone. It lives
+in its own commit (`LEGACY: read the mutation seed from pre-rename config
+files`) so reverting that commit is the entire removal — the block plus two
+call sites tagged `# LEGACY`.
+
 ### Deprecation candidate: cohorts
 
 `cohorts` + `rule_seed` + `mutation_scale` produce per-cohort rule variation via
@@ -301,11 +310,31 @@ The registry drives two windows, split on `source`:
 
 | Window | Renders | Edits |
 |--------|---------|-------|
-| **Settings** | `CONFIG` + `WORLD` | the selected config and the world — the things a save file contains |
-| **Preferences** | `PREFS` | editor state — never written to a config |
+| **Project** | `CONFIG` + `WORLD` | the ConfigBuffer and world settings — exactly what a save file contains |
+| **Preferences** | `PREFS` | editor state — never written to a save |
 
 The split is exhaustive and disjoint: every setting appears in exactly one
 window.
+
+Controls are grouped into **collapsible tabs** by their `group`, in declaration
+order. A tab whose members are all hidden by the current tier is not rendered
+at all — so in Basic mode the Forces and Trails tabs vanish rather than showing
+empty headers.
+
+### The project
+
+The **project** is the state the save/load system stores and restores: the
+whole ConfigBuffer plus the world settings. `Orchestrator.project_name` tracks
+it and titles the window (`Project: Starcrossed`).
+
+It updates on load, on save, **and on hover-preview** — the title says what is
+actually applied, so browsing the Load menu renames as you go. Preview
+snapshots therefore carry the name alongside the configs (`_snapshot_project` /
+`_restore_project`), or unhovering would restore the configs but leave the
+wrong title.
+
+The imgui window ID is pinned with `###project_window` so the changing title
+does not make the window forget its position and docking.
 
 Two tiers: **Basic** is deliberately short (the knobs that most change the
 result, mutation scale first); **Advanced** reveals the rest. The original's

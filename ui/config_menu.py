@@ -77,7 +77,7 @@ class ConfigMenu:
                 self._dispatch('reset_camera')
             imgui.separator()
             _, self.show_settings = imgui.menu_item(
-                "Settings", "", self.show_settings)
+                "Project", "", self.show_settings)
             _, self.show_preferences = imgui.menu_item(
                 "Preferences", "", self.show_preferences)
             _, self.show_config_manager = imgui.menu_item(
@@ -230,7 +230,7 @@ class ConfigMenu:
         self.show_save_dialog = True
         self._save_error = ""
         if not self._save_name:
-            self._save_name = self._status.get('preset', 'Untitled') or 'Untitled'
+            self._save_name = self._status.get('project_name') or 'Untitled'
 
     def _save_dialog(self):
         if not self.show_save_dialog:

@@ -41,30 +41,28 @@ class PreferencesWindow:
             imgui.end()
             return
 
-        imgui.text_disabled("EDITOR")
-        imgui.text("Detail level")
-        # Governs both this window and Settings.
-        if imgui.radio_button("Basic", not self.show_advanced):
-            self.show_advanced = False
-        imgui.same_line()
-        if imgui.radio_button("Advanced", self.show_advanced):
-            self.show_advanced = True
-        imgui.text_disabled("applies to Settings too")
-
-        imgui.separator()
-
-        # Every PREFS-sourced control, in registry order.
-        current_group = None
-        for setting in spec.visible(self.show_advanced):
-            if setting.source != spec.PREFS:
+        # PREFS-sourced controls, grouped into the same collapsible tabs the
+        # Project window uses.
+        for group, settings in spec.grouped(self.show_advanced, (spec.PREFS,)):
+            if not imgui.collapsing_header(
+                    group, imgui.TreeNodeFlags_.default_open.value):
                 continue
-            if setting.group and setting.group != current_group:
-                current_group = setting.group
-                imgui.spacing()
-                imgui.text_disabled(setting.group.upper())
-            self._render_setting(setting)
+            for setting in settings:
+                self._render_setting(setting)
+
+        # Editor is its own tab, and is not registry-driven: the detail level
+        # is a property of the interface rather than of the simulation, so it
+        # has no entry in settings_spec.
+        if imgui.collapsing_header("Editor", imgui.TreeNodeFlags_.default_open.value):
+            imgui.text("Detail level")
+            if imgui.radio_button("Basic", not self.show_advanced):
+                self.show_advanced = False
+            imgui.same_line()
+            if imgui.radio_button("Advanced", self.show_advanced):
+                self.show_advanced = True
+            imgui.text_disabled("applies to the Project window too")
 
         imgui.separator()
-        imgui.text_disabled("Not saved with configs.")
+        imgui.text_disabled("Not saved with projects.")
 
         imgui.end()

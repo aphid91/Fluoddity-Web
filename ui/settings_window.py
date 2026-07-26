@@ -1,13 +1,19 @@
-"""Settings window: live controls over the selected config and the world.
+"""Project window: live controls over everything a save file contains.
+
+THE PROJECT is the state the save/load system stores and restores: the whole
+ConfigBuffer plus the world settings. The window title carries its name --
+"Project: Starcrossed" -- which tracks whatever was last loaded, previewed or
+saved, so the title always says what you are actually looking at.
 
 Renders whatever `settings_spec.SETTINGS` declares (minus the PREFS-sourced
 entries, which belong to the Preferences window), so adding a control is a
-registry entry rather than a UI change.
+registry entry rather than a UI change. Controls are grouped into collapsible
+tabs by their `group`; a tab whose members are all Advanced simply vanishes in
+Basic mode rather than showing an empty header.
 
-This window edits the things a config SAVES: per-particle behaviour and the
-shared world properties. Editor preferences -- brightness, world size, display
-post-processing -- are a different kind of state and live in Preferences,
-together with the Basic/Advanced toggle that governs both windows.
+Editor preferences -- brightness, world size, display post-processing -- are a
+different kind of state and live in Preferences, together with the
+Basic/Advanced toggle that governs both windows.
 
 WHICH CONFIG DOES THIS EDIT?
 The one selected in the Config Manager. That is the manager's entire purpose:
@@ -48,8 +54,14 @@ class SettingsWindow:
         if not self.show_settings:
             return
 
+        project = self._status.get('project_name') or 'Untitled'
+        # The imgui ID must stay stable as the project name changes, or the
+        # window would forget its position and docking every time you load a
+        # file. Everything after "##" is identity, not display.
+        title = f"Project: {project}###project_window"
+
         imgui.set_next_window_size(imgui.ImVec2(360, 560), imgui.Cond_.first_use_ever.value)
-        expanded, self.show_settings = imgui.begin("Settings", True)
+        expanded, self.show_settings = imgui.begin(title, True)
         if not expanded:
             imgui.end()
             return
@@ -63,18 +75,15 @@ class SettingsWindow:
 
         imgui.separator()
 
-        # Config and world settings only. Editor preferences (brightness, world
-        # size, display post-processing) live in the Preferences window, along
-        # with the Basic/Advanced toggle that governs both.
-        current_group = None
-        for setting in spec.visible(self.show_advanced):
-            if setting.source == spec.PREFS:
+        # Config and world settings only. Editor preferences live in the
+        # Preferences window, along with the Basic/Advanced toggle.
+        for group, settings in spec.grouped(self.show_advanced,
+                                            (spec.CONFIG, spec.WORLD)):
+            if not imgui.collapsing_header(
+                    group, imgui.TreeNodeFlags_.default_open.value):
                 continue
-            if setting.group and setting.group != current_group:
-                current_group = setting.group
-                imgui.spacing()
-                imgui.text_disabled(setting.group.upper())
-            self._render_setting(setting)
+            for setting in settings:
+                self._render_setting(setting)
 
         imgui.end()
 
@@ -97,7 +106,7 @@ class SettingsWindow:
         unavailable = not setting.implemented or value is None
         if unavailable:
             imgui.begin_disabled()
-            placeholder = 0.0 if setting.kind != spec.INT else 0
+            placeholder = 0 if setting.kind in (spec.INT, spec.CHOICE) else 0.0
             self._draw_widget(setting, placeholder, interactive=False)
             imgui.end_disabled()
             self._tooltip(setting, suffix="\n\n(not implemented yet)")
@@ -115,6 +124,14 @@ class SettingsWindow:
 
         if setting.kind == spec.INPUT:
             self._draw_input(setting, value, interactive)
+            return
+
+        if setting.kind == spec.CHOICE:
+            options = list(setting.options)
+            index = max(0, min(len(options) - 1, int(value)))
+            changed, new = imgui.combo(label, index, options)
+            if changed and interactive:
+                self._dispatch('edit_setting', setting, int(new))
             return
 
         if setting.kind == spec.INT:

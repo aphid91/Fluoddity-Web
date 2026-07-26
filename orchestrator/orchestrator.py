@@ -114,6 +114,12 @@ class Orchestrator:
             'randomize_seed': self._cmd_randomize_seed,
         })
 
+        #: Name of the current project -- the state the save/load system stores
+        #: and restores (the ConfigBuffer plus world settings). Tracks whatever
+        #: was last loaded, previewed or saved, so the Project window title
+        #: always names what is actually running.
+        self.project_name = Path(self.system.config_path).stem
+
         #: Which ConfigData subsequent controls will edit. Config 0 by default,
         #: so a single-config buffer needs no interaction.
         self.selected_config = 0
@@ -225,6 +231,7 @@ class Orchestrator:
             selected=self.selected,
             config_categories=self.config_categories,
             save_error=self._save_error,
+            project_name=self.project_name,
             selected_config=self.selected_config,
             max_configs=MAX_CONFIGS,
             # The three settings sources, as plain dicts the window reads by
@@ -329,6 +336,7 @@ class Orchestrator:
             return
 
         self.system.config_path = str(path)
+        self.project_name = safe
         self._refresh_config_list()
         print(f"Saved config: {path}")
 
@@ -343,6 +351,7 @@ class Orchestrator:
         # did not, and snapping to a default would be worse than staying put.
         if saved.camera:
             self._apply_saved_camera(saved.camera)
+        self.project_name = entry.name
         self.preset_index = self._index_of(str(entry.path))
         # A load replaces the buffer, which may be smaller than before.
         self.selected_config = min(self.selected_config,
@@ -356,6 +365,24 @@ class Orchestrator:
             print(f"Failed to preview {entry.path}: {e}")
             return
         self.system.apply_configs(saved.configs)
+        # The title tracks what is applied, previews included -- so browsing
+        # the load list renames the Project window as you go.
+        self.project_name = entry.name
+
+    def _snapshot_project(self):
+        """Everything a hover-preview must be able to put back.
+
+        The project name is part of it: previews rename the Project window, so
+        unhovering has to restore the old name along with the configs.
+        """
+        return (self.system.snapshot_configs(), self.project_name)
+
+    def _restore_project(self, snapshot):
+        configs, name = snapshot
+        self.system.apply_configs(configs)
+        self.project_name = name
+        self.selected_config = min(self.selected_config,
+                                   len(self.system.configs) - 1)
 
     def _cmd_snapshot_configs(self):
         """Snapshot for the Load menu's hover-preview session.
@@ -363,13 +390,11 @@ class Orchestrator:
         Returns it rather than storing it: each hover surface owns its own
         snapshot, so two of them open at once cannot clobber each other.
         """
-        return self.system.snapshot_configs()
+        return self._snapshot_project()
 
     def _cmd_restore_configs(self, snapshot=None):
         if snapshot is not None:
-            self.system.apply_configs(snapshot)
-            self.selected_config = min(self.selected_config,
-                                       len(self.system.configs) - 1)
+            self._restore_project(snapshot)
 
     def _cmd_delete_config(self, entry):
         try:
@@ -430,7 +455,7 @@ class Orchestrator:
         so deleting entries frees their numbers back up and the list does not
         drift into high numbers after a lot of churn.
         """
-        stem = Path(self.system.config_path).stem or "Config"
+        stem = self.project_name or "Project"
         taken = {cp.name for cp in self.checkpoints}
         for n in range(100):
             candidate = f"{stem}{n:02d}"
@@ -451,6 +476,7 @@ class Orchestrator:
 
     def _cmd_load_checkpoint(self, checkpoint):
         self.system.apply_configs(checkpoint.configs)
+        self.project_name = checkpoint.name
         self.selected_config = min(self.selected_config,
                                    len(self.system.configs) - 1)
 
@@ -464,16 +490,15 @@ class Orchestrator:
         Separate from the load menu's snapshot: two independent hover surfaces
         must not share one slot, or hovering in one would clobber the other.
         """
-        return self.system.snapshot_configs()
+        return self._snapshot_project()
 
     def _cmd_clipboard_restore(self, snapshot):
         if snapshot is not None:
-            self.system.apply_configs(snapshot)
-            self.selected_config = min(self.selected_config,
-                                       len(self.system.configs) - 1)
+            self._restore_project(snapshot)
 
     def _cmd_clipboard_apply(self, checkpoint):
         self.system.apply_configs(checkpoint.configs)
+        self.project_name = checkpoint.name
 
     # --- settings ---
 
