@@ -36,12 +36,19 @@ class DrawingCommands:
         with its simulation as a result; coords.py exists to make that
         impossible. screen_to_world is the same call picking uses, so a brush
         lands exactly where a click would select.
+
+        The screen->world half is the CANVAS's transform -- that is the space
+        the camera shows and the particles live in. The world->uv half is the
+        FIELD's, because the field may be lower resolution than the canvas
+        (see MAX_FIELD_DIM). Both agree today only because field_dimensions()
+        preserves the canvas aspect and uv is normalized; reading the field's
+        own size here says so out loud rather than relying on it.
         """
         cam = self.camera.state
         world = coords.screen_to_world(pixel, self.window.size(),
                                        self.system.canvas_size,
                                        cam.pan, cam.zoom)
-        return coords.world_to_uv(world, self.system.canvas_size)
+        return coords.world_to_uv(world, self.strafe_field.canvas_size)
 
     def _apply_draw_input(self, state):
         """Paint or erase, following the mouse.

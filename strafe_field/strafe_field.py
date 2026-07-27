@@ -30,22 +30,62 @@ from pathlib import Path
 import moderngl
 import numpy as np
 
+from particle_system.particle_system import canvas_dimensions
 from shared.gl_utils import read_shader, tryset
 
 # Shader paths resolved relative to this module, so the app is not CWD-dependent.
 _SHADER_DIR = Path(__file__).parent / "shaders"
 _SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
 
+#: THE SINGLE SOURCE OF TRUTH for how detailed the field may get.
+#:
+#: Read as a square-equivalent edge: the field is capped at MAX_FIELD_DIM^2
+#: TEXELS, not at that width and height, so a wide canvas spends the same
+#: budget on a wider, shorter texture (see field_dimensions()).
+#:
+#: The field holds soft blobby pushes, not structure -- it is sampled with
+#: LINEAR filtering and consumed as a smooth displacement, so detail beyond
+#: this is invisible while the VRAM is not. The canvas has to track world size
+#: because trails ARE the fine detail; the field does not.
+#:
+#: RG32F = 8 bytes/texel, so 512 costs 2 MB flat. Uncapped it would follow the
+#: canvas: 8 MB at world_size 1, 32 MB at world_size 4.
+MAX_FIELD_DIM = 512
+
+
+def field_dimensions(canvas_size):
+    """Field (width, height) for a canvas: same shape, capped total area.
+
+    Below the cap the field matches the canvas exactly, which keeps the common
+    case texel-for-texel and makes the mapping trivial to reason about. Above
+    it, the canvas ASPECT is preserved while the area is clamped -- so the
+    brush stays circular and cursor mapping stays exact at any world size,
+    because both are computed from the field's own resolution rather than
+    assumed square.
+
+    Composed from canvas_dimensions() rather than reimplemented: that function
+    already does area-preserving aspect math, and two copies of it would be one
+    too many (the same rule that keeps coordinate math in coords.py).
+    """
+    width, height = canvas_size
+    if width * height <= MAX_FIELD_DIM * MAX_FIELD_DIM:
+        return (width, height)
+    return canvas_dimensions(aspect=width / height, dim=MAX_FIELD_DIM)
+
 
 class StrafeField:
     def __init__(self, ctx, canvas_size):
         self.ctx = ctx
-        self.canvas_size = canvas_size
+        #: The field's OWN resolution, which is not the canvas resolution once
+        #: the cap bites. Everything downstream -- the aspect correction in the
+        #: shader, the uv mapping from the cursor -- must read this, never the
+        #: canvas size, or strokes would skew at large world sizes.
+        self.canvas_size = field_dimensions(canvas_size)
 
         # RG32F: two signed, unclamped channels. Signed because a brush vector
         # points in any direction; unclamped because strokes accumulate
         # additively and a normalized format would saturate almost immediately.
-        self.texture = ctx.texture(canvas_size, 2, dtype='f4')
+        self.texture = ctx.texture(self.canvas_size, 2, dtype='f4')
         self.texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
         self.fbo = ctx.framebuffer(color_attachments=[self.texture])
         # Start at zero: an unwritten float texture is undefined, and undefined

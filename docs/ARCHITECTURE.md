@@ -772,11 +772,34 @@ Its **controls**, by contrast, are ordinary `PREFS` — brush size and draw powe
 are how *your* editor is set up, so loading someone else's config must not
 resize your brush.
 
+### Resolution: capped, not canvas-matched
+
+The field takes the canvas's **shape** but not its **size**. `field_dimensions()`
+clamps it to `MAX_FIELD_DIM**2` texels (512² today — one constant in
+`strafe_field.py`, read as a square-equivalent edge, so a wide canvas spends the
+same budget on a wider, shorter texture).
+
+It can afford to, because the field holds soft blobby pushes rather than
+structure: it is filtered `LINEAR` and consumed as a smooth displacement, so
+detail past this point is invisible while the VRAM is not. The canvas has to
+track world size because trails *are* the fine detail; the field does not.
+
+At RG32F (8 bytes/texel) that is 2 MB flat instead of following the canvas —
+8 MB at world size 1, 32 MB at world size 4. Below the cap the field matches the
+canvas texel-for-texel, so the common small case stays trivial to reason about.
+
+**Aspect is preserved, so nothing downstream skews.** Brush circularity and
+cursor mapping are both computed from the field's *own* resolution — the shader
+via `textureSize`, the host via `strafe_field.canvas_size` — never from the
+canvas. `_mouse_field_uv()` deliberately mixes the two: screen→world is the
+canvas's transform (that is the space the camera shows), world→uv is the
+field's.
+
 ### What has to stay in step
 
-- Sized to the canvas, so `_rebuild_system()` rebuilds it too. A World Size or
-  Canvas Aspect change reallocates both; the field's contents are lost, which is
-  consistent with it never surviving a restart either.
+- Sized *from* the canvas, so `_rebuild_system()` rebuilds it too. A World Size
+  or Canvas Aspect change reallocates both; the field's contents are lost, which
+  is consistent with it never surviving a restart either.
 - Sampled like the canvas, so its wrap mode follows the boundary condition. Set
   in `_set_project()` — the single place project state changes — because
   anywhere else a load or an undo could leave the two disagreeing.
