@@ -513,14 +513,20 @@ port. The price is that the mirror must stay bit-exact with the shader; a probe
 test runs the simulation's own `mutate_rule` and compares. **Edit one side,
 edit both, and re-run that test.**
 
-**Tools** (`MouseMode`) exist because three behaviours all want the left button
--- without one, every attempt to pan would select on the way down and paint on
-the way across. `SELECT` clicks to adopt and right-clicks to undo; `CAMERA`
-(default) drags to pan; `SHOVE` drags to push particles away from the cursor and
-right-drags to pull them in; `DRAW` paints the strafe field and right-drags to
-erase. Selected directly with `1`/`2`/`3`/`4`, from the Tools menu, or from the
-toolbar -- not cycled, because there is no sensible "next" tool. Zoom is
-navigation rather than a tool, so the scroll wheel works in all of them.
+**Tools** (`MouseMode`) exist because several behaviours all want the left
+button -- without one, every click would select on the way down and paint on
+the way across. `SELECT` (default) clicks to adopt and right-clicks to undo;
+`SHOVE` drags to push particles away from the cursor and right-drags to pull
+them in; `DRAW` paints the strafe field and right-drags to erase. Selected
+directly with `1`/`2`/`3`, from the Tools menu, or from the toolbar -- not
+cycled, because there is no sensible "next" tool.
+
+**There is no Pan tool.** Navigation is `WASD` to pan, `Q`/`E` to zoom, and the
+scroll wheel, all of which work in every mode. A tool that only moved the view
+was spending a mouse button on something the keyboard does better, and while
+held it blocked every other tool -- you could not adjust the view mid-stroke.
+Select is the default now because it is the only tool whose effect is a single
+undoable step, so a stray click on startup cannot smear the simulation.
 
 ### What history records
 
@@ -682,13 +688,20 @@ Orchestrator.run() loop:
        AppWindow.end_frame()             # swap buffers
 
 UI -> named command -> Orchestrator handler
-     R = reload | SPACE = reset | LEFT/RIGHT = prev/next preset
+     SPACE = pause/resume | R = reset | U = reload shaders
+     G = randomize mutation seed | X = show/hide the GUI
+     LEFT/RIGHT = prev/next preset
      TAB = toggle camera mode | HOME = reset view
-     1/2/3/4 = select / pan / shove / draw tool
-     scroll = zoom (anchored at the cursor, in every tool)
-     left-drag = pan (Pan) | select (Select) | push (Shove) | paint (Draw)
-     right-drag = undo (Select) | pull (Shove) | erase (Draw)
+     1/2/3 = select / shove / draw tool
      (commands also exposed as buttons in the Debug panel)
+
+NAVIGATION -- continuous, read from keys_held in the Orchestrator
+     WASD = pan | Q/E = zoom out/in | scroll = zoom (anchored at the cursor)
+     Works in every tool: navigation is not a tool.
+
+MOUSE, per tool
+     left-drag = select (Select) | push (Shove) | paint (Draw)
+     right-drag = undo (Select) | pull (Shove) | erase (Draw)
 ```
 
 **Why input is polled at the top.** Events are gathered before the physics and
@@ -697,6 +710,38 @@ previous frame's. Polling used to sit next to the buffer swap at the bottom,
 which cost a frame of latency — invisible for keyboard shortcuts, but plainly
 visible when dragging. `AppWindow` therefore no longer pumps the event queue;
 it only swaps.
+
+**One-shot keys and continuous keys are handled in different places**, and the
+split is deliberate:
+
+- **One-shots** (`SPACE`, `R`, `U`, `G`, `X`, tool numbers) read
+  `keys_pressed` in `UI._dispatch_hotkeys` and fire a named command. They
+  happen once per press.
+- **Continuous** navigation (`WASD`, `Q`/`E`) reads `keys_held` against `dt`
+  in `Orchestrator._apply_camera_keys`. Routing it through the hotkey table
+  would make it one step per key-*repeat*, whose rate is an OS setting — the
+  camera would stutter, then accelerate, at a speed the app does not control.
+
+Both scale correctly by construction: the pan step is a fraction of the visible
+height per *second*, so a keypress covers the same distance at 30fps and 144fps
+(verified exact), and it is divided by zoom so it covers the same fraction of
+the *screen* at any magnification. Zoom is exponential per second, because zoom
+is multiplicative — a fixed additive step would crawl when zoomed out and lurch
+when zoomed in.
+
+`X` is the one key the UI handles itself rather than dispatching. Hiding the
+panels changes no simulation state, so there is nothing for the Orchestrator to
+broker — rule 10 cuts both ways.
+
+**Pause** (`SPACE`) freezes the physics *and* the Shove tool, so a paused frame
+is genuinely untouchable. The camera, the overlays and the whole UI stay live,
+so a frozen state can still be navigated and inspected. Two details worth
+knowing: the frame loop still runs one iteration while paused (the camera has
+to draw the frozen state, or the screen goes black — it is `advance()` that is
+skipped, not the render), and motion blur collapses to a single sample, because
+N samples of an unchanging scene is the same picture at N times the cost. The
+guard that stops shoving lives inside `shove_state()` rather than at the call
+site, so a second caller cannot silently defeat it.
 
 ## The frame assembly pipeline
 
@@ -1058,9 +1103,9 @@ not import a simulation module (rule 10), so the strings are the contract.
 
 Adding a tool today means a `MouseMode` member, a `TOOLS` row, a key in the
 hotkey zip in `ui/ui.py`, and a branch in `_apply_canvas_input`. Member order in
-`MouseMode` is the toolbar's left-to-right order and the `1`/`2`/`3`/`4` key
-order, and the enum and `TOOLS` must stay in lockstep -- they are coupled by
-string value only, deliberately, so the UI never imports a simulation module.
+`MouseMode` is the toolbar's left-to-right order and the `1`/`2`/`3` key order,
+and the enum and `TOOLS` must stay in lockstep -- they are coupled by string
+value only, deliberately, so the UI never imports a simulation module.
 
 **A tool whose effect is continuous rather than an event needs one more thing.**
 `_apply_canvas_input` runs once per frame, which is right for a click or a

@@ -176,7 +176,7 @@ vec2 get_strafe_field(vec2 p, int bc){
 //reach around to the far side, because the cursor is not there.
 vec2 get_shove(vec2 p){
     if(shove_strength == 0.0) return vec2(0);
-    #define SHOVE_MULTIPLIER 5.0
+    #define SHOVE_MULTIPLIER 8.0
     vec2 away = p - shove_center;
     float d = length(away);
     //Exactly on the cursor the direction is undefined. Contributing nothing is

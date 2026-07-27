@@ -33,6 +33,12 @@ from .toolbar import TOOLS
 
 from .hover_preview import PreviewSession
 
+#: Highlight for the Show/Hide GUI button while the panels are hidden. Matches
+#: the toolbar's active-tool colors, so "this control is currently doing
+#: something" looks the same everywhere in the app.
+_GUI_HIDDEN = imgui.ImVec4(0.16, 0.44, 0.75, 1.0)
+_GUI_HIDDEN_HOVERED = imgui.ImVec4(0.22, 0.55, 0.9, 1.0)
+
 
 class ConfigMenu:
     """Mixin providing the File menu. Expects the host to supply `_dispatch`."""
@@ -99,6 +105,9 @@ class ConfigMenu:
             if imgui.menu_item_simple("Reset View", "HOME"):
                 self._dispatch('reset_camera')
             imgui.separator()
+            _, self.gui_hidden = imgui.menu_item(
+                "Hide GUI", "X", self.gui_hidden)
+            imgui.separator()
             _, self.show_toolbar = imgui.menu_item(
                 "Tools", "", self.show_toolbar)
             _, self.show_settings = imgui.menu_item(
@@ -116,13 +125,49 @@ class ConfigMenu:
             imgui.end_menu()
 
         if imgui.begin_menu("Simulation"):
-            if imgui.menu_item_simple("Reset", "SPACE"):
+            paused = bool(self._status.get('paused'))
+            if imgui.menu_item_simple("Resume" if paused else "Pause", "SPACE"):
+                self._dispatch('toggle_pause')
+            if imgui.menu_item_simple("Reset", "R"):
                 self._dispatch('reset')
-            if imgui.menu_item_simple("Reload Shaders", "R"):
+            imgui.separator()
+            if imgui.menu_item_simple("Randomize Mutation Seed", "G"):
+                self._dispatch('randomize_seed')
+            imgui.separator()
+            if imgui.menu_item_simple("Reload Shaders", "U"):
                 self._dispatch('reload')
             imgui.end_menu()
 
+        self._gui_toggle_button()
+
         imgui.end_main_menu_bar()
+
+    def _gui_toggle_button(self):
+        """The Show/Hide GUI control, on the menu bar itself.
+
+        On the BAR rather than only in the View menu because it is the one
+        control that has to be reachable while everything else is hidden --
+        putting it behind a menu the user has just hidden the rest of would be
+        a small trap. It is highlighted while hiding, so the state is visible
+        without opening anything.
+        """
+        # Captured BEFORE the button, because clicking it flips the flag:
+        # testing self.gui_hidden again afterwards would pop a different number
+        # of colors than were pushed, exactly on the frame of the click.
+        highlighted = self.gui_hidden
+
+        if highlighted:
+            imgui.push_style_color(imgui.Col_.button.value, _GUI_HIDDEN)
+            imgui.push_style_color(imgui.Col_.button_hovered.value,
+                                   _GUI_HIDDEN_HOVERED)
+            imgui.push_style_color(imgui.Col_.button_active.value,
+                                   _GUI_HIDDEN_HOVERED)
+
+        if imgui.button("Show/Hide GUI ('X')"):
+            self.gui_hidden = not self.gui_hidden
+
+        if highlighted:
+            imgui.pop_style_color(3)
 
     # ------------------------------------------------------------------
     # Load

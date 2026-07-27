@@ -32,12 +32,11 @@ from particle_system.picker import DEFAULT_PICK_RADIUS_PX, radius_px_to_world
 class MouseMode(Enum):
     """What the mouse does on the canvas. The active TOOL.
 
-    Exists because three different behaviours all want the left button --
-    without a mode, every attempt to pan would select a particle on the way
-    down, and every stroke would do both.
+    Exists because several different behaviours all want the left button --
+    without a mode, every click would select a particle on the way down and
+    paint on the way across.
 
     SELECT  click adopts a particle's rule, right-click undoes.
-    CAMERA  drag pans. Navigation.
     SHOVE   drag pushes particles away from the cursor, right-drag pulls them in.
     DRAW    drag paints the strafe field, right-drag erases.
 
@@ -45,12 +44,16 @@ class MouseMode(Enum):
     the PARTICLES, directly and only while the button is held. Draw paints the
     FIELD, which then keeps pushing whatever crosses it until it is erased.
 
-    MEMBER ORDER IS THE TOOLBAR ORDER and the 1/2/3/4 key order. The toolbar
+    THERE IS NO PAN TOOL. Navigation moved to the keyboard (WASD to pan, Q/E to
+    zoom, and the scroll wheel), which frees the mouse for tools entirely --
+    a tool that only moved the view was spending a button on something the
+    keyboard does better, and while held it blocked everything else.
+
+    MEMBER ORDER IS THE TOOLBAR ORDER and the 1/2/3 key order. The toolbar
     builds itself from this enum, so adding a tool here adds a button.
     """
 
     SELECT = 'select'
-    CAMERA = 'camera'
     SHOVE = 'shove'
     DRAW = 'draw'
 

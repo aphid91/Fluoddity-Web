@@ -51,8 +51,13 @@ class ShoveCommands:
         a drag belongs to whoever received the press, so a shove that began on
         the canvas survives the cursor crossing a panel, and a press that
         landed on a panel never starts one.
+
+        Returns None while PAUSED, so a frozen frame stays frozen. The guard
+        lives here rather than at the call site: "paused means nothing shoves"
+        is a property of the shove, and a second caller that forgot to check
+        would silently defeat the pause.
         """
-        if self.mouse_mode is not MouseMode.SHOVE:
+        if self.paused or self.mouse_mode is not MouseMode.SHOVE:
             return None
 
         pushing = state.left_dragging

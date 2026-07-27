@@ -42,6 +42,7 @@ import glfw
 from app_window import AppWindow
 from assembler import Assembler
 from camera import Camera
+from camera.camera_state import PAN_PER_SECOND, ZOOM_PER_SECOND
 from particle_system import coords
 from particle_system.config import BC_WRAP
 from particle_system.particle_system import MAX_CONFIGS
@@ -153,10 +154,17 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         self.hovered = MISS
         self.selected = MISS
 
-        #: The active tool: what the mouse does on the canvas. Camera by
-        #: default, because navigation is the common case and it is the only
-        #: tool that cannot change anything.
-        self.mouse_mode = MouseMode.CAMERA
+        #: The active tool: what the mouse does on the canvas. Select by
+        #: default -- it is the only tool whose effect is a single undoable
+        #: step, so a stray click on startup cannot smear the simulation.
+        #: (Navigation is no longer a tool; it lives on WASD/QE.)
+        self.mouse_mode = MouseMode.SELECT
+
+        #: Whether the simulation is frozen. Pausing stops the physics AND the
+        #: Shove tool, so a paused frame is genuinely untouchable; the camera,
+        #: the overlays and the whole UI stay live, so a frozen state can still
+        #: be navigated and inspected.
+        self.paused = False
 
         #: Where the cursor was on the previous frame of the stroke in progress,
         #: in field uv. None between strokes -- see drawing_commands.py.
@@ -181,6 +189,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         self.ui = UI(self.window.window, commands={
             'reload': self._cmd_reload,
             'reset': self._cmd_reset,
+            'toggle_pause': self._cmd_toggle_pause,
             'next_preset': self._cmd_next_preset,
             'prev_preset': self._cmd_prev_preset,
             'toggle_camera_mode': self._cmd_toggle_camera_mode,
@@ -249,6 +258,9 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # sub-step. Hoisted out of the loop like the field texture and for
             # the same reason: the cursor cannot move mid-frame, so asking
             # again per sub-step would be the same answer at 120x the cost.
+            #
+            # Returns None while paused -- that guard lives inside
+            # shove_state(), so a frozen frame stays frozen no matter who asks.
             shove = self.shove_state(state)
 
             # MOTION BLUR PUTS THE RENDER INSIDE THE PHYSICS LOOP. A displayed
@@ -256,7 +268,10 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # apart, so the camera must see the simulation mid-advance rather
             # than only at the end of it. With blur off this is one render, on
             # the last sub-step, exactly as before.
-            samples, stride = blur_schedule(self.prefs)
+            # PAUSED IS ONE SAMPLE OF A STILL IMAGE. Nothing moves, so there is
+            # nothing for motion blur to average -- N samples of an unchanging
+            # scene is the same picture at N times the cost.
+            samples, stride = (1, 1) if self.paused else blur_schedule(self.prefs)
             self.camera.begin_frame(window_size, samples)
 
             # Which step within each group of `stride` gets rendered. Blurring
@@ -264,10 +279,15 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # come out to exactly ceil(steps/stride) -- see blur_schedule().
             # The single un-blurred sample takes the LAST instead, so a still
             # image shows the newest state rather than a stale one.
-            sample_at = 0 if self.prefs.motion_blur else stride - 1
+            sample_at = 0 if (self.prefs.motion_blur and not self.paused) else stride - 1
 
-            for step in range(self.prefs.physics_steps):
-                self.system.advance(strafe_field, shove)
+            # Still one iteration when paused: the camera has to draw the
+            # frozen state, or the screen would go black. advance() is what is
+            # skipped, not the render.
+            steps = 1 if self.paused else self.prefs.physics_steps
+            for step in range(steps):
+                if not self.paused:
+                    self.system.advance(strafe_field, shove)
                 if step % stride == sample_at:
                     # Pulled per sample, not per frame: the canvas
                     # double-buffer swaps inside advance(), so a texture
@@ -338,9 +358,13 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         filtered for imgui capture, so dragging a panel never pans the view and
         clicking a button never selects a particle.
 
-        THE TOOL ARBITRATES THE LEFT BUTTON. Panning, selecting and painting all
-        want it, and they must not both fire -- without a tool, every attempt to
-        pan would select a particle on the way down and paint on the way across.
+        THE TOOL ARBITRATES THE LEFT BUTTON. Selecting and painting both want
+        it, and they must not both fire -- without a tool, every click would
+        select a particle on the way down and paint on the way across.
+
+        NAVIGATION IS NOT A TOOL. WASD, Q/E and the scroll wheel move the view
+        in every mode, so the mouse is free for tools and the view can be
+        adjusted mid-stroke.
 
         Painting happens HERE, above the render, because draw() binds its own
         framebuffer; running it after window.begin_frame() would paint over the
@@ -349,16 +373,14 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         window_size = self.window.size()
         canvas_size = self.system.canvas_size
 
+        self._apply_camera_keys(state, canvas_size)
+
         if self.mouse_mode is MouseMode.SELECT:
             if state.left_pressed:
                 self._cmd_select_particle(state.mouse_pos)
             # Right-click undoes, mirroring the original's binding.
             if state.right_pressed:
                 self._cmd_undo()
-        elif self.mouse_mode is MouseMode.CAMERA:
-            if state.left_dragging and state.mouse_delta != (0.0, 0.0):
-                self.camera.state.pan_by_pixels(state.mouse_delta,
-                                                window_size, canvas_size)
         elif self.mouse_mode is MouseMode.SHOVE:
             # Nothing to do here: a shove is not an event, it is a condition
             # that holds while the button is down, and it has to be applied
@@ -374,6 +396,36 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         if state.scroll:
             self.camera.state.zoom_at_pixel(state.scroll, state.mouse_pos,
                                             window_size, canvas_size)
+
+    def _apply_camera_keys(self, state, canvas_size):
+        """WASD pans, Q/E zooms. Navigation, so it works in every tool.
+
+        Reads keys_HELD rather than keys_pressed: this is continuous motion for
+        as long as the key is down, not a one-shot. Scaled by dt so the speed is
+        the same at any framerate -- a per-frame step would move twice as fast
+        at 120fps as at 60.
+
+        These are the only movement bindings now: the Pan tool is gone, because
+        a tool that only moved the view spent a mouse button on something the
+        keyboard does better, and blocked every other tool while held.
+        """
+        dt = state.dt
+        if dt <= 0.0:
+            return
+
+        held = state.keys_held
+        # W is up on screen, which is +y in world space.
+        dx = (glfw.KEY_D in held) - (glfw.KEY_A in held)
+        dy = (glfw.KEY_W in held) - (glfw.KEY_S in held)
+        if dx or dy:
+            step = PAN_PER_SECOND * dt
+            self.camera.state.pan_by_fraction((dx * step, dy * step),
+                                              canvas_size)
+
+        # E zooms in, Q out -- E is the "forward" of the pair, next to W.
+        dz = (glfw.KEY_E in held) - (glfw.KEY_Q in held)
+        if dz:
+            self.camera.state.zoom_by_factor(ZOOM_PER_SECOND ** (dz * dt))
 
     def _overlay_args(self):
         """Whether the drawing overlays are on screen, and where.
@@ -444,6 +496,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
                 state.mouse_pos, window_size, canvas_size, cam.pan, cam.zoom),
             cam_mode=cam.mode.value,
             mouse_mode=self.mouse_mode.value,
+            paused=self.paused,
             can_undo=self.history.can_undo,
             can_redo=self.history.can_redo,
             undo_label=self.history.undo_label(),
@@ -508,6 +561,9 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
 
     def _cmd_reset(self):
         self.system.reset()
+
+    def _cmd_toggle_pause(self):
+        self.paused = not self.paused
 
     def _cmd_toggle_camera_mode(self):
         self.camera.state.toggle_mode()

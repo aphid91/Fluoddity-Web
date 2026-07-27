@@ -27,9 +27,8 @@ from imgui_bundle import imgui
 #: so the strings are the contract between the two.
 TOOLS = (
     ('select', 'Select', '1'),
-    ('camera', 'Pan', '2'),
-    ('shove', 'Shove', '3'),
-    ('draw', 'Draw', '4'),
+    ('shove', 'Shove', '2'),
+    ('draw', 'Draw', '3'),
 )
 
 #: Highlight for the active tool. Bright enough to read at a glance across the

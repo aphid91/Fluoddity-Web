@@ -104,6 +104,13 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
         # via set_status(). The UI renders these; it does not source them.
         self._status = {}
         self.show_debug_panel = True
+
+        #: Hides every panel, leaving only the menu bar. A VIEW of the windows,
+        #: not a replacement for their individual toggles: unhiding restores
+        #: exactly what was open, so this is safe to use for a quick look at
+        #: the canvas mid-session.
+        self.gui_hidden = False
+
         self._init_config_menu()
         self._init_config_manager()
         self._init_config_clipboard()
@@ -255,8 +262,19 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
         self._menu_bar()
         # After the menu bar: the delete confirmation is a top-level modal so it
         # survives the menu closing (a popup nested in a menu dies with it).
+        #
+        # The dialogs stay OUTSIDE the hide check. A modal that is open has
+        # taken over input, and hiding it would leave the app apparently frozen
+        # with no way to answer it.
         self._delete_dialog()
         self._save_dialog()
+
+        # X hides every panel and leaves the menu bar, so the canvas can be
+        # seen whole. Individual window toggles are untouched, so unhiding
+        # brings back exactly what was open.
+        if self.gui_hidden:
+            return
+
         self._sync_input_buffers()
         self._toolbar_window()
         self._settings_window()
@@ -327,6 +345,9 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
         imgui.text(f"frame       {self._status.get('frame_count', '-')}")
         imgui.separator()
 
+        if imgui.button("Resume" if self._status.get('paused') else "Pause"):
+            self._dispatch('toggle_pause')
+        imgui.same_line()
         if imgui.button("Reload"):
             self._dispatch('reload')
         imgui.same_line()
@@ -345,7 +366,10 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
         if imgui.button("Reset View"):
             self._dispatch('reset_camera')
 
-        imgui.text_disabled("scroll: zoom   TAB: view   HOME: reset")
+        imgui.text_disabled("WASD: pan   Q/E: zoom   scroll: zoom")
+        imgui.text_disabled("SPACE: pause   R: reset   U: reload shaders")
+        imgui.text_disabled("G: randomize seed   X: hide GUI")
+        imgui.text_disabled("TAB: view   HOME: reset view")
         imgui.text_disabled("1/2/3: tool   ctrl+Z/ctrl+shift+Z: undo/redo")
         imgui.end()
 
@@ -414,9 +438,20 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
             if key in state.keys_pressed:
                 self._dispatch('set_mouse_mode', value)
 
+        # X is handled HERE rather than dispatched, because hiding the panels is
+        # the UI's own business -- no simulation state changes, so there is
+        # nothing for the Orchestrator to broker (rule 10 cuts both ways).
+        if glfw.KEY_X in state.keys_pressed:
+            self.gui_hidden = not self.gui_hidden
+
+        # One-shots only. WASD/QE navigation is CONTINUOUS and lives in the
+        # Orchestrator, which reads keys_held against dt -- routing it through
+        # here would make it one step per key-repeat.
         for key, command in (
-            (glfw.KEY_R, 'reload'),
-            (glfw.KEY_SPACE, 'reset'),
+            (glfw.KEY_SPACE, 'toggle_pause'),
+            (glfw.KEY_R, 'reset'),
+            (glfw.KEY_U, 'reload'),
+            (glfw.KEY_G, 'randomize_seed'),
             (glfw.KEY_RIGHT, 'next_preset'),
             (glfw.KEY_LEFT, 'prev_preset'),
             (glfw.KEY_TAB, 'toggle_camera_mode'),
