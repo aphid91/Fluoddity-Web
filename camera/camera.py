@@ -170,19 +170,20 @@ class Camera:
             self._accum_fbo.clear(0.0, 0.0, 0.0, 1.0)
 
     def render(self, canvas_texture, entity_buffer, entity_count,
-               canvas_size, window_size):
+               canvas_size, window_size, color_sensitivity=0.5):
         """Draw one temporal sample and fold it into the accumulator.
 
         Everything needed is passed per call -- Camera keeps no reference to
         the simulation between frames, so the canvas double-buffer swap stays
-        invisible to it.
+        invisible to it. `color_sensitivity` arrives the same way rather than
+        being read from the config buffer, which belongs to ParticleSystem.
         """
         if self._hdr_fbo is None:
             return
 
         if self.state.mode is CameraMode.PARTICLES:
             self._render_particles(entity_buffer, entity_count,
-                                   canvas_size, window_size)
+                                   canvas_size, window_size, color_sensitivity)
         else:
             self._render_trail(canvas_texture, canvas_size, window_size)
 
@@ -213,7 +214,7 @@ class Camera:
         self.present_vao.render(moderngl.TRIANGLES)
 
     def _render_particles(self, entity_buffer, entity_count,
-                          canvas_size, window_size):
+                          canvas_size, window_size, color_sensitivity=0.5):
         if self.particle_program is None or self.particle_vao is None:
             return
         self._hdr_fbo.use()
@@ -223,6 +224,8 @@ class Camera:
         self._set_view_uniforms(self.particle_program, canvas_size, window_size)
         tryset(self.particle_program, 'sprite_size', SPRITE_SIZE)
         tryset(self.particle_program, 'particle_alpha', PARTICLE_ALPHA)
+        tryset(self.particle_program, 'color_sensitivity',
+               float(color_sensitivity))
 
         # Additive: overlapping sprites accumulate into brighter regions, which
         # is what makes density legible. Unrelated to the temporal accumulation

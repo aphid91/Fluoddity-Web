@@ -278,7 +278,8 @@ vec4 black_box(vec2 L,vec2 R,Rule rule){
 //RETURNS (via out parameters):
 //--force: A "push" vector that will be added to entity.vel
 //--strafe: A "hop" vector that will be added to entity.pos and have no effect on velocity
-void calculate_entity_behavior( vec2 L,vec2 R, vec2 axis, Rule rule, ConfigData config, out vec2 force, out vec2 strafe){
+//--color: raw signal kept for rendering only -- never fed back into the physics
+void calculate_entity_behavior( vec2 L,vec2 R, vec2 axis, Rule rule, ConfigData config, out vec2 force, out vec2 strafe, out vec2 color){
 
     //build a local coordinate frame where "axis" is forward.
     vec2 forward = safenorm(axis);
@@ -300,6 +301,15 @@ void calculate_entity_behavior( vec2 L,vec2 R, vec2 axis, Rule rule, ConfigData 
     //Convert force and strafe back to world coordinates
     force = (forward * force.x * cfg_axial_force(config)) + (left * force.y * cfg_lateral_force(config));
     strafe = (forward * strafe.x * cfg_axial_force(config)) + (left * strafe.y * cfg_lateral_force(config));
+
+    //An arbitrary function of the black box output, reusing the force terms.
+    //NOT y_reflect'd, unlike force above: cancelling the mirror bias is what
+    //keeps motion free of a clockwise preference, but colour WANTS that
+    //asymmetry -- it is what makes the signal something other than a recoloured
+    //copy of where the particle is already going.
+    //
+    //Stays in local coordinates. Nothing downstream treats it as a direction.
+    color = baseterm.xy + mirrorterm.xy;
 
     return;
 }
@@ -359,7 +369,22 @@ void main() {
     //compute entity action
     vec2 strafe =vec2(0);//set by calculate_...
     vec2 force = vec2(0);//set by calculate_...
-    calculate_entity_behavior(ltap.xy,rtap.xy,orientation,rule,config,force,strafe);
+    vec2 col_params = vec2(0);//set by calculate_... -- rendering only
+    calculate_entity_behavior(ltap.xy,rtap.xy,orientation,rule,config,force,strafe,col_params);
+
+    //Colour by cohort: replace the brain's signal with the cohort index, so a
+    //population reads as one flat colour instead of a spread. Done HERE rather
+    //than in the renderer -- the camera just turns col_params.x into a hue and
+    //does not know or care which of the two it is looking at.
+    //
+    //A fixed step per cohort rather than a hash: adjacent populations land
+    //three quarters of the way around the hue wheel from each other, which
+    //separates them without the arbitrary jumble a hash gives. Hue is periodic,
+    //so this wraps on its own and needs no normalizing by the cohort count.
+    #define COHORT_COLOR_CONSTANT 0.75
+    if(cfg_color_by_cohort(config)){
+        col_params.x = floor(cohort) * COHORT_COLOR_CONSTANT;
+    }
 
     //rescale output forces
     force *= 1./sqrt_world_size*cfg_global_force_mult(config)/400.;
@@ -435,5 +460,5 @@ void main() {
     }
 
     //Commit new entity state to buffers
-    entities[index]=make_entity(pos,vel,e_size(e),config_index);
+    entities[index]=make_entity(pos,vel,e_size(e),config_index,col_params);
 }

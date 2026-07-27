@@ -95,7 +95,10 @@ struct ConfigData {
     // the "add a whole new vec4" case rule 2 describes rather than a reclaimed
     // lane. Two spares here for the next additions.
     vec4 force2;    // x: gravity_force y: gravity_strafe z: initial_conditions(i) w: cohort_fences
-};  // 384 bytes
+    // force2 filled up the same way misc did, so this is another whole new
+    // vec4 rather than a reclaimed lane. Three spares for the next additions.
+    vec4 appearance; // x: color_sensitivity y: color_by_cohort(i) zw: spare
+};  // 400 bytes
 
 float cfg_sensor_gain(ConfigData c)     { return c.sensor.x; }
 float cfg_sensor_angle(ConfigData c)    { return c.sensor.y; }
@@ -126,6 +129,15 @@ int cfg_initial_conditions(ConfigData c) { return floatBitsToInt(c.force2.z); }
 // How tightly each particle is held near its own spawn point. 0 is off, 1 is
 // tightest -- see the fence block in entity_update.glsl for the mapping.
 float cfg_cohort_fences(ConfigData c) { return c.force2.w; }
+
+// How strongly the brain's colour signal swings the hue. Read by the PARTICLE
+// CAMERA, not by the physics -- entity_update only decides what raw signal to
+// store, so this can be dragged without disturbing the simulation.
+float cfg_color_sensitivity(ConfigData c) { return c.appearance.x; }
+// When set, col_params.x carries the particle's COHORT instead of its brain
+// output, so each population reads as a flat colour. Handled entirely by what
+// entity_update stores; the renderer does not know the difference.
+bool cfg_color_by_cohort(ConfigData c) { return floatBitsToInt(c.appearance.y) != 0; }
 
 // ---------------------------------------------------------------------------
 // WorldData -- settings that are properties of the world, not of a particle.
@@ -158,7 +170,7 @@ int world_boundary_conditions(WorldData w) { return floatBitsToInt(w.bounds.x); 
 // ---------------------------------------------------------------------------
 struct Entity {
     vec4 pos_vel;  // xy: pos    zw: vel
-    vec4 misc;     // x: size    y: config_index(i)    zw: reserved (color/hue)
+    vec4 misc;     // x: size    y: config_index(i)    zw: col_params
 };
 
 vec2  e_pos(Entity e)          { return e.pos_vel.xy; }
@@ -166,8 +178,29 @@ vec2  e_vel(Entity e)          { return e.pos_vel.zw; }
 float e_size(Entity e)         { return e.misc.x; }
 int   e_config_index(Entity e) { return floatBitsToInt(e.misc.y); }
 
+// RAW OUTPUT FROM THE PARTICLE'S BRAIN, kept for rendering rather than physics.
+// entity_update writes these; the particle camera turns .x into a hue. They are
+// deliberately arbitrary -- an unreflected reuse of the black box's force terms,
+// tuned by eye -- so nothing downstream should read meaning into their scale.
+//
+// The RENDERER decides what they look like. Storing the raw signal instead of a
+// finished hue is what lets Color Sensitivity be dragged without re-running the
+// simulation, which is where the reference put it.
+//
+// .y is written but not yet consumed -- see the deferred notes in ARCHITECTURE.
+vec2 e_col_params(Entity e) { return e.misc.zw; }
+
+Entity make_entity(vec2 pos, vec2 vel, float size, int config_index,
+                   vec2 col_params) {
+    return Entity(vec4(pos, vel),
+                  vec4(size, intBitsToFloat(config_index), col_params));
+}
+
+// Same, for the paths that have no colour signal to offer -- reset() runs
+// before any behaviour is computed. Zero is a valid hue, so this is not a
+// sentinel; the entity simply gets its colour on the next real step.
 Entity make_entity(vec2 pos, vec2 vel, float size, int config_index) {
-    return Entity(vec4(pos, vel), vec4(size, intBitsToFloat(config_index), 0.0, 0.0));
+    return make_entity(pos, vel, size, config_index, vec2(0.0));
 }
 
 // ---------------------------------------------------------------------------

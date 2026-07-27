@@ -69,6 +69,14 @@ class SimulationConfig:
     initial_conditions: int = IC_CENTER
     #: How tightly each particle is held near its own spawn point. 0 is off.
     cohort_fences: float = 0.0
+    #: How strongly the particle's colour signal swings its hue, in PARTICLES
+    #: view. A RENDERING setting that happens to be per-config: it never touches
+    #: the simulation, so dragging it re-colours without disturbing anything.
+    #: Negative values simply run the hue backwards.
+    color_sensitivity: float = 0.5
+    #: Colour each population flat by cohort instead of by its brain's output.
+    #: Applied in entity_update (it changes what gets stored), not the renderer.
+    color_by_cohort: bool = False
     # 80 floats -> 10 FourierCenters, each frequency(4) + amplitude(4)
     rule: tuple = field(default_factory=tuple)
 
@@ -109,6 +117,10 @@ class SimulationConfig:
         record['force2'] = (self.gravity_force, self.gravity_strafe,
                             _int_lane(self.initial_conditions),
                             self.cohort_fences)
+        # appearance: color_sensitivity, color_by_cohort(int bits), 2 spare
+        record['appearance'] = (self.color_sensitivity,
+                                _int_lane(int(self.color_by_cohort)),
+                                0.0, 0.0)
         return record
 
 

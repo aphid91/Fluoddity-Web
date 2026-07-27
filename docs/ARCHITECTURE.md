@@ -786,6 +786,55 @@ to the bound framebuffer. That is undefined behaviour; it survives there only
 because sampling is 1:1 at the fragment's own uv. Letting the blend unit do the
 addition is correct *and* cheaper, and it does not need a ping-pong pair.
 
+### Particle colour
+
+In PARTICLES mode (TAB) each particle is coloured by its **own brain**, not by
+where it is heading. `entity_update` stores a raw two-lane signal in
+`Entity.misc.zw` (`col_params`), and the particle camera turns `.x` into a hue:
+
+```glsl
+// cam_brush.frag
+float hue = color_sensitivity * col_params.x;
+vec3 rgb = hsv2rgb(vec3(hue, 0.8, 1.0));
+```
+
+The signal is `baseterm.xy + mirrorterm.xy` — the black box's force terms,
+**not** `y_reflect`'d the way `force` is. Cancelling the mirror bias is what
+keeps *motion* free of a clockwise preference, but colour wants that asymmetry:
+it is what makes the signal something other than a recoloured copy of the
+velocity. The values are arbitrary and tuned by eye; nothing should read
+meaning into their scale.
+
+**The sensitivity multiply happens in the renderer, not the compute shader.**
+The reference bakes it in at `e.hue = hue_sensitivity * col_params.x`; storing
+the raw signal instead means the slider re-colours the frame without re-running
+any physics. Only the *magnitude* of the swing is a display choice — *what to
+swing on* is decided upstream.
+
+That upstream choice is **Color By Cohort**: when set, `entity_update` stores
+`floor(cohort) * COHORT_COLOR_CONSTANT` in `col_params.x` instead of the brain
+output, so a population reads as one flat colour. The renderer does not know
+the difference, which is why the toggle costs it nothing. A fixed step per
+cohort rather than the reference's `hash(floor(cohort))`: adjacent populations
+land three quarters of the way around the wheel from each other, separated
+without the arbitrary jumble a hash gives, and hue's periodicity means it needs
+no normalizing by the cohort count.
+
+Note the practical consequence of the scale: `col_params.x` typically has a
+spread of ~3, so hue wraps more than once above roughly 0.15 and the population
+starts to read as static rather than structure. Low sensitivities are where the
+structure is.
+
+Both settings are CONFIG (saved, undoable), in the **Appearance** tab. They are
+rendering settings that happen to live per-config, because a config's colours
+are part of how it looks. `color_sensitivity` reaches the Camera as a plain
+uniform brokered by the Orchestrator, taken from the SELECTED config — Camera
+does not read the config buffer, which belongs to `ParticleSystem` (rule 3), so
+with several configs loaded the selected one sets the palette for all.
+
+TRAIL mode is unaffected: the canvas is RG32F and stores a 2D vector with no
+room for a hue channel, so trails still colour by the angle of that vector.
+
 ### The overlays
 
 Both walk the same inverse view transform the camera does
@@ -980,6 +1029,23 @@ left-to-right order and the `1`/`2`/`3` key order.
   `assign_config_index()` at reset. A future "paint particles into config N"
   tool would change it at runtime, so the host must not assume it knows the
   entity->config mapping without a readback.
+- **`col_params.y` is written but nothing reads it.** `entity_update` stores
+  both lanes of the brain's colour signal; the particle camera only uses `.x`
+  as a hue. The lane is kept deliberately, because the intended uses are all
+  *highlighting* rather than colouring:
+  - marking individual particles (the picker's selected entity, which the
+    Entity struct has reserved lanes for but no render-side channel yet);
+  - indicating which **config** a particle belongs to, so a multi-config buffer
+    is legible at a glance;
+  - **box-select over a region**, where moving a slider then spawns a new
+    config containing only the selected particles — so edits apply to a group
+    you drew rather than to the whole population.
+
+  That last one is the reason to keep the lane rather than reclaim it: it needs
+  a per-particle "am I selected" signal that survives into rendering, and this
+  is already that. Note the colour values themselves are arbitrary — an
+  unreflected reuse of the black box's force terms, tuned by eye — so nothing
+  should infer meaning from their scale.
 - PARTICLES mode draws every entity with no culling. Off-screen sprites still
   cost a vertex-shader invocation; at 150k entities that is fine, but a visible
   cost if the entity count grows a lot.

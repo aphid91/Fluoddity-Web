@@ -270,6 +270,11 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
                         entity_count=self.system.entity_count(),
                         canvas_size=self.system.canvas_size,
                         window_size=window_size,
+                        # From the SELECTED config. Per-particle in the shader
+                        # would mean handing Camera the config buffer, which
+                        # belongs to ParticleSystem -- so with several configs
+                        # loaded, the selected one sets the palette for all.
+                        color_sensitivity=self.project.config.color_sensitivity,
                     )
 
             # AFTER the loop, not before: the camera binds its own framebuffers

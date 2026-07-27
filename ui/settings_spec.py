@@ -231,6 +231,32 @@ SETTINGS = [
             "trails into soft washes. A world setting, shared by all particles.",
             group='Trails'),
 
+    # ================= PROJECT: Appearance =================
+    # Rendering, not physics -- these change how particles are DRAWN in the
+    # particle view (TAB) and never touch the simulation. Saved with the config
+    # nonetheless: a config's colours are part of how it looks.
+    Setting('color_sensitivity', 'Color Sensitivity', BASIC, CONFIG, SLIDER,
+            -1.0, 1.0,
+            "How strongly each particle's own output swings its hue, in the "
+            "particle view (TAB).\n\n"
+            "At 0 every particle is the same colour. Turning it up spreads the "
+            "population across the hue wheel by how each particle's rule is "
+            "behaving, so mutation and cohort structure become visible. "
+            "Negative simply runs the hue the other way.\n\n"
+            "The signal driving this typically has a spread of ~3, so hue wraps "
+            "more than once above about 0.15 and the population starts to read "
+            "as static rather than structure. Low values are where the "
+            "structure is.\n\n"
+            "Affects rendering only -- the simulation does not change.",
+            group='Appearance'),
+    Setting('color_by_cohort', 'Color By Cohort', BASIC, CONFIG, BOOL,
+            help="Give each cohort one flat colour instead of colouring by "
+                 "what each particle is doing.\n\n"
+                 "Makes populations legible as groups -- useful with Cohort "
+                 "Fences, or for seeing how far cohorts have mixed. Color "
+                 "Sensitivity still scales the spread between them.",
+            group='Appearance'),
+
     # ================= PREFERENCES: Simulation =================
     Setting('world_size', 'World Size', BASIC, PREFS, INPUT, 0.05, 4.0,
             "Scales the particle count and canvas resolution together. "

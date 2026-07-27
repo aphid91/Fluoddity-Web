@@ -21,6 +21,11 @@ uniform float sprite_size;
 
 out vec2 uv;
 out vec4 pos_vel;
+// The particle's raw colour signal, straight from the entity. `flat` because
+// every vertex of a sprite reads the same entity, so the value is constant
+// across the quad -- interpolating it would be four identical corners' worth
+// of arithmetic for the same answer.
+flat out vec2 col_params;
 
 // Rotate a local offset into the entity's velocity frame, so the sprite is
 // oriented along travel. Falls back to axis-aligned when nearly stationary
@@ -60,4 +65,5 @@ void main() {
 
     uv = uv_coords[gl_VertexID];
     pos_vel = vec4(entity_pos, entity_vel);
+    col_params = e_col_params(e);
 }
