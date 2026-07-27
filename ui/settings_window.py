@@ -37,6 +37,9 @@ from imgui_bundle import imgui
 
 from . import settings_spec as spec
 
+#: Indent applied to controls revealed by a checkbox, in pixels.
+_REVEAL_INDENT = 20.0
+
 
 class SettingsWindow:
     """Mixin providing the Settings window. Host supplies `_dispatch`/`_status`."""
@@ -101,19 +104,48 @@ class SettingsWindow:
     def _render_setting(self, setting):
         value = self._value_of(setting)
 
+        # Hangs off a checkbox that is currently off: not rendered at all.
+        # Greying it out instead would keep a row of dead sliders on screen for
+        # every effect the user is not using, which is the wall this avoids.
+        if setting.reveals_on and not self._revealed(setting):
+            return
+
         # Registered but not yet wired: show the control greyed so the tier
         # layout is visible without implying the knob does something.
         unavailable = not setting.implemented or value is None
         if unavailable:
             imgui.begin_disabled()
             placeholder = 0 if setting.kind in (spec.INT, spec.CHOICE) else 0.0
+            if setting.kind == spec.BOOL:
+                placeholder = False
             self._draw_widget(setting, placeholder, interactive=False)
             imgui.end_disabled()
             self._tooltip(setting, suffix="\n\n(not implemented yet)")
             return
 
+        # Indented so the group reads as belonging to its checkbox. Pushed and
+        # popped around this one control, so the counts balance on every path.
+        indented = bool(setting.reveals_on)
+        if indented:
+            imgui.indent(_REVEAL_INDENT)
         self._draw_widget(setting, value, interactive=True)
         self._tooltip(setting)
+        if indented:
+            imgui.unindent(_REVEAL_INDENT)
+
+    def _revealed(self, setting):
+        """True if this control's governing checkbox is on.
+
+        A missing or unreadable governing value counts as OFF: the payload is
+        only built while a window that reads it is open, and revealing controls
+        against a value we cannot see would be worse than hiding them.
+        """
+        source = {
+            spec.CONFIG: self._status.get('edit_config') or {},
+            spec.WORLD: self._status.get('edit_world') or {},
+            spec.PREFS: self._status.get('edit_prefs') or {},
+        }[setting.source]
+        return bool(source.get(setting.reveals_on, False))
 
     def _draw_widget(self, setting, value, interactive):
         label = f"{setting.label}##{setting.source}.{setting.field}"
@@ -132,6 +164,12 @@ class SettingsWindow:
             changed, new = imgui.combo(label, index, options)
             if changed and interactive:
                 self._dispatch('edit_setting', setting, int(new))
+            return
+
+        if setting.kind == spec.BOOL:
+            changed, new = imgui.checkbox(label, bool(value))
+            if changed and interactive:
+                self._dispatch('edit_setting', setting, bool(new))
             return
 
         if setting.kind == spec.INT:

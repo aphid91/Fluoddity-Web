@@ -22,6 +22,8 @@ Mixed into the Orchestrator; owns no state of its own.
 
 from __future__ import annotations
 
+import dataclasses
+
 from particle_system import coords
 
 
@@ -98,13 +100,32 @@ class DrawingCommands:
         else's config must not resize your brush, and there is no project state
         for undo to restore.
 
-        Neither field is disruptive, so this skips the rebuild check in
-        _edit_preference and just writes. The unchanged-value early-out matters:
-        imgui reports a slider as changed on frames where the value did not
-        actually move, and each of those would otherwise be a disk write.
+        None is disruptive, so this skips the rebuild check in _edit_preference
+        and just writes. The unchanged-value early-out matters: imgui reports a
+        slider as changed on frames where the value did not actually move, and
+        each of those would otherwise be a disk write.
+
+        Coerced to the field's DECLARED type rather than blanket float(): the
+        overlay toggles are booleans, and a float() here would land `1.0` in
+        preferences.json where `true` belongs.
         """
-        updated = self.prefs.with_value(field, float(value))
+        updated = self.prefs.with_value(field, _coerce(self.prefs, field, value))
         if updated == self.prefs:
             return
         self.prefs = updated
         self.prefs.save()
+
+
+def _coerce(prefs, field, value):
+    """`value` as whatever type `field` is declared to hold on Preferences.
+
+    Unknown fields pass through untouched; with_value() drops them anyway.
+    """
+    declared = {f.name: f.type for f in dataclasses.fields(prefs)}.get(field)
+    if declared in (bool, 'bool'):
+        return bool(value)
+    if declared in (int, 'int'):
+        return int(value)
+    if declared in (float, 'float'):
+        return float(value)
+    return value

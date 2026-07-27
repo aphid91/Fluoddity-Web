@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 import moderngl
+import numpy as np
 
 # Shared includes (e.g. common.glsl) live here. `#include "name"` resolves
 # relative to the including file first, then falls back to this directory.
@@ -67,6 +68,37 @@ def _resolve_include(name: str, including_file: Path, line_no: int) -> Path:
         f'{including_file}:{line_no}: #include "{name}" not found '
         f'(looked in {including_file.parent} and {_SHARED_SHADER_DIR})'
     )
+
+
+#: The fullscreen quad, as two triangles in clip space. Paired with
+#: shared/shaders/fullscreen_quad.vert, which is the vertex shader for every
+#: fullscreen pass in the app.
+_QUAD_VERTICES = np.array([
+    -1, -1,  1, -1,  1,  1,
+    -1, -1,  1,  1, -1,  1,
+], dtype=np.float32)
+
+
+def quad_vbo(ctx: moderngl.Context) -> moderngl.Buffer:
+    """A fullscreen-quad vertex buffer.
+
+    Every fullscreen pass wants the same six vertices, and before this existed
+    three modules each built their own copy. Callers still hold the buffer they
+    are given: a VBO outlives the program it is bound through, so it is created
+    once per module and reused across hot-reloads.
+    """
+    return ctx.buffer(_QUAD_VERTICES.tobytes())
+
+
+def quad_vao(ctx: moderngl.Context, program: moderngl.Program,
+             vbo: moderngl.Buffer) -> moderngl.VertexArray:
+    """Bind `program` to a fullscreen-quad VBO.
+
+    Separate from quad_vbo() because the two have different lifetimes: a VAO
+    binds a program, so it must be rebuilt on every reload, while the VBO it
+    references does not.
+    """
+    return ctx.vertex_array(program, [(vbo, '2f', 'in_position')])
 
 
 MUTED_TRYSET_WARNINGS = {}

@@ -35,10 +35,31 @@ class Preferences:
     """Editor preferences. Frozen; edits produce a new instance via `replace`."""
 
     # --- live ---
-    #: Output brightness multiplier applied by the present pass.
+    #: Output brightness multiplier. Applied by the assembler, once, for both
+    #: camera modes -- so TRAIL and PARTICLES respond to it identically.
     brightness: float = 1.0
     #: Physics sub-steps per rendered frame. Higher = faster simulation time.
     physics_steps: int = 30
+
+    # --- display: the frame assembly pipeline ---
+    #: Highlight compression for the asinh tone curve. Low is more linear
+    #: (brighter highlights); high is more logarithmic (reveals faint detail).
+    tonemap_softness: float = 2.5
+
+    #: Temporal supersampling. Off means one camera render per displayed frame.
+    motion_blur: bool = False
+    #: TARGET samples per displayed frame -- see orchestrator.blur_schedule().
+    #: The achieved count equals this when it divides physics_steps and is the
+    #: nearest achievable count otherwise, so this is a target rather than a
+    #: promise. Costs one full camera render per sample.
+    motion_blur_samples: int = 2
+
+    bloom_enabled: bool = False
+    #: Brightness cutoff for bloom extraction. Lower glows more widely.
+    bloom_threshold: float = 0.11
+    bloom_intensity: float = 0.23
+    #: Spread of the blur kernel, in source-texel units.
+    bloom_radius: float = 1.0
 
     # --- drawing (Draw tool) ---
     #: Airbrush gaussian sigma, in aspect-corrected canvas uv.
@@ -48,6 +69,15 @@ class Preferences:
     #: (STRAFE_FIELD_GAIN in shared/shaders/common.glsl), so there is no second
     #: multiplier interacting with this one.
     draw_power: float = 1.0
+
+    #: Opacity of the strafe field overlay. EXACTLY zero is the off switch:
+    #: the assembler does not sample the field texture at all below it.
+    field_opacity: float = 0.0
+    #: When False the field overlay appears only while Draw is the active tool.
+    field_always_show: bool = False
+    #: The brush reticle. Only ever drawn while Draw is the active tool, so
+    #: this gates it within that tool rather than across tools.
+    show_reticle: bool = True
 
     # --- disruptive: changing these reallocates and resets the simulation ---
     #: Scales entity count and canvas resolution together.

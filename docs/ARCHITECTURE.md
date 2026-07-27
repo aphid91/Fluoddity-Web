@@ -21,14 +21,15 @@ Every file belongs to a module folder. Each folder is a Python package
 | Module            | Owns                                                                 |
 |-------------------|----------------------------------------------------------------------|
 | `app_window/`     | GLFW init, the window, and the moderngl **context** (`ctx`). Per-frame windowing (should_close / begin_frame / end_frame). |
-| `camera/`         | The viewpoint: pan/zoom/mode state, and both ways of drawing the world (TRAIL present pass, PARTICLES instanced sprites). Owns `camera.frag`, `cam_brush.vert/frag`, and `CameraState`. Holds no simulation state. |
+| `camera/`         | The viewpoint: pan/zoom/mode state, both ways of drawing the world (TRAIL present pass, PARTICLES instanced sprites), and the **temporal supersampler** behind motion blur. Owns `camera.frag`, `cam_brush.vert/frag`, `accumulate.frag`, and `CameraState`. Emits linear HDR. Holds no simulation state. |
+| `assembler/`      | Everything between the finished camera frame and the screen: bloom, the asinh tone curve, and the two drawing overlays (strafe field, brush reticle). Owns `frame_assembly.frag`, `bloom_downsample.frag`, `bloom_upsample.frag`. Holds no simulation state and no preferences. |
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
 | `strafe_field/`   | The painted Strafe Field: one RG32F texture at canvas resolution, the airbrush shader that writes it (`strafe_draw.frag`), and clear/erase. Live-only — never saved, never in history. |
 | `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `settings_window`, `preferences_window`, `config_manager`, `config_clipboard`, `toolbar`, `drawing_window`), composed onto `UI` as mixins; `settings_spec.py` is the control registry and `hover_preview.py` the shared preview state machine. |
 | `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`, `drawing_commands`). |
 | `project/`        | The `Project` value type (ConfigBuffer + world settings + name + selection, immutable) and `History`, the undo/redo timeline over those values. |
-| `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect). Persisted to `preferences.json`. |
-| `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
+| `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect, and the whole display pipeline: tone curve, motion blur, bloom, overlays). Persisted to `preferences.json`. |
+| `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`, `quad_vbo`/`quad_vao`) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
 | `configs/`        | Physics preset JSONs (`Starcrossed.json`, `9LeafClovers.json`, `Angles.json`). |
 
 ### Key files in `particle_system/`
@@ -661,12 +662,20 @@ Orchestrator.run() loop:
                                          #   paint. Painting happens here, above
                                          #   the render, because it binds its own
                                          #   FBO. Scroll always zooms.
+       blur_schedule(prefs)              # -> (samples, stride)
+       Camera.begin_frame(size, samples) # size + clear the accumulator
   30x  ParticleSystem.advance(field)     # GPU sim sub-steps; field hoisted out
                                          #   of the loop, it cannot change here
-       AppWindow.begin_frame()           # bind + clear default framebuffer
-       Camera.render(                    # data pulled from modules...
-           canvas_texture, entity_buffer,#   ...and handed to Camera, which
-           canvas_size, window_size)     #   holds no persistent reference
+   Nx    Camera.render(...)              # EVERY `stride` STEPS, inside the loop:
+                                         #   draw a sample, add it to the
+                                         #   accumulator weighted 1/N. Canvas
+                                         #   texture pulled per sample -- it
+                                         #   double-buffers inside advance().
+       AppWindow.begin_frame()           # bind + clear default framebuffer.
+                                         #   AFTER the loop: the camera binds its
+                                         #   own FBOs for every sample above.
+       Assembler.present(                # bloom -> brightness -> tone curve ->
+           camera.result(), ...)         #   field overlay -> reticle -> screen
        Orchestrator._report_status()     # push display-only values to UI
        UI.end_frame()                    # build panels, imgui.render(), draw
        AppWindow.end_frame()             # swap buffers
@@ -687,6 +696,124 @@ previous frame's. Polling used to sit next to the buffer swap at the bottom,
 which cost a frame of latency — invisible for keyboard shortcuts, but plainly
 visible when dragging. `AppWindow` therefore no longer pumps the event queue;
 it only swaps.
+
+## The frame assembly pipeline
+
+Everything from "the simulation has advanced" to "pixels are on screen". The
+stages are split across two modules and the order is load-bearing:
+
+```
+Camera                                    Assembler
+------                                    ---------
+colorize   RG canvas -> RGB               bloom       threshold, 5 mips down,
+           (linear HDR, no tone curve)                tent up, add (LINEAR)
+accumulate acc += sample * 1/N            brightness  linear exposure
+           (RGBA16F, ONE/ONE blend)       tone curve  asinh, linear -> display
+                                          overlays    field, reticle
+```
+
+**Everything before the tone curve is linear.** Bloom and brightness are
+physical operations — adding light, then exposing it — and both are only
+meaningful on energy. The curve runs exactly once, at the end. The reference
+tonemaps *before* blooming and pays for it by inverse-tonemapping in two
+separate shaders to get back to a space where addition means anything;
+assembling in this order deletes both round-trips and the precision they cost.
+
+**The overlays go after the curve**, which is the one place the ordering
+inverts. They are annotations, not part of the image: running the reticle's
+white through a compressive curve would dim it and make its apparent thickness
+depend on how bright the scene behind it happens to be.
+
+### The tone curve
+
+`rgb *= asinh(L * softness) / (L * softness)`, where `L = length(rgb)`.
+
+Applied to the **length** of the colour rather than per channel, so the
+direction of the vector — hue and saturation — survives untouched. Dividing by
+softness keeps the curve tangent to the identity at the origin for every
+setting, so dim regions stay put as the slider moves and only highlights
+compress. It is unbounded: it never asymptotes to 1, so a bright enough region
+still clips at the 8-bit present. That is accepted, not overlooked.
+
+This replaced an ad-hoc `rgb / pow(L, 0.575)` that lived inline in
+`camera.frag`, and which PARTICLES mode never had at all — that mode folded
+brightness into per-sprite alpha instead, so the two modes answered to the same
+slider differently. Both now feed the same accumulator and the same assembler.
+
+### Motion blur is a temporal supersample
+
+A displayed frame is the average of N renders taken at different points in the
+simulation's advance, which is why fast movement smears instead of stepping.
+`blur_schedule()` in `orchestrator/orchestrator.py` derives the cadence:
+
+```python
+stride  = max(1, physics_steps // motion_blur_samples)
+samples = ceil(physics_steps / stride)
+```
+
+**THE SAMPLE COUNT IS A TARGET, NOT A PROMISE.** Samples must fall a whole
+number of physics steps apart, so what the user asks for is only achievable
+when it divides `physics_steps`. At 120 steps, X=10 lands exactly (stride 12);
+at 100 steps, X=8 gives stride 12 and therefore **9** samples.
+
+The weight must be `1/samples`, never `1/X`. Weighting by the requested count
+would darken the image by the ratio between them — but only at slider positions
+where the two disagree, which is a miserable bug to find by eye. The invariant
+worth protecting is that **toggling blur, or changing the sample count, must
+not change overall brightness.**
+
+What makes that safe is an identity: the count of steps satisfying
+`step % stride == 0` over `range(n)` is *exactly* `ceil(n / stride)`. Not an
+approximation — so the accumulator always receives precisely the number of
+samples it divided by. It depends on the loop starting at zero and the test
+being `== 0`; the un-blurred path deliberately uses `== stride - 1` instead, so
+a still image shows the newest state rather than a stale one, and it does not
+share (or need) the guarantee.
+
+### Read-write hazards, and why blending is used instead
+
+Two passes here would naively want to read a texture they are writing. Both
+are done with additive blending instead:
+
+- **The accumulator** weights each sample by `1/N` in the shader and lets the
+  blend unit sum them. Clearing once per cycle *is* the reset, which removes
+  the reference's `is_first_frame` branch entirely.
+- **Bloom's upsample** adds the tent-filtered mip into the destination the same
+  way, rather than sampling the destination.
+
+The reference does both by binding the target as a sampler while it is attached
+to the bound framebuffer. That is undefined behaviour; it survives there only
+because sampling is 1:1 at the fragment's own uv. Letting the blend unit do the
+addition is correct *and* cheaper, and it does not need a ping-pong pair.
+
+### The overlays
+
+Both walk the same inverse view transform the camera does
+(`screen_ndc_to_canvas_uv` in `common.glsl`), so they pan and zoom with the
+world instead of sitting on the glass. Per rule 9, they compose that transform
+rather than writing a fresh one.
+
+**Field overlay.** `1 - exp(-magnitude * GAIN)` as grayscale — saturating
+rather than clamped, so a faint field and a heavily overpainted one both stay
+readable and repainting a spot approaches white instead of flattening into a
+solid blob. Canvas uv indexes the field directly: the field is the same *shape*
+as the canvas, only capped in resolution. **Opacity exactly zero is the off
+switch** — the shader does not sample the texture at all below it.
+
+**Brush reticle.** A thin white ring at `2 * draw_size`, which is the gaussian's
+visible extent and also exactly the eraser's hard radius — so the ring reads as
+"what the eraser will take". Its radius is measured in the **same
+`aspect_correct_uv` metric `strafe_draw.frag` paints in**, which is what keeps
+it circular on a non-square canvas. The reference drew this in its frame
+assembly pass and never got it right, carrying an unexplained `4/3` fudge
+factor; reusing the brush's own metric is what removes the need for one.
+`fwidth` sets the line width, so thickness stays constant in screen pixels at
+any zoom.
+
+Whether either overlay is visible is decided by the **Orchestrator**, not the
+UI and not the assembler: it depends on the active tool, and only the
+Orchestrator knows that (rule 10). The field can optionally persist outside the
+Draw tool; the reticle never does.
 
 ## The Strafe Field, and drawing
 
@@ -840,11 +967,11 @@ left-to-right order and the `1`/`2`/`3` key order.
   canvases are implemented and verified, but there is no UI to change the aspect
   at runtime — doing so requires reallocating the canvas textures and resetting
   the sim, which wants a deliberate command rather than a slider.
-- The Draw tool has **no on-screen reticle**, so brush size is only visible by
-  painting. The reference drew a ring in its frame-assembly pass and never quite
-  got it to match on non-square canvases (it carried an unexplained 4/3 fudge
-  factor). Doing it here means deriving the radius from the same
-  `aspect_correct_uv` metric the brush shader uses, not reverse-engineering it.
+- ~~The Draw tool has **no on-screen reticle**~~ — **done.** The ring is drawn
+  in `assembler/shaders/frame_assembly.frag`, with its radius derived from the
+  same `aspect_correct_uv` metric the brush shader uses. It measures circular on
+  non-square canvases with no fudge factor, which is what the reference could
+  never manage. See "The frame assembly pipeline" above.
 - Drawing is **not undoable**, by design (the field is live-only). If strokes
   ever need undo, it wants its own bounded stroke-level timeline, not `History`
   — that one is a timeline of `Project` values and would have to become

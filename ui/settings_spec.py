@@ -25,6 +25,7 @@ KINDS
            reallocate GPU resources and reset the simulation -- a slider would
            reset on every frame of the drag.
   INT      integer slider.
+  BOOL     checkbox. Usually the head of a `reveals_on` group.
   SEED     a Randomize button with the current value shown beside it. The seed
            is an opaque selector into rule-variation space, so it is worth
            reading but never worth typing.
@@ -32,6 +33,13 @@ KINDS
 
 GROUPS become collapsible tabs in whichever window renders them. A tab whose
 members are all hidden by the current tier is not rendered at all.
+
+REVEALS_ON names a BOOL field this control hangs off: it renders, indented,
+only while that checkbox is on. Effects like bloom carry three or four
+parameters that are meaningless when the effect is switched off, and showing
+them anyway is how a preferences panel turns into a wall. This is deliberately
+a plain field reference rather than nesting, so the flat SETTINGS list stays
+flat and the tier/group machinery keeps working unchanged.
 
 `implemented=False` entries are registered but greyed out: the tab layout is
 recorded now so wiring them later is a one-line change, without pretending the
@@ -52,6 +60,7 @@ PREFS = 'prefs'
 SLIDER = 'slider'
 INPUT = 'input'
 INT = 'int'
+BOOL = 'bool'
 SEED = 'seed'
 CHOICE = 'choice'   # dropdown over `options`
 
@@ -78,6 +87,9 @@ class Setting:
     group: str = ""
     #: For CHOICE controls: the dropdown entries, indexed by the stored value.
     options: tuple = ()
+    #: Name of a BOOL field on the same source. When set, this control renders
+    #: indented and only while that checkbox is on.
+    reveals_on: str = ""
 
 
 #: Dropdown entries for the CHOICE controls. ORDER IS THE ENUM: each label's
@@ -241,14 +253,41 @@ SETTINGS = [
             "not affect the simulation and is not saved with a config.",
             group='Display'),
     Setting('tonemap_softness', 'Tonemap Softness', ADVANCED, PREFS, SLIDER,
-            0.0, 1.0, "Softness of the output tone curve.",
-            implemented=False, group='Display'),
-    Setting('motion_blur', 'Motion Blur', ADVANCED, PREFS, SLIDER, 0.0, 1.0,
-            "Blends frames together to smear motion.",
-            implemented=False, group='Display'),
-    Setting('bloom', 'Bloom', ADVANCED, PREFS, SLIDER, 0.0, 1.0,
-            "Glow around bright areas.",
-            implemented=False, group='Display'),
+            0.1, 5.0,
+            "How hard the highlights are compressed.\n\n"
+            "Low is more linear: highlights stay bright and can blow out. "
+            "High is more logarithmic: it pulls faint detail up out of the "
+            "dark at the cost of flattening the brightest regions.",
+            group='Display'),
+
+    Setting('motion_blur', 'Motion Blur', BASIC, PREFS, BOOL,
+            help="Renders each frame several times across the simulation's "
+                 "advance and averages the result, so fast movement smears "
+                 "instead of stepping.\n\n"
+                 "Costs one full render per sample.",
+            group='Display'),
+    Setting('motion_blur_samples', 'Blur Samples', BASIC, PREFS, INT, 1, 16,
+            "How many samples to average per frame.\n\n"
+            "A TARGET, not a promise: samples must fall a whole number of "
+            "physics steps apart, so the count achieved is this one when it "
+            "divides Physics Rate and the nearest reachable value otherwise. "
+            "Raising Physics Rate gives it more room to hit the number asked "
+            "for. Overall brightness does not change either way.",
+            group='Display', reveals_on='motion_blur'),
+
+    Setting('bloom_enabled', 'Bloom', BASIC, PREFS, BOOL,
+            help="Glow around bright areas.",
+            group='Display'),
+    Setting('bloom_threshold', 'Threshold', ADVANCED, PREFS, SLIDER, 0.0, 2.0,
+            "Brightness cutoff for what glows. Lower spreads the glow to more "
+            "of the image; higher confines it to the brightest regions.",
+            group='Display', reveals_on='bloom_enabled'),
+    Setting('bloom_intensity', 'Intensity', ADVANCED, PREFS, SLIDER, 0.0, 3.0,
+            "Strength of the glow.",
+            group='Display', reveals_on='bloom_enabled'),
+    Setting('bloom_radius', 'Radius', ADVANCED, PREFS, SLIDER, 0.1, 3.0,
+            "Spread of the blur kernel -- how far the glow reaches.",
+            group='Display', reveals_on='bloom_enabled'),
 ]
 
 

@@ -1,10 +1,9 @@
 import math
 from pathlib import Path
 
-import numpy as np
 import moderngl
 
-from shared.gl_utils import read_shader, tryset
+from shared.gl_utils import read_shader, tryset, quad_vbo, quad_vao
 from . import persistence
 from .config import BC_WRAP, pack_configs
 from .layout import SIZE_OF_CONFIG_DATA, SIZE_OF_ENTITY_STRUCT, ENTITY_DTYPE
@@ -251,21 +250,10 @@ class ParticleSystem:
 
             # Create or recreate VAO with new program
             if self.quad_vbo is None:
-                # Fullscreen quad vertices as floats
-                vertices = np.array([
-                    -1, -1,
-                     1, -1,
-                     1,  1,
-                    -1, -1,
-                     1,  1,
-                    -1,  1,
-                ], dtype=np.float32)
-                self.quad_vbo = self.ctx.buffer(vertices.tobytes())
+                self.quad_vbo = quad_vbo(self.ctx)
 
-            self.canvas_vao = self.ctx.vertex_array(
-                self.canvas_update_program,
-                [(self.quad_vbo, '2f', 'in_position')]
-            )
+            self.canvas_vao = quad_vao(self.ctx, self.canvas_update_program,
+                                       self.quad_vbo)
             print("Canvas update shaders reloaded successfully")
         except Exception as e:
             print(f"Failed to reload canvas update shaders: {e}")

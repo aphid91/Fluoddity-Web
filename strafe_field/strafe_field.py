@@ -28,10 +28,9 @@ The Orchestrator drives this module; it holds no reference to any other.
 from pathlib import Path
 
 import moderngl
-import numpy as np
 
 from particle_system.particle_system import canvas_dimensions
-from shared.gl_utils import read_shader, tryset
+from shared.gl_utils import read_shader, tryset, quad_vbo, quad_vao
 
 # Shader paths resolved relative to this module, so the app is not CWD-dependent.
 _SHADER_DIR = Path(__file__).parent / "shaders"
@@ -119,14 +118,10 @@ class StrafeField:
             self.program = program
 
             if self.quad_vbo is None:
-                self.quad_vbo = self.ctx.buffer(np.array([
-                    -1, -1,  1, -1,  1,  1,
-                    -1, -1,  1,  1, -1,  1,
-                ], dtype=np.float32).tobytes())
+                self.quad_vbo = quad_vbo(self.ctx)
 
             # The VAO binds a program, so it must be rebuilt with the new one.
-            self.vao = self.ctx.vertex_array(
-                program, [(self.quad_vbo, '2f', 'in_position')])
+            self.vao = quad_vao(self.ctx, program, self.quad_vbo)
 
             # Constant for the life of the program, so it is set here rather
             # than on every stroke frame.

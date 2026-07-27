@@ -48,6 +48,29 @@ class DrawingWindow:
 
         imgui.separator()
 
+        # The field is otherwise invisible -- you can only infer it from how
+        # particles move -- so this is the one way to see what you have painted.
+        changed, value = imgui.slider_float(
+            "Field Opacity", float(prefs.get('field_opacity', 0.0)),
+            0.0, 1.0, format="%.2f")
+        if changed:
+            self._dispatch('edit_draw_pref', 'field_opacity', value)
+
+        changed, value = imgui.checkbox(
+            "Always Show Field", bool(prefs.get('field_always_show', False)))
+        if changed:
+            self._dispatch('edit_draw_pref', 'field_always_show', value)
+        if not prefs.get('field_always_show', False):
+            imgui.same_line()
+            imgui.text_disabled("(Draw tool only)")
+
+        changed, value = imgui.checkbox(
+            "Brush Reticle", bool(prefs.get('show_reticle', True)))
+        if changed:
+            self._dispatch('edit_draw_pref', 'show_reticle', value)
+
+        imgui.separator()
+
         if imgui.button("Clear Field"):
             self._dispatch('clear_strafe_field')
         imgui.same_line()

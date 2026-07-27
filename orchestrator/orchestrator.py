@@ -40,6 +40,7 @@ from pathlib import Path
 import glfw
 
 from app_window import AppWindow
+from assembler import Assembler
 from camera import Camera
 from particle_system import coords
 from particle_system.config import BC_WRAP
@@ -61,7 +62,40 @@ from .settings_commands import SettingsCommands
 
 _CONFIG_DIR = Path(__file__).parent.parent / "configs"
 
-__all__ = ['Orchestrator', 'Checkpoint']
+__all__ = ['Orchestrator', 'Checkpoint', 'blur_schedule']
+
+
+def blur_schedule(prefs):
+    """(samples, stride) for one displayed frame of motion blur.
+
+    Motion blur here is a TEMPORAL SUPERSAMPLE: the frame shown is the average
+    of several renders taken at different points in the simulation's advance,
+    which is why a fast particle smears instead of stepping.
+
+    THE SAMPLE COUNT IS A TARGET, NOT A PROMISE. The user asks for X samples;
+    what is achievable is set by the stride, which must be a whole number of
+    physics steps. At 120 steps X=10 lands exactly (stride 12); at 100 steps
+    X=8 gives stride 12 and so 9 samples. Returning the count that will ACTUALLY
+    occur is the entire point of this function -- weighting by the requested X
+    instead would darken the image by the ratio between them whenever the two
+    disagree, and only for some slider positions, which is a miserable bug to
+    find by eye.
+
+    The count of steps satisfying `step % stride == 0` over range(n) is exactly
+    ceil(n / stride). That is an identity, not an approximation, so the
+    accumulator always receives precisely the number of samples it divided by.
+    It depends on the loop starting at zero and the test being `== 0`; the
+    un-blurred path below deliberately uses a different test and does not share
+    this guarantee (it does not need to -- it takes one sample).
+    """
+    steps = max(1, int(prefs.physics_steps))
+    if not prefs.motion_blur:
+        # One sample, taken on the LAST sub-step, so the un-blurred image shows
+        # the newest state -- which is what rendering after the loop used to do.
+        return 1, steps
+    stride = max(1, steps // max(1, int(prefs.motion_blur_samples)))
+    samples = -(-steps // stride)  # ceil
+    return samples, stride
 
 
 class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
@@ -78,6 +112,9 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         self.prefs = Preferences.load()
 
         self.camera = Camera(ctx)
+        #: Turns the camera's finished HDR frame into what the screen shows:
+        #: bloom, tone curve, overlays. Holds no state of its own.
+        self.assembler = Assembler(ctx)
         self.system = self._build_system()
         #: The painted strafe field. Sized to the canvas, so a disruptive
         #: preference change rebuilds it alongside the system.
@@ -204,20 +241,51 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # texture is hoisted out of the loop: it cannot change mid-frame,
             # and painting happened once, above, in _apply_canvas_input.
             strafe_field = self.strafe_field.current_texture()
-            for _ in range(self.prefs.physics_steps):
-                self.system.advance(strafe_field)
+            window_size = self.window.size()
 
+            # MOTION BLUR PUTS THE RENDER INSIDE THE PHYSICS LOOP. A displayed
+            # frame is the average of `samples` renders taken `stride` steps
+            # apart, so the camera must see the simulation mid-advance rather
+            # than only at the end of it. With blur off this is one render, on
+            # the last sub-step, exactly as before.
+            samples, stride = blur_schedule(self.prefs)
+            self.camera.begin_frame(window_size, samples)
+
+            # Which step within each group of `stride` gets rendered. Blurring
+            # samples the FIRST, because that is what makes the sample count
+            # come out to exactly ceil(steps/stride) -- see blur_schedule().
+            # The single un-blurred sample takes the LAST instead, so a still
+            # image shows the newest state rather than a stale one.
+            sample_at = 0 if self.prefs.motion_blur else stride - 1
+
+            for step in range(self.prefs.physics_steps):
+                self.system.advance(strafe_field)
+                if step % stride == sample_at:
+                    # Pulled per sample, not per frame: the canvas
+                    # double-buffer swaps inside advance(), so a texture
+                    # hoisted out of this loop would go stale immediately.
+                    self.camera.render(
+                        canvas_texture=self.system.current_canvas_texture(),
+                        entity_buffer=self.system.entity_buffer,
+                        entity_count=self.system.entity_count(),
+                        canvas_size=self.system.canvas_size,
+                        window_size=window_size,
+                    )
+
+            # AFTER the loop, not before: the camera binds its own framebuffers
+            # for every sample above, so binding and clearing the screen any
+            # earlier would simply be undone.
             self.window.begin_frame()
-            # Pull data from modules, hand them to Camera. No persistent link:
-            # the canvas double-buffer swap stays invisible to the Camera.
-            self.camera.render(
+            self.assembler.present(
+                self.camera.result(),
                 framebuffer=self.window.ctx.screen,
-                canvas_texture=self.system.current_canvas_texture(),
-                entity_buffer=self.system.entity_buffer,
-                entity_count=self.system.entity_count(),
+                prefs=self.prefs,
                 canvas_size=self.system.canvas_size,
-                window_size=self.window.size(),
-                brightness=self.prefs.brightness,
+                window_size=window_size,
+                cam_pan=self.camera.state.pan,
+                cam_zoom=self.camera.state.zoom,
+                strafe_field=strafe_field,
+                **self._overlay_args(),
             )
 
             # Hand the UI display-only values; it owns no simulation truth.
@@ -285,6 +353,32 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         if state.scroll:
             self.camera.state.zoom_at_pixel(state.scroll, state.mouse_pos,
                                             window_size, canvas_size)
+
+    def _overlay_args(self):
+        """Whether the drawing overlays are on screen, and where.
+
+        THE ACTIVE TOOL DECIDES, so this is the Orchestrator's call: the
+        assembler renders what it is told and the UI owns no simulation truth
+        (rule 10). The field can optionally stay visible outside the Draw tool;
+        the reticle never does, because it shows where a brush that is not
+        currently usable would land.
+        """
+        drawing = self.mouse_mode is MouseMode.DRAW
+        show_field = self.prefs.field_always_show or drawing
+
+        if not (drawing and self.prefs.show_reticle):
+            return {'show_field': show_field, 'reticle_radius': 0.0}
+
+        # The brush's VISIBLE extent, which is 2 sigma of its gaussian -- and
+        # also exactly the eraser's hard radius (strafe_draw.frag), so the ring
+        # reads as "what the eraser will take". Measured in the aspect-corrected
+        # metric the brush shader paints in; the shader applies that same
+        # correction, so what crosses this boundary is a plain scalar.
+        return {
+            'show_field': show_field,
+            'reticle_center': self._mouse_field_uv(self.ui.state.mouse_pos),
+            'reticle_radius': 2.0 * self.prefs.draw_size,
+        }
 
     def _update_pick(self, state):
         """Find the entity under the cursor. ON-DEMAND ONLY -- see run().
@@ -378,6 +472,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
 
     def _cmd_reload(self):
         self.camera.reload()
+        self.assembler.reload()
         self.system.reload()
         # Does not reallocate the field texture, so a painted field survives --
         # which is what makes it practical to tune the brush against a stroke

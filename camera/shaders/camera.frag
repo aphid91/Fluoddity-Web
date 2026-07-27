@@ -14,10 +14,14 @@ uniform vec2 canvas_resolution;
 uniform vec2 window_resolution;
 uniform vec2 cam_pan;
 uniform float cam_zoom;
-uniform float brightness;
 
 in vec2 uv;          // fullscreen quad uv [0,1]
 out vec4 fragColor;
+
+// Turns the canvas's stored magnitude into a sensible starting exposure, so
+// the Brightness slider lands near 1.0 for a typical scene. Not a tone curve:
+// a plain linear gain, applied before anything else sees the value.
+#define CANVAS_GAIN 24.0
 
 vec3 hsv2rgb(vec3 c) {
     vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
@@ -38,13 +42,17 @@ void main() {
         return;
     }
 
+    // LINEAR HDR OUT. The tone curve, brightness and bloom all belong to the
+    // assembler now. That matters for more than tidiness: the accumulator
+    // averages what this pass emits, and averaging display values rather than
+    // energy would make motion blur darken as it smeared.
+    //
+    // The colorize stays HERE, though, rather than moving downstream with the
+    // rest. The canvas holds a vector field, and the accumulator has to average
+    // COLORS, not vectors -- a particle that reverses direction mid-frame would
+    // otherwise average toward zero and punch a black hole in the blur.
     vec4 canv = texture(tex, canvas_uv);
-    fragColor = vec4(3*8*hsv2rgb(vec3(atan(canv.y,canv.x)/3.1415/2.,.75,length(canv.xy))),1);
-    float len = length(fragColor.xyz);
-    if (len > 0.0) {
-        fragColor.xyz /= pow(len, 0.575);
-    }
-    // Applied last, after tone shaping, so it scales the final image rather
-    // than feeding back into the curve.
-    fragColor.xyz *= brightness;
+    vec3 color = CANVAS_GAIN * hsv2rgb(vec3(atan(canv.y, canv.x) / 3.1415 / 2.,
+                                            .75, length(canv.xy)));
+    fragColor = vec4(color, 1.0);
 }
