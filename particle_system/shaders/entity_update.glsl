@@ -176,7 +176,7 @@ vec2 get_strafe_field(vec2 p, int bc){
 //reach around to the far side, because the cursor is not there.
 vec2 get_shove(vec2 p){
     if(shove_strength == 0.0) return vec2(0);
-
+    #define SHOVE_MULTIPLIER 5.0
     vec2 away = p - shove_center;
     float d = length(away);
     //Exactly on the cursor the direction is undefined. Contributing nothing is
@@ -188,7 +188,7 @@ vec2 get_shove(vec2 p){
     //of both tools. No cutoff radius: a distant particle gets a denormal rather
     //than a branch, and every invocation pays for the exp() either way.
     float kernel = exp(-d * d / (2.0 * shove_size * shove_size));
-    return (away / d) * shove_strength * kernel;
+    return SHOVE_MULTIPLIER*(away / d) * shove_strength * kernel;
 }
 
 //normalize vector that tolerates vec2(0)
