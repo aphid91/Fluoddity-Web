@@ -221,6 +221,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # settings
             'edit_setting': self._cmd_edit_setting,
             'randomize_seed': self._cmd_randomize_seed,
+            'randomize_behavior': self._cmd_randomize_behavior,
             # drawing
             'edit_draw_pref': self._cmd_edit_draw_pref,
             'clear_strafe_field': self._cmd_clear_strafe_field,

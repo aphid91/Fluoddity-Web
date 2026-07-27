@@ -505,6 +505,20 @@ payloads are built only when a window that reads them is open.
 it. `mutation_scale` is deliberately untouched, so exactly one field changes
 and undo stays unambiguous.
 
+**Randomize Behavior** (`B`) is the opposite move: throw the rule away and grow
+a new one. It works through a sentinel — **an all-zero rule is not a rule**.
+`entity_update` tests two lanes (`centers[0].frequency` and
+`centers[5].amplitude`) for exactly zero and reads that as "no target given",
+generating random centers from the mutation seed instead. Zeroing is therefore
+how the host asks for a new behaviour without reproducing the shader's
+generator in Python.
+
+**The seed has to move with it.** That fallback is seeded by `mutation_seed`,
+so zeroing the rule alone regenerates the *same* behaviour every time — the
+command would appear to work (the config visibly changes to zeros) while the
+simulation looked identical on every press. Both fields change together as one
+undoable step, because together they are one act.
+
 The particle's rule is **recomputed host-side** (`particle_system/mutation.py`),
 not read back from the GPU. The mutation is deterministic in
 `(rule, scale, seed, cohort)`, so Python can reproduce it -- avoiding the extra
@@ -689,7 +703,8 @@ Orchestrator.run() loop:
 
 UI -> named command -> Orchestrator handler
      SPACE = pause/resume | R = reset | U = reload shaders
-     G = randomize mutation seed | X = show/hide the GUI
+     B = randomize behavior | F = randomize mutation seed
+     X = show/hide the GUI
      LEFT/RIGHT = prev/next preset
      TAB = toggle camera mode | HOME = reset view
      1/2/3 = select / shove / draw tool

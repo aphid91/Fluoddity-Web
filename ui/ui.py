@@ -368,7 +368,8 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
 
         imgui.text_disabled("WASD: pan   Q/E: zoom   scroll: zoom")
         imgui.text_disabled("SPACE: pause   R: reset   U: reload shaders")
-        imgui.text_disabled("G: randomize seed   X: hide GUI")
+        imgui.text_disabled("B: randomize behavior   F: randomize seed")
+        imgui.text_disabled("X: hide GUI")
         imgui.text_disabled("TAB: view   HOME: reset view")
         imgui.text_disabled("1/2/3: tool   ctrl+Z/ctrl+shift+Z: undo/redo")
         imgui.end()
@@ -451,7 +452,8 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
             (glfw.KEY_SPACE, 'toggle_pause'),
             (glfw.KEY_R, 'reset'),
             (glfw.KEY_U, 'reload'),
-            (glfw.KEY_G, 'randomize_seed'),
+            (glfw.KEY_F, 'randomize_seed'),
+            (glfw.KEY_B, 'randomize_behavior'),
             (glfw.KEY_RIGHT, 'next_preset'),
             (glfw.KEY_LEFT, 'prev_preset'),
             (glfw.KEY_TAB, 'toggle_camera_mode'),

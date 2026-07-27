@@ -131,7 +131,9 @@ class ConfigMenu:
             if imgui.menu_item_simple("Reset", "R"):
                 self._dispatch('reset')
             imgui.separator()
-            if imgui.menu_item_simple("Randomize Mutation Seed", "G"):
+            if imgui.menu_item_simple("Randomize Behavior", "B"):
+                self._dispatch('randomize_behavior')
+            if imgui.menu_item_simple("Randomize Mutation Seed", "F"):
                 self._dispatch('randomize_seed')
             imgui.separator()
             if imgui.menu_item_simple("Reload Shaders", "U"):

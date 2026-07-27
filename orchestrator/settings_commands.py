@@ -67,7 +67,7 @@ class SettingsCommands:
         times gives three undo steps -- a button press is a discrete act, not a
         gesture to merge.
 
-        `setting` is optional because the G hotkey has no widget to pass: the
+        `setting` is optional because the F hotkey has no widget to pass: the
         button hands over the Setting it drew, and the key looks it up. Both
         end at the same edit rather than the key having its own path.
         """
@@ -78,6 +78,37 @@ class SettingsCommands:
         before = self.project
         self._cmd_edit_setting(setting, random.random(), record=False)
         self._record_history(before, "randomize mutation seed")
+
+    def _cmd_randomize_behavior(self):
+        """Throw away the selected config's rule and grow a fresh one.
+
+        AN ALL-ZERO RULE IS A SENTINEL, not a rule: entity_update reads it as
+        "no target given" and generates random centers from the mutation seed
+        instead (see the check near the top of its main()). So zeroing is how
+        the host asks for a new behaviour without having to reproduce the
+        shader's generator in Python.
+
+        THE SEED MOVES TOO, and it has to. The fallback is seeded by
+        mutation_seed, so zeroing the rule alone would regenerate the SAME
+        behaviour every time -- the command would appear to do nothing on the
+        second press. Both fields change together as one undoable step, because
+        together they are one act.
+
+        Recorded as a one-shot (no coalesce key): each press is a discrete
+        choice worth stepping back through, not a gesture to merge.
+        """
+        before = self.project
+        project = self.project.edit_selected('rule', _ZERO_RULE)
+        project = project.edited(project.selected, 'mutation_seed',
+                                 random.random())
+        self._set_project(project)
+        self._record_history(before, "randomize behavior")
+
+
+#: The "no target rule" sentinel. 80 floats = 10 FourierCenters x (freq + amp).
+#: entity_update tests two of these lanes for exactly zero and generates a
+#: random rule when they are -- see _cmd_randomize_behavior.
+_ZERO_RULE = (0.0,) * 80
 
 
 def _find_seed_setting():
