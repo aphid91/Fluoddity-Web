@@ -36,16 +36,18 @@ from imgui_bundle.python_backends import glfw_backend
 from .config_clipboard import ConfigClipboardWindow
 from .config_manager import ConfigManagerWindow
 from .config_menu import ConfigMenu
+from .drawing_window import DrawingWindow
 from .input_state import InputState
 from .preferences_window import PreferencesWindow
 from .settings_window import SettingsWindow
+from .toolbar import Toolbar, TOOLS
 
 _MOUSE_BUTTONS = (glfw.MOUSE_BUTTON_LEFT, glfw.MOUSE_BUTTON_RIGHT,
                   glfw.MOUSE_BUTTON_MIDDLE)
 
 
 class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
-         PreferencesWindow):
+         PreferencesWindow, Toolbar, DrawingWindow):
     def __init__(self, window, commands=None):
         """
         window:   the GLFW window handle (from AppWindow).
@@ -107,6 +109,8 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
         self._init_config_clipboard()
         self._init_settings_window()
         self._init_preferences_window()
+        self._init_toolbar()
+        self._init_drawing_window()
 
     # ------------------------------------------------------------------
     # GLFW callbacks. Each forwards to imgui first, then records what the
@@ -254,8 +258,10 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
         self._delete_dialog()
         self._save_dialog()
         self._sync_input_buffers()
+        self._toolbar_window()
         self._settings_window()
         self._preferences_window()
+        self._drawing_window()
         self._config_manager_window()
         self._config_clipboard_window()
         if self.show_debug_panel:
@@ -299,8 +305,8 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
 
         pan = self._status.get('cam_pan', (0.0, 0.0))
         imgui.text(f"cam mode    {self._status.get('cam_mode', '-')}")
-        imgui.text(f"mouse mode  {self._status.get('mouse_mode', '-')}"
-                   f"   (S toggles)")
+        imgui.text(f"tool        {self._status.get('mouse_mode', '-')}"
+                   f"   (1/2/3)")
         imgui.text(f"cam pan     ({pan[0]:7.3f}, {pan[1]:7.3f})")
         imgui.text(f"cam zoom    {self._status.get('cam_zoom', 1.0):.3f}x")
         imgui.text(f"canvas      {self._status.get('canvas_size', '-')}")
@@ -339,8 +345,8 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
         if imgui.button("Reset View"):
             self._dispatch('reset_camera')
 
-        imgui.text_disabled("drag: pan   scroll: zoom   TAB: view   HOME: reset")
-        imgui.text_disabled("S: mouse mode   ctrl+Z/ctrl+shift+Z: undo/redo")
+        imgui.text_disabled("scroll: zoom   TAB: view   HOME: reset")
+        imgui.text_disabled("1/2/3: tool   ctrl+Z/ctrl+shift+Z: undo/redo")
         imgui.end()
 
     @staticmethod
@@ -398,6 +404,14 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
         if ctrl:
             return
 
+        # Tool selection. Number keys pick a tool DIRECTLY, paint-program style:
+        # with three tools there is no sensible "next", and cycling to reach the
+        # one you want gets tedious fast while drawing.
+        for key, (value, _label, _shortcut) in zip(
+                (glfw.KEY_1, glfw.KEY_2, glfw.KEY_3), TOOLS):
+            if key in state.keys_pressed:
+                self._dispatch('set_mouse_mode', value)
+
         for key, command in (
             (glfw.KEY_R, 'reload'),
             (glfw.KEY_SPACE, 'reset'),
@@ -405,7 +419,6 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
             (glfw.KEY_LEFT, 'prev_preset'),
             (glfw.KEY_TAB, 'toggle_camera_mode'),
             (glfw.KEY_HOME, 'reset_camera'),
-            (glfw.KEY_S, 'toggle_mouse_mode'),
         ):
             if key in state.keys_pressed:
                 self._dispatch(command)

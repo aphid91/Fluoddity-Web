@@ -15,8 +15,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from particle_system import persistence
+from particle_system.config import BC_WRAP
 from particle_system.particle_system import (ParticleSystem, canvas_dimensions,
                                              sizing_for)
+from strafe_field import StrafeField
 
 
 class ProjectCommands:
@@ -55,6 +57,16 @@ class ProjectCommands:
         self.system = self._build_system()
         self.system.apply_project(self.project)
         self.system.config_path = path
+
+        # The field is sized to the canvas, so a new canvas needs a new field --
+        # otherwise its uv mapping would silently skew against the new shape.
+        # Its contents are lost, which is consistent with the field being
+        # live-only state that was never going to survive a restart either.
+        self.strafe_field.release()
+        self.strafe_field = StrafeField(self.window.ctx, self.system.canvas_size)
+        self.strafe_field.set_wrap(
+            self.project.world.boundary_conditions == BC_WRAP)
+        self._end_stroke()
 
     # ------------------------------------------------------------------
     # Discovery

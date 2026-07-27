@@ -19,6 +19,12 @@ uniform WorldData world;
 uniform sampler2D canvas_texture;
 uniform int frame_count;
 
+// The painted Strafe Field (see strafe_field/). Displaces particles directly,
+// bypassing velocity. Inactive until the module binds a texture, so the sample
+// is skipped entirely rather than reading an unbound sampler.
+uniform sampler2D strafe_field_texture;
+uniform bool strafe_field_active;
+
 layout(std430, binding = 0) buffer EntityBuffer {
     Entity entities[];
 };
@@ -127,6 +133,15 @@ void pR(inout vec2 p, float a) {
 vec4 get_can(vec2 p, int bc){
     vec2 res = vec2(textureSize(canvas_texture, 0));
     return texture(canvas_texture, world_to_uv_bc(p, res, bc));
+}
+
+//Read the painted strafe field at a world position, honoring the boundary mode
+//for the same reason get_can does: past the edge, wrap reads the far side and
+//every other mode reads the edge.
+vec2 get_strafe_field(vec2 p, int bc){
+    if(!strafe_field_active) return vec2(0);
+    vec2 res = vec2(textureSize(strafe_field_texture, 0));
+    return texture(strafe_field_texture, world_to_uv_bc(p, res, bc)).rg;
 }
 
 //normalize vector that tolerates vec2(0)
@@ -366,6 +381,18 @@ void main() {
     pos += vel;
     pos += strafe*cfg_strafe_power(config);
     pos.y += .01/sqrt_world_size * -gravity_expand(cfg_gravity_strafe(config));
+
+    //The painted Strafe Field, in the strafe channel: a displacement, not a
+    //force, so no rule can resist it and drag never damps it. Applied before
+    //the fence and the boundary so containment still gets the last word --
+    //you can paint a particle against a wall, not through it.
+    //
+    //Deliberately NOT scaled by 1/sqrt_world_size, unlike every force above
+    //it. Those are tuned in world units and must shrink as the world grows;
+    //this is painted in uv space and read in uv space, so it already tracks
+    //canvas size. Dividing again would make an identical stroke weaker in a
+    //bigger world for no reason the user could see.
+    pos += STRAFE_FIELD_GAIN * get_strafe_field(pos, bc);
 
     //Cohort Fences: hold each particle near its own spawn point, so cohorts
     //stay legible instead of dispersing into each other. A soft wall -- it

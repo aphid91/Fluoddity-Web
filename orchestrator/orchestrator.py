@@ -42,14 +42,17 @@ import glfw
 from app_window import AppWindow
 from camera import Camera
 from particle_system import coords
+from particle_system.config import BC_WRAP
 from particle_system.particle_system import MAX_CONFIGS
 from particle_system.picker import DEFAULT_PICK_RADIUS_PX, radius_px_to_world, MISS
 from preferences import Preferences
 from project import Project, History
+from strafe_field import StrafeField
 from ui import UI
 
 from .clipboard_commands import ClipboardCommands, Checkpoint
 from .config_manager_commands import ConfigManagerCommands
+from .drawing_commands import DrawingCommands
 from .project_commands import ProjectCommands
 from .selection_commands import SelectionCommands, MouseMode
 from .settings_commands import SettingsCommands
@@ -62,7 +65,7 @@ __all__ = ['Orchestrator', 'Checkpoint']
 
 
 class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
-                   ConfigManagerCommands, SelectionCommands):
+                   ConfigManagerCommands, SelectionCommands, DrawingCommands):
 
     #: Where configs live. An attribute so the command mixins can reach it.
     _config_dir = _CONFIG_DIR
@@ -76,6 +79,9 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
 
         self.camera = Camera(ctx)
         self.system = self._build_system()
+        #: The painted strafe field. Sized to the canvas, so a disruptive
+        #: preference change rebuilds it alongside the system.
+        self.strafe_field = StrafeField(ctx, self.system.canvas_size)
 
         # --- state the command mixins read and replace ---
 
@@ -88,6 +94,10 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             world=self.system.world,
             name=Path(self.system.config_path).stem,
         )
+        # Startup builds the project directly rather than through _set_project,
+        # so the field's sampling mode is initialized here to match.
+        self.strafe_field.set_wrap(
+            self.project.world.boundary_conditions == BC_WRAP)
 
         #: In-session project checkpoints, newest first. Not persisted:
         #: File > Save is the route for anything worth keeping.
@@ -104,9 +114,14 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         self.hovered = MISS
         self.selected = MISS
 
-        #: What a left-click on the canvas does. Camera by default; selection
-        #: needs its own mode because left-drag already pans.
+        #: The active tool: what the mouse does on the canvas. Camera by
+        #: default, because navigation is the common case and it is the only
+        #: tool that cannot change anything.
         self.mouse_mode = MouseMode.CAMERA
+
+        #: Where the cursor was on the previous frame of the stroke in progress,
+        #: in field uv. None between strokes -- see drawing_commands.py.
+        self._stroke_prev_uv = None
 
         #: Undo/redo timeline. Seeded with the startup state so the first
         #: undo has somewhere to return to. Only selection and seed
@@ -131,7 +146,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             'prev_preset': self._cmd_prev_preset,
             'toggle_camera_mode': self._cmd_toggle_camera_mode,
             'reset_camera': self._cmd_reset_camera,
-            'toggle_mouse_mode': self._cmd_toggle_mouse_mode,
+            'set_mouse_mode': self._cmd_set_mouse_mode,
             'undo': self._cmd_undo,
             'redo': self._cmd_redo,
             'quit': self._cmd_quit,
@@ -158,6 +173,9 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # settings
             'edit_setting': self._cmd_edit_setting,
             'randomize_seed': self._cmd_randomize_seed,
+            # drawing
+            'edit_draw_pref': self._cmd_edit_draw_pref,
+            'clear_strafe_field': self._cmd_clear_strafe_field,
         })
 
         self._refresh_config_list()
@@ -182,9 +200,12 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # holding a key to inspect the particle under the cursor. Call
             # _update_pick() from those paths, not from here.
 
-            # Physics rate is a live preference, read each frame.
+            # Physics rate is a live preference, read each frame. The field
+            # texture is hoisted out of the loop: it cannot change mid-frame,
+            # and painting happened once, above, in _apply_canvas_input.
+            strafe_field = self.strafe_field.current_texture()
             for _ in range(self.prefs.physics_steps):
-                self.system.advance()
+                self.system.advance(strafe_field)
 
             self.window.begin_frame()
             # Pull data from modules, hand them to Camera. No persistent link:
@@ -222,19 +243,27 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         """
         self.project = project
         self.system.apply_project(project)
+        # The field samples the world the same way the canvas does, so its
+        # wrap mode follows the boundary condition. Here because this is THE
+        # single place project state changes -- anywhere else and a load or an
+        # undo could leave the two disagreeing.
+        self.strafe_field.set_wrap(project.world.boundary_conditions == BC_WRAP)
 
     def _apply_canvas_input(self, state):
-        """Translate canvas input into camera motion and selection.
+        """Translate canvas input into whatever the ACTIVE TOOL means.
 
         The UI reports *what happened* (a drag, a click); deciding what it means
         is the Orchestrator's job. Every field consulted here is already
         filtered for imgui capture, so dragging a panel never pans the view and
         clicking a button never selects a particle.
 
-        LEFT-DRAG PANS AND LEFT-CLICK SELECTS, so they must not both fire. The
-        mouse mode arbitrates: panning is always available in CAMERA mode, and
-        in SELECT mode a click selects instead. Without the mode, every attempt
-        to pan would select a particle on the way down.
+        THE TOOL ARBITRATES THE LEFT BUTTON. Panning, selecting and painting all
+        want it, and they must not both fire -- without a tool, every attempt to
+        pan would select a particle on the way down and paint on the way across.
+
+        Painting happens HERE, above the render, because draw() binds its own
+        framebuffer; running it after window.begin_frame() would paint over the
+        screen instead.
         """
         window_size = self.window.size()
         canvas_size = self.system.canvas_size
@@ -245,10 +274,14 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # Right-click undoes, mirroring the original's binding.
             if state.right_pressed:
                 self._cmd_undo()
-        elif state.left_dragging and state.mouse_delta != (0.0, 0.0):
-            self.camera.state.pan_by_pixels(state.mouse_delta, window_size, canvas_size)
+        elif self.mouse_mode is MouseMode.CAMERA:
+            if state.left_dragging and state.mouse_delta != (0.0, 0.0):
+                self.camera.state.pan_by_pixels(state.mouse_delta,
+                                                window_size, canvas_size)
+        elif self.mouse_mode is MouseMode.DRAW:
+            self._apply_draw_input(state)
 
-        # Zoom works in both modes: it is navigation, not a tool.
+        # Zoom works in every tool: it is navigation, not a tool.
         if state.scroll:
             self.camera.state.zoom_at_pixel(state.scroll, state.mouse_pos,
                                             window_size, canvas_size)
@@ -330,7 +363,8 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         that every frame for a window that is closed is pure garbage; with both
         windows shut this returns a shared empty payload instead.
         """
-        if not (self.ui.show_settings or self.ui.show_preferences):
+        if not (self.ui.show_settings or self.ui.show_preferences
+                or self.ui.show_drawing):
             return self._NO_SETTINGS
         return {
             'edit_config': dataclasses.asdict(self.project.config),
@@ -345,6 +379,10 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
     def _cmd_reload(self):
         self.camera.reload()
         self.system.reload()
+        # Does not reallocate the field texture, so a painted field survives --
+        # which is what makes it practical to tune the brush against a stroke
+        # you already like.
+        self.strafe_field.reload()
 
     def _cmd_reset(self):
         self.system.reset()

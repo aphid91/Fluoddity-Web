@@ -23,8 +23,9 @@ Every file belongs to a module folder. Each folder is a Python package
 | `app_window/`     | GLFW init, the window, and the moderngl **context** (`ctx`). Per-frame windowing (should_close / begin_frame / end_frame). |
 | `camera/`         | The viewpoint: pan/zoom/mode state, and both ways of drawing the world (TRAIL present pass, PARTICLES instanced sprites). Owns `camera.frag`, `cam_brush.vert/frag`, and `CameraState`. Holds no simulation state. |
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
-| `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `settings_window`, `preferences_window`, `config_manager`, `config_clipboard`), composed onto `UI` as mixins; `settings_spec.py` is the control registry and `hover_preview.py` the shared preview state machine. |
-| `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`). |
+| `strafe_field/`   | The painted Strafe Field: one RG32F texture at canvas resolution, the airbrush shader that writes it (`strafe_draw.frag`), and clear/erase. Live-only — never saved, never in history. |
+| `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `settings_window`, `preferences_window`, `config_manager`, `config_clipboard`, `toolbar`, `drawing_window`), composed onto `UI` as mixins; `settings_spec.py` is the control registry and `hover_preview.py` the shared preview state machine. |
+| `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`, `drawing_commands`). |
 | `project/`        | The `Project` value type (ConfigBuffer + world settings + name + selection, immutable) and `History`, the undo/redo timeline over those values. |
 | `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect). Persisted to `preferences.json`. |
 | `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
@@ -511,9 +512,13 @@ port. The price is that the mirror must stay bit-exact with the shader; a probe
 test runs the simulation's own `mutate_rule` and compares. **Edit one side,
 edit both, and re-run that test.**
 
-**Mouse modes** exist because left-drag pans and left-click selects -- without a
-mode, every attempt to pan would select on the way down. `CAMERA` (default)
-drags to pan; `SELECT` clicks to adopt and right-clicks to undo. `S` toggles.
+**Tools** (`MouseMode`) exist because three behaviours all want the left button
+-- without one, every attempt to pan would select on the way down and paint on
+the way across. `SELECT` clicks to adopt and right-clicks to undo; `CAMERA`
+(default) drags to pan; `DRAW` paints the strafe field and right-drags to erase.
+Selected directly with `1`/`2`/`3`, from the Tools menu, or from the toolbar --
+not cycled, because with three tools there is no sensible "next". Zoom is
+navigation rather than a tool, so the scroll wheel works in all three.
 
 ### What history records
 
@@ -652,8 +657,12 @@ where the mouse is.
 Orchestrator.run() loop:
        UI.begin_frame()                  # poll events, snapshot InputState,
                                          #   imgui.new_frame(), fire hotkeys
-       _apply_camera_input(state)        # drag -> pan, scroll -> zoom
-  30x  ParticleSystem.advance()          # GPU sim sub-steps
+       _apply_canvas_input(state)        # ACTIVE TOOL decides: pan / select /
+                                         #   paint. Painting happens here, above
+                                         #   the render, because it binds its own
+                                         #   FBO. Scroll always zooms.
+  30x  ParticleSystem.advance(field)     # GPU sim sub-steps; field hoisted out
+                                         #   of the loop, it cannot change here
        AppWindow.begin_frame()           # bind + clear default framebuffer
        Camera.render(                    # data pulled from modules...
            canvas_texture, entity_buffer,#   ...and handed to Camera, which
@@ -665,7 +674,10 @@ Orchestrator.run() loop:
 UI -> named command -> Orchestrator handler
      R = reload | SPACE = reset | LEFT/RIGHT = prev/next preset
      TAB = toggle camera mode | HOME = reset view
-     drag = pan | scroll = zoom (anchored at the cursor)
+     1/2/3 = select / pan / draw tool
+     scroll = zoom (anchored at the cursor, in every tool)
+     left-drag = pan (Pan) | select (Select) | paint (Draw)
+     right-drag = undo (Select) | erase (Draw)
      (commands also exposed as buttons in the Debug panel)
 ```
 
@@ -675,6 +687,125 @@ previous frame's. Polling used to sit next to the buffer swap at the bottom,
 which cost a frame of latency — invisible for keyboard shortcuts, but plainly
 visible when dragging. `AppWindow` therefore no longer pumps the event queue;
 it only swaps.
+
+## The Strafe Field, and drawing
+
+One RG32F texture at canvas resolution, painted with the mouse and read by every
+particle on every physics step. Each texel holds a world-space vector that is
+added **straight to position**:
+
+```glsl
+pos += STRAFE_FIELD_GAIN * get_strafe_field(pos, bc);
+```
+
+That makes it **advection, not a force**. It bypasses velocity entirely, so drag
+never damps it and no rule can resist it — paint a swirl and everything caught
+in it goes around, whatever it would rather be doing. Contrast the force
+channel, where a rule can and does swim upstream. It is applied after gravity
+and **before** the cohort fence and the boundary conditions, so containment
+still gets the last word: you can paint a particle against a wall, not through
+it.
+
+It is deliberately **not** scaled by `1/sqrt_world_size`, unlike every force
+around it. Those are tuned in world units and must shrink as the world grows;
+this is painted in uv space and read in uv space, so it already tracks canvas
+size. Scaling again would make an identical stroke weaker in a bigger world for
+no reason the user could see.
+
+**`STRAFE_FIELD_GAIN` is fixed, and that is a design decision.** The reference
+had both a draw-power slider and a per-field strength multiplier, which interact
+multiplicatively and give two ways to say the same thing. Here Draw Power alone
+sets stroke strength; retuning the feel of the whole feature is the one constant
+in `common.glsl`.
+
+### Why no ping-pong
+
+The canvas double-buffers because it diffuses: each texel reads its neighbours,
+so reading and writing the same texture would race. The strafe field has no such
+hazard — the brush shader never samples the field, and each fragment writes only
+its own texel — so it renders in place, through hardware blending, into its own
+FBO. One texture, no swap, and `current_texture()` is still a per-frame accessor
+so that adding a swap later would stay invisible to callers.
+
+### The brush
+
+A fullscreen quad over the field's FBO, run **once per rendered frame — never
+per physics sub-step**. Painting inside the `advance()` loop would make the
+brush 30x stronger at the default `physics_steps` and would couple stroke weight
+to the simulation rate, so that moving the Physics Steps slider silently changed
+how hard you were drawing.
+
+Two passes share `strafe_draw.frag`:
+
+| | blending | writes |
+|---|---|---|
+| draw (left-drag) | `ONE, ONE` additive | `dir * 0.01 * (power/5) * gaussian(d) / draw_size` |
+| erase (right-drag) | **off** | literal zero inside `d < 2*draw_size`, `discard` outside |
+
+`dir` is the **Out-Repel** vector: a unit vector pointing away from the stroke,
+in the aspect-corrected metric. Dividing the deposit by `draw_size` keeps a small
+brush from feeling useless — per-texel intensity rises as the footprint shrinks,
+so total painted impulse stays in the same range across the size slider.
+
+**Strokes are segments, not points.** Each frame paints the whole segment from
+last frame's cursor position to this one, using distance-to-segment rather than
+distance-to-point. The reference splats a single gaussian per frame, which
+visibly breaks into dots on a fast drag because nothing connects one frame to
+the next. `_stroke_prev_uv` in `drawing_commands.py` is that memory; clearing it
+on release is what makes the next press start a fresh stroke instead of drawing
+a line from wherever the last one ended.
+
+Erasing writes `fragColor` unconditionally. The reference conditionally assigns
+from `fragColor` itself there, which reads an uninitialized `out` variable —
+undefined behaviour that happens to be unreachable in its case. Do not port that.
+
+### Why it is not saved
+
+The texture is megabytes of binary belonging to no `Project`. It is **live-only**:
+not serialized with a config, not in the undo timeline, and Clear Field is the
+only reset. This matches the existing decision to leave canvas trails out of the
+save format, and keeps `History` a timeline of `Project` values rather than of
+mixed state it was never designed to hold. If a future format gains a
+`sim_state` key, this is a candidate to live under it.
+
+Its **controls**, by contrast, are ordinary `PREFS` — brush size and draw power
+are how *your* editor is set up, so loading someone else's config must not
+resize your brush.
+
+### What has to stay in step
+
+- Sized to the canvas, so `_rebuild_system()` rebuilds it too. A World Size or
+  Canvas Aspect change reallocates both; the field's contents are lost, which is
+  consistent with it never surviving a restart either.
+- Sampled like the canvas, so its wrap mode follows the boundary condition. Set
+  in `_set_project()` — the single place project state changes — because
+  anywhere else a load or an undo could leave the two disagreeing.
+- Bound to texture unit **1** (the canvas owns 0), passed into `advance()` per
+  call rather than held by `ParticleSystem`, which must not reference another
+  module.
+
+## Toolbar and the planned side-panel
+
+**Read this before building the side-panel.** The toolbar currently does exactly
+one job: it sets `Orchestrator.mouse_mode`, which `_apply_canvas_input` reads to
+decide what a click means.
+
+The intended endpoint is that the active tool **also selects which controls are
+visible** — physics sliders while selecting, drawing controls while drawing —
+all hosted in one docked side-panel rather than in separate floating windows.
+
+Everything is kept in independent window mixins for now *on purpose*. The
+expected migration is: keep each `_*_window()` body as a panel-*section*
+function, and have the panel call the sections the current tool asks for.
+Nothing in the current design should assume a window owns its own
+`imgui.begin`/`end` forever — which is why the tool is a plain string in the
+status dict and why no window stores a mode of its own. `TOOLS` in
+`ui/toolbar.py` mirrors `MouseMode` by value for the same reason: the UI must
+not import a simulation module (rule 10), so the strings are the contract.
+
+Adding a tool today means adding a `MouseMode` member, a `TOOLS` row, and a
+branch in `_apply_canvas_input`. Member order in `MouseMode` is the toolbar's
+left-to-right order and the `1`/`2`/`3` key order.
 
 ## Deferred / known follow-ups
 
@@ -686,6 +817,15 @@ it only swaps.
   canvases are implemented and verified, but there is no UI to change the aspect
   at runtime — doing so requires reallocating the canvas textures and resetting
   the sim, which wants a deliberate command rather than a slider.
+- The Draw tool has **no on-screen reticle**, so brush size is only visible by
+  painting. The reference drew a ring in its frame-assembly pass and never quite
+  got it to match on non-square canvases (it carried an unexplained 4/3 fudge
+  factor). Doing it here means deriving the radius from the same
+  `aspect_correct_uv` metric the brush shader uses, not reverse-engineering it.
+- Drawing is **not undoable**, by design (the field is live-only). If strokes
+  ever need undo, it wants its own bounded stroke-level timeline, not `History`
+  — that one is a timeline of `Project` values and would have to become
+  something else to hold megabytes of texture.
 - `config_index` is treated as **mutable entity state** written by
   `assign_config_index()` at reset. A future "paint particles into config N"
   tool would change it at runtime, so the host must not assume it knows the

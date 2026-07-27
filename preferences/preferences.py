@@ -40,6 +40,15 @@ class Preferences:
     #: Physics sub-steps per rendered frame. Higher = faster simulation time.
     physics_steps: int = 30
 
+    # --- drawing (Draw tool) ---
+    #: Airbrush gaussian sigma, in aspect-corrected canvas uv.
+    draw_size: float = 0.031
+    #: How hard a stroke paints. THE ONLY strength control for drawing: how far
+    #: the painted field then moves a particle is a fixed constant
+    #: (STRAFE_FIELD_GAIN in shared/shaders/common.glsl), so there is no second
+    #: multiplier interacting with this one.
+    draw_power: float = 1.0
+
     # --- disruptive: changing these reallocates and resets the simulation ---
     #: Scales entity count and canvas resolution together.
     world_size: float = 1.0

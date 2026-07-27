@@ -35,6 +35,12 @@
 
 #define PI 3.1415926
 
+// How hard the painted Strafe Field displaces a particle, per physics step.
+// FIXED BY DESIGN: Draw Power alone sets how strongly a stroke paints, so
+// there is no second multiplier for the user to get lost between. Retuning the
+// feel of the whole feature is this one number.
+#define STRAFE_FIELD_GAIN 0.01
+
 // ---------------------------------------------------------------------------
 // MODE ENUMS -- the single definition. ui/settings_spec.py mirrors these BY
 // VALUE in its DROPDOWN_MODES tuples, so the order of the options there is the

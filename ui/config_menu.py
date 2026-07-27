@@ -29,6 +29,8 @@ from __future__ import annotations
 
 from imgui_bundle import imgui
 
+from .toolbar import TOOLS
+
 from .hover_preview import PreviewSession
 
 
@@ -81,9 +83,14 @@ class ConfigMenu:
                 self._dispatch('undo')
             if imgui.menu_item_simple("Redo", "Ctrl+Shift+Z", False, can_redo):
                 self._dispatch('redo')
-            imgui.separator()
-            if imgui.menu_item_simple("Toggle Mouse Mode", "S"):
-                self._dispatch('toggle_mouse_mode')
+            imgui.end_menu()
+
+        if imgui.begin_menu("Tools"):
+            active = self._status.get('mouse_mode')
+            for value, tool_label, key in TOOLS:
+                clicked, _ = imgui.menu_item(tool_label, key, value == active)
+                if clicked:
+                    self._dispatch('set_mouse_mode', value)
             imgui.end_menu()
 
         if imgui.begin_menu("View"):
@@ -92,8 +99,12 @@ class ConfigMenu:
             if imgui.menu_item_simple("Reset View", "HOME"):
                 self._dispatch('reset_camera')
             imgui.separator()
+            _, self.show_toolbar = imgui.menu_item(
+                "Tools", "", self.show_toolbar)
             _, self.show_settings = imgui.menu_item(
                 "Project", "", self.show_settings)
+            _, self.show_drawing = imgui.menu_item(
+                "Drawing Controls", "", self.show_drawing)
             _, self.show_preferences = imgui.menu_item(
                 "Preferences", "", self.show_preferences)
             _, self.show_config_manager = imgui.menu_item(

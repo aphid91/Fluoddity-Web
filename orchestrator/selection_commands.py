@@ -30,22 +30,35 @@ from particle_system.picker import DEFAULT_PICK_RADIUS_PX, radius_px_to_world
 
 
 class MouseMode(Enum):
-    """What a left-click on the canvas does.
+    """What the mouse does on the canvas. The active TOOL.
 
-    Exists because left-drag pans and left-click selects, and they cannot both
-    own the button -- without a mode, every attempt to pan would select a
-    particle on mouse-down.
+    Exists because three different behaviours all want the left button --
+    without a mode, every attempt to pan would select a particle on the way
+    down, and every stroke would do both.
 
-    CAMERA  drag pans. The default: navigation is the common case.
     SELECT  click adopts a particle's rule, right-click undoes.
+    CAMERA  drag pans. Navigation.
+    DRAW    drag paints the strafe field, right-drag erases.
+
+    MEMBER ORDER IS THE TOOLBAR ORDER and the 1/2/3 key order. The toolbar
+    builds itself from this enum, so adding a tool here adds a button.
     """
 
-    CAMERA = 'camera'
     SELECT = 'select'
+    CAMERA = 'camera'
+    DRAW = 'draw'
 
-    def next(self) -> "MouseMode":
-        members = list(MouseMode)
-        return members[(members.index(self) + 1) % len(members)]
+    @classmethod
+    def from_value(cls, value) -> "MouseMode | None":
+        """Look up a mode by its string value, or None if unknown.
+
+        The UI reports tools as plain strings so it never imports a simulation
+        module (ARCHITECTURE rule 10); this is where the string becomes typed.
+        """
+        for member in cls:
+            if member.value == value:
+                return member
+        return None
 
 
 class SelectionCommands:
@@ -87,8 +100,19 @@ class SelectionCommands:
         self._set_project(self.project.adopt_rule(rule))
         self._record_history(before, f"select particle #{result.index}")
 
-    def _cmd_toggle_mouse_mode(self):
-        self.mouse_mode = self.mouse_mode.next()
+    def _cmd_set_mouse_mode(self, mode):
+        """Select a tool directly, by MouseMode or by its string value.
+
+        Direct selection rather than a cycle: with three tools, cycling to reach
+        the one you want is tedious, and a toolbar has no sensible "next".
+        Switching tools abandons any stroke in progress, so releasing the button
+        over a different tool cannot resume painting.
+        """
+        resolved = mode if isinstance(mode, MouseMode) else MouseMode.from_value(mode)
+        if resolved is None:
+            return
+        self.mouse_mode = resolved
+        self._end_stroke()
 
     def _cmd_undo(self):
         """Step back along the history timeline.

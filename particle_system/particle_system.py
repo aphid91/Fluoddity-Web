@@ -152,6 +152,7 @@ class ParticleSystem:
         """
         resolution = (float(self.canvas_size[0]), float(self.canvas_size[1]))
         tryset(self.entity_update_program, 'canvas_texture', 0)
+        tryset(self.entity_update_program, 'strafe_field_texture', 1)
         tryset(self.canvas_update_program, 'canvas_texture', 0)
         tryset(self.brush_splat_program, 'canvas_resolution', resolution)
 
@@ -269,8 +270,14 @@ class ParticleSystem:
         except Exception as e:
             print(f"Failed to reload canvas update shaders: {e}")
 
-    def advance(self):
-        """Run one simulation step: splat into canvas, update entities, update canvas."""
+    def advance(self, strafe_field=None):
+        """Run one simulation step: splat into canvas, update entities, update canvas.
+
+        `strafe_field` is the painted field texture, passed in per call rather
+        than held as an attribute: it belongs to another module, and modules do
+        not reference one another (the Orchestrator brokers it). None means the
+        feature contributes nothing this step.
+        """
 
         #The ordering here is a little weird. It doesn't matter so much,
         #but if I weren't trying to support legacy configs, the proper order would be:
@@ -281,7 +288,7 @@ class ParticleSystem:
         #memory barriers make sure gpu memory writes are visible to subsequent steps
 
         self.ctx.memory_barrier()
-        self.update_entities()
+        self.update_entities(strafe_field)
         self.ctx.memory_barrier()
         self.update_canvas()
         self.ctx.memory_barrier()
@@ -362,7 +369,7 @@ class ParticleSystem:
         # is what keeps it out of the per-sub-step path.
         self._refresh_world_uniform()
 
-    def update_entities(self):
+    def update_entities(self, strafe_field=None):
         """Dispatch compute shader to update entity positions."""
 
         self.entity_buffer.bind_to_storage_buffer(ENTITY_BUFFER_BINDING)
@@ -373,6 +380,13 @@ class ParticleSystem:
         self._set_world_uniform(self.entity_update_program)
         tryset(self.entity_update_program, 'frame_count', self.frame_count)
         self.canvas_texture.use(location=0)
+
+        # Unit 1: the canvas owns unit 0. Binding costs nothing next to the
+        # dispatch itself, so it is done per sub-step rather than cached.
+        tryset(self.entity_update_program, 'strafe_field_active',
+               strafe_field is not None)
+        if strafe_field is not None:
+            strafe_field.use(location=1)
 
         # Dispatch enough workgroups to cover all entities
         # local_size_x = 256, so we need ceil(entity_count / 256) workgroups
