@@ -405,10 +405,12 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
             return
 
         # Tool selection. Number keys pick a tool DIRECTLY, paint-program style:
-        # with three tools there is no sensible "next", and cycling to reach the
-        # one you want gets tedious fast while drawing.
+        # there is no sensible "next" tool, and cycling to reach the one you
+        # want gets tedious fast while drawing. Zipped against TOOLS, so the
+        # keys follow the toolbar's order and adding a tool needs one more key
+        # here and nothing else.
         for key, (value, _label, _shortcut) in zip(
-                (glfw.KEY_1, glfw.KEY_2, glfw.KEY_3), TOOLS):
+                (glfw.KEY_1, glfw.KEY_2, glfw.KEY_3, glfw.KEY_4), TOOLS):
             if key in state.keys_pressed:
                 self._dispatch('set_mouse_mode', value)
 

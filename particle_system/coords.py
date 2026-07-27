@@ -93,6 +93,27 @@ def uv_to_world(uv, canvas_size) -> tuple[float, float]:
     return ((uv[0] - 0.5) * 2.0 * ex, (uv[1] - 0.5) * 2.0 * ey)
 
 
+#: A radius measured in the brush's ASPECT-CORRECTED uv metric is exactly twice
+#: as large in world units, on both axes.
+#:
+#: The brush corrects a uv delta by (sqrt(ca), 1/sqrt(ca)) -- see
+#: aspect_correct_uv in strafe_draw.frag -- and world space scales uv by
+#: 2*(sqrt(ca), 1/sqrt(ca)). The aspect factors are identical, so they cancel
+#: and only the factor of 2 survives. That cancellation is WHY a single radius
+#: can describe the same circle for a tool that works in uv (Draw) and one that
+#: works in world space (Shove): both metrics are area-preserving, so neither
+#: turns a circle into an oval, and they differ only in scale.
+_UV_TO_WORLD_RADIUS = 2.0
+
+
+def uv_radius_to_world(radius: float) -> float:
+    """Brush radius (aspect-corrected uv) -> world units.
+
+    Independent of canvas size, which is the point -- see above.
+    """
+    return radius * _UV_TO_WORLD_RADIUS
+
+
 def world_to_ndc(p, canvas_size) -> tuple[float, float]:
     """World position -> canvas-normalized device coords [-1,1].
 

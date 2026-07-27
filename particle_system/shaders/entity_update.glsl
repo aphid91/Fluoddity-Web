@@ -25,6 +25,23 @@ uniform int frame_count;
 uniform sampler2D strafe_field_texture;
 uniform bool strafe_field_active;
 
+// --- the Shove tool -------------------------------------------------------
+// Cursor in WORLD space, and how hard to push away from it. Zero strength is
+// the off switch, which is every frame the button is not held.
+//
+// Held FIXED across the whole sub-step loop. The cursor does move within a
+// frame, but interpolating along its path would need the sub-step index as a
+// second uniform for a difference only visible on a very fast drag -- and the
+// painted field is hoisted out of the same loop for the same reason.
+uniform vec2 shove_center;
+uniform float shove_strength;   // signed: positive pushes away, negative pulls in
+// Gaussian sigma in WORLD units. The brush stores its size in aspect-corrected
+// canvas uv; the host converts once (coords.uv_radius_to_world) rather than
+// this shader mixing two metrics. World space is already area-preserving, so a
+// circle here is a circle on screen with no correction of its own -- which is
+// what lets the same reticle serve both tools.
+uniform float shove_size;
+
 layout(std430, binding = 0) buffer EntityBuffer {
     Entity entities[];
 };
@@ -142,6 +159,36 @@ vec2 get_strafe_field(vec2 p, int bc){
     if(!strafe_field_active) return vec2(0);
     vec2 res = vec2(textureSize(strafe_field_texture, 0));
     return texture(strafe_field_texture, world_to_uv_bc(p, res, bc)).rg;
+}
+
+//The Shove tool: a displacement away from (or toward) the cursor while the
+//mouse is held. Unlike the painted field this leaves NOTHING behind -- it acts
+//only on the frames the button is down, which is what makes it feel like
+//pushing the particles rather than painting something that pushes them.
+//
+//Measured in world space directly. That space is area-preserving, so a circle
+//in it is a circle on screen and no aspect correction is needed here (see the
+//coordinate convention in common.glsl).
+//
+//Deliberately NOT boundary-aware, unlike the two readers above. Those sample a
+//texture, where past the edge has to mean something; this is a distance to a
+//point the user is pointing at. In BC_WRAP a shove near the edge does not
+//reach around to the far side, because the cursor is not there.
+vec2 get_shove(vec2 p){
+    if(shove_strength == 0.0) return vec2(0);
+
+    vec2 away = p - shove_center;
+    float d = length(away);
+    //Exactly on the cursor the direction is undefined. Contributing nothing is
+    //also what keeps ATTRACT stable: the kernel peaks here, so without this
+    //guard the strongest pull would be the one with no direction to pull in.
+    if(d <= 0.0) return vec2(0);
+
+    //Same gaussian the brush paints with, so the reticle shows the real reach
+    //of both tools. No cutoff radius: a distant particle gets a denormal rather
+    //than a branch, and every invocation pays for the exp() either way.
+    float kernel = exp(-d * d / (2.0 * shove_size * shove_size));
+    return (away / d) * shove_strength * kernel;
 }
 
 //normalize vector that tolerates vec2(0)
@@ -418,6 +465,17 @@ void main() {
     //canvas size. Dividing again would make an identical stroke weaker in a
     //bigger world for no reason the user could see.
     pos += STRAFE_FIELD_GAIN * get_strafe_field(pos, bc);
+
+    //The Shove tool, in the same channel and for the same reasons: a
+    //displacement, so drag cannot damp it and no rule can resist a direct push.
+    //Also before the fence and the boundary, so containment still gets the last
+    //word -- you can shove a particle against a wall, not through it.
+    //
+    //Already divided by the physics rate on the host, so holding the button for
+    //one frame moves a particle the same distance at 30 sub-steps as at 120.
+    //Without that, the Physics Rate slider would silently be a strength slider
+    //too -- the trap the Draw brush's once-per-frame cadence exists to avoid.
+    pos += get_shove(pos);
 
     //Cohort Fences: hold each particle near its own spawn point, so cohorts
     //stay legible instead of dispersing into each other. A soft wall -- it

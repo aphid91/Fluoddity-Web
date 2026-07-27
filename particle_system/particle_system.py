@@ -258,13 +258,18 @@ class ParticleSystem:
         except Exception as e:
             print(f"Failed to reload canvas update shaders: {e}")
 
-    def advance(self, strafe_field=None):
+    def advance(self, strafe_field=None, shove=None):
         """Run one simulation step: splat into canvas, update entities, update canvas.
 
         `strafe_field` is the painted field texture, passed in per call rather
         than held as an attribute: it belongs to another module, and modules do
         not reference one another (the Orchestrator brokers it). None means the
         feature contributes nothing this step.
+
+        `shove` is the live Shove tool, as (center_x, center_y, strength, size)
+        in WORLD units, or None while the button is not held. Passed the same
+        way and for the same reason: it is the Orchestrator that can see the
+        cursor, and this module must not reach for it.
         """
 
         #The ordering here is a little weird. It doesn't matter so much,
@@ -276,7 +281,7 @@ class ParticleSystem:
         #memory barriers make sure gpu memory writes are visible to subsequent steps
 
         self.ctx.memory_barrier()
-        self.update_entities(strafe_field)
+        self.update_entities(strafe_field, shove)
         self.ctx.memory_barrier()
         self.update_canvas()
         self.ctx.memory_barrier()
@@ -357,7 +362,7 @@ class ParticleSystem:
         # is what keeps it out of the per-sub-step path.
         self._refresh_world_uniform()
 
-    def update_entities(self, strafe_field=None):
+    def update_entities(self, strafe_field=None, shove=None):
         """Dispatch compute shader to update entity positions."""
 
         self.entity_buffer.bind_to_storage_buffer(ENTITY_BUFFER_BINDING)
@@ -368,6 +373,17 @@ class ParticleSystem:
         self._set_world_uniform(self.entity_update_program)
         tryset(self.entity_update_program, 'frame_count', self.frame_count)
         self.canvas_texture.use(location=0)
+
+        # The Shove tool. `shove` is (center_x, center_y, strength, size) or
+        # None; zero strength is the off switch, so the common case is one
+        # uniform write rather than a branch in the shader.
+        if shove is None:
+            tryset(self.entity_update_program, 'shove_strength', 0.0)
+        else:
+            tryset(self.entity_update_program, 'shove_center',
+                   (float(shove[0]), float(shove[1])))
+            tryset(self.entity_update_program, 'shove_strength', float(shove[2]))
+            tryset(self.entity_update_program, 'shove_size', float(shove[3]))
 
         # Unit 1: the canvas owns unit 0. Binding costs nothing next to the
         # dispatch itself, so it is done per sub-step rather than cached.

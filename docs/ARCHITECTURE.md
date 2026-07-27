@@ -26,7 +26,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
 | `strafe_field/`   | The painted Strafe Field: one RG32F texture at canvas resolution, the airbrush shader that writes it (`strafe_draw.frag`), and clear/erase. Live-only — never saved, never in history. |
 | `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `settings_window`, `preferences_window`, `config_manager`, `config_clipboard`, `toolbar`, `drawing_window`), composed onto `UI` as mixins; `settings_spec.py` is the control registry and `hover_preview.py` the shared preview state machine. |
-| `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`, `drawing_commands`). |
+| `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`, `drawing_commands`, `shove_commands`). |
 | `project/`        | The `Project` value type (ConfigBuffer + world settings + name + selection, immutable) and `History`, the undo/redo timeline over those values. |
 | `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect, and the whole display pipeline: tone curve, motion blur, bloom, overlays). Persisted to `preferences.json`. |
 | `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`, `quad_vbo`/`quad_vao`) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
@@ -516,10 +516,11 @@ edit both, and re-run that test.**
 **Tools** (`MouseMode`) exist because three behaviours all want the left button
 -- without one, every attempt to pan would select on the way down and paint on
 the way across. `SELECT` clicks to adopt and right-clicks to undo; `CAMERA`
-(default) drags to pan; `DRAW` paints the strafe field and right-drags to erase.
-Selected directly with `1`/`2`/`3`, from the Tools menu, or from the toolbar --
-not cycled, because with three tools there is no sensible "next". Zoom is
-navigation rather than a tool, so the scroll wheel works in all three.
+(default) drags to pan; `SHOVE` drags to push particles away from the cursor and
+right-drags to pull them in; `DRAW` paints the strafe field and right-drags to
+erase. Selected directly with `1`/`2`/`3`/`4`, from the Tools menu, or from the
+toolbar -- not cycled, because there is no sensible "next" tool. Zoom is
+navigation rather than a tool, so the scroll wheel works in all of them.
 
 ### What history records
 
@@ -683,10 +684,10 @@ Orchestrator.run() loop:
 UI -> named command -> Orchestrator handler
      R = reload | SPACE = reset | LEFT/RIGHT = prev/next preset
      TAB = toggle camera mode | HOME = reset view
-     1/2/3 = select / pan / draw tool
+     1/2/3/4 = select / pan / shove / draw tool
      scroll = zoom (anchored at the cursor, in every tool)
-     left-drag = pan (Pan) | select (Select) | paint (Draw)
-     right-drag = undo (Select) | erase (Draw)
+     left-drag = pan (Pan) | select (Select) | push (Shove) | paint (Draw)
+     right-drag = undo (Select) | pull (Shove) | erase (Draw)
      (commands also exposed as buttons in the Debug panel)
 ```
 
@@ -864,6 +865,59 @@ UI and not the assembler: it depends on the active tool, and only the
 Orchestrator knows that (rule 10). The field can optionally persist outside the
 Draw tool; the reticle never does.
 
+## The Shove tool
+
+Pushes particles away from the cursor while the left button is held, pulls them
+in on the right. It shares the Draw tool's brush — `draw_size` is its gaussian
+sigma, `draw_power` its strength, and the same reticle shows its reach — but it
+is doing something categorically different, and the two are easy to confuse:
+
+|        | acts on          | persists?                        |
+|--------|------------------|----------------------------------|
+| Shove  | the **particles** | no — only while the button is down |
+| Draw   | the **field**     | yes — until erased                 |
+
+Draw paints a force that keeps pushing whatever crosses it. Shove *is* the
+push. That difference drives everything below.
+
+**It runs inside the physics loop**, unlike painting. The field is a texture
+that persists between sub-steps, so it can be written once per frame and read
+many times (`strafe_draw.frag` says so at the top: painting per sub-step would
+make the brush `physics_steps`× stronger). A shove has nothing to persist in —
+it must be applied *as* particles move, or it would be one jump at an arbitrary
+point in the frame's advance.
+
+That makes it inherently per-sub-step, which is exactly what `physics_steps`
+scales. **So the strength is divided by that count before it reaches the GPU**
+(`shove_commands.shove_state`), and holding the button for one frame moves a
+particle the same distance at 30 sub-steps as at 120. Without it the Physics
+Rate slider would silently be a strength slider too. Verified with the physics
+disabled — displacement is rate-independent to 0.13% across a 12× rate change,
+where a missing division shows as ~3×.
+
+**Strafe channel, not force.** `pos += get_shove(pos)`, next to the painted
+field and for the same reasons: drag cannot damp it, no rule can resist it, and
+particles stop dead on release rather than coasting. Applied before the fence
+and the boundary, so containment still gets the last word — you can shove a
+particle against a wall, not through it.
+
+**Measured in world space**, where the shader needs no aspect correction at all:
+world space is already area-preserving, so a circle in it is a circle on screen.
+The brush's sigma arrives pre-converted by `coords.uv_radius_to_world()`, which
+is a bare factor of 2 — the aspect terms in the two metrics are identical and
+cancel. That cancellation is *why* one radius can describe the same circle for a
+tool working in uv (Draw) and one working in world space (Shove).
+
+**Attract is stable at the centre** without a special case. The kernel peaks at
+the cursor but the direction vector is undefined there, so `get_shove` returns
+zero — the same guard `strafe_draw.frag` uses. Particles still pile into a dense
+knot, which is what an attract tool is for; there is simply no NaN.
+
+The cursor is resolved **once per frame** and held for every sub-step, hoisted
+out of the loop exactly like the field texture: it cannot move mid-frame, so
+asking again per sub-step would be the same answer at 120× the cost. A fast drag
+therefore leaves a slightly scalloped wake rather than a smooth trench.
+
 ## The Strafe Field, and drawing
 
 One RG32F texture at canvas resolution, painted with the mouse and read by every
@@ -1002,9 +1056,20 @@ status dict and why no window stores a mode of its own. `TOOLS` in
 `ui/toolbar.py` mirrors `MouseMode` by value for the same reason: the UI must
 not import a simulation module (rule 10), so the strings are the contract.
 
-Adding a tool today means adding a `MouseMode` member, a `TOOLS` row, and a
-branch in `_apply_canvas_input`. Member order in `MouseMode` is the toolbar's
-left-to-right order and the `1`/`2`/`3` key order.
+Adding a tool today means a `MouseMode` member, a `TOOLS` row, a key in the
+hotkey zip in `ui/ui.py`, and a branch in `_apply_canvas_input`. Member order in
+`MouseMode` is the toolbar's left-to-right order and the `1`/`2`/`3`/`4` key
+order, and the enum and `TOOLS` must stay in lockstep -- they are coupled by
+string value only, deliberately, so the UI never imports a simulation module.
+
+**A tool whose effect is continuous rather than an event needs one more thing.**
+`_apply_canvas_input` runs once per frame, which is right for a click or a
+stroke but wrong for something that must act *while* the simulation advances.
+Shove is the worked example: its branch there does nothing but claim the left
+button, and the actual work is a value read once per frame and handed to every
+`advance()` call. If a new tool influences the physics rather than issuing a
+command, expect it to follow that shape -- and to need dividing by
+`physics_steps`, for the reasons in the Shove section.
 
 ## Deferred / known follow-ups
 

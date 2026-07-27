@@ -57,6 +57,7 @@ from .drawing_commands import DrawingCommands
 from .project_commands import ProjectCommands
 from .selection_commands import SelectionCommands, MouseMode
 from .settings_commands import SettingsCommands
+from .shove_commands import ShoveCommands
 
 # Physics sub-steps per frame is a live preference (Preferences.physics_steps).
 
@@ -99,7 +100,8 @@ def blur_schedule(prefs):
 
 
 class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
-                   ConfigManagerCommands, SelectionCommands, DrawingCommands):
+                   ConfigManagerCommands, SelectionCommands, DrawingCommands,
+                   ShoveCommands):
 
     #: Where configs live. An attribute so the command mixins can reach it.
     _config_dir = _CONFIG_DIR
@@ -243,6 +245,12 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             strafe_field = self.strafe_field.current_texture()
             window_size = self.window.size()
 
+            # The Shove tool, resolved ONCE per frame and held for every
+            # sub-step. Hoisted out of the loop like the field texture and for
+            # the same reason: the cursor cannot move mid-frame, so asking
+            # again per sub-step would be the same answer at 120x the cost.
+            shove = self.shove_state(state)
+
             # MOTION BLUR PUTS THE RENDER INSIDE THE PHYSICS LOOP. A displayed
             # frame is the average of `samples` renders taken `stride` steps
             # apart, so the camera must see the simulation mid-advance rather
@@ -259,7 +267,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             sample_at = 0 if self.prefs.motion_blur else stride - 1
 
             for step in range(self.prefs.physics_steps):
-                self.system.advance(strafe_field)
+                self.system.advance(strafe_field, shove)
                 if step % stride == sample_at:
                     # Pulled per sample, not per frame: the canvas
                     # double-buffer swaps inside advance(), so a texture
@@ -351,6 +359,14 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             if state.left_dragging and state.mouse_delta != (0.0, 0.0):
                 self.camera.state.pan_by_pixels(state.mouse_delta,
                                                 window_size, canvas_size)
+        elif self.mouse_mode is MouseMode.SHOVE:
+            # Nothing to do here: a shove is not an event, it is a condition
+            # that holds while the button is down, and it has to be applied
+            # INSIDE the physics loop rather than once before it. run() reads
+            # it from shove_state() for exactly that reason. The branch exists
+            # so the tool still claims the left button and the fall-through
+            # below cannot pan the view out from under it.
+            pass
         elif self.mouse_mode is MouseMode.DRAW:
             self._apply_draw_input(state)
 
@@ -367,11 +383,17 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         (rule 10). The field can optionally stay visible outside the Draw tool;
         the reticle never does, because it shows where a brush that is not
         currently usable would land.
+
+        The reticle serves BOTH brush tools: Draw and Shove share draw_size, so
+        the ring means the same thing in each -- the reach of what the button
+        is about to do. The field overlay does not, because only Draw touches
+        it.
         """
         drawing = self.mouse_mode is MouseMode.DRAW
+        brushing = drawing or self.mouse_mode is MouseMode.SHOVE
         show_field = self.prefs.field_always_show or drawing
 
-        if not (drawing and self.prefs.show_reticle):
+        if not (brushing and self.prefs.show_reticle):
             return {'show_field': show_field, 'reticle_radius': 0.0}
 
         # The brush's VISIBLE extent, which is 2 sigma of its gaussian -- and

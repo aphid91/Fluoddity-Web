@@ -28,7 +28,8 @@ from imgui_bundle import imgui
 TOOLS = (
     ('select', 'Select', '1'),
     ('camera', 'Pan', '2'),
-    ('draw', 'Draw', '3'),
+    ('shove', 'Shove', '3'),
+    ('draw', 'Draw', '4'),
 )
 
 #: Highlight for the active tool. Bright enough to read at a glance across the

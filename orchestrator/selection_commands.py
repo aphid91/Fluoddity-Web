@@ -38,14 +38,20 @@ class MouseMode(Enum):
 
     SELECT  click adopts a particle's rule, right-click undoes.
     CAMERA  drag pans. Navigation.
+    SHOVE   drag pushes particles away from the cursor, right-drag pulls them in.
     DRAW    drag paints the strafe field, right-drag erases.
 
-    MEMBER ORDER IS THE TOOLBAR ORDER and the 1/2/3 key order. The toolbar
+    SHOVE and DRAW are easy to confuse and worth stating apart: Shove acts on
+    the PARTICLES, directly and only while the button is held. Draw paints the
+    FIELD, which then keeps pushing whatever crosses it until it is erased.
+
+    MEMBER ORDER IS THE TOOLBAR ORDER and the 1/2/3/4 key order. The toolbar
     builds itself from this enum, so adding a tool here adds a button.
     """
 
     SELECT = 'select'
     CAMERA = 'camera'
+    SHOVE = 'shove'
     DRAW = 'draw'
 
     @classmethod
