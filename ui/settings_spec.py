@@ -176,6 +176,22 @@ SETTINGS = [
             "Negative values invert the turn direction.",
             group='Forces'),
 
+    Setting('gravity_strafe', 'Gravity (Strafe)', BASIC, CONFIG, SLIDER, -1.0, 1.0,
+            "A steady pull on every particle, applied as displacement -- it "
+            "slides particles without changing their velocity, so they keep "
+            "steering as before while drifting. Positive pulls down.\n\n"
+            "The slider is not proportional to the force: it is expanded "
+            "logarithmically, so the middle of the range covers small "
+            "adjustments and the ends reach far. Dead centre is exactly zero.",
+            group='Forces'),
+    Setting('gravity_force', 'Gravity (Force)', ADVANCED, CONFIG, SLIDER, -1.0, 1.0,
+            "A steady pull on every particle, applied as acceleration -- it "
+            "feeds velocity, so particles build up speed and fight their own "
+            "steering. Positive pulls down.\n\n"
+            "Logarithmically expanded like Gravity (Strafe), with a true zero "
+            "at centre.",
+            group='Forces'),
+
     # ================= PROJECT: Trails =================
     Setting('trail_persistence', 'Trail Persistence', ADVANCED, WORLD, SLIDER,
             0.5, 0.999,

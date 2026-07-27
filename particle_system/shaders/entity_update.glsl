@@ -172,6 +172,28 @@ void mutate_rule(inout Rule current_rule,float amount,float cohort){
 }
 
 
+// Gravity-like force expansion: maps a linear -1..1 slider (gravity_force /
+// gravity_strafe) to a logarithmic physical force, so a small knob covers a
+// wide range. Odd-symmetric, with a linear dead-zone near centre so it reaches
+// exactly 0.
+//
+//   physical = sign(c) * MAXV * 10^(DECADES*(|c|-1))   for |c| > KNEE
+//   physical = sign(c) * V_KNEE * (|c|/KNEE)           for |c| <= KNEE
+//
+// The two pieces meet at |c| == KNEE, so the curve is continuous there.
+#define GRAVITY_MAXV    0.5   // physical value at |control| = 1
+#define GRAVITY_DECADES 4.0   // log span: MAXV .. MAXV/10^DECADES
+#define GRAVITY_KNEE    0.05  // |control| below this ramps linearly to 0
+float gravity_expand(float c){
+    float a = abs(c);
+    float s = sign(c);
+    float v_knee = GRAVITY_MAXV * pow(10.0, GRAVITY_DECADES*(GRAVITY_KNEE - 1.0));
+    if (a <= GRAVITY_KNEE) {
+        return s * v_knee * (a / GRAVITY_KNEE);
+    }
+    return s * GRAVITY_MAXV * pow(10.0, GRAVITY_DECADES*(a - 1.0));
+}
+
 //Used to enforce left-right symmetry in the local coordinates vec2(forward, left)
 vec2 y_reflect(vec2 p){
     return p*vec2(1,-1);
@@ -284,9 +306,17 @@ void main() {
     //Accelerate: Apply drag and add force to e.vel,
     vel = vel*cfg_drag(config) + force;
 
+    //Uniform pull on the whole population, in the same two channels: _force
+    //feeds velocity (after drag, so drag does not damp it away the same frame),
+    //_strafe displaces position directly. Negated so a positive slider pulls
+    //DOWN the screen. Scaled by 1/sqrt_world_size like every other force here,
+    //so the feel survives a World Size change.
+    vel.y += .01/sqrt_world_size * -gravity_expand(cfg_gravity_force(config));
+
     //Move: add vel and strafe to pos
     pos += vel;
     pos += strafe*cfg_strafe_power(config);
+    pos.y += .01/sqrt_world_size * -gravity_expand(cfg_gravity_strafe(config));
 
     //wrap into the toroidal world bounds
     pos = world_wrap(pos, canvas_res);

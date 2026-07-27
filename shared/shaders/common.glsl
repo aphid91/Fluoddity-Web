@@ -66,7 +66,11 @@ struct ConfigData {
     vec4 sensor;    // x: gain          y: angle       z: distance    w: mutation_scale
     vec4 force;     // x: global_mult   y: drag        z: strafe      w: axial
     vec4 misc;      // x: lateral       y: hazard_rate z: cohorts(i)  w: mutation_seed
-};  // 368 bytes
+    // The first four vec4s filled up (misc.w went to mutation_seed), so this is
+    // the "add a whole new vec4" case rule 2 describes rather than a reclaimed
+    // lane. Two spares here for the next additions.
+    vec4 force2;    // x: gravity_force y: gravity_strafe    zw: reserved
+};  // 384 bytes
 
 float cfg_sensor_gain(ConfigData c)     { return c.sensor.x; }
 float cfg_sensor_angle(ConfigData c)    { return c.sensor.y; }
@@ -84,6 +88,13 @@ int   cfg_cohorts(ConfigData c)       { return floatBitsToInt(c.misc.z); }
 // Which random variation the rule mutation uses. Per-config rather than a
 // uniform, so different particle populations can mutate differently.
 float cfg_mutation_seed(ConfigData c) { return c.misc.w; }
+
+// Uniform pull on the whole population, in the two motion channels the rest of
+// the physics uses: _force feeds velocity, _strafe displaces position directly.
+// Both are LINEAR -1..1 controls -- run them through gravity_expand() before
+// use, never apply them raw.
+float cfg_gravity_force(ConfigData c)  { return c.force2.x; }
+float cfg_gravity_strafe(ConfigData c) { return c.force2.y; }
 
 // ---------------------------------------------------------------------------
 // WorldData -- settings that are properties of the world, not of a particle.

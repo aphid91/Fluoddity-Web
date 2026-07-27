@@ -50,6 +50,12 @@ class SimulationConfig:
     axial_force: float
     lateral_force: float
     hazard_rate: float
+    #: Uniform pull on the whole population, one per motion channel. LINEAR
+    #: -1..1 controls -- the shader expands them logarithmically via
+    #: gravity_expand(). Default 0 (no pull), so configs saved before these
+    #: existed behave exactly as they did.
+    gravity_force: float = 0.0
+    gravity_strafe: float = 0.0
     # 80 floats -> 10 FourierCenters, each frequency(4) + amplitude(4)
     rule: tuple = field(default_factory=tuple)
 
@@ -85,7 +91,10 @@ class SimulationConfig:
         # misc: lateral, hazard_rate, cohorts(int bits), mutation_seed
         record['misc'] = (self.lateral_force, self.hazard_rate,
                           _int_lane(self.cohorts), self.mutation_seed)
+        # force2: gravity_force, gravity_strafe, and two spare lanes
+        record['force2'] = (self.gravity_force, self.gravity_strafe, 0.0, 0.0)
         return record
+
 
 @dataclass(frozen=True)
 class WorldSettings:

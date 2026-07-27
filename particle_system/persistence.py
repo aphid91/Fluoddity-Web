@@ -86,6 +86,10 @@ def _config_to_dict(config: SimulationConfig) -> dict:
             "cohorts": config.cohorts,
             "mutation_seed": config.mutation_seed,
         },
+        "force2": {
+            "gravity_force": config.gravity_force,
+            "gravity_strafe": config.gravity_strafe,
+        },
     }
 
 
@@ -93,6 +97,7 @@ def _config_from_dict(data: dict) -> SimulationConfig:
     sensor = data["sensor"]
     force = data["force"]
     misc = data["misc"]
+    force2 = data.get("force2", {})
     return SimulationConfig(
         cohorts=int(misc["cohorts"]),
         # LEGACY: v8 files written before the rename spell this "rule_seed".
@@ -107,6 +112,11 @@ def _config_from_dict(data: dict) -> SimulationConfig:
         axial_force=float(force["axial"]),
         lateral_force=float(misc["lateral"]),
         hazard_rate=float(misc["hazard_rate"]),
+        # Added after the format shipped: v8 files written before gravity
+        # existed have no force2 block, and zero means "no pull", which is
+        # exactly what they meant. Additive, so no legacy reader needed.
+        gravity_force=float(force2.get("gravity_force", 0.0)),
+        gravity_strafe=float(force2.get("gravity_strafe", 0.0)),
         rule=tuple(float(v) for v in data["rule"]),
     )
 
