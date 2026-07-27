@@ -80,11 +80,14 @@ class Setting:
     options: tuple = ()
 
 
-#: Dropdown entries for the CHOICE controls. Both features are registered but
-#: not yet implemented; the option lists record the intended modes.
+#: Dropdown entries for the CHOICE controls. ORDER IS THE ENUM: each label's
+#: index is the value stored and uploaded, so these must stay in lockstep with
+#: the BC_*/IC_* defines in shared/shaders/common.glsl (mirrored in
+#: particle_system/config.py). Reordering a tuple here silently changes what
+#: every saved config means.
 DROPDOWN_MODES = {
-    'boundary_conditions': ('Wrap', 'Clamp', 'Bounce', 'Respawn'),
-    'initial_conditions': ('Random', 'Grid', 'Ring', 'Center'),
+    'boundary_conditions': ('Bounce', 'Wrap', 'Reset'),
+    'initial_conditions': ('Grid', 'Random', 'Center', 'Ring'),
 }
 
 # Bounds are fixed and generous rather than user-editable (adjustable slider
@@ -137,19 +140,30 @@ SETTINGS = [
             "its own mutation of the rule, so more cohorts means more distinct "
             "behaviours coexisting.",
             group='Population'),
-    Setting('boundary_conditions', 'Boundary Conditions', ADVANCED, CONFIG,
-            CHOICE, 0, 3,
-            "What happens when a particle reaches the edge of the world.",
-            implemented=False, group='Population',
+    Setting('boundary_conditions', 'Boundary Conditions', ADVANCED, WORLD,
+            CHOICE, 0, 2,
+            "What happens when a particle reaches the edge of the world. "
+            "Bounce reflects it, Wrap carries it round to the far side, Reset "
+            "returns it to its starting position.\n\n"
+            "A world setting: the trails themselves wrap or stop at the edge "
+            "to match, so it cannot differ between particles sharing a canvas.",
+            group='Population',
             options=DROPDOWN_MODES['boundary_conditions']),
     Setting('initial_conditions', 'Initial Conditions', ADVANCED, CONFIG,
             CHOICE, 0, 3,
-            "How particles are arranged when the simulation resets.",
-            implemented=False, group='Population',
+            "How particles are arranged when the simulation resets. Grid and "
+            "Ring lay the cohorts out, Random scatters them, Center starts "
+            "them all in a clump at the middle.\n\n"
+            "Also governs where Hazard Rate respawns particles, and where "
+            "Cohort Fences hold them.",
+            group='Population',
             options=DROPDOWN_MODES['initial_conditions']),
     Setting('cohort_fences', 'Cohort Fences', ADVANCED, CONFIG, SLIDER, 0.0, 1.0,
-            "Confines each cohort to its own region of the world.",
-            implemented=False, group='Population'),
+            "Holds each particle near where it started, so cohorts stay "
+            "distinct instead of mixing. 0 is off; higher values pull harder. "
+            "Follows Initial Conditions -- the fence is around a particle's "
+            "own starting point, wherever that mode put it.",
+            group='Population'),
     Setting('hazard_rate', 'Hazard Rate', ADVANCED, CONFIG, SLIDER, 0.0, 0.01,
             "Chance per step that a particle is reset to its initial state. "
             "A slow churn that keeps the population from settling.",

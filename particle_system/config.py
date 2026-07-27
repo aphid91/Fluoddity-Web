@@ -25,6 +25,13 @@ import numpy as np
 from .layout import CONFIG_DATA_DTYPE, WORLD_DATA_DTYPE
 
 
+#: Mode enums, mirroring the BC_*/IC_* defines in common.glsl BY VALUE. The
+#: shader is the definition; these exist so host code and the settings registry
+#: can name the modes instead of writing bare integers.
+BC_BOUNCE, BC_WRAP, BC_RESET = 0, 1, 2
+IC_GRID, IC_RANDOM, IC_CENTER, IC_RING = 0, 1, 2, 3
+
+
 def _int_lane(value: int) -> np.float32:
     """Store an int in a float lane (mirrors GLSL intBitsToFloat)."""
     return np.frombuffer(np.int32(value).tobytes(), dtype=np.float32)[0]
@@ -56,6 +63,12 @@ class SimulationConfig:
     #: existed behave exactly as they did.
     gravity_force: float = 0.0
     gravity_strafe: float = 0.0
+    #: How particles are arranged on reset. Indexes the IC_* modes in
+    #: common.glsl. Defaults to IC_CENTER, which is what this app did before
+    #: the mode was selectable, so existing configs look unchanged.
+    initial_conditions: int = IC_CENTER
+    #: How tightly each particle is held near its own spawn point. 0 is off.
+    cohort_fences: float = 0.0
     # 80 floats -> 10 FourierCenters, each frequency(4) + amplitude(4)
     rule: tuple = field(default_factory=tuple)
 
@@ -91,8 +104,11 @@ class SimulationConfig:
         # misc: lateral, hazard_rate, cohorts(int bits), mutation_seed
         record['misc'] = (self.lateral_force, self.hazard_rate,
                           _int_lane(self.cohorts), self.mutation_seed)
-        # force2: gravity_force, gravity_strafe, and two spare lanes
-        record['force2'] = (self.gravity_force, self.gravity_strafe, 0.0, 0.0)
+        # force2: gravity_force, gravity_strafe, initial_conditions(int bits),
+        # cohort_fences
+        record['force2'] = (self.gravity_force, self.gravity_strafe,
+                            _int_lane(self.initial_conditions),
+                            self.cohort_fences)
         return record
 
 
@@ -113,11 +129,17 @@ class WorldSettings:
 
     trail_persistence: float = 0.94
     trail_diffusion: float = 1.0
+    #: What happens at the edge of the world. Indexes the BC_* modes in
+    #: common.glsl. A world setting rather than a per-config one: the trail
+    #: field obeys the same boundary, and there is only one trail field.
+    #: Defaults to BC_WRAP, the behavior before the mode was selectable.
+    boundary_conditions: int = BC_WRAP
 
     def for_upload(self, sqrt_world_size: float, config_count: int) -> "WorldConfig":
         return WorldConfig(
             trail_persistence=self.trail_persistence,
             trail_diffusion=self.trail_diffusion,
+            boundary_conditions=self.boundary_conditions,
             sqrt_world_size=sqrt_world_size,
             config_count=config_count,
         )
@@ -135,16 +157,25 @@ class WorldConfig:
     trail_diffusion: float
     sqrt_world_size: float
     config_count: int
+    boundary_conditions: int = BC_WRAP
 
     def to_record(self) -> np.ndarray:
         record = np.zeros((), dtype=WORLD_DATA_DTYPE)
         record['trail'] = (self.trail_persistence, self.trail_diffusion,
                            self.sqrt_world_size, _int_lane(self.config_count))
+        record['bounds'] = (_int_lane(self.boundary_conditions), 0.0, 0.0, 0.0)
         return record
 
-    def as_uniform_value(self) -> tuple:
-        """WorldData as a flat tuple, for setting the `world.trail` uniform."""
-        return tuple(float(v) for v in self.to_record()['trail'])
+    def as_uniform_value(self) -> dict[str, tuple]:
+        """WorldData as {member: flat tuple}, one entry per vec4 lane.
+
+        GLSL struct uniforms are set a member at a time, so this is keyed by
+        member name rather than flattened -- adding a lane to WorldData means
+        adding a key here, not renumbering an offset.
+        """
+        record = self.to_record()
+        return {name: tuple(float(v) for v in record[name])
+                for name in record.dtype.names}
 
 
 def pack_configs(configs: list[SimulationConfig]) -> bytes:

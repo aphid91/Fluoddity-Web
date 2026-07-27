@@ -12,8 +12,12 @@ uniform int frame_count;
 
 in vec2 uv;
 out vec4 canvas_out;
+// The diffusion stencil reaches one texel past the edge, so it has to obey the
+// same boundary the particles do: wrap across the seam only in BC_WRAP,
+// otherwise clamp so trails stop at the wall instead of bleeding through it.
 vec4 getCan(vec2 p, sampler2D sam) {
-    vec2 uv = fract(p);
+    vec2 uv = world_boundary_conditions(world) == BC_WRAP ? fract(p)
+                                                          : clamp(p, 0.0, 1.0);
     return texture(sam, uv);
 }
 

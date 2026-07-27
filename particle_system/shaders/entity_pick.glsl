@@ -40,8 +40,9 @@ layout(std430, binding = 2) buffer PickResultBuffer {
 };
 
 uniform vec2 target;            // world position being picked at
-uniform vec2 canvas_resolution;
 uniform float max_dist;         // search radius in WORLD units; beyond this, miss
+// No canvas_resolution here: distance is straight-line (see below), so nothing
+// in this shader needs to know the world's shape.
 
 #define INDEX_BITS 20u          // up to ~1.05M entities
 #define INDEX_MASK ((1u << INDEX_BITS) - 1u)
@@ -56,9 +57,12 @@ void main() {
     Entity e = entities[index];
     vec2 pos = e_pos(e);
 
-    // Toroidal: respects the wrap, so a particle just past an edge is correctly
-    // adjacent to the cursor near the opposite edge.
-    float dist_sq = world_dist_sq(target, pos, canvas_resolution);
+    // Straight-line, deliberately NOT toroidal. Picking is a UI affordance, and
+    // the wrap only changes the answer for a click within a particle radius of
+    // the seam -- not worth threading the boundary mode down here, and wrong in
+    // every mode but BC_WRAP anyway.
+    vec2 d = target - pos;
+    float dist_sq = dot(d, d);
     if (dist_sq > max_dist * max_dist) return;   // outside the radius: not a candidate
 
     // Quantize distance into the high bits. Using the actual distance (not the

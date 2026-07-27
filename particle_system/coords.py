@@ -110,7 +110,12 @@ def ndc_to_world(ndc, canvas_size) -> tuple[float, float]:
 
 
 def world_wrap(p, canvas_size) -> tuple[float, float]:
-    """Wrap a world position into the toroidal world bounds."""
+    """Wrap a world position into the world bounds.
+
+    BC_WRAP only: the world is a torus in that boundary mode alone. Bounce and
+    Reset are handled in the shader (`world_bounce` in common.glsl), since
+    nothing on the host needs to move a particle.
+    """
     ex, ey = world_half_extent(canvas_size)
 
     def wrap(v, extent):
@@ -120,20 +125,9 @@ def world_wrap(p, canvas_size) -> tuple[float, float]:
     return (wrap(p[0], ex), wrap(p[1], ey))
 
 
-def world_delta(a, b, canvas_size) -> tuple[float, float]:
-    """Shortest offset from a to b across the wrap.
-
-    The world is a torus, so a particle just past the right edge is adjacent to
-    one at the left edge -- straight-line distance would call them maximally far
-    apart.
-    """
-    return world_wrap((b[0] - a[0], b[1] - a[1]), canvas_size)
-
-
-def world_dist_sq(a, b, canvas_size) -> float:
-    """Squared toroidal distance between two world points."""
-    dx, dy = world_delta(a, b, canvas_size)
-    return dx * dx + dy * dy
+# There is deliberately no toroidal distance here. Picking -- the only thing
+# that ever wanted one -- uses straight-line distance in every boundary mode;
+# see entity_pick.glsl.
 
 
 # ---------------------------------------------------------------------------

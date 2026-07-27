@@ -120,10 +120,13 @@ void pR(inout vec2 p, float a) {
 	p = cos(a)*p + sin(a)*vec2(p.y, -p.x);
 }
 
-//convert p from worldspace to texture coords and retrieve canvas
-vec4 get_can(vec2 p){
+//convert p from worldspace to texture coords and retrieve canvas.
+//The boundary mode decides what a sensor reaching past the edge sees: in
+//BC_WRAP the sampler repeats and it reads the far side; otherwise it clamps
+//and reads the edge, because in those modes the far side is not adjacent.
+vec4 get_can(vec2 p, int bc){
     vec2 res = vec2(textureSize(canvas_texture, 0));
-    return texture(canvas_texture, world_to_uv(p, res));
+    return texture(canvas_texture, world_to_uv_bc(p, res, bc));
 }
 
 //normalize vector that tolerates vec2(0)
@@ -145,14 +148,59 @@ int assign_config_index(uint index){
     return 0;
 }
 
-//Return all entities to their initialization state
+//Where an entity starts, per the config's initial-conditions mode.
+//
+//PURE, and deliberately so: Cohort Fences needs to know where a particle's
+//home is on every frame, and recomputing it here is cheaper than widening
+//Entity to store it. Because both the fence and reset() call this, they can
+//never disagree about where home is.
+//
+//Every mode starts from the same small per-cohort jitter, then places it.
+//Grid and Ring are expressed in world extent rather than the reference's
+//inline aspect fudge, so they stay correct on a non-square canvas.
+vec2 initial_position(uint index, ConfigData config){
+    float cohort_val = get_cohort(index, config);
+    vec2 extent = world_half_extent_from_res(vec2(textureSize(canvas_texture, 0)));
+
+    vec2 pos = .019*vec2(hash(vec2(cohort_val)),hash(vec2(cohort_val+index+2.142)));
+
+    int mode = cfg_initial_conditions(config);
+    int cohorts = max(1, cfg_cohorts(config));
+
+    if(mode == IC_GRID){
+        //One cell per cohort, laid out so the cells come out roughly SQUARE:
+        //for n cohorts in a box of aspect a, that wants sqrt(n*a) columns.
+        //(Using n*a rather than sqrt(n)*a is the difference between a grid and
+        //a single wide strip on a wide canvas.)
+        float cols = max(1.0, round(sqrt(float(cohorts) * extent.x/extent.y)));
+        vec2 cells = vec2(cols, ceil(float(cohorts)/cols));
+        vec2 cell = vec2(mod(floor(cohort_val),cols), floor(floor(cohort_val)/cols));
+        pos += (cell + 0.5)/cells * 2.0*extent - extent;
+    }
+    else if(mode == IC_RANDOM){
+        //scattered across the whole world
+        pos = (vec2(hash(vec2(cohort_val,1.0)),hash(vec2(cohort_val,2.0)))*2.0-1.0)*extent;
+    }
+    else if(mode == IC_RING){
+        float angle = cohort_val/float(cohorts) * 2.0*PI;
+        pos += vec2(cos(angle),sin(angle)) * 0.5*min(extent.x,extent.y);
+    }
+    //IC_CENTER: the bare jitter, which is what this app did before the mode
+    //was selectable. Kept as a real mode so that look stays reachable.
+
+    return pos;
+}
+
+//Return all entities to their initialization state.
+//
+//NOTE: this writes the entity buffer ITSELF, so every caller must return
+//immediately after -- a later `entities[index]=...` would clobber it.
 void reset(uint index, ConfigData config){
 
     float size=index<entities.length()?.0015/world_sqrt_world_size(world): 0;
     float cohort_val = get_cohort(index, config);
 
-    //set pos and vel to random values on a across the canvas
-    vec2 pos=.019*vec2(hash(vec2(cohort_val)),hash(vec2(cohort_val+index+2.142)));//vec2(hash(vec2(cohort_val, 1.0)), hash(vec2(cohort_val, 2.0))) * 2.0 - 1.0;
+    vec2 pos = initial_position(index, config);
     vec2 vel=0.00005*(vec2(hash(vec2(cohort_val,index)),hash(vec2(cohort_val,pos.y)))*2-1);
 
     //store to persistent entity buffer
@@ -277,8 +325,9 @@ void main() {
     pR(right_sensor_offset,-cfg_sensor_angle(config)*PI);
 
     //read the trails from canvas
-    vec4 ltap = get_can(pos+left_sensor_offset);
-    vec4 rtap = get_can(pos+right_sensor_offset);
+    int bc = world_boundary_conditions(world);
+    vec4 ltap = get_can(pos+left_sensor_offset, bc);
+    vec4 rtap = get_can(pos+right_sensor_offset, bc);
 
     //if a few arbitrary coefficients are exactly 0, then assume target_rule is all 0s (no target) and generate a random rule instead.
     if(rule.centers[0].frequency==vec4(0) && rule.centers[5].amplitude==vec4(0)){
@@ -318,8 +367,45 @@ void main() {
     pos += strafe*cfg_strafe_power(config);
     pos.y += .01/sqrt_world_size * -gravity_expand(cfg_gravity_strafe(config));
 
-    //wrap into the toroidal world bounds
-    pos = world_wrap(pos, canvas_res);
+    //Cohort Fences: hold each particle near its own spawn point, so cohorts
+    //stay legible instead of dispersing into each other. A soft wall -- it
+    //pushes back in both motion channels rather than hard-clamping, so a
+    //particle can still lean on the fence and be shaped by it.
+    //Slider is 0=off .. 1=tightest; the radius mapping is here, not in the UI.
+    float fences = cfg_cohort_fences(config);
+    if(fences > 0.0){
+        float radius = mix(0.5, 0.02, fences);
+        vec2 to_home = initial_position(index, config) - pos;
+        float excess = length(to_home) - radius;
+        if(excess > 0.0){
+            vec2 dir = safenorm(to_home);
+            //#define HARD_FENCE 1
+            #ifdef HARD_FENCE
+            //Hard version: leaving the fence is fatal. Kept because it is a
+            //genuinely different look, not because it is a fallback.
+            reset(index, config);
+            return;//reset writes the entity buffer itself
+            #else
+            vel += .001*excess*dir;   //force: accelerate toward home
+            pos += .51*excess*dir;    //strafe: hop most of the way back
+            #endif
+        }
+    }
+
+    //Boundary conditions, applied last: after every force, both integrations,
+    //and the fence. A world property, so it comes from WorldData.
+    if(bc == BC_WRAP){
+        pos = world_wrap(pos, canvas_res);
+    }
+    else if(bc == BC_BOUNCE){
+        world_bounce(pos, vel, canvas_res);
+    }
+    else if(bc == BC_RESET){
+        if(any(greaterThan(abs(pos), world_half_extent_from_res(canvas_res)))){
+            reset(index, config);
+            return;//reset writes the entity buffer itself
+        }
+    }
 
     //Commit new entity state to buffers
     entities[index]=make_entity(pos,vel,e_size(e),config_index);

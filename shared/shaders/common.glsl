@@ -36,6 +36,25 @@
 #define PI 3.1415926
 
 // ---------------------------------------------------------------------------
+// MODE ENUMS -- the single definition. ui/settings_spec.py mirrors these BY
+// VALUE in its DROPDOWN_MODES tuples, so the order of the options there is the
+// order here. Change one, change both.
+// ---------------------------------------------------------------------------
+
+// What happens when a particle reaches the edge of the world. A WorldData
+// setting: the trail field follows the same rule, so it cannot vary per config.
+#define BC_BOUNCE 0
+#define BC_WRAP   1
+#define BC_RESET  2
+
+// How particles are placed on reset. A ConfigData setting: different
+// populations can seed differently.
+#define IC_GRID   0
+#define IC_RANDOM 1
+#define IC_CENTER 2
+#define IC_RING   3
+
+// ---------------------------------------------------------------------------
 // Rule -- the Fourier Feature Network coefficients that define particle behavior
 // ---------------------------------------------------------------------------
 
@@ -69,7 +88,7 @@ struct ConfigData {
     // The first four vec4s filled up (misc.w went to mutation_seed), so this is
     // the "add a whole new vec4" case rule 2 describes rather than a reclaimed
     // lane. Two spares here for the next additions.
-    vec4 force2;    // x: gravity_force y: gravity_strafe    zw: reserved
+    vec4 force2;    // x: gravity_force y: gravity_strafe z: initial_conditions(i) w: cohort_fences
 };  // 384 bytes
 
 float cfg_sensor_gain(ConfigData c)     { return c.sensor.x; }
@@ -96,6 +115,12 @@ float cfg_mutation_seed(ConfigData c) { return c.misc.w; }
 float cfg_gravity_force(ConfigData c)  { return c.force2.x; }
 float cfg_gravity_strafe(ConfigData c) { return c.force2.y; }
 
+// How this population is arranged on reset -- one of the IC_* modes above.
+int cfg_initial_conditions(ConfigData c) { return floatBitsToInt(c.force2.z); }
+// How tightly each particle is held near its own spawn point. 0 is off, 1 is
+// tightest -- see the fence block in entity_update.glsl for the mapping.
+float cfg_cohort_fences(ConfigData c) { return c.force2.w; }
+
 // ---------------------------------------------------------------------------
 // WorldData -- settings that are properties of the world, not of a particle.
 //
@@ -105,12 +130,19 @@ float cfg_gravity_strafe(ConfigData c) { return c.force2.y; }
 // ---------------------------------------------------------------------------
 struct WorldData {
     vec4 trail;  // x: persistence  y: diffusion  z: sqrt_world_size  w: config_count(i)
+    // trail filled up, so this is rule 2's "add a whole new vec4" case.
+    vec4 bounds; // x: boundary_conditions(i)   yzw: reserved
 };
 
 float world_trail_persistence(WorldData w) { return w.trail.x; }
 float world_trail_diffusion(WorldData w)   { return w.trail.y; }
 float world_sqrt_world_size(WorldData w)   { return w.trail.z; }
 int   world_config_count(WorldData w)      { return floatBitsToInt(w.trail.w); }
+
+// What happens at the edge of the world -- one of the BC_* modes above. A
+// world property rather than a per-config one: the trail field has to obey the
+// same boundary as the particles do, and there is only one trail field.
+int world_boundary_conditions(WorldData w) { return floatBitsToInt(w.bounds.x); }
 
 // ---------------------------------------------------------------------------
 // Entity -- one particle. 32 bytes, 16-byte aligned.
@@ -148,6 +180,10 @@ Entity make_entity(vec2 pos, vec2 vel, float size, int config_index) {
 // particle_system/coords.py). The reference implementation had six divergent
 // copies of this math, at least one of which contradicted the others; that is
 // the specific failure this rule exists to prevent.
+//
+// THE WORLD IS A TORUS ONLY IN BC_WRAP. The boundary mode decides the world's
+// topology, so anything that crosses an edge must ask: world_wrap for wrap,
+// world_bounce for bounce, and world_to_uv_bc for every texture read.
 // ---------------------------------------------------------------------------
 
 // Half-extent of world space on each axis, from canvas aspect ca = res.x/res.y.
@@ -160,10 +196,19 @@ vec2 world_half_extent_from_res(vec2 canvas_res) {
     return world_half_extent(canvas_res.x / canvas_res.y);
 }
 
-// World -> texture uv [0,1]. The canvas wraps, so uv is expected to be fract'd
-// by the sampler (textures are set to repeat).
+// World -> texture uv [0,1]. In BC_WRAP the canvas textures are set to repeat
+// and the sampler does the wrapping, so uv is deliberately left unclamped.
+// Every other boundary mode must go through world_to_uv_bc below.
 vec2 world_to_uv(vec2 p, vec2 canvas_res) {
     return p / (2.0 * world_half_extent_from_res(canvas_res)) + 0.5;
+}
+
+// World -> texture uv, honoring the boundary mode. Only BC_WRAP leaves uv free
+// for the sampler's repeat to handle; the others clamp, so a sensor reaching
+// past the edge reads the edge rather than the far side of the world.
+vec2 world_to_uv_bc(vec2 p, vec2 canvas_res, int bc) {
+    vec2 uv = world_to_uv(p, canvas_res);
+    return bc == BC_WRAP ? uv : clamp(uv, 0.0, 1.0);
 }
 
 vec2 uv_to_world(vec2 uv, vec2 canvas_res) {
@@ -175,25 +220,32 @@ vec2 world_to_ndc(vec2 p, vec2 canvas_res) {
     return p / world_half_extent_from_res(canvas_res);
 }
 
-// Wrap a world position into the toroidal world bounds.
+// Wrap a world position into the world bounds. BC_WRAP only -- the world is a
+// torus in that mode alone.
 vec2 world_wrap(vec2 p, vec2 canvas_res) {
     vec2 extent = world_half_extent_from_res(canvas_res);
     vec2 size = 2.0 * extent;
     return size * (fract(p / size - 0.5) - 0.5);
 }
 
-// Shortest offset from a to b across the wrap. The world is a torus, so a
-// particle just past the right edge is adjacent to one at the left edge --
-// straight-line distance would call them maximally far apart.
-vec2 world_delta(vec2 a, vec2 b, vec2 canvas_res) {
-    return world_wrap(b - a, canvas_res);
+// Reflect a coordinate given in edge units back into [-1,1]. A triangle wave,
+// so it is correct for ARBITRARY overshoot. The reference's single-fold version
+// (sign(x)*(1-abs(1-abs(x)))) silently teleported a particle to the far side
+// once it passed 2x the edge in one step, which heavy gravity reaches.
+float edge_fold(float x) {
+    float t = mod(abs(x), 2.0);
+    return sign(x) * (1.0 - abs(1.0 - t));
 }
 
-// Squared toroidal distance. Squared because callers compare distances, and
-// skipping the sqrt in an inner loop over every entity is worth it.
-float world_dist_sq(vec2 a, vec2 b, vec2 canvas_res) {
-    vec2 d = world_delta(a, b, canvas_res);
-    return dot(d, d);
+// Reflect a position off the world bounds, flipping the velocity components
+// that crossed. Position and velocity move together: reflecting the position
+// without reversing the velocity would just re-trigger the bounce every frame,
+// pinning the particle to the wall.
+void world_bounce(inout vec2 p, inout vec2 v, vec2 canvas_res) {
+    vec2 extent = world_half_extent_from_res(canvas_res);
+    if (abs(p.x) > extent.x) v.x = -v.x;
+    if (abs(p.y) > extent.y) v.y = -v.y;
+    p = vec2(edge_fold(p.x / extent.x), edge_fold(p.y / extent.y)) * extent;
 }
 
 // ---------------------------------------------------------------------------

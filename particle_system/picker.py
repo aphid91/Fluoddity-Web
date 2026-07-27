@@ -17,6 +17,11 @@ The cost is one frame of latency. At 60fps that is 16ms, well below the ~100ms
 where pointing feels laggy, and invisible for hover-highlighting or clicking.
 Callers that must have an exactly-current answer should say so explicitly
 (see `pick_blocking`), understanding it stalls and will not port.
+
+DISTANCE IS STRAIGHT-LINE, in every boundary mode -- including wrap, where the
+world really is a torus. The difference only shows for a click within a particle
+radius of the seam, which is not worth teaching this shader about the world's
+shape. See the note in entity_pick.glsl.
 """
 
 from __future__ import annotations
@@ -94,8 +99,7 @@ class EntityPicker:
         except Exception as e:
             print(f"Failed to reload entity pick shader: {e}")
 
-    def request(self, entity_buffer, entity_count, target_world,
-                canvas_size, radius_world):
+    def request(self, entity_buffer, entity_count, target_world, radius_world):
         """Dispatch a pick. The result is available from `retrieve()` next frame."""
         if self.program is None:
             return
@@ -106,8 +110,6 @@ class EntityPicker:
         self.result_buffer.bind_to_storage_buffer(PICK_RESULT_BINDING)
 
         tryset(self.program, 'target', (float(target_world[0]), float(target_world[1])))
-        tryset(self.program, 'canvas_resolution',
-               (float(canvas_size[0]), float(canvas_size[1])))
         tryset(self.program, 'max_dist', float(radius_world))
 
         self.program.run(math.ceil(entity_count / 256), 1, 1)

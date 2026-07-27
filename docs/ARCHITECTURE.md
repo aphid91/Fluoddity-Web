@@ -116,6 +116,15 @@ These are the load-bearing constraints. Follow them when extending the project.
    the others, and the resulting drift between overlays and the simulation was
    never fully fixed. See "The view transform" below.
 
+   **The world's topology is a setting, not a constant.** It is a torus only in
+   `BC_WRAP`; Bounce reflects and Reset respawns. Four things follow the mode
+   and must agree, or the boundary only half exists: the entity update
+   (`world_wrap` / `world_bounce`), the canvas samplers' repeat flags
+   (`_apply_boundary_sampling`), the trail diffusion stencil in `canvas.frag`,
+   and every sensor read (`world_to_uv_bc`). Because the trail field obeys the
+   same boundary as the particles and there is only one trail field, the mode
+   lives in `WorldData` — it cannot vary per config.
+
 10. **Simulation truth lives in the ConfigBuffer, not in the UI.** When a UI
     module lands, it reads config state and issues commands; it does not own a
     parallel copy. Where UI state and sim state diverge, the WebGPU port stops
@@ -593,10 +602,13 @@ is invisible for hovering and clicking. `pick_blocking()` exists for host-side
 tooling and tests; it stalls and does not port, so it must not be used in the
 render loop.
 
-**Distance is toroidal.** The world wraps, so a particle just past one edge is
-adjacent to the cursor near the opposite edge. `world_delta` / `world_dist_sq`
-in `coords.py` and `common.glsl` implement this; straight-line distance would
-disagree with the simulation's own topology.
+**Distance is straight-line, in every boundary mode.** The obvious objection is
+that the world wraps, so a particle just past one edge is adjacent to a cursor
+near the opposite edge — and that is true, but only in `BC_WRAP`, and only for a
+click within a particle radius of the seam. Threading the boundary mode down
+into the pick shader to fix a case that narrow was not worth it, and the
+toroidal helpers it would have needed asserted a topology that two of the three
+boundary modes do not have. They were removed rather than left uncalled.
 
 The pick radius is specified in **screen pixels** and converted through the view
 transform, so the tolerance feels identical at any zoom — a world-space radius

@@ -28,7 +28,7 @@ import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .config import SimulationConfig, WorldSettings
+from .config import BC_WRAP, IC_CENTER, SimulationConfig, WorldSettings
 
 FORMAT_VERSION = 8
 
@@ -89,6 +89,8 @@ def _config_to_dict(config: SimulationConfig) -> dict:
         "force2": {
             "gravity_force": config.gravity_force,
             "gravity_strafe": config.gravity_strafe,
+            "initial_conditions": config.initial_conditions,
+            "cohort_fences": config.cohort_fences,
         },
     }
 
@@ -117,6 +119,10 @@ def _config_from_dict(data: dict) -> SimulationConfig:
         # exactly what they meant. Additive, so no legacy reader needed.
         gravity_force=float(force2.get("gravity_force", 0.0)),
         gravity_strafe=float(force2.get("gravity_strafe", 0.0)),
+        # Likewise added after the format shipped. IC_CENTER and no fences are
+        # what those files were doing before the settings existed.
+        initial_conditions=int(force2.get("initial_conditions", IC_CENTER)),
+        cohort_fences=float(force2.get("cohort_fences", 0.0)),
         rule=tuple(float(v) for v in data["rule"]),
     )
 
@@ -128,6 +134,7 @@ def to_dict(configs, world: WorldSettings, camera: dict | None = None,
         "world": {
             "trail_persistence": world.trail_persistence,
             "trail_diffusion": world.trail_diffusion,
+            "boundary_conditions": world.boundary_conditions,
         },
         "configs": [_config_to_dict(c) for c in configs],
     }
@@ -159,6 +166,9 @@ def _from_v8(data: dict) -> SavedConfig:
     world = WorldSettings(
         trail_persistence=float(world_raw["trail_persistence"]),
         trail_diffusion=float(world_raw["trail_diffusion"]),
+        # Added after the format shipped: files without it predate selectable
+        # boundaries, and wrap is what they ran.
+        boundary_conditions=int(world_raw.get("boundary_conditions", BC_WRAP)),
     )
     return SavedConfig(configs=configs, world=world,
                        camera=data.get("camera"), notes=data.get("notes", ""))
@@ -202,6 +212,12 @@ def _from_v7(data: dict) -> SavedConfig:
     Dropped on purpose: slider_ranges, sweeps, jitters,
     parameter_sweeps_enabled (all subsumed by the ConfigBuffer or cut), and
     most of `appearance` (unimplemented here).
+
+    ALSO dropped: v7's boundary_conditions and initial_conditions. Both enums
+    were renumbered (v7 was BOUNCE-RESET-WRAP and GRID-RANDOM-RING), so reading
+    the integers straight across would silently change what a preset does.
+    Loading them needs a remap, which is deferred to a migration script rather
+    than smuggled into the reader.
     """
     physics = data["physics"]
     settings = data["settings"]

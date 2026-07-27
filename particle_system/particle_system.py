@@ -6,7 +6,7 @@ import moderngl
 
 from shared.gl_utils import read_shader, tryset
 from . import persistence
-from .config import pack_configs
+from .config import BC_WRAP, pack_configs
 from .layout import SIZE_OF_CONFIG_DATA, SIZE_OF_ENTITY_STRUCT, ENTITY_DTYPE
 from .picker import EntityPicker, MISS
 
@@ -91,16 +91,14 @@ class ParticleSystem:
         # Textures and framebuffers.
         # Canvas textures only ever use .xy (velocity flow field), so RG suffices.
         # Particles are splatted directly into the canvas, so there is no separate brush texture.
+        # Their repeat mode follows the boundary condition -- see
+        # _apply_boundary_sampling(), called once these exist.
         self.canvas_texture = self.ctx.texture(canvas_size, 2, dtype='f4')
-        self.canvas_texture.repeat_x = True
-        self.canvas_texture.repeat_y = True
         self.canvas_texture.filter = (moderngl.LINEAR,moderngl.LINEAR)
         self.canvas_fbo = self.ctx.framebuffer(color_attachments=[self.canvas_texture])
 
         # Double buffer for canvas update (read from one, write to other)
         self.canvas_texture_back = self.ctx.texture(canvas_size, 2, dtype='f4')
-        self.canvas_texture_back.repeat_x = True
-        self.canvas_texture_back.repeat_y = True
         self.canvas_texture_back.filter = (moderngl.LINEAR,moderngl.LINEAR)
         self.canvas_fbo_back = self.ctx.framebuffer(color_attachments=[self.canvas_texture_back])
 
@@ -120,6 +118,7 @@ class ParticleSystem:
         self._world_uniform = None
         self._upload_configs()
         self._refresh_world_uniform()
+        self._apply_boundary_sampling()
 
         # Fullscreen quad for canvas update (initialized in reload)
         self.quad_vbo = None
@@ -194,7 +193,24 @@ class ParticleSystem:
         self._world_uniform = self.current_world_config().as_uniform_value()
 
     def _set_world_uniform(self, program):
-        tryset(program, 'world.trail', self._world_uniform)
+        for member, value in self._world_uniform.items():
+            tryset(program, f'world.{member}', value)
+
+    def _apply_boundary_sampling(self):
+        """Point the canvas samplers at the current boundary mode.
+
+        The textures repeat only in wrap mode. In every other mode a sensor or
+        a diffusion tap reaching past the edge must read the EDGE, not the far
+        side -- otherwise particles bouncing off a wall would still smell trails
+        from across the world, and the boundary would only half exist.
+
+        Both textures are set because they swap identity every frame in
+        update_canvas(); setting only the front one would flicker.
+        """
+        repeat = self.world.boundary_conditions == BC_WRAP
+        for tex in (self.canvas_texture, self.canvas_texture_back):
+            tex.repeat_x = repeat
+            tex.repeat_y = repeat
 
     def _reload_entity_update(self):
         """Reload entity update compute shader."""
@@ -291,8 +307,8 @@ class ParticleSystem:
         Returns a PickResult; check `.hit` before using `.index`.
         """
         result = self.picker.retrieve(self.entity_buffer, ENTITY_DTYPE)
-        self.picker.request(self.entity_buffer, self.entity_count_value, target_world,
-                            self.canvas_size, radius_world)
+        self.picker.request(self.entity_buffer, self.entity_count_value,
+                            target_world, radius_world)
         return result
 
     def pick_blocking(self, target_world, radius_world):
@@ -303,8 +319,8 @@ class ParticleSystem:
         and does NOT translate to WebGPU, so it must not be used in the render
         loop.
         """
-        self.picker.request(self.entity_buffer, self.entity_count_value, target_world,
-                            self.canvas_size, radius_world)
+        self.picker.request(self.entity_buffer, self.entity_count_value,
+                            target_world, radius_world)
         self.ctx.finish()
         return self.picker.retrieve(self.entity_buffer, ENTITY_DTYPE)
 
@@ -329,6 +345,9 @@ class ParticleSystem:
         project/project.py); this only ships it to the device.
         """
         self.world = project.world
+        # Sampler mode is part of the boundary condition, so it follows the
+        # world setting rather than being fixed at construction.
+        self._apply_boundary_sampling()
         self.apply_configs(project.configs)
 
     def apply_configs(self, configs):
