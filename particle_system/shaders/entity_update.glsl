@@ -402,11 +402,26 @@ void main() {
     vec4 rtap = get_can(pos+right_sensor_offset, bc);
 
     //if a few arbitrary coefficients are exactly 0, then assume target_rule is all 0s (no target) and generate a random rule instead.
+    float rule_seed = cfg_mutation_seed(config)+floor(cohort);
     if(rule.centers[0].frequency==vec4(0) && rule.centers[5].amplitude==vec4(0)){
-        rule = Rule(generate_random_centers(cfg_mutation_seed(config)+floor(cohort)));
+        //A GENERATED RULE IS ALREADY RANDOM, so it is NOT mutated on top.
+        //The seed alone decides it, and rerolling the seed rerolls the whole
+        //rule -- there is nothing for Mutation Scale to add that the seed does
+        //not already do, and mutating here would mean Mutation Scale silently
+        //changed a rule the user never authored.
+        //
+        //It also keeps the rule REPRODUCIBLE ON THE HOST. mutate_rule derives
+        //its own seed by hashing the rule's coefficients, and hash() is
+        //chaotic, so a 1-ULP difference in a generated coefficient (the GPU
+        //fuses a multiply-add here that numpy cannot) would send the mutation
+        //somewhere else entirely. Skipping it means particle selection can
+        //reproduce exactly what a particle obeys -- see particle_system/mutation.py.
+        rule = Rule(generate_random_centers(rule_seed));
     }
-    //Each cohort gets a random mutation
-    mutate_rule(rule,cfg_mutation_scale(config),cfg_mutation_seed(config)+floor(cohort));
+    else {
+        //Each cohort gets a random mutation
+        mutate_rule(rule,cfg_mutation_scale(config),rule_seed);
+    }
 
     //rescale sensor values
     float sensor_scaling = sqrt_world_size*38.855*cfg_sensor_gain(config);

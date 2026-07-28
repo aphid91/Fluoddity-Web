@@ -95,6 +95,13 @@ class SelectionCommands:
 
         A miss leaves everything untouched -- clicking empty space should do
         nothing, not reset anything.
+
+        SELECTING ON AN UNAUTHORED CONFIG IS THE INTERESTING CASE. After
+        Randomize Behavior the config's rule is all zeros -- a sentinel meaning
+        "generate one" -- and the particles obey a rule that exists only on the
+        GPU. entity_rule() reproduces it exactly (generated rules are not
+        mutated, on either side), and adopting the result writes it into the
+        config as a real rule, so the sentinel stops firing from here on.
         """
         result = self._pick_at(pixel)
         self.selected = result

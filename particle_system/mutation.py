@@ -15,13 +15,21 @@ deterministic in (rule, amount, cohort), so Python can reproduce it exactly.
 No extra buffer, no GPU readback -- and nothing for the WebGPU port to
 translate, where readbacks are async anyway.
 
-THE PRICE IS THAT THIS MUST STAY BIT-EXACT WITH THE SHADER.
-Ported line-for-line from entity_update.glsl (pcg_hash/hash/hash4 and
-mutate_rule). If you edit either side, edit both, and re-run the GPU-vs-Python
-probe in the verification suite -- it runs the shader's own code over a range
-of inputs and compares. A silent divergence here means selection adopts a rule
-the particle never had, which looks like "the sim jumped" rather than like a
-bug.
+THE PRICE IS THAT THIS MUST TRACK THE SHADER.
+Ported line-for-line from entity_update.glsl (pcg_hash/hash/hash4,
+generate_random_centers and mutate_rule). If you edit either side, edit both,
+and re-run the GPU-vs-Python probe -- it lifts the shader's own function bodies
+out of the .glsl, compiles them, and compares. A silent divergence here means
+selection adopts a rule the particle never had, which looks like "the sim
+jumped" rather than like a bug.
+
+AGREEMENT IS TO ONE ULP, NOT BIT-EXACT. Measured, not assumed: the GPU is free
+to contract a multiply-add into an FMA, rounding once where numpy rounds twice.
+That is harmless as long as nothing amplifies it -- which is exactly why a
+generated rule is NOT mutated on either side. mutate_rule derives its seed by
+hashing the rule's own coefficients, and hash() is chaotic, so feeding it a
+1-ULP difference produced a completely different rule (internal seed 0.3088 vs
+0.2605). Generate or mutate, never both.
 
 TWO TRAPS, both load-bearing:
 
@@ -102,6 +110,55 @@ def cohort_of(index: int, cohorts: int, entity_count: int) -> np.float32:
                       / np.float32(entity_count))
 
 
+def is_zero_rule(rule) -> bool:
+    """True if the shader would treat `rule` as "no target given".
+
+    THE SENTINEL, mirrored exactly: entity_update tests two specific lanes --
+    centers[0].frequency and centers[5].amplitude -- for exactly zero, not the
+    whole rule. Testing all 80 floats here would be a different predicate, and
+    a rule that happened to zero only those lanes would then diverge.
+    """
+    flat = np.asarray(rule, dtype=np.float32)
+    if flat.size != RULE_FLOATS:
+        return False
+    centers = flat.reshape(CENTERS, 2, 4)
+    return not centers[0][0].any() and not centers[5][1].any()
+
+
+def generate_random_centers(seed) -> tuple:
+    """Mirrors generate_random_centers() in entity_update.glsl.
+
+    What a particle actually obeys when its config carries no authored rule.
+    Ported line-for-line, same float32 discipline as everything else here --
+    see the module docstring's two traps.
+    """
+    seed = np.float32(seed)
+    centers = np.zeros((CENTERS, 2, 4), dtype=np.float32)
+
+    for i in range(CENTERS):
+        base = i * 8
+        # Frequencies: [-2,2], biased toward [-1,1] by squaring the scale.
+        # NOTE the shader reuses lane 0's hash for freq_scale AND for
+        # frequency.x -- not a typo to tidy, it is what the GPU computes.
+        h0 = hash2(seed, _f32(base + 0))
+        # pow(h, 2.0), NOT h*h. They differ by an ULP on this hardware, and an
+        # ULP is not survivable here: mutate_rule derives its seed by hashing
+        # these very coefficients, and hash() is chaotic by design -- one bit
+        # in gives a completely different seed out (measured: 0.3088 vs
+        # 0.2605), so the mutation that follows diverges entirely.
+        freq_scale = _f32(_f32(1.0) + _f32(2.0) * _f32(np.power(h0, _f32(2.0))))
+        for lane in range(4):
+            h = h0 if lane == 0 else hash2(seed, _f32(base + lane))
+            centers[i][0][lane] = _f32(_f32(h * _f32(2.0) - _f32(1.0))
+                                       * freq_scale)
+        # Amplitudes: [-1,1], unscaled.
+        for lane in range(4):
+            h = hash2(seed, _f32(base + 4 + lane))
+            centers[i][1][lane] = _f32(h * _f32(2.0) - _f32(1.0))
+
+    return tuple(float(v) for v in centers.reshape(-1))
+
+
 def mutate_rule(rule, amount, cohort) -> tuple:
     """Mutate a rule the way the shader does. Returns 80 floats.
 
@@ -151,13 +208,29 @@ def mutate_rule(rule, amount, cohort) -> tuple:
 def entity_rule(config, index: int, entity_count: int) -> tuple:
     """The rule a given entity is actually obeying.
 
-    Composes the two steps the shader takes: work out the entity's cohort, then
-    mutate the config's base rule by (mutation_seed + floor(cohort)).
+    Composes the same three steps the shader takes: work out the entity's
+    cohort, substitute a generated rule if the config carries none, then mutate
+    by (mutation_seed + floor(cohort)).
 
-    Does NOT reproduce the shader's "all-zero rule means generate a random one"
-    branch -- that path exists for configs with no authored rule, and adopting
-    a generated rule is not what selection is for.
+    THE SENTINEL BRANCH IS NOT OPTIONAL, though it once looked it. This used to
+    skip it, on the reasoning that an unauthored rule was not worth adopting --
+    which held only while nothing produced zero rules. Randomize Behavior does
+    exactly that, so skipping it meant selection mutated all-zero coefficients
+    while the particle obeyed a generated rule: a near-zero rule adopted from a
+    particle that never had it, which reads as the simulation dying rather than
+    as a bug. Both sides must branch the same way or neither should.
+
+    A GENERATED RULE IS NOT MUTATED, matching the shader. It is already random,
+    and the seed that produced it already rerolls it wholesale, so Mutation
+    Scale has nothing to add. That also makes this path exactly reproducible:
+    mutate_rule hashes the rule's own coefficients to derive its seed, and the
+    GPU fuses a multiply-add in the generator that numpy cannot, so a 1-ULP
+    difference would otherwise be amplified by a chaotic hash into a completely
+    different rule.
     """
     cohort = cohort_of(index, config.cohorts, entity_count)
     seed = np.float32(np.float32(config.mutation_seed) + np.floor(cohort))
+
+    if is_zero_rule(config.rule):
+        return generate_random_centers(seed)
     return mutate_rule(config.rule, config.mutation_scale, seed)

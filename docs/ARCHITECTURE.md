@@ -521,6 +521,27 @@ command would appear to work (the config visibly changes to zeros) while the
 simulation looked identical on every press. Both fields change together as one
 undoable step, because together they are one act.
 
+**A generated rule is never mutated.** It is already random, and the seed that
+produced it rerolls it wholesale, so Mutation Scale has nothing to add — and
+letting it apply would mean that slider silently reshaping a rule the user
+never authored. `entity_update` therefore branches: generate *or* mutate, never
+both.
+
+That also makes selection work. `mutate_rule` derives its own seed by **hashing
+the rule's coefficients**, and `hash()` is chaotic by design; the GPU fuses a
+multiply-add in the generator that numpy cannot, so the host's copy of a
+generated rule differs by one ULP. Mutating on top amplified that ULP into a
+completely different rule (measured: internal seed 0.3088 vs 0.2605, final
+coefficients off by 1.65). Without the mutation the difference stays at that
+one ULP — invisible — and `mutation.entity_rule()` reproduces what a particle
+is actually obeying. Selecting such a particle then writes the generated rule
+into the config as a real one, so the sentinel stops firing from that point on.
+
+The host mirror must follow **both** branches. It once skipped the sentinel
+entirely, which was defensible only while nothing produced zero rules;
+Randomize Behavior does, and the mismatch showed up as selection adopting
+near-zero coefficients and the simulation appearing to die.
+
 The particle's rule is **recomputed host-side** (`particle_system/mutation.py`),
 not read back from the GPU. The mutation is deterministic in
 `(rule, scale, seed, cohort)`, so Python can reproduce it -- avoiding the extra
