@@ -25,7 +25,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | `assembler/`      | Everything between the finished camera frame and the screen: bloom, the asinh tone curve, and the two drawing overlays (strafe field, brush reticle). Owns `frame_assembly.frag`, `bloom_downsample.frag`, `bloom_upsample.frag`. Holds no simulation state and no preferences. |
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
 | `strafe_field/`   | The painted Strafe Field: one RG32F texture at canvas resolution, the airbrush shader that writes it (`strafe_draw.frag`), and clear/erase. Live-only — never saved, never in history. |
-| `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `settings_window`, `preferences_window`, `config_manager`, `config_clipboard`, `toolbar`, `drawing_window`), composed onto `UI` as mixins; `settings_spec.py` is the control registry and `hover_preview.py` the shared preview state machine. |
+| `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `settings_window`, `preferences_window`, `config_manager`, `toolbar`, `drawing_window`), composed onto `UI` as mixins; `settings_spec.py` is the control registry and `hover_preview.py` the shared preview state machine. |
 | `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`, `drawing_commands`, `shove_commands`). |
 | `project/`        | The `Project` value type (ConfigBuffer + world settings + name + selection, immutable) and `History`, the undo/redo timeline over those values. |
 | `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect, and the whole display pipeline: tone curve, motion blur, bloom, overlays). Persisted to `preferences.json`. |
@@ -369,9 +369,10 @@ user folders accumulate.
 
 ### The hover-preview contract
 
-Two surfaces browse config collections by hovering — the **File > Load** menu
-and the **Config Clipboard**. Both use the same state machine, implemented once
-in `ui/hover_preview.py` as `PreviewSession`:
+Two submenus browse config collections by hovering — **File > Load** (files on
+disk) and **Edit > Load Checkpoint...** (in-session checkpoints). Both use the
+same state machine, implemented once in `ui/hover_preview.py` as
+`PreviewSession`:
 
 | Event | Effect |
 |-------|--------|
@@ -386,10 +387,12 @@ restores on close and silently discards the user's selection.
 
 **Each surface owns its own `PreviewSession`, and therefore its own snapshot.**
 An earlier version kept a single snapshot slot on the Orchestrator; with two
-independent hover surfaces that breaks — hovering a clipboard entry while the
-Load menu is open overwrites the menu's snapshot, and unhovering restores the
-wrong state. `snapshot_configs` therefore *returns* the snapshot rather than
-storing it, and `restore_configs` takes one back.
+independent hover surfaces that breaks — one surface's preview overwrites the
+other's snapshot, and unhovering restores the wrong state. `snapshot_configs`
+therefore *returns* the snapshot rather than storing it, and `restore_configs`
+takes one back. Keep this even though both surfaces are now submenus that
+cannot be open simultaneously: the sessions are what make that safe, not the
+menus, and a future panel-hosted browser would reintroduce the overlap.
 
 Preview applies **configs and world settings only**. The camera and the
 particles are untouched, so unhovering is a single buffer upload — instant, and
@@ -497,33 +500,44 @@ Enter — a slider would rebuild the system on every frame of a drag.
 `Preferences.requires_restart` decides this, and `_rebuild_system` carries the
 live configs across so a resize never discards unsaved edits.
 
-**Undo is the Config Clipboard.** Set a checkpoint, experiment, hover to A/B,
-click to revert. A second, weaker undo next to it would be redundant.
+**Undo is the config clipboard.** Set a checkpoint (Ctrl+C), experiment, then
+hover Edit > Load Checkpoint... to A/B and click to revert. A second, weaker
+undo next to it would be redundant.
 
-## The config windows
+## Config management
 
-Two windows in `ui/`, both toggled from the **View** menu.
-
-**Config Manager** (`config_manager.py`) selects which `ConfigData` subsequent
-controls will edit — Config 0 by default, so a single-config buffer needs no
-interaction. Selection is *state only* today; per-config sliders will consume it
-when they land. It grows the buffer three ways: **Duplicate Selected**,
-**Load...** (appends every config in a saved file), and **Remove**.
+**Config Manager** (`config_manager.py`) is a window, toggled from the **View**
+menu. It selects which `ConfigData` subsequent controls will edit — Config 0 by
+default, so a single-config buffer needs no interaction. Selection is *state
+only* today; per-config sliders will consume it when they land. It grows the
+buffer three ways: **Duplicate Selected**, **Load...** (appends every config in
+a saved file), and **Remove**.
 
 Its Load... browser is deliberately plain — no hover-preview, no delete. Those
 belong to File > Load, whose job is *replacing* the buffer. This one *appends*,
 so previewing would mean repeatedly growing and shrinking the buffer under the
 cursor.
 
-**Config Clipboard** (`config_clipboard.py`) holds in-session checkpoints of the
-**entire** ConfigBuffer — a scratch space for experimenting without committing
-to disk. Checkpoints are named `<preset><NN>` (`Starcrossed00`, `Starcrossed01`,
-…), numbered per preset, and numbering *reuses freed gaps* so heavy churn does
-not drift into high numbers. Newest is on top. Deleting has no confirmation:
-unlike a saved file, a checkpoint is a cheap scratch copy.
+**The config clipboard** holds in-session checkpoints of the **entire**
+ConfigBuffer — a scratch space for experimenting without committing to disk.
+Checkpoints are named `<preset><NN>` (`Starcrossed00`, `Starcrossed01`, …),
+numbered per preset, and numbering *reuses freed gaps* so heavy churn does not
+drift into high numbers. Newest is on top. Deleting has no confirmation: unlike
+a saved file, a checkpoint is a cheap scratch copy.
 
 Session-only by design — they vanish on quit. File > Save is the route for
 anything worth keeping.
+
+**It is entirely in the Edit menu** — `Set Checkpoint` (Ctrl+C), `Load Latest
+Checkpoint` (Ctrl+V), and the `Load Checkpoint...` submenu that browses them by
+hover. It *was* a standalone window, which had to carry its own open/close
+lifecycle, its own child-window scrolling, and its own "Set Checkpoint" button
+duplicating the menu item beside it — all so it could show a list that is
+usually empty and never long. The submenu is the same browse-by-hover contract
+as File > Load, which is what the act already was; making it look like one is
+what removed the duplication. The commands in
+`orchestrator/clipboard_commands.py` did not change, which is the sign the
+window was UI and nothing else.
 
 `MAX_CONFIGS` (64) caps the buffer. The GPU would take far more, but a hard cap
 keeps the manager UI bounded and makes overflow a reportable condition rather
@@ -636,8 +650,8 @@ add/duplicate/remove.
 
 **Two exclusions, neither an oversight:**
 
-*Hover-preview and its restore.* The Load menu and Config Clipboard apply a
-config as the cursor crosses each row, then put it back. These are transient
+*Hover-preview and its restore.* Both browse submenus apply a config as the
+cursor crosses each row, then put it back. These are transient
 states the user never chose � browsing forty configs would leave forty entries
 and evict real work. Only the **committed** load records. Coalescing cannot help
 here: previews are not rapid edits to merge, they revert themselves.

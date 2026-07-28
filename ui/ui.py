@@ -33,7 +33,6 @@ import glfw
 from imgui_bundle import imgui
 from imgui_bundle.python_backends import glfw_backend
 
-from .config_clipboard import ConfigClipboardWindow
 from .config_manager import ConfigManagerWindow
 from .config_menu import ConfigMenu
 from .drawing_window import DrawingWindow
@@ -46,7 +45,7 @@ _MOUSE_BUTTONS = (glfw.MOUSE_BUTTON_LEFT, glfw.MOUSE_BUTTON_RIGHT,
                   glfw.MOUSE_BUTTON_MIDDLE)
 
 
-class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
+class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
          PreferencesWindow, Toolbar, DrawingWindow):
     def __init__(self, window, commands=None):
         """
@@ -113,7 +112,6 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
 
         self._init_config_menu()
         self._init_config_manager()
-        self._init_config_clipboard()
         self._init_settings_window()
         self._init_preferences_window()
         self._init_toolbar()
@@ -281,7 +279,6 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
         self._preferences_window()
         self._drawing_window()
         self._config_manager_window()
-        self._config_clipboard_window()
         if self.show_debug_panel:
             self._debug_panel()
 

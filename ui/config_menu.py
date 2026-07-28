@@ -62,6 +62,16 @@ class ConfigMenu:
             on_apply=lambda entry: self._dispatch('preview_config', entry),
         )
 
+        #: Hover-preview for the Load Checkpoint submenu. A SECOND, independent
+        #: session for the same reason: both submenus can be walked in one
+        #: sitting, and sharing a snapshot would let one restore the other's
+        #: state.
+        self._checkpoint_preview = PreviewSession(
+            on_snapshot=lambda: self._dispatch_result('clipboard_snapshot'),
+            on_restore=lambda snap: self._dispatch('clipboard_restore', snap),
+            on_apply=lambda cp: self._dispatch('clipboard_apply', cp),
+        )
+
     # ------------------------------------------------------------------
     # Menu bar
     # ------------------------------------------------------------------
@@ -97,6 +107,7 @@ class ConfigMenu:
             if imgui.menu_item_simple("Load Latest Checkpoint", "Ctrl+V",
                                       False, has_checkpoint):
                 self._dispatch('load_latest_checkpoint')
+            self._checkpoint_menu()
             imgui.end_menu()
 
         if imgui.begin_menu("Tools"):
@@ -126,8 +137,6 @@ class ConfigMenu:
                 "Preferences", "", self.show_preferences)
             _, self.show_config_manager = imgui.menu_item(
                 "Config Manager", "", self.show_config_manager)
-            _, self.show_config_clipboard = imgui.menu_item(
-                "Config Clipboard", "", self.show_config_clipboard)
             _, self.show_debug_panel = imgui.menu_item(
                 "Debug Panel", "", self.show_debug_panel)
             imgui.end_menu()
@@ -268,6 +277,104 @@ class ConfigMenu:
 
         imgui.pop_id()
         return hovered
+
+    # ------------------------------------------------------------------
+    # Load Checkpoint
+    # ------------------------------------------------------------------
+
+    def _checkpoint_menu(self):
+        """Edit > Load Checkpoint...: the in-session config clipboard.
+
+        Deliberately the SAME shape as File > Load above -- hover to audition,
+        unhover to snap back, click to lock in -- because it is the same act on
+        a different collection. This replaced a standalone Config Clipboard
+        window, which needed its own open/close lifecycle, its own child-window
+        scrolling and its own "Set Checkpoint" button duplicating the menu item
+        two rows above it. As a submenu it needs none of that.
+
+        Checkpoints are session-only and cheap to retake, so the X deletes
+        immediately -- unlike File > Load's X, which destroys a file on disk and
+        therefore asks first.
+
+        Its own PreviewSession (and therefore its own snapshot), so previewing
+        here cannot clobber a preview in progress in the Load menu.
+        """
+        opened = imgui.begin_menu("Load Checkpoint...",
+                                  bool(self._status.get('checkpoints')))
+
+        # Opening edge: snapshot what we may need to restore. Taken on open
+        # rather than per-hover so it captures the state the user is leaving.
+        if opened:
+            self._checkpoint_preview.begin()
+        else:
+            # Closing edge: undo any preview, unless a click committed one.
+            # Also runs on the frame the menu is disabled/absent, which is
+            # exactly when a stranded preview would otherwise stick.
+            self._checkpoint_preview.end()
+            return
+
+        checkpoints = self._status.get('checkpoints') or []
+        if not checkpoints:
+            imgui.text_disabled("no checkpoints this session")
+            imgui.end_menu()
+            return
+
+        imgui.text_disabled(f"{len(checkpoints)} checkpoint(s), newest first")
+        imgui.separator()
+
+        hovered_now = None
+        deleted = None
+        for cp in checkpoints:
+            hit, remove = self._checkpoint_entry(cp)
+            if hit:
+                hovered_now = cp
+            if remove:
+                deleted = cp
+
+        self._checkpoint_preview.sync(hovered_now, key_of=lambda c: c.key)
+
+        if deleted is not None:
+            # The snapshot may hold the deleted checkpoint's state; put the
+            # pre-preview state back and drop it, so a later restore cannot
+            # resurrect what was just discarded.
+            self._checkpoint_preview.restore_now()
+            self._checkpoint_preview.forget()
+            self._dispatch('delete_checkpoint', deleted)
+
+        imgui.end_menu()
+
+    def _checkpoint_entry(self, cp):
+        """One checkpoint row. Returns (hovered, delete_requested).
+
+        Same layout discipline as _load_entry: the selectable gets an explicit
+        width so the X is not sitting on top of its click area, which would
+        make pressing X silently load the checkpoint instead of deleting it.
+        """
+        imgui.push_id(f"cp/{cp.key}")
+
+        button_w = imgui.get_frame_height()
+        spacing = imgui.get_style().item_spacing.x
+        text_w = imgui.calc_text_size(cp.name).x
+        name_w = max(text_w + spacing * 2.0, 120.0)
+
+        clicked = imgui.selectable(cp.name, False, 0, imgui.ImVec2(name_w, 0.0))[0]
+        hovered = imgui.is_item_hovered()
+
+        imgui.same_line(0.0, spacing)
+        imgui.push_style_color(imgui.Col_.button.value, imgui.ImVec4(0.6, 0.15, 0.15, 1.0))
+        imgui.push_style_color(imgui.Col_.button_hovered.value, imgui.ImVec4(0.85, 0.2, 0.2, 1.0))
+        remove = imgui.button("X", imgui.ImVec2(button_w, 0.0))
+        imgui.pop_style_color(2)
+        if imgui.is_item_hovered():
+            hovered = True
+
+        if clicked:
+            # Commit: drop the snapshot so closing does not undo this.
+            self._checkpoint_preview.commit(cp.key)
+            self._dispatch('load_checkpoint', cp)
+
+        imgui.pop_id()
+        return hovered, remove
 
     def _delete_dialog(self):
         """Confirm a deletion. Rendered at top level, outside the menu.
