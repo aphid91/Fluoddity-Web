@@ -37,6 +37,7 @@ import math
 
 from imgui_bundle import imgui
 
+from . import gated_controls as gated
 from . import settings_spec as spec
 from . import tooltip_graphic
 
@@ -56,18 +57,6 @@ _DIAGRAM_MODES = {
 _DIAGRAM_TEXT_EXTRA = 140.0
 
 
-def _setting_for(source, field):
-    """The registry entry owning `field` on `source`, or None.
-
-    Keyed on both halves because a field name alone is not unique across the
-    three sources -- the same reason _DIAGRAM_MODES is keyed that way.
-    """
-    for setting in spec.SETTINGS:
-        if setting.source == source and setting.field == field:
-            return setting
-    return None
-
-
 class SettingsWindow:
     """Mixin providing the Settings window. Host supplies `_dispatch`/`_status`."""
 
@@ -80,27 +69,9 @@ class SettingsWindow:
         #: Enter rather than per-keystroke, because they reset the simulation.
         self._input_buffers = {}
 
-        #: Labels of GATES checkboxes the user has ticked while everything they
-        #: gate is still zero. Without this the box would spring back the
-        #: instant it was ticked, since its state is otherwise derived purely
-        #: from those values -- there is nowhere else for "revealed but not yet
-        #: set" to live. Session-only and deliberately unsaved: a config with no
-        #: gravity in it should open with the box unticked.
-        self._gate_forced = set()
-        #: (project, selected config) the overrides above belong to. When this
-        #: changes, the values on screen came from somewhere other than the
-        #: user, so the overrides are dropped and the boxes re-derive from
-        #: whatever was loaded -- see _sync_gates().
-        self._gate_identity = None
-
-        #: (source, field) of every GATED slider with a gesture in flight --
-        #: held, dragged, or taking ctrl+click text. Such a slider stays on
-        #: screen whatever its value does, and is the ONLY thing that keeps it
-        #: there once the value reaches base. Opened on is_item_active(), closed
-        #: on is_item_deactivated(), which is where the fold-back is decided.
-        #: See _draw_gated() for why a global "is the user busy?" test cannot
-        #: replace this.
-        self._gate_sessions = set()
+        #: Open gestures and forced-open gates for the self-hiding controls.
+        #: See ui/gated_controls.py -- all of that behaviour lives there.
+        self._gates = gated.GateState()
 
         #: (setting, mode) for the sensor slider hovered THIS frame, or None.
         #: Set while the sliders render and consumed at the end of the same
@@ -123,10 +94,10 @@ class SettingsWindow:
             # still up -- otherwise the first drag after reopening would be
             # treated as sustaining a panel that is not there.
             self._diagram_open = False
-            # Same reasoning for gated sliders: a control that stops being
+            # Same reasoning for the gated sliders: a control that stops being
             # rendered never gets its deactivation, and a session left open
             # would hold it expanded when the window comes back.
-            self._gate_sessions.clear()
+            self._gates.clear()
             return
 
         # Cleared at the top of every frame and set again by whichever sensor
@@ -145,7 +116,7 @@ class SettingsWindow:
         if not expanded:
             imgui.end()
             self._diagram_open = False   # collapsed: same reasoning as above
-            self._gate_sessions.clear()  # ditto -- nothing rendered, no sessions
+            self._gates.clear()          # ditto -- nothing rendered, no gestures
             return
 
         selected = self._status.get('selected_config', 0)
@@ -182,14 +153,17 @@ class SettingsWindow:
 
     # ------------------------------------------------------------------
 
+    def _source_of(self, setting):
+        """The payload dict holding this setting's source, as a plain dict."""
+        return self._status.get({
+            spec.CONFIG: 'edit_config',
+            spec.WORLD: 'edit_world',
+            spec.PREFS: 'edit_prefs',
+        }[setting.source]) or {}
+
     def _value_of(self, setting):
         """Current value for a setting, from whichever source owns it."""
-        source = {
-            spec.CONFIG: self._status.get('edit_config') or {},
-            spec.WORLD: self._status.get('edit_world') or {},
-            spec.PREFS: self._status.get('edit_prefs') or {},
-        }[setting.source]
-        return source.get(setting.field)
+        return self._source_of(setting).get(setting.field)
 
     def _render_setting(self, setting):
         value = self._value_of(setting)
@@ -203,7 +177,8 @@ class SettingsWindow:
         # A GATES checkbox has no field of its own -- it is derived from the
         # ones it reveals -- so it never reaches the value checks below.
         if setting.gates:
-            self._draw_gate(setting)
+            gated.draw_gate(setting, self._gates, self._gate_checked(setting),
+                            self._clear_gated)
             self._tooltip(setting)
             return
 
@@ -236,51 +211,38 @@ class SettingsWindow:
         A missing or unreadable governing value counts as OFF: the payload is
         only built while a window that reads it is open, and revealing controls
         against a value we cannot see would be worse than hiding them.
+
+        A GATES checkbox owns no field, so `reveals_on` may name its LABEL
+        instead of a stored bool. It must be asked the same question the box
+        itself answers, overrides included -- the raw derivation would leave a
+        ticked box with nothing under it, since ticking is exactly the case
+        where the gated values are all still zero.
         """
-        source = {
-            spec.CONFIG: self._status.get('edit_config') or {},
-            spec.WORLD: self._status.get('edit_world') or {},
-            spec.PREFS: self._status.get('edit_prefs') or {},
-        }[setting.source]
-        # A GATES checkbox owns no field, so `reveals_on` names its LABEL rather
-        # than a stored bool. Its state is derived from the fields it gates --
-        # nothing is stored for it, which is the point.
-        gate = self._gate_by_label(setting.reveals_on)
+        gate = gated.gate_by_label(setting.reveals_on)
         if gate is not None:
-            # Must ask the same question the checkbox answers, override and all
-            # -- reading the raw derivation here would leave a ticked box with
-            # nothing under it, since ticking is exactly the case where the
-            # gated values are all still zero.
             return self._gate_checked(gate)
-        return bool(source.get(setting.reveals_on, False))
+        return bool(self._source_of(setting).get(setting.reveals_on, False))
 
     def _gate_checked(self, gate):
         """Whether a GATES checkbox reads as ticked: derived, or forced open."""
-        return self._gate_open(gate) or gate.label in self._gate_forced
-
-    @staticmethod
-    def _gate_by_label(label):
-        """The GATES checkbox named by `label`, or None if it is a real field."""
-        if not label:
-            return None
-        for candidate in spec.SETTINGS:
-            if candidate.gates and candidate.label == label:
-                return candidate
-        return None
+        return self._gate_open(gate) or gate.label in self._gates.forced
 
     def _gate_open(self, gate):
         """True if any field a GATES checkbox covers is non-zero.
 
         EXACTLY zero, deliberately: the gravity sliders are bipolar and pass
         through zero on the way between real values, so a tolerance here would
-        make a deliberate hair's-breadth setting collapse the control it is in.
+        collapse the control around a deliberate hair's-breadth setting.
         """
-        source = {
-            spec.CONFIG: self._status.get('edit_config') or {},
-            spec.WORLD: self._status.get('edit_world') or {},
-            spec.PREFS: self._status.get('edit_prefs') or {},
-        }[gate.source]
+        source = self._source_of(gate)
         return any(float(source.get(f, 0.0) or 0.0) != 0.0 for f in gate.gates)
+
+    def _clear_gated(self, gate):
+        """Zero every field a GATES checkbox covers -- what unticking means."""
+        for field in gate.gates:
+            member = gated.setting_for(gate.source, field)
+            if member is not None and float(self._value_of(member) or 0.0) != 0.0:
+                self._dispatch('edit_setting', member, 0.0)
 
     def _draw_widget(self, setting, value, interactive):
         label = f"{setting.label}##{setting.source}.{setting.field}"
@@ -293,8 +255,10 @@ class SettingsWindow:
             self._draw_input(setting, value, interactive)
             return
 
-        if setting.kind in (spec.GATED, spec.GATED_INT):
-            self._draw_gated(setting, value, interactive)
+        if gated.is_gated(setting):
+            gated.draw_gated(
+                setting, value, self._gates, self._gated_slider,
+                lambda s, v: self._dispatch('edit_setting', s, v), interactive)
             return
 
         if setting.kind == spec.CHOICE:
@@ -412,196 +376,32 @@ class SettingsWindow:
         # rather than the status payload, which still holds the old value.
         return float(value)
 
-    def _draw_gate(self, setting, interactive=True):
-        """A checkbox derived from the fields it gates, storing nothing itself.
+    def _gated_slider(self, setting, value):
+        """Render a gated control's slider. Returns the value it settled on.
 
-        Ticking it does not set a flag -- there is no flag. It reveals the
-        sliders beneath it, which are already at zero, and the box stays ticked
-        because `self._gate_forced` remembers the click for as long as they sit
-        there. Unticking zeroes them, at which point the derivation agrees on
-        its own and the memory is dropped.
-
-        That memory is the one piece of session state this pattern needs, and
-        it is deliberately not persisted: reopening the app with a zeroed
-        gravity shows the box unticked, which is the honest reading of the
-        config.
+        Gating works in STORED space (`gate_base` is a stored value) while the
+        slider shows display space, so the conversions compose here exactly as
+        they do on the ungated paths -- Trail Stiffness is both gated and
+        inverted, and Hazard Rate both gated and curved.
         """
-        changed, new = imgui.checkbox(f"{setting.label}##gate.{setting.label}",
-                                      self._gate_checked(setting))
-        if not (changed and interactive):
-            return
-
-        if new:
-            # Nothing to write: the sliders keep the zeros they already hold and
-            # simply become visible. Remembering the click is what holds the box
-            # open until they are given a value.
-            self._gate_forced.add(setting.label)
-            return
-
-        self._gate_forced.discard(setting.label)
-        # Unticking must actually turn gravity OFF, not just hide a live value:
-        # a hidden slider still pulling every particle down is the worst
-        # possible outcome of a checkbox.
-        for field in setting.gates:
-            member = _setting_for(setting.source, field)
-            if member is not None and float(self._value_of(member) or 0.0) != 0.0:
-                self._dispatch('edit_setting', member, 0.0)
-
-    def _draw_gated(self, setting, value, interactive):
-        """A slider that folds itself back into a checkbox at its base value.
-
-        THE SESSION LATCH IS WHAT MAKES THIS WORK, and it is worth understanding
-        before touching any of it. The slider is shown when the value is off
-        base OR while a session is open on it:
-
-            show = not at base  or  session open
-
-        A session opens the moment imgui reports the widget active -- a click, a
-        drag, or entering ctrl+click text entry -- and closes only when imgui
-        reports it deactivated. The fold-back is evaluated at exactly that
-        closing edge and nowhere else.
-
-        WHY NOT SIMPLY TEST THE VALUE EACH FRAME. Because the value passes
-        through the off zone DURING the gesture: drag a jitter slider to the
-        bottom and it is at zero long before you let go. Folding then destroys
-        the drag that produced it -- imgui drops a drag whose widget stops being
-        submitted. The latch holds the slider on screen for the whole gesture
-        no matter what the value does, which is the entire point.
-
-        Detecting "is the user busy?" from global state (any mouse down, imgui
-        wants the keyboard) was the previous attempt and does not work: those
-        are true during the drag but false on the frame it ends, which is the
-        one frame the fold-back actually runs -- so it fired at the release with
-        the value already inside the off zone, and the control vanished anyway.
-        The latch is per widget and edge-triggered, so it cannot make that
-        mistake.
-
-        THE OFF ZONE IS MEASURED IN SLIDER POSITION, not in value. For a curved
-        slider the two are wildly different: Hazard Rate is cubed, so 0.01% of
-        the way along the bar is 1e-12 in value. Position is what the user is
-        actually manipulating and what "barely off the bottom" means to the eye,
-        so both the fold-back test and the tick nudge work in that space.
-
-        WHY TICKING DOES NOT SET EXACTLY THE BASE
-        The control is derived: at base with no session it shows a checkbox, so
-        setting base on tick would re-derive as unticked in the same frame and
-        the slider would never appear. It is nudged just off instead -- one
-        epsilon of POSITION, which for Hazard Rate is a value indistinguishable
-        from zero rather than a few-percent jump up the bar.
-        """
-        base = float(setting.gate_base)
-        current = float(value)
-        integral = setting.kind == spec.GATED_INT
-        key = (setting.source, setting.field)
-
-        if self._gate_off(setting, current) and key not in self._gate_sessions:
-            changed, new = imgui.checkbox(
-                f"{setting.label}##{setting.source}.{setting.field}", False)
-            if changed and new and interactive:
-                # Opening the session here too means the slider appears even if
-                # the nudge somehow lands inside the off zone -- the checkbox
-                # can never "not respond" to being ticked.
-                self._gate_sessions.add(key)
-                self._dispatch('edit_setting', setting,
-                               int(base + 1.0) if integral
-                               else self._gate_nudged(setting))
-            return
-
-        # Gating works in STORED space (gate_base is a stored value), but the
-        # slider itself shows display space -- Trail Stiffness is both gated and
-        # inverted, so the two conversions have to compose here exactly as they
-        # do on the ungated paths.
         label = f"{setting.label}##{setting.source}.{setting.field}"
-        # Tracked so the fold-back below tests what the slider JUST produced.
-        # _value_of() reads the status payload, which is a snapshot taken before
-        # this frame's dispatches, so it would still hold the pre-drag value.
-        landed = current
-        if integral:
-            changed, new = imgui.slider_int(label, int(current),
-                                            int(setting.lo), int(setting.hi))
-            if changed and interactive:
-                landed = float(int(new))
-                self._dispatch('edit_setting', setting, int(new))
-        elif setting.curve != 1.0:
-            # Curved and gated compose: Hazard Rate is both.
-            landed = self._stored(setting, self._draw_curved_slider(
-                setting, self._shown(setting, current), interactive))
-        else:
-            changed, new = imgui.slider_float(label, self._shown(setting, current),
-                                              setting.lo, setting.hi)
-            if changed and interactive:
-                landed = self._stored(setting, new)
-                self._dispatch('edit_setting', setting, landed)
-
-        if not interactive:
-            return
-
-        # HOLD the session open for as long as imgui says the widget is being
-        # worked -- held, dragged, or taking typed input.
-        if imgui.is_item_active():
-            self._gate_sessions.add(key)
-            return
-
-        # THE CLOSING EDGE, and the only place the fold-back may happen.
-        # is_item_deactivated() rather than ..._after_edit(): a drag that ends
-        # back where it started is still a finished gesture, and the control
-        # should settle the same way either way.
-        if not imgui.is_item_deactivated():
-            return
-        self._gate_sessions.discard(key)
-        # Snap to exactly base, so the derivation is unambiguous rather than
-        # "within epsilon" -- which is also what makes a saved config carrying a
-        # stray 1e-9 come back as a clean unticked box.
-        if landed != base and self._gate_off(setting, landed):
-            self._dispatch('edit_setting', setting,
-                           int(base) if integral else base)
-
-    def _gate_position(self, setting, value):
-        """Where `value` sits along the slider's TRAVEL, as 0..1 from the base.
-
-        Curved sliders make value distance and visual distance disagree by
-        orders of magnitude, and it is the visual one that decides whether a
-        control looks like it is sitting at zero. Mirrors the mapping in
-        _draw_curved_slider, so the two cannot drift apart.
-        """
-        lo, hi = float(setting.lo), float(setting.hi)
-        span = hi - lo
-        if span == 0.0:
-            return 0.0
-        norm = min(1.0, max(0.0, (float(value) - lo) / span))
-        pos = norm ** (1.0 / setting.curve) if setting.curve != 1.0 else norm
-        base_norm = min(1.0, max(0.0, (float(setting.gate_base) - lo) / span))
-        base_pos = (base_norm ** (1.0 / setting.curve)
-                    if setting.curve != 1.0 else base_norm)
-        return abs(pos - base_pos)
-
-    def _gate_off(self, setting, value):
-        """True if `value` is close enough to base to count as switched off.
-
-        Integer controls compare exactly -- there is no "nearly 1 sample".
-        """
         if setting.kind == spec.GATED_INT:
-            return int(round(float(value))) == int(round(float(setting.gate_base)))
-        return self._gate_position(setting, value) <= setting.gate_epsilon
-
-    def _gate_nudged(self, setting):
-        """The value one epsilon of POSITION off base -- what ticking sets.
-
-        Strictly outside the off zone (the test is `<=`), or the box would
-        re-derive as unticked in the same frame and the slider never appear.
-        """
-        lo, hi = float(setting.lo), float(setting.hi)
-        span = hi - lo
-        if span == 0.0:
-            return float(setting.gate_base)
-        base_norm = min(1.0, max(0.0, (float(setting.gate_base) - lo) / span))
-        base_pos = (base_norm ** (1.0 / setting.curve)
-                    if setting.curve != 1.0 else base_norm)
-        # Away from whichever end the base sits at, so a base of `hi` steps down.
-        step = setting.gate_epsilon * 2.0
-        pos = base_pos + (step if base_pos <= 0.5 else -step)
-        pos = min(1.0, max(0.0, pos))
-        return lo + span * (pos ** setting.curve if setting.curve != 1.0 else pos)
+            changed, new = imgui.slider_int(label, int(value),
+                                            int(setting.lo), int(setting.hi))
+            if changed:
+                self._dispatch('edit_setting', setting, int(new))
+                return float(int(new))
+            return float(value)
+        if setting.curve != 1.0:
+            return self._stored(setting, self._draw_curved_slider(
+                setting, self._shown(setting, value), interactive=True))
+        changed, new = imgui.slider_float(label, self._shown(setting, value),
+                                          setting.lo, setting.hi)
+        if changed:
+            stored = self._stored(setting, new)
+            self._dispatch('edit_setting', setting, stored)
+            return stored
+        return float(value)
 
     def _draw_seed(self, setting, value, interactive):
         """A Randomize button with the current seed shown beside it.
@@ -786,39 +586,6 @@ class SettingsWindow:
         imgui.pop_text_wrap_pos()
         imgui.end()
 
-    def _sync_gates(self):
-        """Retire forced-open gates that no longer need the override.
-
-        _gate_forced exists only to hold a box open between the tick and the
-        first drag, while everything under it is still zero. Two things end
-        that, and both mean the override has done its job:
-
-        ONCE THE VALUES ARE NON-ZERO the derivation reads "open" by itself, so
-        the override is redundant. Dropping it here rather than leaving it set
-        is what lets a later load of a zeroed config close the box.
-
-        ON A LOAD OR CONFIG SWITCH the values on screen are no longer the ones
-        the user ticked the box for. Whatever they are now is the honest answer,
-        so the override goes and the derivation speaks for the new config --
-        which is the "setting the value outside of user interaction" case.
-        """
-        identity = (self._status.get('project_name'),
-                    self._status.get('selected_config'))
-        if identity != self._gate_identity:
-            self._gate_identity = identity
-            self._gate_forced.clear()
-            # Sessions too: a load can swap the value under a slider that never
-            # got its deactivation (the window closed, the tier changed, the
-            # control stopped being rendered). A stale session would hold an
-            # at-base slider open forever, since nothing else can close one.
-            self._gate_sessions.clear()
-            return
-
-        for gate in tuple(self._gate_forced):
-            setting = self._gate_by_label(gate)
-            if setting is None or self._gate_open(setting):
-                self._gate_forced.discard(gate)
-
     def _sync_input_buffers(self):
         """Refresh INPUT text from live values when they change elsewhere.
 
@@ -826,7 +593,9 @@ class SettingsWindow:
         Buffers being edited are left alone -- imgui owns focus, and clobbering
         text mid-type would be hostile.
         """
-        self._sync_gates()
+        self._gates.sync((self._status.get('project_name'),
+                          self._status.get('selected_config')),
+                         self._gate_open)
 
         for setting in spec.SETTINGS:
             if setting.kind != spec.INPUT:

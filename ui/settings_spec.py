@@ -30,36 +30,12 @@ KINDS
            is an opaque selector into rule-variation space, so it is worth
            reading but never worth typing.
   CHOICE   dropdown over `options`.
-  GATED    a slider that hides itself behind a checkbox -- see below.
-  GATED_INT the integer form of the same thing.
-
-GATED SLIDERS -- controls that are usually off
-Several settings are "off" at one end of their range and only interesting when
-deliberately turned on: jitter, fences, hazard rate, motion blur. Left as plain
-sliders they are four more knobs to scan past, all sitting at zero. A GATED
-control therefore shows a bare CHECKBOX while it holds its `gate_base`, and the
-slider only while it holds something else.
-
-THE STATE IS DERIVED, NEVER STORED. There is no "jitter enabled" field
-anywhere -- the widget asks "is this value at base?" on every frame, so:
-  - loading a config with 0.0 shows a checkbox, one with 0.3 shows a slider at
-    0.3, and neither case needs the loader to know this pattern exists;
-  - undo, the config clipboard and A/B preview all keep working untouched,
-    because there is no second piece of state for them to miss.
-
-Ticking the box sets the value just off base, so the slider appears (at the
-bottom of its travel) rather than the box instantly re-deriving as unticked.
-Dropping the slider back within `gate_epsilon` of base snaps it to exactly base
-and the checkbox returns. That test runs only when a gesture ENDS -- never
-mid-drag, and never mid-ctrl+click-entry -- so dragging through zero does not
-make the control vanish out from under the cursor.
-
-`gate_base` is not always zero: Blur Samples counts renders, so its "off" is 1.
-
-GATES -- one checkbox in front of several sliders
-`gates` builds the same derived checkbox without a slider of its own: it reads
-as ticked while ANY field it names is non-zero, and members point at it with
-`reveals_on`. Gravity uses this -- two sliders, one box, nothing stored.
+  GATED    a slider that shows a checkbox while it sits at `gate_base`, and
+           hides itself again when dragged back to it. GATED_INT is the integer
+           form. A `gates` tuple makes the same kind of derived checkbox for
+           OTHER sliders instead of one of its own (Gravity). Both are entirely
+           implemented in ui/gated_controls.py, including why -- nothing about
+           them is stored, so the rest of the app is unaffected.
 
 GROUPS become collapsible tabs in whichever window renders them. A tab whose
 members are all hidden by the current tier is not rendered at all.
@@ -143,24 +119,15 @@ class Setting:
     #: value is inverted on the way into the widget and back on the way out, so
     #: only the display flips. Only meaningful for SLIDER.
     inverted: bool = False
-    #: For GATED controls: the value that counts as "off". The control shows an
-    #: unchecked checkbox while it holds this, and returns to one when a drag
-    #: ends within `gate_epsilon` of it. Ticking the checkbox sets exactly this,
-    #: so a freshly revealed slider starts at its own base rather than jumping.
+    #: GATED: the value that counts as "off" and shows a checkbox. Not always
+    #: zero -- Blur Samples counts renders, so its off is 1.
     gate_base: float = 0.0
-    #: Half-width of the "off" zone around `gate_base`, measured along the
-    #: slider's TRAVEL rather than in value: 1e-4 means "the first 0.01% of the
-    #: bar". Position, not value, because a curved slider makes the two disagree
-    #: by orders of magnitude -- on Hazard Rate's cubed range the same fraction
-    #: of value covers nearly half the visible bar, which would put its whole
-    #: reason for existing inside the off zone. Never consulted while the user
-    #: is manipulating anything; see _gate_busy().
+    #: GATED: half-width of the off zone, along the slider's TRAVEL rather than
+    #: in value -- 1e-4 means the first 0.01% of the bar.
     gate_epsilon: float = 1e-4
-    #: For a checkbox that gates OTHER controls without being a stored setting
-    #: itself: the fields it reveals. The checkbox is derived -- it reads as
-    #: ticked whenever any listed field is non-zero -- so nothing is saved for
-    #: it and loading a config sets it implicitly. Members name it in
-    #: `reveals_on`, exactly as they would a real BOOL field.
+    #: Fields this control's checkbox reveals, for a checkbox that gates OTHER
+    #: sliders and stores nothing itself. Members name it by LABEL in
+    #: `reveals_on`, as they would a real BOOL field.
     gates: tuple = ()
 
 
@@ -291,11 +258,8 @@ SETTINGS = [
             "particles turn on a dime; high values give them momentum.",
             group='Forces'),
 
-    # One derived checkbox in front of both gravity sliders. Unlike a GATED
-    # control this does not self-hide: the sliders are bipolar, so a value on
-    # its way through zero is a normal thing to drag past rather than an "off"
-    # to snap to. It reads as ticked while EITHER slider is non-zero, so loading
-    # a config with gravity reveals them and one without keeps them folded away.
+    # Not GATED: the sliders are bipolar, so passing through zero is a normal
+    # thing to drag past rather than an "off" to snap to.
     Setting('', 'Gravity', BASIC, CONFIG, BOOL,
             help="Reveals the two gravity sliders.\n\n"
                  "Not itself a saved setting -- it simply reads as on whenever "
@@ -370,10 +334,8 @@ SETTINGS = [
     # Stored as `trail_diffusion` but shown INVERTED, as stiffness: 0.0 is full
     # diffusion, 1.0 is none. The stored field, the shader and the save format
     # all still speak diffusion -- see `inverted` on Setting.
-    # Gated on the STORED value, which is the inverse of what is shown: full
-    # diffusion (stored 1.0) is "no stiffness", so that is the base the checkbox
-    # folds back to. The slider then reads 0.0 at the moment it appears, exactly
-    # like the other gated controls.
+    # gate_base is the STORED value: full diffusion (1.0) is "no stiffness", so
+    # the slider reads 0.0 the moment it appears, like every other gated one.
     Setting('trail_diffusion', 'Trail Stiffness', ADVANCED, WORLD, GATED,
             0.0, 1.0,
             "How much the trail field RESISTS spreading outward. 1.0 holds "
@@ -411,11 +373,8 @@ SETTINGS = [
             "dark at the cost of flattening the brightest regions.",
             group='Display'),
 
-    # ONE control, not a checkbox plus a slider. A sample count of 1 IS motion
-    # blur switched off -- there was never a state where the old checkbox and
-    # this number disagreed -- so the two collapse into a gated slider whose
-    # base is 1. That removed the `motion_blur` preference entirely; see
-    # orchestrator.blur_schedule(), which now tests this count directly.
+    # A sample count of 1 IS blur switched off, so there is no separate enable
+    # flag -- see orchestrator.blur_schedule().
     Setting('motion_blur_samples', 'Motion Blur', BASIC, PREFS, GATED_INT, 1, 16,
             "Renders each frame several times across the simulation's advance "
             "and averages the result, so fast movement smears instead of "
