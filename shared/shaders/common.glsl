@@ -109,7 +109,11 @@ struct ConfigData {
     // whether it belongs. Read the per-lane comment, not the name.
     vec4 misc2;  // x: color_sensitivity     y: color_by_cohort(i)
                  // z: sensor_angle_jitter   w: sensor_distance_jitter
-};  // 400 bytes
+    // misc2 had no spares left, so Radial Gravity is rule 2's "add a whole new
+    // vec4" case again rather than a reclaimed lane. Three spares here for the
+    // next additions.
+    vec4 misc3;  // x: radial_gravity(i)     yzw: reserved
+};  // 416 bytes
 
 float cfg_sensor_gain(ConfigData c)     { return c.sensor.x; }
 float cfg_sensor_angle(ConfigData c)    { return c.sensor.y; }
@@ -158,6 +162,15 @@ bool cfg_color_by_cohort(ConfigData c) { return floatBitsToInt(c.misc2.y) != 0; 
 // Applied in entity_update.glsl; 0 is off.
 float cfg_sensor_angle_jitter(ConfigData c)    { return c.misc2.z; }
 float cfg_sensor_distance_jitter(ConfigData c) { return c.misc2.w; }
+
+// Which direction the two gravity channels above pull in. False (the default,
+// and what every config written before this existed means) is the fixed
+// vec2(0,1) screen-down pull; true swings it to the particle's own position
+// vector, so positive values fall inwards towards the origin and negative
+// values blow outwards. Lives in misc3 rather than beside the gravity values
+// because force2 and misc2 were both full -- read the lane comment, not the
+// name.
+bool cfg_radial_gravity(ConfigData c) { return floatBitsToInt(c.misc3.x) != 0; }
 
 // The width of the Sensor Distance slider (0..5), which is what a distance
 // jitter of 1.0 spans. It lives here rather than being read from the slider

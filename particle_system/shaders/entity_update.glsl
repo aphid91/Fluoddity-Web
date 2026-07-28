@@ -484,12 +484,27 @@ void main() {
     //_strafe displaces position directly. Negated so a positive slider pulls
     //DOWN the screen. Scaled by 1/sqrt_world_size like every other force here,
     //so the feel survives a World Size change.
-    vel.y += .01/sqrt_world_size * -gravity_expand(cfg_gravity_force(config));
+    //
+    //Which way is "down" is one direction shared by both channels, taken once
+    //here so Force and Strafe can never disagree about it. Radial Gravity
+    //swings it from the fixed screen axis to the particle's own position
+    //vector, which points AWAY from the origin -- so with the same negation a
+    //positive slider still falls "down", now meaning inwards. A particle
+    //sitting exactly on the origin has no direction to fall in; normalize()
+    //would hand back NaN there and poison the position for good, so that one
+    //case gets no pull rather than an arbitrary one.
+    vec2 gravity_dir = vec2(0.0, 1.0);
+    if (cfg_radial_gravity(config)) {
+        float r = length(pos);
+        gravity_dir = r > 0.0 ? pos/r : vec2(0.0);
+    }
+
+    vel += .01/sqrt_world_size * -gravity_expand(cfg_gravity_force(config)) * gravity_dir;
 
     //Move: add vel and strafe to pos
     pos += vel;
     pos += strafe*cfg_strafe_power(config);
-    pos.y += .01/sqrt_world_size * -gravity_expand(cfg_gravity_strafe(config));
+    pos += .01/sqrt_world_size * -gravity_expand(cfg_gravity_strafe(config)) * gravity_dir;
 
     //The painted Strafe Field, in the strafe channel: a displacement, not a
     //force, so no rule can resist it and drag never damps it. Applied before

@@ -84,6 +84,11 @@ class SimulationConfig:
     #: unchanged.
     sensor_angle_jitter: float = 0.0
     sensor_distance_jitter: float = 0.0
+    #: Whether the two gravity values above pull along the fixed screen axis
+    #: (False) or along each particle's own position vector (True), making them
+    #: pull towards or away from the origin. False is what every config saved
+    #: before this existed meant.
+    radial_gravity: bool = False
     # 80 floats -> 10 FourierCenters, each frequency(4) + amplitude(4)
     rule: tuple = field(default_factory=tuple)
 
@@ -130,6 +135,8 @@ class SimulationConfig:
                            _int_lane(int(self.color_by_cohort)),
                            self.sensor_angle_jitter,
                            self.sensor_distance_jitter)
+        # misc3: radial_gravity(int bits), three reserved lanes
+        record['misc3'] = (_int_lane(int(self.radial_gravity)), 0.0, 0.0, 0.0)
         return record
 
 

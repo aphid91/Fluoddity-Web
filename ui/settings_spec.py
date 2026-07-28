@@ -281,6 +281,20 @@ SETTINGS = [
             "Logarithmically expanded like Gravity (Strafe), with a true zero "
             "at centre.",
             group='Forces', reveals_on='Gravity'),
+    # Hangs off the same gate as the sliders it redirects: on its own it does
+    # nothing, so leaving it on screen with both gravities at zero would be a
+    # checkbox with no observable effect.
+    Setting('radial_gravity', 'Radial Gravity', ADVANCED, CONFIG, BOOL,
+            help="Pull each particle along its own position vector instead of "
+                 "straight down the screen.\n\n"
+                 "Both gravity sliders swing together -- positive values fall "
+                 "inwards towards the centre of the world, negative values "
+                 "blow outwards. The strength is unchanged; only the direction "
+                 "differs, so a config can be flipped between a downpour and a "
+                 "collapse without retuning either slider.\n\n"
+                 "A particle sitting exactly at the centre has no direction to "
+                 "fall in and is left alone.",
+            group='Forces', reveals_on='Gravity'),
 
     # ================= PROJECT: Trails =================
     Setting('trail_persistence', 'Trail Persistence', ADVANCED, WORLD, SLIDER,

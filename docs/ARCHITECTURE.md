@@ -217,8 +217,19 @@ block and default to zero, which is what they meant.
 
 **The fifth vec4 is now full too, and was renamed `misc2` as a result.** Its
 last two spare lanes went to the sensor jitters — the *other* half of rule 7,
-claiming reserved lanes rather than adding a vec4, so `ConfigData` is still 400
-bytes. There are no spares left; the next addition needs a new one.
+claiming reserved lanes rather than adding a vec4, so `ConfigData` stayed 400
+bytes through that addition.
+
+**Radial Gravity** then found `misc2` full and took a sixth vec4, `misc3` (400
+to 416 bytes), leaving three spare lanes. It is a single bool riding an int lane
+(`floatBitsToInt(...) != 0`, as `color_by_cohort` does), and it redirects both
+gravity channels at once: the shader takes the pull direction *once* — the fixed
+`vec2(0,1)` or `normalize(pos)` — and multiplies both `_force` and `_strafe` by
+it, so the two channels cannot disagree about which way is down. `pos` is
+centred on the origin, so the normalized position vector points outwards and the
+existing negation makes a positive slider fall *inwards*. A particle exactly at
+the origin gets no pull, because `normalize()` there is NaN and one NaN
+permanently destroys that particle's position.
 
 It was called `appearance` while it held only `color_sensitivity` and
 `color_by_cohort`. The jitters are physics, so that name became a lie about half

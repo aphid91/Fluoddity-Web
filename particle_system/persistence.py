@@ -105,6 +105,9 @@ def _config_to_dict(config: SimulationConfig) -> dict:
             "sensor_angle_jitter": config.sensor_angle_jitter,
             "sensor_distance_jitter": config.sensor_distance_jitter,
         },
+        "misc3": {
+            "radial_gravity": config.radial_gravity,
+        },
     }
 
 
@@ -119,6 +122,7 @@ def _config_from_dict(data: dict) -> SimulationConfig:
     # `misc2`. Both names are read so every config written before the rename
     # keeps loading; only the new one is written.
     misc2 = data.get("misc2") or data.get("appearance", {})
+    misc3 = data.get("misc3", {})
     return SimulationConfig(
         cohorts=int(misc["cohorts"]),
         # LEGACY: v8 files written before the rename spell this "rule_seed".
@@ -151,6 +155,10 @@ def _config_from_dict(data: dict) -> SimulationConfig:
         # file written before these existed was doing.
         sensor_angle_jitter=float(misc2.get("sensor_angle_jitter", 0.0)),
         sensor_distance_jitter=float(misc2.get("sensor_distance_jitter", 0.0)),
+        # Also additive. A file with no misc3 block was written when gravity
+        # only ever pulled along the fixed screen axis, which is what False
+        # means -- so those configs keep falling exactly the way they did.
+        radial_gravity=bool(misc3.get("radial_gravity", False)),
         rule=tuple(float(v) for v in data["rule"]),
     )
 
