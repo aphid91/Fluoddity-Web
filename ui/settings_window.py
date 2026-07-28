@@ -26,6 +26,11 @@ the whole buffer, so "Set Checkpoint, experiment, hover to A/B, click to
 revert" is the undo story. Building a second, weaker one next to it would be
 redundant.
 
+REVERT, at the top, is the coarser version of that: back to what is on disk,
+discarding everything since. It dispatches the SAME load command File > Load
+does, with the same entry, so the two can never drift apart -- see
+_revert_button().
+
 Values are pushed on every change, straight into the GPU buffer -- editing a
 slider shows its effect immediately, which is the point of having sliders at
 all rather than editing JSON.
@@ -119,12 +124,7 @@ class SettingsWindow:
             self._gates.clear()          # ditto -- nothing rendered, no gestures
             return
 
-        selected = self._status.get('selected_config', 0)
-        config_count = self._status.get('config_count', 1)
-        imgui.text(f"Editing Config {selected}")
-        if config_count > 1:
-            imgui.same_line()
-            imgui.text_disabled(f"of {config_count}")
+        self._revert_button(project)
 
         imgui.separator()
 
@@ -150,6 +150,78 @@ class SettingsWindow:
         # Recorded AFTER the panel is drawn, so next frame's "may a drag keep
         # this alive?" test asks about a panel that was really on screen.
         self._diagram_open = self._diagram_hovered is not None
+
+    def _revert_button(self, project):
+        """Reload the project's own file, discarding every edit since.
+
+        The escape hatch for the window below it: these controls write straight
+        into the GPU buffer with no confirmation, so an experiment that went
+        nowhere needs one click to undo rather than a hunt for which sliders
+        were moved.
+
+        DELIBERATELY THE SAME COMMAND File > Load > <this project> dispatches,
+        with the same entry -- not a private "reset" path. Whatever loading does
+        (history entry, camera, preset index) is what reverting does, and the
+        two cannot drift apart later. The tooltip says so, because a button that
+        silently duplicates a menu item is a button people are afraid to press.
+
+        Greyed out when nothing on disk matches, which is the Untitled case: a
+        project that was never loaded or saved has nothing to revert TO.
+        """
+        entry = self._revert_entry()
+        if entry is None:
+            imgui.begin_disabled()
+        # Full width, so it reads as a header for the window rather than a
+        # control belonging to the first group.
+        if imgui.button(f"Revert to {project} (Ctrl-R)",
+                        imgui.ImVec2(-1.0, 0.0)) and entry is not None:
+            self._dispatch('load_config', entry)
+        if entry is None:
+            imgui.end_disabled()
+        self._revert_tooltip(project, entry)
+
+    def _revert_tooltip(self, project, entry):
+        if not imgui.is_item_hovered(imgui.HoveredFlags_.delay_normal.value
+                                     | imgui.HoveredFlags_.for_tooltip.value
+                                     | imgui.HoveredFlags_.allow_when_disabled.value):
+            return
+        if not imgui.begin_tooltip():
+            return
+        imgui.push_text_wrap_pos(320.0)
+        if entry is None:
+            imgui.text_disabled("Revert")
+            imgui.separator()
+            imgui.text_unformatted(
+                "Nothing to revert to: this project has not been loaded from "
+                "or saved to a file yet. Save it first.")
+        else:
+            imgui.text_disabled(f"Revert to {project}")
+            imgui.separator()
+            imgui.text_unformatted(
+                f"Exactly equivalent to File > Load > {project} -- it reloads "
+                f"the same file through the same path.\n\n"
+                f"Every change made since it was loaded is discarded, "
+                f"including world settings and the camera. Undo (Ctrl+Z) still "
+                f"gets them back.")
+        imgui.pop_text_wrap_pos()
+        imgui.end_tooltip()
+
+    def _revert_entry(self):
+        """The load-menu entry for the currently loaded project, or None.
+
+        Matched by NAME against the same categories the Load menu renders from,
+        so the button and the menu item cannot disagree about which file is
+        meant -- and a project whose file has since been deleted correctly finds
+        nothing rather than dispatching a load of a missing path.
+        """
+        project = self._status.get('project_name')
+        if not project:
+            return None
+        for entries in (self._status.get('config_categories') or {}).values():
+            for entry in entries:
+                if entry.name == project:
+                    return entry
+        return None
 
     # ------------------------------------------------------------------
 

@@ -828,6 +828,7 @@ Orchestrator.run() loop:
 UI -> named command -> Orchestrator handler
      Ctrl+Z / Ctrl+Shift+Z = undo / redo
      Ctrl+C / Ctrl+V = set checkpoint / load newest checkpoint
+     Ctrl+R = revert to the project's saved file (same as File > Load > it)
      SPACE = pause/resume | R = reset | U = reload shaders
      B = randomize behavior | F = randomize mutation seed
      X = show/hide the GUI
@@ -1099,13 +1100,22 @@ make the brush `physics_steps`× stronger). A shove has nothing to persist in �
 it must be applied *as* particles move, or it would be one jump at an arbitrary
 point in the frame's advance.
 
-That makes it inherently per-sub-step, which is exactly what `physics_steps`
-scales. **So the strength is divided by that count before it reaches the GPU**
-(`shove_commands.shove_state`), and holding the button for one frame moves a
-particle the same distance at 30 sub-steps as at 120. Without it the Physics
-Rate slider would silently be a strength slider too. Verified with the physics
-disabled — displacement is rate-independent to 0.13% across a 12× rate change,
-where a missing division shows as ~3×.
+That makes it inherently per-sub-step, so the strength is divided by that count
+before it reaches the GPU (`shove_commands.shove_state`) — otherwise the raw
+value would be applied `physics_steps` times per frame.
+
+**And then multiplied back up by `steps / 30`, so the shove is PROPORTIONAL to
+Physics Rate**, at 1× where the slider defaults. The two factors cancel to a
+constant, and the code deliberately does *not* collapse them: they mean
+different things (one is required by per-sub-step application, one is a tuning
+choice) and a bare `/30.0` would read as a magic number.
+
+This was originally the opposite — divided only, so a held shove moved a
+particle the same distance per frame at any rate. That is the defensible
+default for a *tool*, but it makes the shove feel progressively weaker as the
+rate rises, because everything it is pushing is moving faster while it is not.
+Proportional keeps the gesture the same size relative to what is on screen,
+which is what the tool is judged against in practice.
 
 **Strafe channel, not force.** `pos += get_shove(pos)`, next to the painted
 field and for the same reasons: drag cannot damp it, no rule can resist it, and

@@ -14,9 +14,14 @@ WHY THIS RUNS INSIDE THE PHYSICS LOOP, unlike painting. The field is a texture
 that persists between steps, so it can be written once per frame and read many
 times. A shove has nothing to persist in -- it has to be applied as the
 particles move, or it would be a single jump at one arbitrary point in the
-frame's advance. That makes it per-sub-step, which is exactly what
-prefs.physics_steps scales, so the strength is divided by that count before it
-reaches the GPU (see shove_state).
+frame's advance. That makes it per-sub-step, so the strength is divided by
+prefs.physics_steps before it reaches the GPU (see shove_state).
+
+AND THEN SCALED BACK UP BY THE RATE, deliberately: the shove is PROPORTIONAL to
+Physics Rate, tuned so 30 steps is 1x. The particles it is pushing move faster
+as the rate rises, and a shove that did not would shrink from a shove to a
+nudge without the user touching its slider. Keeping it proportional keeps it
+the same gesture relative to what is on screen.
 
 Mixed into the Orchestrator; owns no state of its own.
 """
@@ -35,6 +40,14 @@ from .selection_commands import MouseMode
 #: the slider is shared with Draw, and the two tools should respond to it in
 #: the same direction even though they act on different things.
 SHOVE_GAIN = 0.004
+
+#: The Physics Rate a shove is tuned against. Shove strength is PROPORTIONAL to
+#: the rate -- the tool pushes as fast as the simulation is running, so a shove
+#: keeps its weight relative to everything else moving on screen instead of
+#: becoming a feeble nudge at high rates and a shunt at low ones. This is the
+#: rate where that scaling is 1x, so 30 feels exactly as it always has and the
+#: slider's default needs no relearning.
+SHOVE_REFERENCE_STEPS = 30.0
 
 
 class ShoveCommands:
@@ -72,11 +85,15 @@ class ShoveCommands:
                                         self.system.canvas_size,
                                         cam.pan, cam.zoom)
 
-        # Divided by the sub-step count, so holding the button for one frame
-        # moves a particle the same distance at 30 steps as at 120. Without
-        # this the Physics Rate slider would silently be a strength slider too.
+        # Per sub-step, so a frame's total shove scales with the sub-step count
+        # -- a shove is as fast as the simulation it is pushing. Written as the
+        # division by `steps` that per-sub-step application requires, times the
+        # deliberate reintroduction of the rate, rather than collapsed to the
+        # constant it equals: the two factors mean different things, and a bare
+        # /SHOVE_REFERENCE_STEPS would read as an arbitrary number.
         steps = max(1, int(self.prefs.physics_steps))
-        strength = SHOVE_GAIN * self.prefs.draw_power / steps
+        strength = (SHOVE_GAIN * self.prefs.draw_power / steps
+                    * (steps / SHOVE_REFERENCE_STEPS))
         if pulling:
             strength = -strength
 

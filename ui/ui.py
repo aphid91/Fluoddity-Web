@@ -433,6 +433,16 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         if ctrl and glfw.KEY_V in state.keys_pressed:
             self._dispatch('load_latest_checkpoint')
             return
+        # Revert: reload the project's own file. Deliberately Ctrl+R next to
+        # bare R for Reset -- both put things back, one the simulation and one
+        # the settings. Resolved through the same helper the Project window's
+        # button uses, so a project with no file on disk does nothing here
+        # rather than dispatching a load of nothing.
+        if ctrl and glfw.KEY_R in state.keys_pressed:
+            entry = self._revert_entry()
+            if entry is not None:
+                self._dispatch('load_config', entry)
+            return
         # Every other Ctrl combination is left alone, so Ctrl+<key> can never
         # trigger a bare-key shortcut below.
         if ctrl:
