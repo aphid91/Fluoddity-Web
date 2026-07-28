@@ -3,9 +3,16 @@
 FORMAT v8
 Writes exactly what this codebase actually has: a WorldData block, a list of
 ConfigData entries, and the camera. Fields the project has explicitly cut --
-slider_ranges, sweeps, jitters, parameter_sweeps_enabled -- are not written,
-because a save format that carries dead features teaches the next reader that
-those features exist.
+slider_ranges, sweeps, parameter_sweeps_enabled, and the reference's generic
+per-setting `jitter` -- are not written, because a save format that carries dead
+features teaches the next reader that those features exist. (The two SENSOR
+jitters this project does have are a different, purpose-built feature and are
+written; see `misc2` below.)
+
+BLOCK NAMES MIRROR THE GLSL STRUCT, so a reader can line a file up against
+common.glsl. That means renaming a vec4 there renames a block here: `misc2` was
+called `appearance` until the sensor jitters landed in it. `_config_from_dict`
+reads both names, so files written before the rename still load.
 
 Multiple configs are supported from the start: the ConfigBuffer is a list, so a
 save is a list. Saving "just config 0" writes a one-element list, which loads
@@ -92,9 +99,11 @@ def _config_to_dict(config: SimulationConfig) -> dict:
             "initial_conditions": config.initial_conditions,
             "cohort_fences": config.cohort_fences,
         },
-        "appearance": {
+        "misc2": {
             "color_sensitivity": config.color_sensitivity,
             "color_by_cohort": config.color_by_cohort,
+            "sensor_angle_jitter": config.sensor_angle_jitter,
+            "sensor_distance_jitter": config.sensor_distance_jitter,
         },
     }
 
@@ -104,7 +113,12 @@ def _config_from_dict(data: dict) -> SimulationConfig:
     force = data["force"]
     misc = data["misc"]
     force2 = data.get("force2", {})
-    appearance = data.get("appearance", {})
+    # RENAMED LANE: this block was called "appearance" while it held only the
+    # two colour settings. The sensor jitters are physics, so the name had
+    # become a lie about half its contents and the vec4 in common.glsl is now
+    # `misc2`. Both names are read so every config written before the rename
+    # keeps loading; only the new one is written.
+    misc2 = data.get("misc2") or data.get("appearance", {})
     return SimulationConfig(
         cohorts=int(misc["cohorts"]),
         # LEGACY: v8 files written before the rename spell this "rule_seed".
@@ -128,11 +142,15 @@ def _config_from_dict(data: dict) -> SimulationConfig:
         # what those files were doing before the settings existed.
         initial_conditions=int(force2.get("initial_conditions", IC_CENTER)),
         cohort_fences=float(force2.get("cohort_fences", 0.0)),
-        # Also additive. A file with no appearance block predates particle
-        # colouring entirely, and 0.5 is the middle of the slider -- the same
-        # default the reference shipped, so those configs look like it intended.
-        color_sensitivity=float(appearance.get("color_sensitivity", 0.5)),
-        color_by_cohort=bool(appearance.get("color_by_cohort", False)),
+        # Also additive. A file with neither block predates particle colouring
+        # entirely, and 0.5 is the middle of the slider -- the same default the
+        # reference shipped, so those configs look like it intended.
+        color_sensitivity=float(misc2.get("color_sensitivity", 0.5)),
+        color_by_cohort=bool(misc2.get("color_by_cohort", False)),
+        # Also additive, and zero means "no jitter" -- which is exactly what a
+        # file written before these existed was doing.
+        sensor_angle_jitter=float(misc2.get("sensor_angle_jitter", 0.0)),
+        sensor_distance_jitter=float(misc2.get("sensor_distance_jitter", 0.0)),
         rule=tuple(float(v) for v in data["rule"]),
     )
 

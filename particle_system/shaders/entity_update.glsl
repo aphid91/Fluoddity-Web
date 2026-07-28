@@ -387,14 +387,40 @@ void main() {
     vec2 pos = e_pos(e);
     vec2 vel = e_vel(e);
 
+    //Sensor jitter: a random wobble on where this particle looks, resampled
+    //EVERY STEP rather than fixed per particle -- so it reads as a shimmer that
+    //softens structure, not as a population of individuals with different eyes.
+    //
+    //Each slider is 0..1 and scaled so that 1.0 spans the whole range of the
+    //parameter it perturbs: angle is a -1..1 half-turn control so it needs no
+    //scaling, distance is 0..SENSOR_DISTANCE_SPAN so it takes that factor.
+    //Both offsets are the SAME draw, applied to both sensors together, so the
+    //pair stays symmetric about the heading and jitter never introduces the
+    //left/right bias that y_reflect exists to cancel.
+    float angle = cfg_sensor_angle(config);
+    float distance = cfg_sensor_distance(config);
+
+    float angle_jitter = cfg_sensor_angle_jitter(config);
+    if(angle_jitter != 0.0){
+        angle += angle_jitter * (2.0*hash(vec2(float(index), float(frame_count))) - 1.0);
+    }
+    float distance_jitter = cfg_sensor_distance_jitter(config);
+    if(distance_jitter != 0.0){
+        //Deliberately UNCLAMPED: a negative distance puts both sensors behind
+        //the particle (and swaps which is left), which is a genuinely different
+        //look that no combination of the other sliders can reach.
+        distance += SENSOR_DISTANCE_SPAN * distance_jitter
+                  * (2.0*hash(vec2(float(index) + 0.5, float(frame_count))) - 1.0);
+    }
+
     //Calculate position offsets for the two sensors.
-    float sample_dist = 1./sqrt_world_size*.005 * cfg_sensor_distance(config);
+    float sample_dist = 1./sqrt_world_size*.005 * distance;
     vec2 orientation = safenorm(vel);//vector facing the same direction as velocity, with length==sample_dist
 
     vec2 left_sensor_offset = orientation*sample_dist;
     vec2 right_sensor_offset = orientation*sample_dist;
-    pR(left_sensor_offset,cfg_sensor_angle(config)*PI);//rotate them opposite directions
-    pR(right_sensor_offset,-cfg_sensor_angle(config)*PI);
+    pR(left_sensor_offset,angle*PI);//rotate them opposite directions
+    pR(right_sensor_offset,-angle*PI);
 
     //read the trails from canvas
     int bc = world_boundary_conditions(world);

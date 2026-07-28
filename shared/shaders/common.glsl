@@ -96,8 +96,19 @@ struct ConfigData {
     // lane. Two spares here for the next additions.
     vec4 force2;    // x: gravity_force y: gravity_strafe z: initial_conditions(i) w: cohort_fences
     // force2 filled up the same way misc did, so this is another whole new
-    // vec4 rather than a reclaimed lane. Three spares for the next additions.
-    vec4 appearance; // x: color_sensitivity y: color_by_cohort(i) zw: spare
+    // vec4 rather than a reclaimed lane. This one's zw were the last two spares
+    // in the struct, and the sensor jitters claimed them -- rule 2's "claim a
+    // reserved lane" case. THERE ARE NO SPARE LANES LEFT: the next addition
+    // needs a whole new vec4.
+    //
+    // NAMED FOR BEING AN OVERFLOW LANE, NOT FOR A THEME -- like `misc` and
+    // `force2` above it. It was called `appearance` while it held only the two
+    // colour settings; the sensor jitters are physics, so that name had become
+    // a lie about half its contents. A lane is a place four floats fit, not a
+    // category, and pretending otherwise makes the next addition agonize over
+    // whether it belongs. Read the per-lane comment, not the name.
+    vec4 misc2;  // x: color_sensitivity     y: color_by_cohort(i)
+                 // z: sensor_angle_jitter   w: sensor_distance_jitter
 };  // 400 bytes
 
 float cfg_sensor_gain(ConfigData c)     { return c.sensor.x; }
@@ -133,12 +144,26 @@ float cfg_cohort_fences(ConfigData c) { return c.force2.w; }
 // How strongly the brain's colour signal swings the hue. Read by the PARTICLE
 // CAMERA, not by the physics -- entity_update only decides what raw signal to
 // store, so this can be dragged without disturbing the simulation.
-float cfg_color_sensitivity(ConfigData c) { return c.appearance.x; }
+float cfg_color_sensitivity(ConfigData c) { return c.misc2.x; }
 // Colour each population flat by its cohort instead of by its brain's output.
 // A DISPLAY choice, read by the particle camera -- entity_update transmits both
 // signals (col_params.x is the brain, .y the cohort) and picks neither, so this
 // takes effect immediately, even while the simulation is paused.
-bool cfg_color_by_cohort(ConfigData c) { return floatBitsToInt(c.appearance.y) != 0; }
+bool cfg_color_by_cohort(ConfigData c) { return floatBitsToInt(c.misc2.y) != 0; }
+
+// Random wobble added to each sensor reading, resampled EVERY PHYSICS STEP --
+// a shimmer, not a fixed per-particle trait. Both are 0..1 controls scaled so
+// that 1.0 spans the whole range of the parameter they perturb: angle covers
+// its own -1..1 slider directly, distance covers SENSOR_DISTANCE_SPAN below.
+// Applied in entity_update.glsl; 0 is off.
+float cfg_sensor_angle_jitter(ConfigData c)    { return c.misc2.z; }
+float cfg_sensor_distance_jitter(ConfigData c) { return c.misc2.w; }
+
+// The width of the Sensor Distance slider (0..5), which is what a distance
+// jitter of 1.0 spans. It lives here rather than being read from the slider
+// bounds because the shader has no access to those -- MUST MATCH the `hi` of
+// the sensor_distance entry in ui/settings_spec.py.
+#define SENSOR_DISTANCE_SPAN 5.0
 
 // ---------------------------------------------------------------------------
 // WorldData -- settings that are properties of the world, not of a particle.

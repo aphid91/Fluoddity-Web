@@ -77,6 +77,13 @@ class SimulationConfig:
     #: Colour each population flat by cohort instead of by its brain's output.
     #: Applied in entity_update (it changes what gets stored), not the renderer.
     color_by_cohort: bool = False
+    #: Random wobble on where each particle looks, RESAMPLED EVERY PHYSICS STEP
+    #: -- a shimmer rather than a fixed per-particle trait. 0..1, where 1.0
+    #: spans the full range of the parameter it perturbs (see the accessors in
+    #: common.glsl). Default 0, so configs saved before these existed are
+    #: unchanged.
+    sensor_angle_jitter: float = 0.0
+    sensor_distance_jitter: float = 0.0
     # 80 floats -> 10 FourierCenters, each frequency(4) + amplitude(4)
     rule: tuple = field(default_factory=tuple)
 
@@ -117,10 +124,12 @@ class SimulationConfig:
         record['force2'] = (self.gravity_force, self.gravity_strafe,
                             _int_lane(self.initial_conditions),
                             self.cohort_fences)
-        # appearance: color_sensitivity, color_by_cohort(int bits), 2 spare
-        record['appearance'] = (self.color_sensitivity,
-                                _int_lane(int(self.color_by_cohort)),
-                                0.0, 0.0)
+        # misc2: color_sensitivity, color_by_cohort(int bits),
+        # sensor_angle_jitter, sensor_distance_jitter
+        record['misc2'] = (self.color_sensitivity,
+                           _int_lane(int(self.color_by_cohort)),
+                           self.sensor_angle_jitter,
+                           self.sensor_distance_jitter)
         return record
 
 

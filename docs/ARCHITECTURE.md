@@ -215,6 +215,60 @@ Size change.
 Additive to the save format: files written before `force2` existed have no such
 block and default to zero, which is what they meant.
 
+**The fifth vec4 is now full too, and was renamed `misc2` as a result.** Its
+last two spare lanes went to the sensor jitters — the *other* half of rule 7,
+claiming reserved lanes rather than adding a vec4, so `ConfigData` is still 400
+bytes. There are no spares left; the next addition needs a new one.
+
+It was called `appearance` while it held only `color_sensitivity` and
+`color_by_cohort`. The jitters are physics, so that name became a lie about half
+its contents. **Overflow lanes are named for being overflow lanes** — `misc`,
+`force2`, `misc2` — because a vec4 is a place four floats fit, not a category,
+and a thematic name makes the next addition agonize over whether it belongs.
+Read the per-lane comment, not the name.
+
+### Sensor jitter
+
+Two 0..1 controls that add a random wobble to where a particle looks, applied in
+`entity_update.glsl` just before the sensor offsets are built:
+
+```glsl
+angle    += angle_jitter * (2*hash(...) - 1);
+distance += SENSOR_DISTANCE_SPAN * distance_jitter * (2*hash(...) - 1);
+```
+
+**Each is scaled so 1.0 spans the whole range of the slider it perturbs.** Angle
+is already a -1..1 half-turn control and needs no scaling; distance is
+0..5, so it carries that span as `SENSOR_DISTANCE_SPAN` in `common.glsl`. That
+constant **mirrors the `hi` of the `sensor_distance` entry in
+`settings_spec.py`** — the shader cannot read the registry's bounds, so widening
+one means widening the other. Both call sites carry a note saying so.
+
+Fitting the scale to each parameter individually is the point: it is why these
+are two purpose-built controls rather than the reference's one generic
+`jitter` lane on every `PhysicsSetting`, which was proportional to the result
+(`result += jitter * result * random`) and therefore did nothing at all when a
+setting sat at zero.
+
+**Resampled every physics step, not fixed per particle** — seeded on
+`(index, frame_count)`, so it is a *shimmer* that softens structure rather than
+a population of individuals with permanently different eyes. At the default
+Physics Rate that is ~1800 redraws a second.
+
+**Both sensors get the same draw**, applied to the pair together, so they stay
+symmetric about the heading. Jittering them independently would introduce
+exactly the left/right bias that the `y_reflect` mirror term exists to cancel.
+
+**Distance is deliberately unclamped.** Because the jitter is offset either way
+around the base value, high settings push it negative for some steps, which puts
+both sensors *behind* the particle with left and right swapped. That is a look
+no other slider reaches, so it is kept rather than clamped at zero.
+
+They live in the `misc2` vec4 and therefore in the save file's `misc2` block —
+because that is the lane they fit in, not because they share a theme with the
+two colour settings beside them. They are physics, and they are in the Sensors
+tab.
+
 ### Deprecation candidate: cohorts
 
 `cohorts` + `rule_seed` + `mutation_scale` produce per-cohort rule variation via
@@ -287,9 +341,18 @@ a world point lands and toggling between them does not shift the image.
 
 **Format v8** writes what this codebase actually has: a `world` block, a
 `configs` list, and optionally a `camera`. Fields the project cut —
-`slider_ranges`, `sweeps`, `jitters`, `parameter_sweeps_enabled`, most of
-`appearance` — are **not written**. A save format that carries dead features
-teaches the next reader those features exist.
+`slider_ranges`, `sweeps`, `parameter_sweeps_enabled`, the reference's generic
+per-setting `jitter`, and most of v7's `appearance` — are **not written**. A
+save format that carries dead features teaches the next reader those features
+exist. (The two *sensor* jitters are a different, purpose-built feature and are
+written; see "Sensor jitter" above.)
+
+**A config's blocks are named after the GLSL struct's vec4s**, so a file can be
+read side by side with `common.glsl`. The cost is that renaming a lane renames a
+block: `misc2` was `appearance` until the sensor jitters landed in it, and
+`_config_from_dict` reads **both** names so nothing written before the rename
+stops loading. A rename is therefore cheap but not free — prefer getting the
+lane name right when the vec4 is added.
 
 Multiple configs are supported from the start, because the ConfigBuffer is a
 list. "Save Config 0" writes a one-element list and loads through the identical

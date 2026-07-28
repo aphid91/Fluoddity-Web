@@ -128,6 +128,10 @@ SETTINGS = [
             "of its two sensors. Small angles look ahead; larger angles sweep "
             "wide. Negative values swap left and right.",
             group='Sensors'),
+    # NOTE: the 5.0 upper bound is mirrored in common.glsl as
+    # SENSOR_DISTANCE_SPAN, which is what a Sensor Distance Jitter of 1.0
+    # spans. The shader cannot read these bounds, so widening this one means
+    # widening that #define too.
     Setting('sensor_distance', 'Sensor Distance', BASIC, CONFIG, SLIDER, 0.0, 5.0,
             "How far ahead a particle samples the trail field. Short distances "
             "produce tight, detailed structure; long distances produce broad, "
@@ -135,12 +139,25 @@ SETTINGS = [
             group='Sensors'),
     Setting('sensor_angle_jitter', 'Sensor Angle Jitter', ADVANCED, CONFIG,
             SLIDER, 0.0, 1.0,
-            "Random per-particle variation in sensor angle.",
-            implemented=False, group='Sensors'),
+            "Random wobble added to Sensor Angle, redrawn every physics step. "
+            "A shimmer rather than a trait: the same particle looks somewhere "
+            "slightly different each step, which softens structure into "
+            "something looser and more organic.\n\n"
+            "Scaled so 1.0 spans the whole Sensor Angle slider, meaning the "
+            "angle is then effectively random and the base value stops "
+            "mattering.",
+            group='Sensors'),
     Setting('sensor_distance_jitter', 'Sensor Distance Jitter', ADVANCED, CONFIG,
             SLIDER, 0.0, 1.0,
-            "Random per-particle variation in sensor distance.",
-            implemented=False, group='Sensors'),
+            "Random wobble added to Sensor Distance, redrawn every physics "
+            "step -- the distance counterpart to Sensor Angle Jitter, mixing "
+            "near and far sampling instead of near and wide.\n\n"
+            "Scaled so 1.0 spans the whole Sensor Distance slider. Because "
+            "that range is offset either way, high values push the distance "
+            "NEGATIVE for some steps, which puts the sensors behind the "
+            "particle with left and right swapped. That is deliberate: it is "
+            "a look no other slider reaches.",
+            group='Sensors'),
     Setting('sensor_gain', 'Sensor Gain', ADVANCED, CONFIG, SLIDER, 0.0, 8.0,
             "How strongly particles respond to what they sense. Higher values "
             "make particles more reactive to the trails on the canvas.",
@@ -161,7 +178,7 @@ SETTINGS = [
             "to match, so it cannot differ between particles sharing a canvas.",
             group='Population',
             options=DROPDOWN_MODES['boundary_conditions']),
-    Setting('initial_conditions', 'Initial Conditions', ADVANCED, CONFIG,
+    Setting('initial_conditions', 'Initial Conditions', BASIC, CONFIG,
             CHOICE, 0, 3,
             "How particles are arranged when the simulation resets. Grid and "
             "Ring lay the cohorts out, Random scatters them, Center starts "
@@ -170,7 +187,7 @@ SETTINGS = [
             "Cohort Fences hold them.",
             group='Population',
             options=DROPDOWN_MODES['initial_conditions']),
-    Setting('cohort_fences', 'Cohort Fences', ADVANCED, CONFIG, SLIDER, 0.0, 1.0,
+    Setting('cohort_fences', 'Cohort Fences', BASIC, CONFIG, SLIDER, 0.0, 1.0,
             "Holds each particle near where it started, so cohorts stay "
             "distinct instead of mixing. 0 is off; higher values pull harder. "
             "Follows Initial Conditions -- the fence is around a particle's "
