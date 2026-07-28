@@ -59,12 +59,12 @@ class ConfigClipboardWindow:
 
         checkpoints = self._status.get('checkpoints') or []
 
-        if imgui.button("Set Checkpoint"):
+        if imgui.button("Set Checkpoint (Ctrl+C)"):
             self._dispatch('set_checkpoint')
         imgui.same_line()
         if not checkpoints:
             imgui.begin_disabled()
-        if imgui.button("Load Most Recent"):
+        if imgui.button("Load Most Recent (Ctrl+V)"):
             # Committing first means the hover machinery will not undo this
             # when the cursor later leaves the list.
             self._clipboard_preview.commit(checkpoints[0].key if checkpoints else None)
@@ -76,7 +76,7 @@ class ConfigClipboardWindow:
 
         if not checkpoints:
             imgui.text_disabled("no checkpoints this session")
-            imgui.text_disabled('press "Set Checkpoint" to store one')
+            imgui.text_disabled("press Ctrl+C to store one")
             imgui.end()
             return
 

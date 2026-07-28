@@ -89,6 +89,14 @@ class ConfigMenu:
                 self._dispatch('undo')
             if imgui.menu_item_simple("Redo", "Ctrl+Shift+Z", False, can_redo):
                 self._dispatch('redo')
+            imgui.separator()
+            # The config clipboard, under the keys people already reach for.
+            has_checkpoint = bool(self._status.get('checkpoints'))
+            if imgui.menu_item_simple("Set Checkpoint", "Ctrl+C"):
+                self._dispatch('set_checkpoint')
+            if imgui.menu_item_simple("Load Latest Checkpoint", "Ctrl+V",
+                                      False, has_checkpoint):
+                self._dispatch('load_latest_checkpoint')
             imgui.end_menu()
 
         if imgui.begin_menu("Tools"):

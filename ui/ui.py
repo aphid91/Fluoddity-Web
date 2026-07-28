@@ -426,6 +426,18 @@ class UI(ConfigMenu, ConfigManagerWindow, ConfigClipboardWindow, SettingsWindow,
         if ctrl and glfw.KEY_Y in state.keys_pressed:
             self._dispatch('redo')
             return
+        # Copy/paste, mapped to the config clipboard: Ctrl+C checkpoints the
+        # whole project, Ctrl+V restores the newest checkpoint. The familiar
+        # keys for the familiar idea -- this IS the app's copy/paste, there is
+        # no other clipboard to conflict with.
+        if ctrl and glfw.KEY_C in state.keys_pressed:
+            self._dispatch('set_checkpoint')
+            return
+        if ctrl and glfw.KEY_V in state.keys_pressed:
+            self._dispatch('load_latest_checkpoint')
+            return
+        # Every other Ctrl combination is left alone, so Ctrl+<key> can never
+        # trigger a bare-key shortcut below.
         if ctrl:
             return
 

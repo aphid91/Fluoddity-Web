@@ -725,6 +725,8 @@ Orchestrator.run() loop:
        AppWindow.end_frame()             # swap buffers
 
 UI -> named command -> Orchestrator handler
+     Ctrl+Z / Ctrl+Shift+Z = undo / redo
+     Ctrl+C / Ctrl+V = set checkpoint / load newest checkpoint
      SPACE = pause/resume | R = reset | U = reload shaders
      B = randomize behavior | F = randomize mutation seed
      X = show/hide the GUI
