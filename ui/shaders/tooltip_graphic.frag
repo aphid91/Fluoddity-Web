@@ -34,7 +34,7 @@ out vec4 fragColor;
 //: Distance at which the diagram's sensors sit at the edge of the frame. The
 //: slider's real range is 0..5, which would put the sensors far outside the
 //: view; this maps that range onto something that reads at tooltip size.
-#define DISTANCE_FULL_SCALE 5.0
+#define DISTANCE_FULL_SCALE 3.0
 
 float sdSegment(in vec2 p, in vec2 a, in vec2 b)
 {
@@ -46,7 +46,24 @@ float sdSegment(in vec2 p, in vec2 a, in vec2 b)
 void pR(inout vec2 p, float a) {
     p = cos(a) * p + sin(a) * vec2(p.y, -p.x);
 }
-
+float sdTriangle( in vec2 p, in float r )
+{
+    const float k = sqrt(3.0);
+    p.x = abs(p.x) - r;
+    p.y = p.y + r/k;
+    if( p.x+k*p.y>0.0 ) p = vec2(p.x-k*p.y,-k*p.x-p.y)/2.0;
+    p.x -= clamp( p.x, -2.0*r, 0.0 );
+    return -length(p)*sign(p.y);
+}
+float sd_arrow(vec2 uv,vec2 end,float scale){
+    scale*=2;
+    vec2 tri_p = uv-end;
+    pR(tri_p,-atan(end.x,end.y));
+    tri_p.y+=scale*.1;
+    return min(
+    sdTriangle(tri_p,.1*scale),
+    sdSegment(uv,vec2(0),end-normalize(end)*.1*scale)-scale*.03);
+}
 float sd_particle(vec2 p) {
     return length(p) - 0.1;
 }
@@ -68,12 +85,12 @@ void main() {
 
     // The hovered quantity oscillates around its current value so the tooltip
     // animates the thing it is describing. The other stays put.
-    float angle = SENSOR_ANGLE + (ANGLE_MODE ? 0.15 * sin(time) : 0.0);
+    float angle = SENSOR_ANGLE ;
     float distance_norm = SENSOR_DISTANCE / DISTANCE_FULL_SCALE;
-    distance_norm += DISTANCE_MODE ? 0.1 * sin(time) : 0.0;
 
     fragColor = vec4(0.0, 0.0, 0.0, 1.0);
-
+    vec3 trail_col = 2*vec3(1,.6,.2);
+    fragColor.xyz += trail_col*.7*max(0,sign(-p.y)*max(0,1-8*abs(p.x)))*exp(p.y*2);
     // A negative angle swaps the sensors left for right, which is a real and
     // visible difference in behaviour. Fold the sign out of the rotation and
     // into which side is coloured, so the diagram shows the swap rather than
