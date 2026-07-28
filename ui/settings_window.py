@@ -72,6 +72,12 @@ class SettingsWindow:
         #: Set while the sliders render and consumed at the end of the same
         #: frame, so the diagram closes the moment the cursor leaves.
         self._diagram_hovered = None
+        #: Whether the panel was on screen at the end of LAST frame. A drag may
+        #: keep an already-open panel up, but must never be what opens one --
+        #: see the note in _tooltip(). Last frame's value is the right question:
+        #: sliders render before the panel does, so this frame's is not known
+        #: yet when it is consulted.
+        self._diagram_open = False
         #: Where to pin the diagram: the Project window's top-right corner,
         #: captured each frame before its imgui.end().
         self._diagram_anchor = imgui.ImVec2(0.0, 0.0)
@@ -79,6 +85,10 @@ class SettingsWindow:
 
     def _settings_window(self):
         if not self.show_settings:
+            # No window means no panel, so a later reopen must not think one was
+            # still up -- otherwise the first drag after reopening would be
+            # treated as sustaining a panel that is not there.
+            self._diagram_open = False
             return
 
         # Cleared at the top of every frame and set again by whichever sensor
@@ -96,6 +106,7 @@ class SettingsWindow:
         expanded, self.show_settings = imgui.begin(title, True)
         if not expanded:
             imgui.end()
+            self._diagram_open = False   # collapsed: same reasoning as above
             return
 
         selected = self._status.get('selected_config', 0)
@@ -126,6 +137,9 @@ class SettingsWindow:
 
         if self._diagram_hovered is not None:
             self._sensor_diagram_panel()
+        # Recorded AFTER the panel is drawn, so next frame's "may a drag keep
+        # this alive?" test asks about a panel that was really on screen.
+        self._diagram_open = self._diagram_hovered is not None
 
     # ------------------------------------------------------------------
 
@@ -337,13 +351,28 @@ class SettingsWindow:
             # its turn rather than flashing up the instant the cursor crosses a
             # slider on its way somewhere else.
             #
-            # is_item_active() bypasses the delay, and must: once a drag is
-            # under way imgui stops reporting hover, and the diagram going dark
-            # exactly while the user drags the slider it explains would be the
-            # worst possible moment for it to leave.
-            if imgui.is_item_active() or imgui.is_item_hovered(
-                    imgui.HoveredFlags_.delay_normal.value
-                    | imgui.HoveredFlags_.for_tooltip.value):
+            # is_item_active() KEEPS it up through a drag: imgui stops reporting
+            # hover once the drag starts, and the diagram going dark exactly
+            # while you drag the slider it explains is the worst moment for it
+            # to leave.
+            #
+            # But it must never be what first OPENS the panel, and THIS IS THE
+            # WHOLE FIX for a bug worth not reintroducing: a window appearing
+            # mid-drag is raised above the Project window, and imgui drops an
+            # active drag once its owning window stops being frontmost. So
+            # grabbing a slider before the hover delay elapsed would open the
+            # panel and break the very drag that opened it.
+            #
+            # Requiring the panel to be up ALREADY means a drag can only sustain
+            # one, never summon one -- and nothing new appears while dragging.
+            # Fixing it with no_bring_to_front_on_focus instead would also work,
+            # but by never raising the panel at all, leaving it buried behind
+            # other windows.
+            active = imgui.is_item_active()
+            hovered = imgui.is_item_hovered(
+                imgui.HoveredFlags_.delay_normal.value
+                | imgui.HoveredFlags_.for_tooltip.value)
+            if hovered or (active and self._diagram_open):
                 self._diagram_hovered = (setting, mode)
             return
 
@@ -417,6 +446,12 @@ class SettingsWindow:
                    | imgui.WindowFlags_.no_resize.value
                    | imgui.WindowFlags_.always_auto_resize.value
                    | imgui.WindowFlags_.no_focus_on_appearing.value
+                   # NOT no_bring_to_front_on_focus. It would also stop the
+                   # drag being broken, but by never raising the panel at all --
+                   # which buries it behind every other window and makes the
+                   # diagram useless. The panel must come to the front; it just
+                   # must not do so DURING a drag, which is what the
+                   # _diagram_open guard in _tooltip() handles instead.
                    | imgui.WindowFlags_.no_nav.value
                    | imgui.WindowFlags_.no_docking.value
                    # Nothing in here is clickable, and the panel sits directly
