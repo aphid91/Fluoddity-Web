@@ -170,20 +170,23 @@ class Camera:
             self._accum_fbo.clear(0.0, 0.0, 0.0, 1.0)
 
     def render(self, canvas_texture, entity_buffer, entity_count,
-               canvas_size, window_size, color_sensitivity=0.5):
+               canvas_size, window_size, color_sensitivity=0.5,
+               color_by_cohort=False):
         """Draw one temporal sample and fold it into the accumulator.
 
         Everything needed is passed per call -- Camera keeps no reference to
         the simulation between frames, so the canvas double-buffer swap stays
-        invisible to it. `color_sensitivity` arrives the same way rather than
-        being read from the config buffer, which belongs to ParticleSystem.
+        invisible to it. The two colour settings arrive the same way rather
+        than being read from the config buffer, which belongs to
+        ParticleSystem.
         """
         if self._hdr_fbo is None:
             return
 
         if self.state.mode is CameraMode.PARTICLES:
             self._render_particles(entity_buffer, entity_count,
-                                   canvas_size, window_size, color_sensitivity)
+                                   canvas_size, window_size,
+                                   color_sensitivity, color_by_cohort)
         else:
             self._render_trail(canvas_texture, canvas_size, window_size)
 
@@ -214,7 +217,8 @@ class Camera:
         self.present_vao.render(moderngl.TRIANGLES)
 
     def _render_particles(self, entity_buffer, entity_count,
-                          canvas_size, window_size, color_sensitivity=0.5):
+                          canvas_size, window_size, color_sensitivity=0.5,
+                          color_by_cohort=False):
         if self.particle_program is None or self.particle_vao is None:
             return
         self._hdr_fbo.use()
@@ -226,6 +230,7 @@ class Camera:
         tryset(self.particle_program, 'particle_alpha', PARTICLE_ALPHA)
         tryset(self.particle_program, 'color_sensitivity',
                float(color_sensitivity))
+        tryset(self.particle_program, 'color_by_cohort', bool(color_by_cohort))
 
         # Additive: overlapping sprites accumulate into brighter regions, which
         # is what makes density legible. Unrelated to the temporal accumulation

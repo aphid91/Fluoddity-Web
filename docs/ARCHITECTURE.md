@@ -273,10 +273,12 @@ against each other by running the GLSL on the GPU and comparing outputs.
 the quad is always fullscreen, and each screen pixel asks "what world point do I
 show?". That inverse is what places the letterbox bars correctly.
 
-`CameraMode.PARTICLES` draws one instanced sprite per entity, transformed to
-screen ndc **in the vertex shader** — so the camera is baked into the vertices
-and the present pass must not apply it again. Particles are world-sized (they
-grow as you zoom in), matching the original's feel.
+`CameraMode.PARTICLES` (**the default**) draws one instanced sprite per entity,
+transformed to screen ndc **in the vertex shader** — so the camera is baked into
+the vertices and the present pass must not apply it again. Particles are
+world-sized (they grow as you zoom in), matching the original's feel. It is the
+default because it is the more direct view of what the simulation is doing, and
+the only one that carries the per-particle colour signal.
 
 Both modes consume the same transform, so they agree pixel-for-pixel about where
 a world point lands and toggling between them does not shift the image.
@@ -866,20 +868,28 @@ it is what makes the signal something other than a recoloured copy of the
 velocity. The values are arbitrary and tuned by eye; nothing should read
 meaning into their scale.
 
-**The sensitivity multiply happens in the renderer, not the compute shader.**
-The reference bakes it in at `e.hue = hue_sensitivity * col_params.x`; storing
-the raw signal instead means the slider re-colours the frame without re-running
-any physics. Only the *magnitude* of the swing is a display choice — *what to
-swing on* is decided upstream.
+**Every colour decision happens in the renderer.** `entity_update` transmits
+both signals and chooses neither: `col_params.x` is the brain's output,
+`col_params.y` the particle's cohort index. The reference bakes its choices
+into the compute shader (`e.hue = hue_sensitivity * col_params.x`, with a
+branch for cohort colouring above it); keeping the raw signals means both
+Color Sensitivity and Color By Cohort re-colour the frame without re-running
+any physics.
 
-That upstream choice is **Color By Cohort**: when set, `entity_update` stores
-`floor(cohort) * COHORT_COLOR_CONSTANT` in `col_params.x` instead of the brain
-output, so a population reads as one flat colour. The renderer does not know
-the difference, which is why the toggle costs it nothing. A fixed step per
+**That is not just tidiness — it is what makes the controls work while
+paused.** A display decision made in `entity_update` only takes effect on the
+next physics step, so the checkbox appears broken exactly when you most want
+to flip between the two and compare a frozen frame. Verified: toggling it
+changes the image with `frame_count` unchanged.
+
+**Color By Cohort** therefore lives in `cam_brush.frag`, selecting `.y` instead
+of `.x` and scaling it by `COHORT_COLOR_CONSTANT` (0.75). A fixed step per
 cohort rather than the reference's `hash(floor(cohort))`: adjacent populations
 land three quarters of the way around the wheel from each other, separated
 without the arbitrary jumble a hash gives, and hue's periodicity means it needs
-no normalizing by the cohort count.
+no normalizing by the cohort count. Sensitivity scales both signals, so it
+stays meaningful in either mode — by cohort it sets how far apart the
+populations sit on the wheel.
 
 Note the practical consequence of the scale: `col_params.x` typically has a
 spread of ~3, so hue wraps more than once above roughly 0.15 and the population
@@ -1154,10 +1164,11 @@ command, expect it to follow that shape -- and to need dividing by
   `assign_config_index()` at reset. A future "paint particles into config N"
   tool would change it at runtime, so the host must not assume it knows the
   entity->config mapping without a readback.
-- **`col_params.y` is written but nothing reads it.** `entity_update` stores
-  both lanes of the brain's colour signal; the particle camera only uses `.x`
-  as a hue. The lane is kept deliberately, because the intended uses are all
-  *highlighting* rather than colouring:
+- ~~**`col_params.y` is written but nothing reads it.**~~ — **in use.** It now
+  carries the particle's cohort index, which `cam_brush.frag` reads when Color
+  By Cohort is on. The lane is no longer free, so the *other* uses once
+  imagined for it need somewhere else to live. They are still wanted, and they
+  are all **highlighting** rather than colouring:
   - marking individual particles (the picker's selected entity, which the
     Entity struct has reserved lanes for but no render-side channel yet);
   - indicating which **config** a particle belongs to, so a multi-config buffer
@@ -1166,9 +1177,11 @@ command, expect it to follow that shape -- and to need dividing by
     config containing only the selected particles — so edits apply to a group
     you drew rather than to the whole population.
 
-  That last one is the reason to keep the lane rather than reclaim it: it needs
-  a per-particle "am I selected" signal that survives into rendering, and this
-  is already that. Note the colour values themselves are arbitrary — an
+  All three need a per-particle "am I highlighted" signal that survives into
+  rendering. `Entity.misc` is now full (`x` size, `y` config_index, `zw`
+  col_params), so this wants either a widened Entity or a lane reclaimed from
+  something else — worth deciding deliberately rather than by whichever
+  feature lands first. Note the brain's colour values are arbitrary — an
   unreflected reuse of the black box's force terms, tuned by eye — so nothing
   should infer meaning from their scale.
 - PARTICLES mode draws every entity with no culling. Off-screen sprites still

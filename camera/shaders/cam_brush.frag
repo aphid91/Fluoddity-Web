@@ -1,18 +1,21 @@
 #version 430
 
 // Particle-cam fragment: a soft gaussian disc per entity, colored by the
-// particle's own brain.
+// particle's own brain -- or by its cohort.
 //
-// The hue comes from col_params.x -- a raw output of the black box the particle
-// evaluates each step, written by entity_update. So two particles running the
-// same rule agree, and particles running mutated rules drift apart in colour:
-// the image shows the POPULATION'S STRUCTURE rather than just where things are
-// heading, which is what velocity-direction hue showed before.
+// entity_update transmits BOTH signals and chooses neither: col_params.x is a
+// raw output of the black box the particle evaluates each step, col_params.y is
+// its cohort index. Everything about turning those into a colour happens here.
 //
-// The sensitivity multiply happens HERE rather than in the compute shader, so
-// dragging the slider re-colours the frame without re-running any physics.
-// Only the magnitude of the swing is a display choice; what to swing on was
-// decided upstream (cohort vs. brain output).
+// THAT SPLIT IS THE POINT. Colour is a display decision, so deciding it in the
+// compute shader would mean a checkbox that does nothing until the next physics
+// step -- appearing broken exactly while paused, which is when you most want to
+// flip between the two and compare. Here, both toggles are immediate.
+//
+// By brain: two particles running the same rule agree, and mutated ones drift
+// apart, so the image shows the POPULATION'S STRUCTURE rather than just where
+// things are heading (which is what velocity-direction hue showed before).
+// By cohort: each population reads as one flat colour.
 
 in vec2 uv;
 in vec4 pos_vel;
@@ -20,9 +23,16 @@ flat in vec2 col_params;
 out vec4 frag_out;
 
 uniform float particle_alpha;
-//: How hard col_params.x swings the hue. Per-config, handed over by the
+//: How hard the colour signal swings the hue. Per-config, handed over by the
 //: Orchestrator -- Camera does not read the config buffer (rule 3).
 uniform float color_sensitivity;
+//: Swap the brain's signal for the cohort index. Same route, same reason.
+uniform bool color_by_cohort;
+
+// How far apart consecutive cohorts land on the hue wheel. Three quarters of a
+// turn separates neighbours without the arbitrary jumble a hash gives, and hue
+// is periodic so it wraps on its own -- no normalizing by the cohort count.
+#define COHORT_COLOR_CONSTANT 0.75
 
 vec3 hsv2rgb(vec3 c) {
     vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
@@ -46,7 +56,13 @@ void main() {
     // simply travels further around the wheel. Saturation and value are fixed,
     // matching the reference: only hue carries information, which keeps every
     // particle equally legible against the black background.
-    float hue = color_sensitivity * col_params.x;
+    //
+    // Sensitivity scales BOTH signals, so it stays meaningful in either mode:
+    // by cohort it sets how far apart the populations sit on the wheel.
+    float signal = color_by_cohort
+        ? col_params.y * COHORT_COLOR_CONSTANT
+        : col_params.x;
+    float hue = color_sensitivity * signal;
 
     frag_out = vec4(hsv2rgb(vec3(hue, 0.8, 1.0)) * kernel * particle_alpha, 1.0);
 }

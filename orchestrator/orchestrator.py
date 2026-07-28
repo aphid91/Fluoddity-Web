@@ -304,6 +304,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
                         # belongs to ParticleSystem -- so with several configs
                         # loaded, the selected one sets the palette for all.
                         color_sensitivity=self.project.config.color_sensitivity,
+                        color_by_cohort=self.project.config.color_by_cohort,
                     )
 
             # AFTER the loop, not before: the camera binds its own framebuffers

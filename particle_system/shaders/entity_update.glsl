@@ -419,19 +419,15 @@ void main() {
     vec2 col_params = vec2(0);//set by calculate_... -- rendering only
     calculate_entity_behavior(ltap.xy,rtap.xy,orientation,rule,config,force,strafe,col_params);
 
-    //Colour by cohort: replace the brain's signal with the cohort index, so a
-    //population reads as one flat colour instead of a spread. Done HERE rather
-    //than in the renderer -- the camera just turns col_params.x into a hue and
-    //does not know or care which of the two it is looking at.
+    //The particle's cohort, carried alongside the brain's signal so the
+    //RENDERER can choose between them. This shader transmits both and decides
+    //nothing: Color By Cohort is a display choice, and deciding it here would
+    //mean the checkbox did nothing until the next physics step -- so it would
+    //appear broken while paused, which is exactly when you want to compare.
     //
-    //A fixed step per cohort rather than a hash: adjacent populations land
-    //three quarters of the way around the hue wheel from each other, which
-    //separates them without the arbitrary jumble a hash gives. Hue is periodic,
-    //so this wraps on its own and needs no normalizing by the cohort count.
-    #define COHORT_COLOR_CONSTANT 0.75
-    if(cfg_color_by_cohort(config)){
-        col_params.x = floor(cohort) * COHORT_COLOR_CONSTANT;
-    }
+    //Sent raw. What a cohort index looks like as a colour is the renderer's
+    //business (see cam_brush.frag).
+    col_params.y = floor(cohort);
 
     //rescale output forces
     force *= 1./sqrt_world_size*cfg_global_force_mult(config)/400.;

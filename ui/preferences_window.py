@@ -29,7 +29,7 @@ class PreferencesWindow:
     """Mixin providing the Preferences window. Host supplies `_dispatch`/`_status`."""
 
     def _init_preferences_window(self):
-        self.show_preferences = False
+        self.show_preferences = True
 
     def _preferences_window(self):
         if not self.show_preferences:

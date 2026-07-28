@@ -43,10 +43,12 @@ class CameraMode(Enum):
     """What the camera draws.
 
     TRAIL     the accumulated velocity flow-field the particles write into.
-              This is the default look: smooth, continuous, the trails ARE the
-              simulation state.
-    PARTICLES each entity drawn as an instanced sprite. Shows where the
-              particles actually are, which the trail view only implies.
+              Smooth and continuous -- the trails ARE the simulation state.
+    PARTICLES each entity drawn as an instanced sprite, coloured by its own
+              output. Shows where the particles actually are, which the trail
+              view only implies. The DEFAULT: it is the more direct view of
+              what the simulation is doing, and the only one that carries the
+              per-particle colour signal.
     """
 
     TRAIL = 'trail'
@@ -63,7 +65,7 @@ class CameraState:
 
     pan: tuple[float, float] = (0.0, 0.0)
     zoom: float = 1.0
-    mode: CameraMode = CameraMode.TRAIL
+    mode: CameraMode = CameraMode.PARTICLES
 
     def reset(self):
         self.pan = (0.0, 0.0)

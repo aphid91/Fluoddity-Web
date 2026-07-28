@@ -134,9 +134,10 @@ float cfg_cohort_fences(ConfigData c) { return c.force2.w; }
 // CAMERA, not by the physics -- entity_update only decides what raw signal to
 // store, so this can be dragged without disturbing the simulation.
 float cfg_color_sensitivity(ConfigData c) { return c.appearance.x; }
-// When set, col_params.x carries the particle's COHORT instead of its brain
-// output, so each population reads as a flat colour. Handled entirely by what
-// entity_update stores; the renderer does not know the difference.
+// Colour each population flat by its cohort instead of by its brain's output.
+// A DISPLAY choice, read by the particle camera -- entity_update transmits both
+// signals (col_params.x is the brain, .y the cohort) and picks neither, so this
+// takes effect immediately, even while the simulation is paused.
 bool cfg_color_by_cohort(ConfigData c) { return floatBitsToInt(c.appearance.y) != 0; }
 
 // ---------------------------------------------------------------------------
