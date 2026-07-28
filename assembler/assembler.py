@@ -83,11 +83,13 @@ class Assembler:
 
     def present(self, source, framebuffer, prefs, canvas_size, window_size,
                 cam_pan, cam_zoom, strafe_field=None, show_field=False,
-                reticle_center=None, reticle_radius=0.0):
+                reticle_center=None, reticle_radius=0.0,
+                reticle_dashed=False):
         """Assemble `source` onto `framebuffer`.
 
-        `show_field` and `reticle_radius` arrive already decided: whether an
-        overlay belongs on screen depends on the active tool, and that is the
+        `show_field`, `reticle_radius` and `reticle_dashed` arrive already
+        decided: whether an overlay belongs on screen, and which tool it is
+        describing, depends on the active tool -- and that is the
         Orchestrator's to know, not this module's.
         """
         if self.program is None or self.vao is None or source is None:
@@ -141,6 +143,7 @@ class Assembler:
         tryset(self.program, 'reticle_center',
                (float(center[0]), float(center[1])))
         tryset(self.program, 'reticle_radius', float(reticle_radius))
+        tryset(self.program, 'reticle_dashed', bool(reticle_dashed))
 
         self.vao.render(moderngl.TRIANGLES)
 

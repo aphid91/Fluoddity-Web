@@ -442,9 +442,15 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         the ring means the same thing in each -- the reach of what the button
         is about to do. The field overlay does not, because only Draw touches
         it.
+
+        Because one ring serves two tools, its SHAPE cannot say which is armed,
+        so its LINE STYLE does: Shove dashes it, Draw leaves it solid. The
+        circle stays identical either way, which is the honest thing to draw --
+        the reach genuinely is the same, and only what the button does differs.
         """
         drawing = self.mouse_mode is MouseMode.DRAW
-        brushing = drawing or self.mouse_mode is MouseMode.SHOVE
+        shoving = self.mouse_mode is MouseMode.SHOVE
+        brushing = drawing or shoving
         show_field = self.prefs.field_always_show or drawing
 
         if not (brushing and self.prefs.show_reticle):
@@ -459,6 +465,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             'show_field': show_field,
             'reticle_center': self._mouse_field_uv(self.ui.state.mouse_pos),
             'reticle_radius': 2.0 * self.prefs.draw_size,
+            'reticle_dashed': shoving,
         }
 
     def _update_pick(self, state):

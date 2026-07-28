@@ -36,6 +36,12 @@ uniform float field_opacity;
 //: aspect-corrected metric; zero means "no reticle" and skips the whole block.
 uniform vec2 reticle_center;
 uniform float reticle_radius;
+//: Draw the ring as dashes rather than a solid line. Both brush tools share one
+//: brush and therefore one reticle, so the ring alone cannot say which is
+//: armed; the dashes are what distinguish SHOVE (dashed) from DRAW (solid).
+//: A property of the LINE, not of the brush -- the circle it traces is
+//: identical either way, because the reach really is the same.
+uniform bool reticle_dashed;
 
 in vec2 uv;
 out vec4 fragColor;
@@ -48,6 +54,18 @@ out vec4 fragColor;
 // Reticle line width, in pixels. Converted to uv via fwidth, so the ring stays
 // this thick on screen at any zoom.
 #define RETICLE_WIDTH_PX 1.5
+
+// Dashed-ring geometry, used only when reticle_dashed is set. A FIXED NUMBER OF
+// DASHES around the circumference rather than a fixed dash length: the ring
+// changes size with the brush and with zoom, and a fixed length would collapse
+// into a dotted blur on a small brush and stretch into near-solid arcs on a big
+// one. A fixed count keeps the pattern recognisable at every size, which is the
+// entire job here -- it has to read as "dashed, therefore Shove" at a glance.
+#define RETICLE_DASH_COUNT 16.0
+// Fraction of each dash cell that is drawn, so the gap is 1 - this. Tuned by
+// eye: enough gap to read as deliberately dashed at a glance, but small enough
+// that the ring still reads as a circle whose radius you can judge.
+#define RETICLE_DASH_DUTY 0.6625
 
 // World space is area-preserving, so a raw uv delta is anisotropic on a
 // non-square canvas. This is the SAME correction strafe_draw.frag applies when
@@ -106,9 +124,35 @@ void main() {
         // Drawn outside the canvas too: the brush paints right up to the edge,
         // so clipping the ring there would hide where the stroke lands.
         if (reticle_radius > 0.0) {
-            float d = length(aspect_correct_uv(canvas_uv - reticle_center));
+            vec2 rel = aspect_correct_uv(canvas_uv - reticle_center);
+            float d = length(rel);
             float w = fwidth(d) * RETICLE_WIDTH_PX;
             float ring = 1.0 - smoothstep(0.0, w, abs(d - reticle_radius));
+
+            // SHOVE draws the same circle dashed, so the two brush tools are
+            // told apart at a glance without moving or resizing the reticle.
+            if (reticle_dashed) {
+                // Position around the ring, in dash cells. atan is the one
+                // place this fragment cares about angle at all.
+                float cell = (atan(rel.y, rel.x) / (2.0*PI) + 0.5)
+                           * RETICLE_DASH_COUNT;
+
+                // Antialias along the ARC, which needs the angular derivative
+                // rather than the radial one used for w above. fwidth(cell) is
+                // wrong on its own: atan wraps once per revolution, and at that
+                // seam the derivative explodes and smears one cell into a
+                // solid blob. Deriving the arc footprint from the radial
+                // measure instead is continuous everywhere.
+                float arc = fwidth(d) * RETICLE_DASH_COUNT
+                          / max(2.0*PI * reticle_radius, 1e-6);
+
+                // Triangle wave over the cell, so both dash ends antialias with
+                // one smoothstep and the pattern has no seam.
+                float t = abs(fract(cell) - 0.5) * 2.0;
+                ring *= 1.0 - smoothstep(RETICLE_DASH_DUTY - arc,
+                                         RETICLE_DASH_DUTY + arc, t);
+            }
+
             color = mix(color, vec3(1.0), ring);
         }
     }

@@ -33,6 +33,8 @@ all rather than editing JSON.
 
 from __future__ import annotations
 
+import math
+
 from imgui_bundle import imgui
 
 from . import settings_spec as spec
@@ -179,6 +181,10 @@ class SettingsWindow:
                 self._dispatch('edit_setting', setting, int(new))
             return
 
+        if setting.curve != 1.0:
+            self._draw_curved_slider(setting, value, interactive)
+            return
+
         # Default: float slider. Ctrl+click types an exact value, which is how
         # a config can hold a value outside these fixed bounds without a
         # range-editing UI.
@@ -186,6 +192,50 @@ class SettingsWindow:
                                           setting.lo, setting.hi)
         if changed and interactive:
             self._dispatch('edit_setting', setting, float(new))
+
+    def _draw_curved_slider(self, setting, value, interactive):
+        """A slider whose TRAVEL is bent, for ranges squashed against one end.
+
+        imgui has no power-scaled slider, so the widget is driven in normalized
+        0..1 POSITION space and the real value is mapped in and out around it:
+
+            pos   = ((value - lo) / (hi - lo)) ** (1/curve)
+            value = lo + (hi - lo) * pos ** curve
+
+        The value is never stored curved. What is saved, dispatched and shown
+        in the readout is the real number, so a curve is purely how the control
+        feels -- changing one cannot change what a config means.
+
+        The readout is explicit for the same reason: with a bent slider the
+        handle position no longer suggests the magnitude, so the number has to
+        be legible. It is formatted at a precision that suits the range rather
+        than imgui's default %.3f, which would show a whole useful range of a
+        rate like Hazard Rate as "0.000".
+        """
+        label = f"{setting.label}##{setting.source}.{setting.field}"
+        lo, hi = float(setting.lo), float(setting.hi)
+        span = hi - lo
+
+        # Guard the degenerate registry entry rather than producing inf/NaN and
+        # a slider that cannot be moved.
+        if span <= 0.0:
+            imgui.text_disabled(f"{setting.label}: empty range")
+            return
+
+        # A config may legitimately hold a value outside the slider's bounds
+        # (ctrl+click types one), so clamp the POSITION rather than the value:
+        # the handle pins to the end while the readout still tells the truth.
+        norm = min(1.0, max(0.0, (float(value) - lo) / span))
+        pos = norm ** (1.0 / setting.curve)
+
+        # Enough decimals to distinguish adjacent positions at the fine end,
+        # where the curve spends most of its travel.
+        decimals = max(3, min(8, int(round(-math.log10(span))) + 4))
+        changed, new_pos = imgui.slider_float(label, pos, 0.0, 1.0,
+                                              f"{float(value):.{decimals}f}")
+        if changed and interactive:
+            self._dispatch('edit_setting', setting,
+                           lo + span * (min(1.0, max(0.0, new_pos)) ** setting.curve))
 
     def _draw_seed(self, setting, value, interactive):
         """A Randomize button with the current seed shown beside it.

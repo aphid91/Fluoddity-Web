@@ -90,6 +90,17 @@ class Setting:
     #: Name of a BOOL field on the same source. When set, this control renders
     #: indented and only while that checkbox is on.
     reveals_on: str = ""
+    #: Exponent bending a SLIDER's travel, for ranges whose interesting part is
+    #: squashed against one end. The slider POSITION is what curves; the value
+    #: is still the real number and is what gets stored, shown and saved:
+    #:
+    #:     value = lo + (hi - lo) * pos**curve
+    #:
+    #: 1.0 (the default) is a plain linear slider. Above 1.0 gives fine control
+    #: near `lo` and coarse near `hi` -- which is what a rate like Hazard Rate
+    #: wants, where everything usable lives in the bottom few percent. Only
+    #: meaningful for SLIDER, and only for lo >= 0.
+    curve: float = 1.0
 
 
 #: Dropdown entries for the CHOICE controls. ORDER IS THE ENUM: each label's
@@ -195,8 +206,14 @@ SETTINGS = [
             group='Population'),
     Setting('hazard_rate', 'Hazard Rate', ADVANCED, CONFIG, SLIDER, 0.0, 0.01,
             "Chance per step that a particle is reset to its initial state. "
-            "A slow churn that keeps the population from settling.",
-            group='Population'),
+            "A slow churn that keeps the population from settling.\n\n"
+            "The slider is CUBED, so most of its travel covers the very small "
+            "rates where the effect is a slow churn rather than a constant "
+            "teardown. This is a per-STEP probability applied ~1800 times a "
+            "second at the default Physics Rate, so the usable range is far "
+            "smaller than it looks: 0.001 already resets most of the "
+            "population within a second.",
+            group='Population', curve=3.0),
 
     # ================= PROJECT: Forces =================
     Setting('global_force_mult', 'Global Force', ADVANCED, CONFIG, SLIDER, 0.0, 2.0,
@@ -252,7 +269,7 @@ SETTINGS = [
     # Rendering, not physics -- these change how particles are DRAWN in the
     # particle view (TAB) and never touch the simulation. Saved with the config
     # nonetheless: a config's colours are part of how it looks.
-    Setting('color_sensitivity', 'Color Sensitivity', BASIC, CONFIG, SLIDER,
+    Setting('color_sensitivity', 'Color Sensitivity', ADVANCED, CONFIG, SLIDER,
             -1.0, 1.0,
             "How strongly each particle's own output swings its hue, in the "
             "particle view (TAB).\n\n"

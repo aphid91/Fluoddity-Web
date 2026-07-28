@@ -490,6 +490,19 @@ Entries with `implemented=False` are registered but rendered greyed. This
 records the tier layout for controls whose underlying feature does not exist
 yet, without pretending the knob works.
 
+**A slider's travel can be bent, via `curve`.** `value = lo + (hi-lo) *
+pos**curve`, so an exponent above 1 spends most of the handle's travel near
+`lo`. Hazard Rate is the case that needs it (`curve=3.0`): it is a *per-step*
+probability applied ~1800 times a second, so everything usable is crammed into
+the bottom tenth of its range and a linear slider is unusable — 46% of the
+travel now covers what used to be 10%.
+
+**Only the POSITION curves; the value never does.** What is dispatched, stored,
+saved and shown in the readout is the real number, so adding or retuning a curve
+cannot change what any config means. The readout is spelled out explicitly for
+these, because a bent handle no longer suggests the magnitude, and imgui's
+default `%.3f` would render a whole useful range as "0.000".
+
 **Slider bounds are fixed and generous.** User-adjustable ranges were cut; a
 config needing a value outside a bound is handled by ctrl+clicking the slider
 to type an exact value, which imgui supports natively.
@@ -1030,10 +1043,28 @@ factor; reusing the brush's own metric is what removes the need for one.
 `fwidth` sets the line width, so thickness stays constant in screen pixels at
 any zoom.
 
+**Dashed means Shove, solid means Draw.** One brush serves both tools and the
+circle is genuinely the same size in each, so the ring's *shape* cannot say
+which is armed — its *line style* does. Drawing a different radius would be a
+lie about the reach; changing only the line leaves the geometry honest.
+
+The dash count is **fixed per revolution** (16), not a fixed dash length: the
+ring changes size with the brush and with zoom, and a fixed length would
+degenerate into a dotted blur on a small brush and near-solid arcs on a large
+one. A fixed count keeps the pattern recognisable at every size, which is the
+whole job.
+
+Antialiasing the dash ends needs the **angular** footprint, and the obvious
+`fwidth(angle)` is wrong: `atan` wraps once per revolution, so at that seam the
+derivative explodes and smears one cell into a solid blob. The arc width is
+derived from the radial `fwidth` and the radius instead, which is continuous
+everywhere.
+
 Whether either overlay is visible is decided by the **Orchestrator**, not the
 UI and not the assembler: it depends on the active tool, and only the
 Orchestrator knows that (rule 10). The field can optionally persist outside the
-Draw tool; the reticle never does.
+Draw tool; the reticle never does. `reticle_dashed` follows the same rule — the
+assembler renders the style it is handed and decides nothing.
 
 ## The Shove tool
 
