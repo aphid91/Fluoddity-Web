@@ -30,6 +30,36 @@ KINDS
            is an opaque selector into rule-variation space, so it is worth
            reading but never worth typing.
   CHOICE   dropdown over `options`.
+  GATED    a slider that hides itself behind a checkbox -- see below.
+  GATED_INT the integer form of the same thing.
+
+GATED SLIDERS -- controls that are usually off
+Several settings are "off" at one end of their range and only interesting when
+deliberately turned on: jitter, fences, hazard rate, motion blur. Left as plain
+sliders they are four more knobs to scan past, all sitting at zero. A GATED
+control therefore shows a bare CHECKBOX while it holds its `gate_base`, and the
+slider only while it holds something else.
+
+THE STATE IS DERIVED, NEVER STORED. There is no "jitter enabled" field
+anywhere -- the widget asks "is this value at base?" on every frame, so:
+  - loading a config with 0.0 shows a checkbox, one with 0.3 shows a slider at
+    0.3, and neither case needs the loader to know this pattern exists;
+  - undo, the config clipboard and A/B preview all keep working untouched,
+    because there is no second piece of state for them to miss.
+
+Ticking the box sets the value just off base, so the slider appears (at the
+bottom of its travel) rather than the box instantly re-deriving as unticked.
+Dropping the slider back within `gate_epsilon` of base snaps it to exactly base
+and the checkbox returns. That test runs only when a gesture ENDS -- never
+mid-drag, and never mid-ctrl+click-entry -- so dragging through zero does not
+make the control vanish out from under the cursor.
+
+`gate_base` is not always zero: Blur Samples counts renders, so its "off" is 1.
+
+GATES -- one checkbox in front of several sliders
+`gates` builds the same derived checkbox without a slider of its own: it reads
+as ticked while ANY field it names is non-zero, and members point at it with
+`reveals_on`. Gravity uses this -- two sliders, one box, nothing stored.
 
 GROUPS become collapsible tabs in whichever window renders them. A tab whose
 members are all hidden by the current tier is not rendered at all.
@@ -63,6 +93,10 @@ INT = 'int'
 BOOL = 'bool'
 SEED = 'seed'
 CHOICE = 'choice'   # dropdown over `options`
+#: A slider that hides itself behind a checkbox while it sits at its base
+#: value -- see the GATED SLIDERS note below.
+GATED = 'gated'
+GATED_INT = 'gated_int'
 
 
 @dataclass(frozen=True)
@@ -101,6 +135,33 @@ class Setting:
     #: wants, where everything usable lives in the bottom few percent. Only
     #: meaningful for SLIDER, and only for lo >= 0.
     curve: float = 1.0
+    #: True if the slider shows the COMPLEMENT of the stored value, i.e. what
+    #: the user drags is (lo + hi) - value. For a quantity whose natural name
+    #: is the opposite of what the simulation stores -- Trail Stiffness is the
+    #: inverse of trail diffusion -- this lets the label and the slider agree
+    #: without touching the shader, the save format or any stored config. The
+    #: value is inverted on the way into the widget and back on the way out, so
+    #: only the display flips. Only meaningful for SLIDER.
+    inverted: bool = False
+    #: For GATED controls: the value that counts as "off". The control shows an
+    #: unchecked checkbox while it holds this, and returns to one when a drag
+    #: ends within `gate_epsilon` of it. Ticking the checkbox sets exactly this,
+    #: so a freshly revealed slider starts at its own base rather than jumping.
+    gate_base: float = 0.0
+    #: Half-width of the "off" zone around `gate_base`, measured along the
+    #: slider's TRAVEL rather than in value: 1e-4 means "the first 0.01% of the
+    #: bar". Position, not value, because a curved slider makes the two disagree
+    #: by orders of magnitude -- on Hazard Rate's cubed range the same fraction
+    #: of value covers nearly half the visible bar, which would put its whole
+    #: reason for existing inside the off zone. Never consulted while the user
+    #: is manipulating anything; see _gate_busy().
+    gate_epsilon: float = 1e-4
+    #: For a checkbox that gates OTHER controls without being a stored setting
+    #: itself: the fields it reveals. The checkbox is derived -- it reads as
+    #: ticked whenever any listed field is non-zero -- so nothing is saved for
+    #: it and loading a config sets it implicitly. Members name it in
+    #: `reveals_on`, exactly as they would a real BOOL field.
+    gates: tuple = ()
 
 
 #: Dropdown entries for the CHOICE controls. ORDER IS THE ENUM: each label's
@@ -121,58 +182,19 @@ DROPDOWN_MODES = {
 # ORDER MATTERS: controls render in this order, grouped into the collapsible
 # tab named by `group`. Tabs appear in the order their first member appears.
 SETTINGS = [
-    # ================= PROJECT: Sensors =================
-    # Mutation first: it is the single most consequential control.
+    # ================= PROJECT: Mutation =================
+    # First tab: the single most consequential pair of controls in the app.
     Setting('mutation_scale', 'Mutation Scale', BASIC, CONFIG, SLIDER, 0.0, 1.0,
             "How much each cohort's rule is randomly varied from the base rule. "
             "The most consequential control here: 0 makes every particle obey "
             "the same rule, higher values fan the population out into "
             "distinct behaviours.",
-            group='Sensors'),
+            group='Mutation'),
     Setting('mutation_seed', 'Mutation Seed', BASIC, CONFIG, SEED, 0.0, 1.0,
             "Which random variation the mutation uses. Only has an effect when "
             "Mutation Scale is above zero. Randomize to explore alternatives "
             "at the same mutation strength.",
-            group='Sensors'),
-    Setting('sensor_angle', 'Sensor Angle', BASIC, CONFIG, SLIDER, -1.0, 1.0,
-            "The angle, in half-turns, between a particle's heading and each "
-            "of its two sensors. Small angles look ahead; larger angles sweep "
-            "wide. Negative values swap left and right.",
-            group='Sensors'),
-    # NOTE: the 5.0 upper bound is mirrored in common.glsl as
-    # SENSOR_DISTANCE_SPAN, which is what a Sensor Distance Jitter of 1.0
-    # spans. The shader cannot read these bounds, so widening this one means
-    # widening that #define too.
-    Setting('sensor_distance', 'Sensor Distance', BASIC, CONFIG, SLIDER, 0.0, 5.0,
-            "How far ahead a particle samples the trail field. Short distances "
-            "produce tight, detailed structure; long distances produce broad, "
-            "smooth flows.",
-            group='Sensors'),
-    Setting('sensor_angle_jitter', 'Sensor Angle Jitter', ADVANCED, CONFIG,
-            SLIDER, 0.0, 1.0,
-            "Random wobble added to Sensor Angle, redrawn every physics step. "
-            "A shimmer rather than a trait: the same particle looks somewhere "
-            "slightly different each step, which softens structure into "
-            "something looser and more organic.\n\n"
-            "Scaled so 1.0 spans the whole Sensor Angle slider, meaning the "
-            "angle is then effectively random and the base value stops "
-            "mattering.",
-            group='Sensors'),
-    Setting('sensor_distance_jitter', 'Sensor Distance Jitter', ADVANCED, CONFIG,
-            SLIDER, 0.0, 1.0,
-            "Random wobble added to Sensor Distance, redrawn every physics "
-            "step -- the distance counterpart to Sensor Angle Jitter, mixing "
-            "near and far sampling instead of near and wide.\n\n"
-            "Scaled so 1.0 spans the whole Sensor Distance slider. Because "
-            "that range is offset either way, high values push the distance "
-            "NEGATIVE for some steps, which puts the sensors behind the "
-            "particle with left and right swapped. That is deliberate: it is "
-            "a look no other slider reaches.",
-            group='Sensors'),
-    Setting('sensor_gain', 'Sensor Gain', ADVANCED, CONFIG, SLIDER, 0.0, 8.0,
-            "How strongly particles respond to what they sense. Higher values "
-            "make particles more reactive to the trails on the canvas.",
-            group='Sensors'),
+            group='Mutation'),
 
     # ================= PROJECT: Population =================
     Setting('cohorts', 'Cohorts', BASIC, CONFIG, INT, 1, 64,
@@ -198,13 +220,13 @@ SETTINGS = [
             "Cohort Fences hold them.",
             group='Population',
             options=DROPDOWN_MODES['initial_conditions']),
-    Setting('cohort_fences', 'Cohort Fences', BASIC, CONFIG, SLIDER, 0.0, 1.0,
+    Setting('cohort_fences', 'Cohort Fences', BASIC, CONFIG, GATED, 0.0, 1.0,
             "Holds each particle near where it started, so cohorts stay "
             "distinct instead of mixing. 0 is off; higher values pull harder. "
             "Follows Initial Conditions -- the fence is around a particle's "
             "own starting point, wherever that mode put it.",
             group='Population'),
-    Setting('hazard_rate', 'Hazard Rate', ADVANCED, CONFIG, SLIDER, 0.0, 0.01,
+    Setting('hazard_rate', 'Hazard Rate', ADVANCED, CONFIG, GATED, 0.0, 0.01,
             "Chance per step that a particle is reset to its initial state. "
             "A slow churn that keeps the population from settling.\n\n"
             "The slider is CUBED, so most of its travel covers the very small "
@@ -215,27 +237,71 @@ SETTINGS = [
             "population within a second.",
             group='Population', curve=3.0),
 
+    # ================= PROJECT: Sensors =================
+    Setting('sensor_angle', 'Sensor Angle', BASIC, CONFIG, SLIDER, -1.0, 1.0,
+            "The angle, in half-turns, between a particle's heading and each "
+            "of its two sensors. Small angles look ahead; larger angles sweep "
+            "wide. Negative values swap left and right.",
+            group='Sensors'),
+    # NOTE: the 5.0 upper bound is mirrored in common.glsl as
+    # SENSOR_DISTANCE_SPAN, which is what a Sensor Distance Jitter of 1.0
+    # spans. The shader cannot read these bounds, so widening this one means
+    # widening that #define too.
+    Setting('sensor_distance', 'Sensor Distance', BASIC, CONFIG, SLIDER, 0.0, 5.0,
+            "How far ahead a particle samples the trail field. Short distances "
+            "produce tight, detailed structure; long distances produce broad, "
+            "smooth flows.",
+            group='Sensors'),
+    Setting('sensor_angle_jitter', 'Sensor Angle Jitter', ADVANCED, CONFIG,
+            GATED, 0.0, 1.0,
+            "Random wobble added to Sensor Angle, redrawn every physics step. "
+            "A shimmer rather than a trait: the same particle looks somewhere "
+            "slightly different each step, which softens structure into "
+            "something looser and more organic.\n\n"
+            "Scaled so 1.0 spans the whole Sensor Angle slider, meaning the "
+            "angle is then effectively random and the base value stops "
+            "mattering.",
+            group='Sensors'),
+    Setting('sensor_distance_jitter', 'Sensor Distance Jitter', ADVANCED, CONFIG,
+            GATED, 0.0, 1.0,
+            "Random wobble added to Sensor Distance, redrawn every physics "
+            "step -- the distance counterpart to Sensor Angle Jitter, mixing "
+            "near and far sampling instead of near and wide.\n\n"
+            "Scaled so 1.0 spans the whole Sensor Distance slider. Because "
+            "that range is offset either way, high values push the distance "
+            "NEGATIVE for some steps, which puts the sensors behind the "
+            "particle with left and right swapped. That is deliberate: it is "
+            "a look no other slider reaches.",
+            group='Sensors'),
+    Setting('sensor_gain', 'Sensor Gain', ADVANCED, CONFIG, SLIDER, 0.0, 8.0,
+            "How strongly particles respond to what they sense. Higher values "
+            "make particles more reactive to the trails on the canvas.",
+            group='Sensors'),
+
     # ================= PROJECT: Forces =================
     Setting('global_force_mult', 'Global Force', ADVANCED, CONFIG, SLIDER, 0.0, 2.0,
             "Master multiplier on every force a particle applies to itself. "
             "Raise for faster, more violent motion; lower for languid drift.",
             group='Forces'),
-    Setting('drag', 'Drag', ADVANCED, CONFIG, SLIDER, 0.0, 1.0,
+    # Stored as `drag`, shown as Momentum: the field is how much velocity
+    # CARRIES OVER, which is momentum, not how much is lost. Renaming the label
+    # rather than the field keeps every saved config readable.
+    Setting('drag', 'Momentum', ADVANCED, CONFIG, SLIDER, 0.0, 1.0,
             "How much velocity carries over between steps. Low values make "
             "particles turn on a dime; high values give them momentum.",
             group='Forces'),
-    Setting('strafe_power', 'Strafe Power', ADVANCED, CONFIG, SLIDER, 0.0, 2.0,
-            "Strength of sideways displacement that moves a particle without "
-            "changing its velocity -- a sidestep rather than a push.",
-            group='Forces'),
-    Setting('axial_force', 'Axial Force', ADVANCED, CONFIG, SLIDER, -2.0, 2.0,
-            "Scales the forward/backward component of a particle's response.",
-            group='Forces'),
-    Setting('lateral_force', 'Lateral Force', ADVANCED, CONFIG, SLIDER, -2.0, 2.0,
-            "Scales the left/right component of a particle's response. "
-            "Negative values invert the turn direction.",
-            group='Forces'),
 
+    # One derived checkbox in front of both gravity sliders. Unlike a GATED
+    # control this does not self-hide: the sliders are bipolar, so a value on
+    # its way through zero is a normal thing to drag past rather than an "off"
+    # to snap to. It reads as ticked while EITHER slider is non-zero, so loading
+    # a config with gravity reveals them and one without keeps them folded away.
+    Setting('', 'Gravity', BASIC, CONFIG, BOOL,
+            help="Reveals the two gravity sliders.\n\n"
+                 "Not itself a saved setting -- it simply reads as on whenever "
+                 "either gravity value is non-zero, so a config that uses "
+                 "gravity opens with these already showing.",
+            group='Forces', gates=('gravity_strafe', 'gravity_force')),
     Setting('gravity_strafe', 'Gravity (Strafe)', BASIC, CONFIG, SLIDER, -1.0, 1.0,
             "A steady pull on every particle, applied as displacement -- it "
             "slides particles without changing their velocity, so they keep "
@@ -243,14 +309,14 @@ SETTINGS = [
             "The slider is not proportional to the force: it is expanded "
             "logarithmically, so the middle of the range covers small "
             "adjustments and the ends reach far. Dead centre is exactly zero.",
-            group='Forces'),
+            group='Forces', reveals_on='Gravity'),
     Setting('gravity_force', 'Gravity (Force)', ADVANCED, CONFIG, SLIDER, -1.0, 1.0,
             "A steady pull on every particle, applied as acceleration -- it "
             "feeds velocity, so particles build up speed and fight their own "
             "steering. Positive pulls down.\n\n"
             "Logarithmically expanded like Gravity (Strafe), with a true zero "
             "at centre.",
-            group='Forces'),
+            group='Forces', reveals_on='Gravity'),
 
     # ================= PROJECT: Trails =================
     Setting('trail_persistence', 'Trail Persistence', ADVANCED, WORLD, SLIDER,
@@ -258,11 +324,6 @@ SETTINGS = [
             "How much of the trail field survives each step. High values leave "
             "long-lived trails; low values make them evaporate quickly. "
             "A world setting: shared by every particle on the canvas.",
-            group='Trails'),
-    Setting('trail_diffusion', 'Trail Diffusion', ADVANCED, WORLD, SLIDER,
-            0.0, 1.0,
-            "How fast the trail field spreads outward. Higher values blur "
-            "trails into soft washes. A world setting, shared by all particles.",
             group='Trails'),
 
     # ================= PROJECT: Appearance =================
@@ -290,6 +351,36 @@ SETTINGS = [
                  "Fences, or for seeing how far cohorts have mixed. Color "
                  "Sensitivity still scales the spread between them.",
             group='Appearance'),
+
+    # ================= PROJECT: Advanced =================
+    # Last tab, on purpose: the knobs you reach for once the rest is dialled in.
+    # Declared here rather than beside their relatives so the tab lands at the
+    # bottom -- tabs come out in the order their first member appears.
+    Setting('axial_force', 'Axial Force', ADVANCED, CONFIG, SLIDER, -2.0, 2.0,
+            "Scales the forward/backward component of a particle's response.",
+            group='Advanced'),
+    Setting('lateral_force', 'Lateral Force', ADVANCED, CONFIG, SLIDER, -2.0, 2.0,
+            "Scales the left/right component of a particle's response. "
+            "Negative values invert the turn direction.",
+            group='Advanced'),
+    Setting('strafe_power', 'Strafe Power', ADVANCED, CONFIG, SLIDER, 0.0, 2.0,
+            "Strength of sideways displacement that moves a particle without "
+            "changing its velocity -- a sidestep rather than a push.",
+            group='Advanced'),
+    # Stored as `trail_diffusion` but shown INVERTED, as stiffness: 0.0 is full
+    # diffusion, 1.0 is none. The stored field, the shader and the save format
+    # all still speak diffusion -- see `inverted` on Setting.
+    # Gated on the STORED value, which is the inverse of what is shown: full
+    # diffusion (stored 1.0) is "no stiffness", so that is the base the checkbox
+    # folds back to. The slider then reads 0.0 at the moment it appears, exactly
+    # like the other gated controls.
+    Setting('trail_diffusion', 'Trail Stiffness', ADVANCED, WORLD, GATED,
+            0.0, 1.0,
+            "How much the trail field RESISTS spreading outward. 1.0 holds "
+            "trails exactly where they were laid; lower values let them bleed, "
+            "and 0.0 is full-rate diffusion that blurs them into soft washes. "
+            "A world setting, shared by all particles.",
+            group='Advanced', inverted=True, gate_base=1.0),
 
     # ================= PREFERENCES: Simulation =================
     Setting('world_size', 'World Size', BASIC, PREFS, INPUT, 0.05, 4.0,
@@ -320,20 +411,22 @@ SETTINGS = [
             "dark at the cost of flattening the brightest regions.",
             group='Display'),
 
-    Setting('motion_blur', 'Motion Blur', BASIC, PREFS, BOOL,
-            help="Renders each frame several times across the simulation's "
-                 "advance and averages the result, so fast movement smears "
-                 "instead of stepping.\n\n"
-                 "Costs one full render per sample.",
-            group='Display'),
-    Setting('motion_blur_samples', 'Blur Samples', BASIC, PREFS, INT, 1, 16,
-            "How many samples to average per frame.\n\n"
+    # ONE control, not a checkbox plus a slider. A sample count of 1 IS motion
+    # blur switched off -- there was never a state where the old checkbox and
+    # this number disagreed -- so the two collapse into a gated slider whose
+    # base is 1. That removed the `motion_blur` preference entirely; see
+    # orchestrator.blur_schedule(), which now tests this count directly.
+    Setting('motion_blur_samples', 'Motion Blur', BASIC, PREFS, GATED_INT, 1, 16,
+            "Renders each frame several times across the simulation's advance "
+            "and averages the result, so fast movement smears instead of "
+            "stepping. The slider is how many samples to average, and costs "
+            "one full render each.\n\n"
             "A TARGET, not a promise: samples must fall a whole number of "
             "physics steps apart, so the count achieved is this one when it "
             "divides Physics Rate and the nearest reachable value otherwise. "
             "Raising Physics Rate gives it more room to hit the number asked "
             "for. Overall brightness does not change either way.",
-            group='Display', reveals_on='motion_blur'),
+            group='Display', gate_base=1.0),
 
     Setting('bloom_enabled', 'Bloom', BASIC, PREFS, BOOL,
             help="Glow around bright areas.",

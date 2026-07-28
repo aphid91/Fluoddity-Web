@@ -92,11 +92,13 @@ def blur_schedule(prefs):
     this guarantee (it does not need to -- it takes one sample).
     """
     steps = max(1, int(prefs.physics_steps))
-    if not prefs.motion_blur:
+    requested = max(1, int(prefs.motion_blur_samples))
+    if requested <= 1:
+        # A sample count of 1 IS motion blur off; there is no separate flag.
         # One sample, taken on the LAST sub-step, so the un-blurred image shows
         # the newest state -- which is what rendering after the loop used to do.
         return 1, steps
-    stride = max(1, steps // max(1, int(prefs.motion_blur_samples)))
+    stride = max(1, steps // requested)
     samples = -(-steps // stride)  # ceil
     return samples, stride
 
@@ -289,7 +291,10 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # come out to exactly ceil(steps/stride) -- see blur_schedule().
             # The single un-blurred sample takes the LAST instead, so a still
             # image shows the newest state rather than a stale one.
-            sample_at = 0 if (self.prefs.motion_blur and not self.paused) else stride - 1
+            # Keyed on the RESOLVED count rather than the preference, so the
+            # paused case and a sample count of 1 take the same branch without
+            # this line having to restate either condition.
+            sample_at = 0 if samples > 1 else stride - 1
 
             # Still one iteration when paused: the camera has to draw the
             # frozen state, or the screen would go black. advance() is what is

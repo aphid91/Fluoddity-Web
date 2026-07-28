@@ -29,6 +29,38 @@ from pathlib import Path
 
 _PREFS_PATH = Path(__file__).parent.parent / "preferences.json"
 
+#: Sample count meaning "blur off", for the migration below. Mirrors the
+#: gate_base on the Motion Blur control in ui/settings_spec.py.
+_BLUR_OFF = 1
+#: What a file written before the merge used when blur was on. The old pair was
+#: a bool plus a count, and the count defaulted to 2.
+_LEGACY_BLUR_SAMPLES = 2
+
+
+def _migrate(data: dict) -> dict:
+    """Bring an older preferences file up to the current field set.
+
+    MOTION BLUR WAS A BOOL PLUS A COUNT and is now just the count, with 1
+    meaning off. Dropping the bool without looking at it would silently switch
+    blur off for anyone who had it on with a count of 1 -- a combination the old
+    UI allowed, since the two could disagree. The bool is the statement of
+    intent, so it wins: on with a useless count becomes a usable one.
+
+    Unknown keys are already ignored by load(), so this only has to handle keys
+    whose MEANING changed, not their presence.
+    """
+    if 'motion_blur' not in data:
+        return data
+    data = dict(data)
+    was_on = bool(data.pop('motion_blur'))
+    samples = int(data.get('motion_blur_samples', _LEGACY_BLUR_SAMPLES) or _BLUR_OFF)
+    if was_on and samples <= _BLUR_OFF:
+        samples = _LEGACY_BLUR_SAMPLES
+    elif not was_on:
+        samples = _BLUR_OFF
+    data['motion_blur_samples'] = samples
+    return data
+
 
 @dataclass(frozen=True)
 class Preferences:
@@ -46,13 +78,17 @@ class Preferences:
     #: (brighter highlights); high is more logarithmic (reveals faint detail).
     tonemap_softness: float = 2.5
 
-    #: Temporal supersampling. Off means one camera render per displayed frame.
-    motion_blur: bool = False
-    #: TARGET samples per displayed frame -- see orchestrator.blur_schedule().
-    #: The achieved count equals this when it divides physics_steps and is the
-    #: nearest achievable count otherwise, so this is a target rather than a
-    #: promise. Costs one full camera render per sample.
-    motion_blur_samples: int = 2
+    #: Temporal supersampling. TARGET samples per displayed frame -- see
+    #: orchestrator.blur_schedule(). The achieved count equals this when it
+    #: divides physics_steps and is the nearest achievable count otherwise, so
+    #: this is a target rather than a promise. Costs one full camera render per
+    #: sample.
+    #:
+    #: 1 IS THE OFF SWITCH: one render per displayed frame is exactly what
+    #: "no motion blur" means, so there is no separate enable flag to disagree
+    #: with this number. The UI shows the pair as one gated control (a checkbox
+    #: until you turn it on) rather than a bool beside a count.
+    motion_blur_samples: int = 1
 
     bloom_enabled: bool = False
     #: Brightness cutoff for bloom extraction. Lower glows more widely.
@@ -110,6 +146,7 @@ class Preferences:
             return cls()
         if not isinstance(data, dict):
             return cls()
+        data = _migrate(data)
         known = {f.name for f in fields(cls)}
         return cls(**{k: v for k, v in data.items() if k in known})
 
