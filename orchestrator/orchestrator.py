@@ -51,6 +51,7 @@ from preferences import Preferences
 from project import Project, History
 from strafe_field import StrafeField
 from ui import UI
+from ui.tooltip_graphic import TooltipGraphic
 
 from .clipboard_commands import ClipboardCommands, Checkpoint
 from .config_manager_commands import ConfigManagerCommands
@@ -122,6 +123,10 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         #: The painted strafe field. Sized to the canvas, so a disruptive
         #: preference change rebuilds it alongside the system.
         self.strafe_field = StrafeField(ctx, self.system.canvas_size)
+        #: The diagram drawn inside the sensor tooltips. Built here rather than
+        #: in the UI because it owns a framebuffer, and the UI owns no GPU
+        #: resources (rule 10); the UI is handed it and only asks it to draw.
+        self.tooltip_graphic = TooltipGraphic(ctx)
 
         # --- state the command mixins read and replace ---
 
@@ -226,6 +231,10 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             'edit_draw_pref': self._cmd_edit_draw_pref,
             'clear_strafe_field': self._cmd_clear_strafe_field,
         })
+
+        # Handed over once, not per frame: it is a fixed renderer the UI draws
+        # with, unlike the values in _report_status() which change every frame.
+        self.ui.set_status(tooltip_graphic=self.tooltip_graphic)
 
         self._refresh_config_list()
 
@@ -567,6 +576,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         # which is what makes it practical to tune the brush against a stroke
         # you already like.
         self.strafe_field.reload()
+        self.tooltip_graphic.reload()
 
     def _cmd_reset(self):
         self.system.reset()

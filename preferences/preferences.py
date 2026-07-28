@@ -79,6 +79,13 @@ class Preferences:
     #: this gates it within that tool rather than across tools.
     show_reticle: bool = True
 
+    # --- interface ---
+    #: The animated sensor diagram pinned beside the Project window while a
+    #: sensor slider is hovered. On by default: it is the fastest way to learn
+    #: what those two sliders mean. Off leaves them with the plain text tooltip
+    #: every other setting gets, for anyone who already knows.
+    sensor_tooltip_diagram: bool = True
+
     # --- disruptive: changing these reallocates and resets the simulation ---
     #: Scales entity count and canvas resolution together.
     world_size: float = 1.0

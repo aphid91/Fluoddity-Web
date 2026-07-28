@@ -62,6 +62,22 @@ class PreferencesWindow:
                 self.show_advanced = True
             imgui.text_disabled("applies to the Project window too")
 
+            # Not registry-driven for the same reason the tier toggle is not:
+            # it configures the interface, not the simulation. It does persist,
+            # though, so unlike the tier it is a real preference field.
+            prefs = self._status.get('edit_prefs') or {}
+            changed, value = imgui.checkbox(
+                "Sensor tooltip diagram",
+                bool(prefs.get('sensor_tooltip_diagram', True)))
+            if changed:
+                self._dispatch('edit_draw_pref', 'sensor_tooltip_diagram', value)
+            if imgui.is_item_hovered(imgui.HoveredFlags_.delay_normal.value
+                                     | imgui.HoveredFlags_.for_tooltip.value):
+                imgui.set_tooltip(
+                    "Show the animated sensor diagram beside the Project "
+                    "window\nwhile hovering Sensor Angle or Sensor Distance.\n"
+                    "Off falls back to the plain text tooltip.")
+
         imgui.separator()
         imgui.text_disabled("Not saved with projects.")
 

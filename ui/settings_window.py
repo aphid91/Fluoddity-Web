@@ -38,9 +38,22 @@ import math
 from imgui_bundle import imgui
 
 from . import settings_spec as spec
+from . import tooltip_graphic
 
 #: Indent applied to controls revealed by a checkbox, in pixels.
 _REVEAL_INDENT = 20.0
+
+#: Settings explained by the shader-drawn diagram instead of a plain tooltip,
+#: mapped to which quantity the diagram animates. Keyed by (source, field) so
+#: the match cannot be fooled by a same-named field on another source.
+_DIAGRAM_MODES = {
+    (spec.CONFIG, 'sensor_angle'): 'angle',
+    (spec.CONFIG, 'sensor_distance'): 'distance',
+}
+
+#: How much wider than the diagram the panel's text may run, in pixels. The
+#: diagram alone is too narrow a column for a paragraph.
+_DIAGRAM_TEXT_EXTRA = 140.0
 
 
 class SettingsWindow:
@@ -55,9 +68,23 @@ class SettingsWindow:
         #: Enter rather than per-keystroke, because they reset the simulation.
         self._input_buffers = {}
 
+        #: (setting, mode) for the sensor slider hovered THIS frame, or None.
+        #: Set while the sliders render and consumed at the end of the same
+        #: frame, so the diagram closes the moment the cursor leaves.
+        self._diagram_hovered = None
+        #: Where to pin the diagram: the Project window's top-right corner,
+        #: captured each frame before its imgui.end().
+        self._diagram_anchor = imgui.ImVec2(0.0, 0.0)
+        self._diagram_anchor_width = 0.0
+
     def _settings_window(self):
         if not self.show_settings:
             return
+
+        # Cleared at the top of every frame and set again by whichever sensor
+        # slider is hovered while the controls below render. Nothing carries
+        # over, so unhovering closes the diagram on the very next frame.
+        self._diagram_hovered = None
 
         project = self._status.get('project_name') or 'Untitled'
         # The imgui ID must stay stable as the project name changes, or the
@@ -90,7 +117,15 @@ class SettingsWindow:
             for setting in settings:
                 self._render_setting(setting)
 
+        # Captured before end(), used after it: the diagram is a window of its
+        # own and cannot be opened inside this one.
+        self._diagram_anchor = imgui.get_window_pos()
+        self._diagram_anchor_width = imgui.get_window_size().x
+
         imgui.end()
+
+        if self._diagram_hovered is not None:
+            self._sensor_diagram_panel()
 
     # ------------------------------------------------------------------
 
@@ -291,6 +326,27 @@ class SettingsWindow:
             imgui.text_disabled("   resets the simulation (Enter to apply)")
 
     def _tooltip(self, setting, suffix=""):
+        # The two sensor settings are explained by a pinned diagram panel
+        # instead -- see _sensor_diagram_panel(). Note the hover here and show
+        # no floating tooltip, so the two never overlap. Turning the diagram
+        # off in Preferences falls through to the plain tooltip below, so those
+        # sliders are never left with no explanation at all.
+        mode = _DIAGRAM_MODES.get((setting.source, setting.field))
+        if mode is not None and self._diagram_enabled():
+            # The same delay flags the text tooltips use, so the diagram waits
+            # its turn rather than flashing up the instant the cursor crosses a
+            # slider on its way somewhere else.
+            #
+            # is_item_active() bypasses the delay, and must: once a drag is
+            # under way imgui stops reporting hover, and the diagram going dark
+            # exactly while the user drags the slider it explains would be the
+            # worst possible moment for it to leave.
+            if imgui.is_item_active() or imgui.is_item_hovered(
+                    imgui.HoveredFlags_.delay_normal.value
+                    | imgui.HoveredFlags_.for_tooltip.value):
+                self._diagram_hovered = (setting, mode)
+            return
+
         if not imgui.is_item_hovered(imgui.HoveredFlags_.delay_normal.value
                                      | imgui.HoveredFlags_.for_tooltip.value):
             return
@@ -301,6 +357,82 @@ class SettingsWindow:
             imgui.text_unformatted(setting.help + suffix)
             imgui.pop_text_wrap_pos()
             imgui.end_tooltip()
+
+    def _diagram_enabled(self):
+        """True if the sensor diagram is switched on in Preferences.
+
+        Defaults to on when the payload is missing, matching the preference's
+        own default -- the alternative silently disables the feature on any
+        frame the prefs dict has not been built.
+        """
+        prefs = self._status.get('edit_prefs') or {}
+        return bool(prefs.get('sensor_tooltip_diagram', True))
+
+    def _sensor_diagram_panel(self):
+        """The pinned diagram for the sensor settings, at the window's right edge.
+
+        WHY PINNED RATHER THAN A NORMAL TOOLTIP
+        A tooltip follows the cursor, and the cursor is on the slider being
+        dragged -- so the diagram would jitter around the screen at exactly the
+        moment it is meant to be watched. Anchoring it to the window's edge
+        holds it still while the value under it changes, which is the whole
+        point of an animated diagram.
+
+        IT LIVES AND DIES WITH THE HOVER, and deliberately does not persist the
+        way the reference's did. That one stayed up for as long as the cursor
+        was anywhere in the physics window, which meant a panel about sensors
+        hanging over the screen while you adjusted something unrelated. Here,
+        moving off the slider closes it. The panel itself is therefore not
+        interactive -- there is nothing in it to click, so nothing is lost.
+
+        Call at the END of the Project window's build, while its position and
+        size are still readable, but AFTER imgui.end() -- a window cannot be
+        opened inside another.
+        """
+        setting, mode = self._diagram_hovered
+        graphic = self._status.get('tooltip_graphic')
+        # No renderer means the Orchestrator did not supply one. The UI owns no
+        # GPU resources of its own, so a missing diagram is a cosmetic loss
+        # rather than a broken window: fall back to nothing at all.
+        if graphic is None:
+            return
+
+        config = self._status.get('edit_config') or {}
+        texture = graphic.render(
+            imgui.get_time(),
+            angle_mode=(mode == 'angle'),
+            distance_mode=(mode == 'distance'),
+            sensor_angle=config.get('sensor_angle', 0.0),
+            sensor_distance=config.get('sensor_distance', 0.0),
+        )
+
+        imgui.set_next_window_pos(
+            imgui.ImVec2(self._diagram_anchor.x + self._diagram_anchor_width,
+                         self._diagram_anchor.y))
+        imgui.set_next_window_size(imgui.ImVec2(0, 0))
+        imgui.begin(
+            "##sensor_diagram",
+            flags=(imgui.WindowFlags_.no_title_bar.value
+                   | imgui.WindowFlags_.no_move.value
+                   | imgui.WindowFlags_.no_resize.value
+                   | imgui.WindowFlags_.always_auto_resize.value
+                   | imgui.WindowFlags_.no_focus_on_appearing.value
+                   | imgui.WindowFlags_.no_nav.value
+                   | imgui.WindowFlags_.no_docking.value
+                   # Nothing in here is clickable, and the panel sits directly
+                   # under the cursor's path off the slider. Letting it eat
+                   # mouse input would block the canvas behind it.
+                   | imgui.WindowFlags_.no_inputs.value),
+        )
+
+        size = float(tooltip_graphic.TEXTURE_SIZE)
+        imgui.image(texture, imgui.ImVec2(size, size))
+        imgui.push_text_wrap_pos(size + _DIAGRAM_TEXT_EXTRA)
+        imgui.text_disabled(setting.label)
+        imgui.separator()
+        imgui.text_unformatted(setting.help)
+        imgui.pop_text_wrap_pos()
+        imgui.end()
 
     def _sync_input_buffers(self):
         """Refresh INPUT text from live values when they change elsewhere.
