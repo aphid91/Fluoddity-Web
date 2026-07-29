@@ -67,15 +67,6 @@ out vec4 fragColor;
 // that the ring still reads as a circle whose radius you can judge.
 #define RETICLE_DASH_DUTY 0.6625
 
-// World space is area-preserving, so a raw uv delta is anisotropic on a
-// non-square canvas. This is the SAME correction strafe_draw.frag applies when
-// it paints -- the ring must be measured in the metric the brush works in, or
-// it would read as an oval exactly when the canvas is not square.
-vec2 aspect_correct_uv(vec2 d) {
-    float ca = canvas_resolution.x / canvas_resolution.y;
-    return d * vec2(sqrt(ca), 1.0 / sqrt(ca));
-}
-
 void main() {
     vec3 color = texture(source, uv).rgb;
 
@@ -124,7 +115,11 @@ void main() {
         // Drawn outside the canvas too: the brush paints right up to the edge,
         // so clipping the ring there would hide where the stroke lands.
         if (reticle_radius > 0.0) {
-            vec2 rel = aspect_correct_uv(canvas_uv - reticle_center);
+            // The SAME correction strafe_draw.frag applies when it paints (both
+            // take it from common.glsl) -- the ring must be measured in the
+            // metric the brush works in, or it would read as an oval exactly
+            // when the canvas is not square.
+            vec2 rel = aspect_correct_uv(canvas_uv - reticle_center, canvas_resolution);
             float d = length(rel);
             float w = fwidth(d) * RETICLE_WIDTH_PX;
             float ring = 1.0 - smoothstep(0.0, w, abs(d - reticle_radius));

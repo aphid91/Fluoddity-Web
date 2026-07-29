@@ -309,6 +309,17 @@ vec2 world_half_extent_from_res(vec2 canvas_res) {
     return world_half_extent(canvas_res.x / canvas_res.y);
 }
 
+// Scale a uv-space delta into the aspect-corrected metric -- literally
+// world_half_extent applied as a scale, which is why it lives here rather than
+// being its own piece of aspect math. World space is area-preserving, so a raw
+// uv delta is anisotropic on a non-square canvas; brushes measured in this
+// metric stay circular, and a ring drawn in it matches the brush that paints
+// in it. Used by strafe_draw.frag (painting) and frame_assembly.frag (the
+// reticle that must agree with it).
+vec2 aspect_correct_uv(vec2 d, vec2 canvas_res) {
+    return d * world_half_extent_from_res(canvas_res);
+}
+
 // World -> texture uv [0,1]. In BC_WRAP the canvas textures are set to repeat
 // and the sampler does the wrapping, so uv is deliberately left unclamped.
 // Every other boundary mode must go through world_to_uv_bc below.

@@ -13,8 +13,16 @@
 // The field texture is never READ here -- each fragment writes only its own
 // texel -- which is what makes it safe to render in place with no ping-pong.
 
+// Brought in for aspect_correct_uv -- world space is area-preserving (see
+// particle_system/coords.py), so a raw uv delta is anisotropic on a non-square
+// canvas, and correcting it is what keeps the brush a circle rather than an
+// oval. frame_assembly.frag's reticle takes the same function from here, which
+// is what keeps the ring and the stroke measured in one metric. The rest of
+// common.glsl's declarations come along and compile unused.
+#include "common.glsl"
+
 in vec2 uv;              // from shared/shaders/fullscreen_quad.vert
-out vec2 fragColor;      // RG32F target: the strafe vector for this texel
+out vec2 fragColor;      // RG16F target: the strafe vector for this texel
 
 uniform vec2 canvas_resolution;
 uniform vec2 mouse;            // field uv [0,1], this frame
@@ -22,14 +30,6 @@ uniform vec2 previous_mouse;   // field uv [0,1], previous frame of this stroke
 uniform float draw_size;       // gaussian sigma, in the aspect-corrected metric
 uniform float draw_power;
 uniform bool erase_mode;
-
-// World space is area-preserving (see particle_system/coords.py), so a raw uv
-// delta is anisotropic on a non-square canvas. Correcting it here is what keeps
-// the brush a circle rather than an oval when canvas_aspect != 1.
-vec2 aspect_correct_uv(vec2 d) {
-    float ca = canvas_resolution.x / canvas_resolution.y;
-    return d * vec2(sqrt(ca), 1.0 / sqrt(ca));
-}
 
 // Distance from `p` to the segment a->b, in the aspect-corrected metric, plus
 // the nearest point on that segment.
@@ -40,8 +40,8 @@ vec2 aspect_correct_uv(vec2 d) {
 // Painting the whole segment travelled since the last frame is what makes a
 // stroke continuous at any drag speed.
 float dist_to_stroke(vec2 p, vec2 a, vec2 b, out vec2 nearest) {
-    vec2 pa = aspect_correct_uv(p - a);
-    vec2 ba = aspect_correct_uv(b - a);
+    vec2 pa = aspect_correct_uv(p - a, canvas_resolution);
+    vec2 ba = aspect_correct_uv(b - a, canvas_resolution);
     float denom = dot(ba, ba);
     // denom == 0 on the first frame of a stroke, where a == b and the segment
     // degenerates to a point. h = 0 then, which is exactly a point splat.
@@ -80,7 +80,7 @@ void main() {
     // NEAREST POINT ON THE SEGMENT rather than from the mouse, so on a fast
     // drag the whole length of the stroke pushes outward instead of the tail
     // pointing back at wherever the cursor ended up.
-    vec2 away = aspect_correct_uv(uv - nearest);
+    vec2 away = aspect_correct_uv(uv - nearest, canvas_resolution);
     float len = length(away);
     // Exactly on the stroke the direction is undefined; contribute nothing
     // rather than a NaN that would poison the texel permanently.
