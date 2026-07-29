@@ -54,9 +54,9 @@ class SettingsWindow:
 
     def _init_settings_window(self):
         self.show_settings = True
-        # Tier state is shared with the Preferences window, whose radio buttons
-        # own it -- switching there reveals advanced controls in both.
-        self.show_advanced = False
+        # NB: self.show_advanced is NOT declared here. It is shared with the
+        # Preferences window, whose radio buttons own it, so UI.__init__
+        # declares it for both.
         #: Pending text for INPUT controls, keyed by field. These commit on
         #: Enter rather than per-keystroke, because they reset the simulation.
         self._input_buffers = {}

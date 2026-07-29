@@ -116,6 +116,16 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         #: the canvas mid-session.
         self.gui_hidden = False
 
+        #: Settings tier, SHARED BY TWO WINDOWS: the Preferences window's
+        #: Basic/Advanced radio owns it, and both Preferences and Project filter
+        #: their controls by it -- switching there reveals advanced controls in
+        #: both. It lives here, above both mixins, because a value two of them
+        #: share belongs to neither. It used to be declared inside
+        #: _init_settings_window(), which worked only because that _init_ runs
+        #: before _init_preferences_window() below -- a silent ordering
+        #: dependency with nothing to announce it if the order ever changed.
+        self.show_advanced = False
+
         self._init_config_menu()
         self._init_config_manager()
         self._init_settings_window()
