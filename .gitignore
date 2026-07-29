@@ -28,3 +28,8 @@ build/
 *.log
 preferences.config
 preferences.json
+# imgui rewrites this every session, so a tracked copy is pure churn. Kept
+# consistent with preferences.json above: both are per-user session state, not
+# project source. A canonical default layout, if ever wanted, ships as
+# default_imgui.ini the way Reference/ does.
+imgui.ini

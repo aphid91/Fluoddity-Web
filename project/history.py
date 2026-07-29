@@ -195,7 +195,3 @@ class History:
         if not self.can_undo:
             return ""
         return self._states[self._cursor].label
-
-    def clear(self) -> None:
-        self._states.clear()
-        self._cursor = -1

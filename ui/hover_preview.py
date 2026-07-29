@@ -45,14 +45,6 @@ class PreviewSession:
         #: Key of the item currently previewed, or None.
         self._previewing = None
 
-    @property
-    def is_open(self) -> bool:
-        return self._open
-
-    @property
-    def previewing(self):
-        return self._previewing
-
     def begin(self):
         """Call when the surface opens. Idempotent within a session."""
         if self._open:

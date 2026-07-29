@@ -130,25 +130,11 @@ def ndc_to_world(ndc, canvas_size) -> tuple[float, float]:
     return (ndc[0] * ex, ndc[1] * ey)
 
 
-def world_wrap(p, canvas_size) -> tuple[float, float]:
-    """Wrap a world position into the world bounds.
-
-    BC_WRAP only: the world is a torus in that boundary mode alone. Bounce and
-    Reset are handled in the shader (`world_bounce` in common.glsl), since
-    nothing on the host needs to move a particle.
-    """
-    ex, ey = world_half_extent(canvas_size)
-
-    def wrap(v, extent):
-        size = 2.0 * extent
-        return size * (math.fmod(math.fmod(v / size - 0.5, 1.0) + 1.0, 1.0) - 0.5)
-
-    return (wrap(p[0], ex), wrap(p[1], ey))
-
-
-# There is deliberately no toroidal distance here. Picking -- the only thing
-# that ever wanted one -- uses straight-line distance in every boundary mode;
-# see entity_pick.glsl.
+# There is deliberately no host-side world_wrap here, and no toroidal distance.
+# Wrapping is the shader's job (`world_wrap` in common.glsl): nothing on the
+# host ever needs to move a particle. Picking -- the only thing that ever
+# wanted a toroidal distance -- uses straight-line distance in every boundary
+# mode; see entity_pick.glsl.
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +199,13 @@ def screen_to_ndc(pixel, window_size) -> tuple[float, float]:
 
 
 def ndc_to_screen(ndc, window_size) -> tuple[float, float]:
-    """Screen ndc [-1,1] -> screen pixel (GLFW convention)."""
+    """Screen ndc [-1,1] -> screen pixel (GLFW convention).
+
+    KEPT although nothing calls it since world_to_screen went: this is
+    screen_to_ndc's exact inverse, and a conversion table missing one direction
+    invites the next caller to write it inline -- which is what rule 9 exists to
+    stop. Four lines, no cost.
+    """
     return ((ndc[0] + 1.0) * 0.5 * window_size[0],
             (1.0 - ndc[1]) * 0.5 * window_size[1])
 
@@ -228,22 +220,9 @@ def screen_to_world(pixel, window_size, canvas_size,
     return screen_ndc_to_world(ndc, canvas_size, window_size, pan, zoom)
 
 
-def world_to_screen(p, canvas_size, window_size,
-                    pan=IDENTITY_PAN, zoom=IDENTITY_ZOOM) -> tuple[float, float]:
-    """World position -> screen pixel. The full forward chain."""
-    ndc = world_to_screen_ndc(p, canvas_size, window_size, pan, zoom)
-    return ndc_to_screen(ndc, window_size)
-
-
-def visible_world_bounds(canvas_size, window_size,
-                         pan=IDENTITY_PAN, zoom=IDENTITY_ZOOM):
-    """World-space rect currently visible: (min_x, min_y, max_x, max_y).
-
-    Useful for culling and for showing the user what the camera covers. Note
-    that with letterboxing the visible region never exceeds the canvas box on
-    the fitted axis.
-    """
-    lo = screen_to_world((0, window_size[1]), window_size, canvas_size, pan, zoom)
-    hi = screen_to_world((window_size[0], 0), window_size, canvas_size, pan, zoom)
-    return (min(lo[0], hi[0]), min(lo[1], hi[1]),
-            max(lo[0], hi[0]), max(lo[1], hi[1]))
+# The forward chain stops at world_to_screen_ndc (above), which the camera and
+# the overlays use. A world_to_screen composing it with ndc_to_screen, and a
+# visible_world_bounds built on screen_to_world, both existed here unused --
+# the app only ever converts the other way, from the cursor into the world.
+# Both are two lines to rebuild from the steps above if something ever wants
+# them.

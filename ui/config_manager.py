@@ -34,7 +34,9 @@ class ConfigManagerWindow:
         self.show_config_manager = False
         #: True while the embedded Load... browser is open.
         self._manager_browser_open = False
-        self._manager_message = ""
+        # No UI-local message field: the manager's message comes from the
+        # Orchestrator via _status['manager_message'], which is the only copy
+        # anything reads.
 
     def _config_manager_window(self):
         if not self.show_config_manager:

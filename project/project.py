@@ -78,10 +78,6 @@ class Project:
     def count(self) -> int:
         return len(self.configs)
 
-    def world_for_upload(self, sqrt_world_size: float):
-        """The GPU-facing WorldData: saved settings + runtime sizing."""
-        return self.world.for_upload(sqrt_world_size, len(self.configs))
-
     # ------------------------------------------------------------------
     # Writes -- each returns a NEW Project
     # ------------------------------------------------------------------

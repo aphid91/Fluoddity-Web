@@ -82,8 +82,5 @@ class InputState:
     #: Seconds since the previous frame.
     dt: float = 0.0
 
-    def key_held(self, key: int) -> bool:
-        return key in self.keys_held
-
-    def key_pressed(self, key: int) -> bool:
-        return key in self.keys_pressed
+    # No key_held()/key_pressed() helpers: callers test `key in
+    # state.keys_held` directly, which is no longer and reads the same.
