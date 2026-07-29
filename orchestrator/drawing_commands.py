@@ -50,7 +50,7 @@ class DrawingCommands:
         world = coords.screen_to_world(pixel, self.window.size(),
                                        self.system.canvas_size,
                                        cam.pan, cam.zoom)
-        return coords.world_to_uv(world, self.strafe_field.canvas_size)
+        return coords.world_to_uv(world, self.strafe_field.field_size)
 
     def _apply_draw_input(self, state):
         """Paint or erase, following the mouse.

@@ -86,15 +86,16 @@ class StrafeField:
     def __init__(self, ctx, canvas_size):
         self.ctx = ctx
         #: The field's OWN resolution, which is not the canvas resolution once
-        #: the cap bites. Everything downstream -- the aspect correction in the
-        #: shader, the uv mapping from the cursor -- must read this, never the
-        #: canvas size, or strokes would skew at large world sizes.
-        self.canvas_size = field_dimensions(canvas_size)
+        #: MAX_FIELD_DIM bites. Everything downstream -- the aspect correction
+        #: in the shader, the uv mapping from the cursor -- must read this,
+        #: never the canvas size, or strokes would skew at large world sizes.
+        #: It was called canvas_size, which invited exactly that mistake.
+        self.field_size = field_dimensions(canvas_size)
 
         # RG16F: two signed, unclamped channels. Signed because a brush vector
         # points in any direction; unclamped because strokes accumulate
         # additively and a normalized format would saturate almost immediately.
-        self.texture = ctx.texture(self.canvas_size, 2, dtype=FIELD_DTYPE)
+        self.texture = ctx.texture(self.field_size, 2, dtype=FIELD_DTYPE)
         self.texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
         self.fbo = ctx.framebuffer(color_attachments=[self.texture])
         # Start at zero: an unwritten float texture is undefined, and undefined
@@ -140,8 +141,13 @@ class StrafeField:
         program, which already had these set, and tryset re-setting them is a
         no-op in effect.
         """
+        # The uniform is named canvas_resolution because strafe_draw.frag shares
+        # aspect_correct_uv with the assembler, whose copy really is fed the
+        # canvas. What it means in THIS shader is "the resolution of the texture
+        # I am drawing into" -- which is the FIELD's, deliberately. Feeding it
+        # the canvas size would skew every stroke once MAX_FIELD_DIM bites.
         tryset(self.program, 'canvas_resolution',
-               (float(self.canvas_size[0]), float(self.canvas_size[1])))
+               (float(self.field_size[0]), float(self.field_size[1])))
 
     # ------------------------------------------------------------------
     # Narrow accessors

@@ -1310,8 +1310,10 @@ canvas texel-for-texel, so the common small case stays trivial to reason about.
 
 **Aspect is preserved, so nothing downstream skews.** Brush circularity and
 cursor mapping are both computed from the field's *own* resolution — the shader
-via `textureSize`, the host via `strafe_field.canvas_size` — never from the
-canvas. `_mouse_field_uv()` deliberately mixes the two: screen→world is the
+via `textureSize`, the host via `strafe_field.field_size` — never from the
+canvas. (That attribute was called `canvas_size`, which named the one thing it
+must never be confused with; `ParticleSystem.canvas_size` genuinely *is* the
+canvas, so the two sat one typo apart.) `_mouse_field_uv()` deliberately mixes the two: screen→world is the
 canvas's transform (that is the space the camera shows), world→uv is the
 field's.
 
