@@ -226,44 +226,62 @@ class ConfigMenu:
         self._load_preview.sync(hovered_now, key_of=lambda e: e.key)
         imgui.end_menu()
 
-    def _load_entry(self, entry) -> bool:
-        """One row: a name to load, and an X to delete. Returns True if hovered.
+    @staticmethod
+    def _browser_entry(row_id: str, label: str):
+        """One browsable row: a name to load, and an X to remove it.
+
+        Returns (clicked, hovered, delete_clicked). It renders and reports; the
+        CALLER decides what loading and deleting mean, because that is the only
+        thing the two browsers disagree about -- File > Load confirms its delete
+        (it destroys a file), Load Checkpoint does it immediately (session-only
+        and cheap to retake).
 
         LAYOUT MATTERS HERE. A default imgui.selectable() spans the full width
         of the menu, so a button placed after it with same_line() sits ON TOP of
         the selectable's click area -- the selectable is submitted first, wins
-        the click, and pressing X silently loads the config instead of deleting
+        the click, and pressing X silently loads the entry instead of deleting
         it. The selectable is therefore given an explicit width that stops short
         of the button.
         """
-        imgui.push_id(f"{entry.category}/{entry.name}")
+        imgui.push_id(row_id)
 
         button_w = imgui.get_frame_height()      # square-ish X button
         spacing = imgui.get_style().item_spacing.x
         # Menus size to their content, so there is no meaningful "available
         # width" to subtract from. Derive a row width from the text instead, and
         # keep a floor so short names still leave a comfortable target.
-        text_w = imgui.calc_text_size(entry.name).x
+        text_w = imgui.calc_text_size(label).x
         name_w = max(text_w + spacing * 2.0, 120.0)
 
-        clicked = imgui.selectable(entry.name, False, 0,
+        clicked = imgui.selectable(label, False, 0,
                                    imgui.ImVec2(name_w, 0.0))[0]
         hovered = imgui.is_item_hovered()
 
         imgui.same_line(0.0, spacing)
-        # Deleting is destructive and permanent, so it opens a confirmation
-        # popup rather than firing on click.
         imgui.push_style_color(imgui.Col_.button.value, imgui.ImVec4(0.6, 0.15, 0.15, 1.0))
         imgui.push_style_color(imgui.Col_.button_hovered.value, imgui.ImVec4(0.85, 0.2, 0.2, 1.0))
         delete_clicked = imgui.button("X", imgui.ImVec2(button_w, 0.0))
         imgui.pop_style_color(2)
+        # The X is part of the row: hovering it must not read as unhovering the
+        # row, or the preview would snap back as the cursor crossed to it.
         if imgui.is_item_hovered():
             hovered = True
+
+        imgui.pop_id()
+        return clicked, hovered, delete_clicked
+
+    def _load_entry(self, entry) -> bool:
+        """One config-file row. Returns True if hovered."""
+        clicked, hovered, delete_clicked = self._browser_entry(
+            f"{entry.category}/{entry.name}", entry.name)
+
         if delete_clicked:
-            # Confirmation is a top-level modal, NOT a popup nested in this
-            # menu: a popup opened inside a menu dies with the menu, so the
-            # dialog would vanish the moment the user moved the cursor. The
-            # modal outlives the menu and is rendered by _build_ui.
+            # Deleting is destructive and permanent, so it opens a confirmation
+            # rather than firing on click. Confirmation is a top-level modal,
+            # NOT a popup nested in this menu: a popup opened inside a menu dies
+            # with the menu, so the dialog would vanish the moment the user
+            # moved the cursor. The modal outlives the menu and is rendered by
+            # _build_ui.
             self._pending_delete = entry
             # Deleting the previewed config must not leave it applied.
             self._load_preview.restore_now()
@@ -275,7 +293,6 @@ class ConfigMenu:
             self._load_preview.commit(entry.key)
             self._dispatch('load_config', entry)
 
-        imgui.pop_id()
         return hovered
 
     # ------------------------------------------------------------------
@@ -346,34 +363,17 @@ class ConfigMenu:
     def _checkpoint_entry(self, cp):
         """One checkpoint row. Returns (hovered, delete_requested).
 
-        Same layout discipline as _load_entry: the selectable gets an explicit
-        width so the X is not sitting on top of its click area, which would
-        make pressing X silently load the checkpoint instead of deleting it.
+        Unlike _load_entry, the delete is reported straight back to the caller
+        rather than confirmed: checkpoints are session-only and cheap to retake,
+        so there is nothing to protect the user from.
         """
-        imgui.push_id(f"cp/{cp.key}")
-
-        button_w = imgui.get_frame_height()
-        spacing = imgui.get_style().item_spacing.x
-        text_w = imgui.calc_text_size(cp.name).x
-        name_w = max(text_w + spacing * 2.0, 120.0)
-
-        clicked = imgui.selectable(cp.name, False, 0, imgui.ImVec2(name_w, 0.0))[0]
-        hovered = imgui.is_item_hovered()
-
-        imgui.same_line(0.0, spacing)
-        imgui.push_style_color(imgui.Col_.button.value, imgui.ImVec4(0.6, 0.15, 0.15, 1.0))
-        imgui.push_style_color(imgui.Col_.button_hovered.value, imgui.ImVec4(0.85, 0.2, 0.2, 1.0))
-        remove = imgui.button("X", imgui.ImVec2(button_w, 0.0))
-        imgui.pop_style_color(2)
-        if imgui.is_item_hovered():
-            hovered = True
+        clicked, hovered, remove = self._browser_entry(f"cp/{cp.key}", cp.name)
 
         if clicked:
             # Commit: drop the snapshot so closing does not undo this.
             self._checkpoint_preview.commit(cp.key)
             self._dispatch('load_checkpoint', cp)
 
-        imgui.pop_id()
         return hovered, remove
 
     def _delete_dialog(self):
