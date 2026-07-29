@@ -69,22 +69,36 @@ class TooltipGraphic:
         self.texture_id = imgui.ImTextureRef(self._texture.glo)
 
     def _build_program(self):
-        """Compile the shader and bind the quad. Also the reload path."""
-        self._program = self.ctx.program(
+        """Compile the shader and bind the quad. Raises on a bad compile.
+
+        Only __init__ calls this unguarded: at construction there is no
+        previous program to fall back to, so a broken shader on startup is
+        genuinely fatal. reload() is the guarded path.
+        """
+        program = self.ctx.program(
             vertex_shader=read_shader(str(_SHARED_SHADER_DIR / 'fullscreen_quad.vert')),
             fragment_shader=read_shader(str(_SHADER_DIR / 'tooltip_graphic.frag')),
         )
-        # A VAO binds a program, so it is rebuilt whenever the program is; the
-        # VBO it references is not.
-        self._vao = quad_vao(self.ctx, self._program, self._vbo)
+        # Assigned only once both succeed, so a caller that catches the
+        # exception is left with a coherent program/VAO pair. A VAO binds a
+        # program, so it is rebuilt whenever the program is; the VBO it
+        # references is not.
+        vao = quad_vao(self.ctx, program, self._vbo)
+        self._program = program
+        self._vao = vao
 
     def reload(self):
         """Recompile the shader, keeping the render target.
 
-        A compile error leaves the previous program in place and re-raises, so
-        a typo mid-edit costs the tooltip's appearance rather than the session.
+        A compile error leaves the previous program in place and prints, so a
+        typo mid-edit costs the tooltip's appearance rather than the session --
+        the same hot-reload contract every other GPU module honours.
         """
-        self._build_program()
+        try:
+            self._build_program()
+            print("Tooltip graphic shader reloaded successfully")
+        except Exception as e:
+            print(f"Failed to reload tooltip graphic shader: {e}")
 
     def render(self, elapsed: float, *, angle_mode: bool, distance_mode: bool,
                sensor_angle: float, sensor_distance: float):
