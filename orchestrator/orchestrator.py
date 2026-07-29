@@ -336,7 +336,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
                     self.camera.render(
                         canvas_texture=self.system.current_canvas_texture(),
                         entity_buffer=self.system.entity_buffer,
-                        entity_count=self.system.entity_count(),
+                        entity_count=self.system.entity_count,
                         canvas_size=self.system.canvas_size,
                         window_size=window_size,
                         # From the SELECTED config. Per-particle in the shader
@@ -588,7 +588,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # them is open -- see _settings_dicts().
             **self._settings_dicts(),
             preset=Path(self.system.config_path).stem,
-            entity_count=self.system.entity_count(),
+            entity_count=self.system.entity_count,
             config_count=self.project.count,
             frame_count=self.system.frame_count,
         )

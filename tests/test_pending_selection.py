@@ -40,8 +40,9 @@ class FakeSystem:
     def retrieve_pick(self):
         return self.queued
 
-    def entity_count(self):
-        return 1000
+    #: A property on the real ParticleSystem (E7), so the fake matches -- a
+    #: fake with a different access shape would hide a broken call site.
+    entity_count = 1000
 
 
 class Harness(SelectionCommands):

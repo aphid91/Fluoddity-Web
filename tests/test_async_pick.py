@@ -50,9 +50,9 @@ def _sample_targets(system, count=10):
 
     from particle_system.layout import ENTITY_DTYPE
 
-    stride = max(1, system.entity_count() // count)
+    stride = max(1, system.entity_count // count)
     targets = []
-    for i in range(0, system.entity_count(), stride):
+    for i in range(0, system.entity_count, stride):
         raw = system.entity_buffer.read(size=ENTITY_DTYPE.itemsize,
                                         offset=i * ENTITY_DTYPE.itemsize)
         rec = np.frombuffer(raw, dtype=ENTITY_DTYPE)[0]

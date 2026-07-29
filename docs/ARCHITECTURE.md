@@ -54,10 +54,27 @@ These are the load-bearing constraints. Follow them when extending the project.
    `shared/` because they don't interface with domain state.
 
 2. **Modules expose public *data* via typed values (dataclasses); public *GPU
-   resources* via narrow accessors.** `SimulationConfig` is a frozen dataclass.
-   Live GPU handles (textures, buffers, programs, VAOs) are *not* wrapped in
-   dataclasses — they're opaque handles, not data. They're handed out per-frame
-   via accessors like `ParticleSystem.current_canvas_texture()`.
+   resources* via narrow accessors; simple *scalar state* via read-only
+   attributes.** `SimulationConfig` is a frozen dataclass. Live GPU handles
+   (textures, buffers, programs, VAOs) are *not* wrapped in dataclasses —
+   they're opaque handles, not data. They're handed out per-frame via accessors
+   like `ParticleSystem.current_canvas_texture()`, because their *identity*
+   changes underfoot (the canvas double-buffer swaps every step).
+
+   A count or a size has no such problem, so it is read as a plain attribute or
+   property: `entity_count`, `frame_count`, `canvas_size`. `entity_count` used
+   to be a method while its two neighbours were bare attributes, which made the
+   convention look like an accident rather than a rule.
+
+   **Writes are the asymmetry.** A module's state is read across the boundary
+   but never *assigned* across it. `ParticleSystem.config_path` was the one
+   exception — the Orchestrator did `system.config_path = ...` from four places
+   — and is now a read-only property with a `set_config_path()` setter. The
+   setter stayed separate from `apply_project()` rather than being folded in,
+   even though the two usually fire together: `apply_project` is also the
+   hover-preview and slider-edit path, where the project changes but its origin
+   on disk does not, so bundling them would make *auditioning* a config in the
+   load menu rewrite the window title.
 
 3. **The Orchestrator is the sole broker.** Modules do not reference each other.
    All inter-module communication is a method call or data hand-off routed through

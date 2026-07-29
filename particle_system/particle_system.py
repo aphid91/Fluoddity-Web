@@ -52,7 +52,9 @@ class ParticleSystem:
         # is the single source of truth the shader reads.
         self.sqrt_world_size = math.sqrt(
             self.entity_count_value / ENTITIES_PER_WORLD_UNIT)
-        self.config_path = str(config_path)
+        #: Where the current project came from, for the window title and the
+        #: preset index. Read freely; write only through set_config_path().
+        self._config_path = str(config_path)
         # One code path for reading configs, so v7/v8 handling never diverges
         # between startup and a later load.
         _saved = persistence.load(config_path)
@@ -254,8 +256,16 @@ class ParticleSystem:
         """Reset simulation state."""
         self.frame_count = 0
 
+    @property
     def entity_count(self):
-        """Narrow accessor: how many entities the simulation is running."""
+        """How many entities the simulation is running.
+
+        A property, not a method, to match frame_count and canvas_size beside
+        it: simple scalar state crosses the module boundary as a read-only
+        attribute. The narrow-ACCESSOR convention (rule 2) is for GPU resources
+        like current_canvas_texture(), whose identity changes underfoot; a
+        count is just a number.
+        """
         return self.entity_count_value
 
     def request_pick(self, target_world, radius_world):
@@ -303,6 +313,28 @@ class ParticleSystem:
         because the double-buffer swap means the front texture changes identity.
         """
         return self.canvas_texture
+
+    @property
+    def config_path(self):
+        """Path the current project was loaded from or last saved to.
+
+        Read-only as an attribute; use set_config_path() to change it. It was
+        assigned from the Orchestrator directly (`system.config_path = ...`),
+        the only cross-module attribute write in the codebase, which rule 2
+        rules out.
+        """
+        return self._config_path
+
+    def set_config_path(self, path):
+        """Record where the current project now lives on disk.
+
+        Separate from apply_project() rather than folded into it, though the
+        two often fire together: apply_project is ALSO the hover-preview and
+        slider-edit path, where the project changes but its origin does not.
+        Bundling them would make auditioning a config in the load menu rewrite
+        the window title, which is the opposite of what a preview means.
+        """
+        self._config_path = str(path)
 
     def apply_project(self, project):
         """Upload a project's configs and world settings. Does not touch entities.

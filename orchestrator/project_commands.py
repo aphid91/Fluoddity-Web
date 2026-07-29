@@ -56,7 +56,7 @@ class ProjectCommands:
         path = self.system.config_path
         self.system = self._build_system()
         self.system.apply_project(self.project)
-        self.system.config_path = path
+        self.system.set_config_path(path)
 
         # The field is sized to the canvas, so a new canvas needs a new field --
         # otherwise its uv mapping would silently skew against the new shape.
@@ -124,7 +124,7 @@ class ProjectCommands:
             self._save_error = f"Could not write {path.name}: {e}"
             return
 
-        self.system.config_path = str(path)
+        self.system.set_config_path(str(path))
         self.project = self.project.renamed(safe)
         self._refresh_config_list()
         print(f"Saved config: {path}")
@@ -142,7 +142,7 @@ class ProjectCommands:
                                                     world=saved.world))
         self._record_history(before, f"load {entry.name}")
         self._preview_origin = None
-        self.system.config_path = str(entry.path)
+        self.system.set_config_path(str(entry.path))
         # Only move the camera if the file actually recorded one -- v7 presets
         # did not, and snapping to a default would be worse than staying put.
         if saved.camera:
@@ -232,7 +232,7 @@ class ProjectCommands:
                                                     name=Path(path).stem,
                                                     world=saved.world))
         self._record_history(before, f"load {Path(path).stem}")
-        self.system.config_path = str(path)
+        self.system.set_config_path(str(path))
         print(f"Loaded config: {path}")
 
     def _apply_saved_camera(self, cam_data):

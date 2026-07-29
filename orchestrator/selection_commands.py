@@ -146,7 +146,7 @@ class SelectionCommands:
 
         config = self.project.config
         rule = mutation.entity_rule(config, result.index,
-                                    self.system.entity_count())
+                                    self.system.entity_count)
 
         self._set_project(self.project.adopt_rule(rule))
         self._record_history(before, f"select particle #{result.index}")
