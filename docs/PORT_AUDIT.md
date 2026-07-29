@@ -429,13 +429,38 @@ Two textures, three independent base-spec facts:
 `rg16float` is filterable, renderable, AND blendable in base WebGPU with no optional
 features, and it keeps the 2-channel shape — so no shader `out vec2` widening, no
 wasted channels, and bandwidth halves. (The audit originally suggested `rgba16float`,
-which is equally capable but needlessly widens every canvas/field write.) The risk to
-verify is dynamic range: `brush.frag:33` multiplies velocity by
-`premult = (1-P)/P`, spanning ~1e-3 to ~1e4 across the trail-persistence range. fp16
-max is 65504, min normal ~6.1e-5, subnormals to ~6e-8. The A/B verification protocol is
-in CLEANUP_PLAN.md item D1; record the verdict here once run. Fallback if fp16 visibly
-degrades: a fixed per-channel scale factor, or keep RG32F and require both optional
-features (narrower device matrix).
+which is equally capable but needlessly widens every canvas/field write.)
+
+**Verdict (implemented + measured 2026-07-28): RG16F ships, but only WITH the value
+scale — bare fp16 failed the A/B.** Headless A/B (600 sub-steps, real sim, canvas and
+entity stats) showed bare fp16 tracks fp32 within a few percent at trail persistence
+≤ 0.94 (the default), but at P = 0.999 — the slider top, and a used zone: 23 of 197
+real configs sit above 0.99, 12 saved at 1.0 — trails came out up to **40× dimmer**
+(canvas p99) with particle speed distributions shifted ~2×, because the splat
+premultiply `(1-P)/P ≈ 1e-3` makes every deposit *fp16-subnormal* (~3.6e-6) and the
+blend stage flushes them. A pure-numpy model of the accumulate recurrence separated
+the mechanisms: subnormal flushing (fixable by scaling) dominates the GPU deficit;
+ulp-granularity starvation (not fixable by scaling) contributes a residual ~25%
+steady-state shortfall at P = 0.999 and <1% at ≤ 0.94.
+
+What shipped (all in-shader, applies identically to any format):
+- `CANVAS_VALUE_SCALE = 512` (`common.glsl`) — stored canvas values ride 512× above
+  their physical meaning; `brush.frag` multiplies, `get_can()` and `camera.frag`
+  divide. `canvas.frag`'s decay/diffuse is linear and scale-invariant.
+- Trail-persistence clamp floor raised 1e-4 → 1e-2 (`TRAIL_PERSISTENCE_MIN`, both
+  writers in lockstep) — the old floor served only typed-in extremes (observed min
+  across 197 configs: 0.312) and its premult ~1e4 would overflow scaled fp16.
+- `CANVAS_VALUE_MAX = 60000` saturation clamp in `canvas.frag` + `get_can()` — an
+  fp16-only hazard: a texel past 65504 rounds to **inf, and inf survives decay
+  forever** (`inf·P = inf`), permanently poisoning the texel and NaN-ing any particle
+  that senses it. fp32 never needed this guard; do not remove it while the canvas is
+  fp16.
+
+Residual known cost: ~25% steady-state trail dimming at the extreme top of the
+persistence slider (an inherent fp16 mantissa limit, scale-independent), negligible at
+the default. User spot-checked the result in-app and accepted it. Revert path: set
+`CANVAS_DTYPE`/`FIELD_DTYPE` back to `'f4'` — the scale/clamp machinery is
+format-agnostic and can stay.
 
 ### 1b. REPEAT wrap — [FINE, with a structural note]
 

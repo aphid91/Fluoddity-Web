@@ -55,6 +55,15 @@ MAX_CONFIGS = 64
 _SHADER_DIR = Path(__file__).parent / "shaders"
 _SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
 
+#: Canvas texel format: RG16F ('f2'), not RG32F ('f4'). Chosen for the WebGPU
+#: port: base WebGPU can neither LINEAR-filter nor blend rg32float (both need
+#: optional device features), while rg16float does everything this texture
+#: needs with no features at all -- and at half the bandwidth. The precision
+#: budget was verified numerically against fp32 across the trail-persistence
+#: range; see docs/PORT_AUDIT.md section 1a. Revert to 'f4' only alongside a
+#: decision to require those optional features.
+CANVAS_DTYPE = 'f2'
+
 
 class ParticleSystem:
     def __init__(self, ctx, canvas_size=None, config_path=None, entity_count=None):
@@ -92,12 +101,12 @@ class ParticleSystem:
         # Particles are splatted directly into the canvas, so there is no separate brush texture.
         # Their repeat mode follows the boundary condition -- see
         # _apply_boundary_sampling(), called once these exist.
-        self.canvas_texture = self.ctx.texture(canvas_size, 2, dtype='f4')
+        self.canvas_texture = self.ctx.texture(canvas_size, 2, dtype=CANVAS_DTYPE)
         self.canvas_texture.filter = (moderngl.LINEAR,moderngl.LINEAR)
         self.canvas_fbo = self.ctx.framebuffer(color_attachments=[self.canvas_texture])
 
         # Double buffer for canvas update (read from one, write to other)
-        self.canvas_texture_back = self.ctx.texture(canvas_size, 2, dtype='f4')
+        self.canvas_texture_back = self.ctx.texture(canvas_size, 2, dtype=CANVAS_DTYPE)
         self.canvas_texture_back.filter = (moderngl.LINEAR,moderngl.LINEAR)
         self.canvas_fbo_back = self.ctx.framebuffer(color_attachments=[self.canvas_texture_back])
 

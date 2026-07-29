@@ -42,6 +42,41 @@
 #define STRAFE_FIELD_GAIN 0.01
 
 // ---------------------------------------------------------------------------
+// CANVAS VALUE SCALE -- the canvas is RG16F (see CANVAS_DTYPE in
+// particle_system.py), and fp16's usable range starts at ~6.1e-5. At high
+// Trail Persistence the splat premultiply (1-P)/P shrinks each deposit to
+// ~1e-6, which is SUBNORMAL in fp16: blend units flush it and trails starve
+// (measured: 40x dimmer at P=0.999). All stored canvas values therefore ride
+// 512x above their physical meaning: the splat multiplies by this, every READER
+// divides by it. canvas.frag's decay/diffuse is linear and scale-invariant, so
+// it neither knows nor cares.
+//
+// 512 is chosen with both ends in view: it lifts a slow particle's deposit at
+// P = 0.999 (~3.6e-6) to ~1.8e-3 -- comfortably normal -- while the largest
+// legitimate single splat (fast particle at the P clamp floor) stays around
+// 1e4, under fp16's 65504 ceiling. Readers: get_can() in entity_update.glsl,
+// camera.frag. Writers: brush.frag.
+#define CANVAS_VALUE_SCALE 512.0
+
+// Saturation ceiling for stored (scaled) canvas values, applied by canvas.frag
+// on every write. NEEDED BECAUSE OF fp16: a texel pushed past 65504 rounds to
+// inf, and inf survives decay forever (inf * P == inf) -- one extreme splat
+// pile-up would permanently poison the texel and NaN any particle that senses
+// it. Saturating below the ceiling lets even an absurd pile-up decay back down.
+// fp32 never needed this; do not remove it while the canvas is fp16.
+#define CANVAS_VALUE_MAX 60000.0
+
+// Trail Persistence's legal range inside the shaders. The FLOOR is well below
+// the slider (0.5..0.999) and below every known config (observed min 0.312);
+// it exists for typed-in extremes. It was 1e-4, but (1-P)/P at 1e-4 is ~1e4,
+// which times CANVAS_VALUE_SCALE would overflow fp16 on a single splat --
+// 1e-2 caps the premultiply at ~99 and costs nothing anyone uses.
+// brush.frag and canvas.frag MUST clamp with the same bounds, or the splat
+// premultiply and the decay would disagree about what P means.
+#define TRAIL_PERSISTENCE_MIN 1e-2
+#define TRAIL_PERSISTENCE_MAX 0.999
+
+// ---------------------------------------------------------------------------
 // MODE ENUMS -- the single definition. ui/settings_spec.py mirrors these BY
 // VALUE in its DROPDOWN_MODES tuples, so the order of the options there is the
 // order here. Change one, change both.

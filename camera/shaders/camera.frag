@@ -51,7 +51,10 @@ void main() {
     // rest. The canvas holds a vector field, and the accumulator has to average
     // COLORS, not vectors -- a particle that reverses direction mid-frame would
     // otherwise average toward zero and punch a black hole in the blur.
-    vec4 canv = texture(tex, canvas_uv);
+    // Stored canvas values ride CANVAS_VALUE_SCALE above their physical
+    // meaning (an fp16 range fix -- see common.glsl); divide it back out so
+    // brightness means what it always did.
+    vec4 canv = texture(tex, canvas_uv) / CANVAS_VALUE_SCALE;
     vec3 color = CANVAS_GAIN * hsv2rgb(vec3(atan(canv.y, canv.x) / 3.1415 / 2.,
                                             .75, length(canv.xy)));
     fragColor = vec4(color, 1.0);

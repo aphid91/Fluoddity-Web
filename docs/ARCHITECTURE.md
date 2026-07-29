@@ -24,7 +24,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | `camera/`         | The viewpoint: pan/zoom/mode state, both ways of drawing the world (TRAIL present pass, PARTICLES instanced sprites), and the **temporal supersampler** behind motion blur. Owns `camera.frag`, `cam_brush.vert/frag`, `accumulate.frag`, and `CameraState`. Emits linear HDR. Holds no simulation state. |
 | `assembler/`      | Everything between the finished camera frame and the screen: bloom, the asinh tone curve, and the two drawing overlays (strafe field, brush reticle). Owns `frame_assembly.frag`, `bloom_downsample.frag`, `bloom_upsample.frag`. Holds no simulation state and no preferences. |
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
-| `strafe_field/`   | The painted Strafe Field: one RG32F texture at canvas resolution, the airbrush shader that writes it (`strafe_draw.frag`), and clear/erase. Live-only — never saved, never in history. |
+| `strafe_field/`   | The painted Strafe Field: one RG16F texture at canvas resolution, the airbrush shader that writes it (`strafe_draw.frag`), and clear/erase. Live-only — never saved, never in history. |
 | `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state. One file per window (`config_menu`, `settings_window`, `preferences_window`, `config_manager`, `toolbar`, `drawing_window`), composed onto `UI` as mixins; `settings_spec.py` is the control registry and `hover_preview.py` the shared preview state machine. |
 | `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`, `drawing_commands`, `shove_commands`). |
 | `project/`        | The `Project` value type (ConfigBuffer + world settings + name + selection, immutable) and `History`, the undo/redo timeline over those values. |
@@ -93,6 +93,14 @@ These are the load-bearing constraints. Follow them when extending the project.
    structs with mixed scalar types. An all-vec4 struct is unambiguous in both,
    so this codebase translates to WebGPU without a layout audit. This is the
    single most important rule for the planned port. `layout.py` enforces it.
+
+   *Texture formats follow the same principle.* A format is chosen to work in
+   **base** WebGPU, not to be maximally precise: the canvas and the strafe field
+   are RG16F because base WebGPU can neither filter nor blend `rg32float`
+   without optional device features, while `rg16float` filters, renders, and
+   blends with none. Where that costs precision, the fix lives in the shaders
+   (`CANVAS_VALUE_SCALE` and the saturation clamp in `common.glsl`) rather than
+   in a format upgrade that would narrow the device matrix.
 
 8. **`common.glsl` is the single source of truth for struct layout.** All
    host/GPU structs (`Entity`, `ConfigData`, `WorldData`, `Rule`) are declared
@@ -1028,7 +1036,7 @@ uniform brokered by the Orchestrator, taken from the SELECTED config — Camera
 does not read the config buffer, which belongs to `ParticleSystem` (rule 3), so
 with several configs loaded the selected one sets the palette for all.
 
-TRAIL mode is unaffected: the canvas is RG32F and stores a 2D vector with no
+TRAIL mode is unaffected: the canvas is RG16F and stores a 2D vector with no
 room for a hue channel, so trails still colour by the angle of that vector.
 
 ### The overlays
@@ -1142,7 +1150,7 @@ therefore leaves a slightly scalloped wake rather than a smooth trench.
 
 ## The Strafe Field, and drawing
 
-One RG32F texture at canvas resolution, painted with the mouse and read by every
+One RG16F texture at canvas resolution, painted with the mouse and read by every
 particle on every physics step. Each texel holds a world-space vector that is
 added **straight to position**:
 
@@ -1236,8 +1244,8 @@ structure: it is filtered `LINEAR` and consumed as a smooth displacement, so
 detail past this point is invisible while the VRAM is not. The canvas has to
 track world size because trails *are* the fine detail; the field does not.
 
-At RG32F (8 bytes/texel) that is 2 MB flat instead of following the canvas —
-8 MB at world size 1, 32 MB at world size 4. Below the cap the field matches the
+At RG16F (4 bytes/texel) that is 1 MB flat instead of following the canvas —
+4 MB at world size 1, 16 MB at world size 4. Below the cap the field matches the
 canvas texel-for-texel, so the common small case stays trivial to reason about.
 
 **Aspect is preserved, so nothing downstream skews.** Brush circularity and

@@ -27,8 +27,12 @@ void main() {
     // Splat directly into the canvas, premultiplied by (1-P)/P so that after the
     // canvas pass's P decay the steady contribution matches the old (1-P)*brush mix.
     // kernel_func*kernel_func reproduces the old SRC_ALPHA blend's quadratic weighting.
-    float P = clamp(world_trail_persistence(world), 1e-4, 0.999);
+    // CANVAS_VALUE_SCALE keeps the deposit out of fp16's subnormal range at high
+    // P -- every canvas reader divides it back out (see common.glsl).
+    float P = clamp(world_trail_persistence(world),
+                    TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
     float premult = (1.0 - P) / P;
     vec2 vel = pos_vel.zw;
-    brush_out = vec4(vel * kernel_func * kernel_func * premult, 0.0, 0.0);
+    brush_out = vec4(vel * kernel_func * kernel_func * premult
+                     * CANVAS_VALUE_SCALE, 0.0, 0.0);
 }

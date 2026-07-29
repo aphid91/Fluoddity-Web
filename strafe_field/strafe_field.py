@@ -1,7 +1,7 @@
 """StrafeField: a painted vector field that displaces every particle.
 
 WHAT IT IS
-One RG32F texture at canvas resolution. Each texel holds a world-space vector
+One RG16F texture at canvas resolution. Each texel holds a world-space vector
 that is added straight to the position of any particle over it, every physics
 step. That makes it ADVECTION rather than a force: it bypasses velocity
 entirely, so drag never damps it and no particle can "swim upstream" against it
@@ -47,9 +47,15 @@ _SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
 #: this is invisible while the VRAM is not. The canvas has to track world size
 #: because trails ARE the fine detail; the field does not.
 #:
-#: RG32F = 8 bytes/texel, so 512 costs 2 MB flat. Uncapped it would follow the
-#: canvas: 8 MB at world_size 1, 32 MB at world_size 4.
+#: RG16F = 4 bytes/texel, so 512 costs 1 MB flat. Uncapped it would follow the
+#: canvas: 4 MB at world_size 1, 16 MB at world_size 4.
 MAX_FIELD_DIM = 512
+
+#: Field texel format: RG16F ('f2'), matching the canvas (see CANVAS_DTYPE in
+#: particle_system.py for the WebGPU rationale). Painted deposits are ~1e-2 per
+#: stroke frame and consumed as a smooth displacement, well inside fp16's
+#: range; verified in docs/PORT_AUDIT.md section 1a.
+FIELD_DTYPE = 'f2'
 
 
 def field_dimensions(canvas_size):
@@ -81,10 +87,10 @@ class StrafeField:
         #: canvas size, or strokes would skew at large world sizes.
         self.canvas_size = field_dimensions(canvas_size)
 
-        # RG32F: two signed, unclamped channels. Signed because a brush vector
+        # RG16F: two signed, unclamped channels. Signed because a brush vector
         # points in any direction; unclamped because strokes accumulate
         # additively and a normalized format would saturate almost immediately.
-        self.texture = ctx.texture(self.canvas_size, 2, dtype='f4')
+        self.texture = ctx.texture(self.canvas_size, 2, dtype=FIELD_DTYPE)
         self.texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
         self.fbo = ctx.framebuffer(color_attachments=[self.texture])
         # Start at zero: an unwritten float texture is undefined, and undefined

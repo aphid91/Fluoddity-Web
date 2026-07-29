@@ -39,7 +39,10 @@ void main() {
     if(frame_count==0){canvas_out=vec4(0,0,0,0);return;}
     vec4 canvas_color;
     float TRAIL_DIFFUSION = clamp(world_trail_diffusion(world),0.001,1.0);
-    float TRAIL_PERSISTENCE = clamp(world_trail_persistence(world),1e-4,0.999);
+    // Same bounds as brush.frag's premultiply, from common.glsl -- the splat
+    // and the decay must agree about what P means.
+    float TRAIL_PERSISTENCE = clamp(world_trail_persistence(world),
+                                    TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
     if(TRAIL_DIFFUSION>0){
         TRAIL_DIFFUSION= TRAIL_DIFFUSION*TRAIL_DIFFUSION;//better scaling for slider
         TRAIL_DIFFUSION = 4./(pow(5,(TRAIL_DIFFUSION))-1);//better scaling for slider
@@ -49,5 +52,10 @@ void main() {
         canvas_color = texture(canvas_texture,uv);
     }
     // Brush splats are already mixed into the canvas; just decay by persistence.
-    canvas_out = canvas_color * TRAIL_PERSISTENCE;
+    // The clamp is fp16 insurance, not a look decision: past 65504 a texel
+    // rounds to inf, and inf survives decay forever (see CANVAS_VALUE_MAX in
+    // common.glsl). This pass touches every texel every step, so a transient
+    // inf from an extreme splat pile-up is scrubbed within one step.
+    canvas_out = clamp(canvas_color * TRAIL_PERSISTENCE,
+                       vec4(-CANVAS_VALUE_MAX), vec4(CANVAS_VALUE_MAX));
 }

@@ -149,7 +149,14 @@ void pR(inout vec2 p, float a) {
 //and reads the edge, because in those modes the far side is not adjacent.
 vec4 get_can(vec2 p, int bc){
     vec2 res = vec2(textureSize(canvas_texture, 0));
-    return texture(canvas_texture, world_to_uv_bc(p, res, bc));
+    // Stored values ride CANVAS_VALUE_SCALE above their physical meaning (an
+    // fp16 range fix -- see common.glsl); divide it back out so the sensors
+    // see the same magnitudes they always did. The clamp guards against a
+    // transient inf texel (a splat pile-up the canvas pass has not scrubbed
+    // yet): sensing inf would NaN the particle's position permanently.
+    vec4 canv = texture(canvas_texture, world_to_uv_bc(p, res, bc));
+    return clamp(canv, vec4(-CANVAS_VALUE_MAX), vec4(CANVAS_VALUE_MAX))
+           / CANVAS_VALUE_SCALE;
 }
 
 //Read the painted strafe field at a world position, honoring the boundary mode
