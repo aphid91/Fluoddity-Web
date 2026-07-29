@@ -9,10 +9,15 @@ from .config import BC_WRAP, pack_configs
 from .layout import SIZE_OF_CONFIG_DATA, SIZE_OF_ENTITY_STRUCT, ENTITY_DTYPE
 from .picker import EntityPicker, MISS
 
-WORLD_SIZE = 1.
-SQRT_WORLD_SIZE = math.sqrt(WORLD_SIZE)
-ENTITY_COUNT = int(600000*WORLD_SIZE)
-CANVAS_DIM = int(1024*SQRT_WORLD_SIZE)
+#: The two numbers that define the simulation's scale, named once. Everything
+#: else about sizing is derived from them by sizing_for().
+#:
+#: Density: entities per world unit of area. Resolution: the canvas edge at
+#: world size 1. They are a matched pair -- 600k particles over a 1024x1024
+#: canvas is the density the defaults are tuned around, so moving one without
+#: the other changes how the whole simulation reads.
+ENTITIES_PER_WORLD_UNIT = 600_000
+BASE_CANVAS_DIM = 1024
 
 #: Canvas aspect (width:height). 1.0 is square. Changing this changes the SHAPE
 #: of the simulated world -- world space is area-preserving, so the canvas keeps
@@ -22,25 +27,38 @@ CANVAS_DIM = int(1024*SQRT_WORLD_SIZE)
 CANVAS_ASPECT = 1.
 
 
-def canvas_dimensions(aspect=CANVAS_ASPECT, dim=CANVAS_DIM):
-    """Canvas (width, height) for an aspect, preserving total pixel count.
-
-    Area-preserving to match world space: dim*dim pixels regardless of shape,
-    so changing aspect does not silently change simulation cost or the
-    effective resolution of the trails.
-    """
-    s = math.sqrt(aspect)
-    return (max(1, int(round(dim * s))), max(1, int(round(dim / s))))
-
-
 def sizing_for(world_size):
     """(entity_count, canvas_dim) for a world size.
 
     World size scales particle count and canvas resolution together, so
     density stays constant as the world grows -- the same simulation, larger.
+    Canvas dim goes as the square root because world size is an AREA and dim is
+    an edge.
     """
-    return (max(1, int(600000 * world_size)),
-            max(16, int(1024 * math.sqrt(world_size))))
+    return (max(1, int(ENTITIES_PER_WORLD_UNIT * world_size)),
+            max(16, int(BASE_CANVAS_DIM * math.sqrt(world_size))))
+
+
+#: Sizing for a world size of 1 -- what a ParticleSystem built without explicit
+#: sizing gets. Derived through sizing_for so the default and the scaled case
+#: can never disagree.
+ENTITY_COUNT, CANVAS_DIM = sizing_for(1.0)
+
+
+def canvas_dimensions(aspect=CANVAS_ASPECT, dim=None):
+    """Canvas (width, height) for an aspect, preserving total pixel count.
+
+    Area-preserving to match world space: dim*dim pixels regardless of shape,
+    so changing aspect does not silently change simulation cost or the
+    effective resolution of the trails.
+
+    `dim` defaults to CANVAS_DIM (world size 1); it is resolved at call time
+    rather than bound as a default argument so the two stay in step.
+    """
+    if dim is None:
+        dim = CANVAS_DIM
+    s = math.sqrt(aspect)
+    return (max(1, int(round(dim * s))), max(1, int(round(dim / s))))
 
 # SSBO binding points. Mirrored in common.glsl's header table.
 ENTITY_BUFFER_BINDING = 0
@@ -82,7 +100,8 @@ class ParticleSystem:
         # Derived from the ACTUAL entity count, not the module default, so a
         # rebuilt system scales distances correctly. This feeds WorldData and
         # is the single source of truth the shader reads.
-        self.sqrt_world_size = math.sqrt(self.entity_count_value / 600000.0)
+        self.sqrt_world_size = math.sqrt(
+            self.entity_count_value / ENTITIES_PER_WORLD_UNIT)
         self.config_path = str(config_path)
         # One code path for reading configs, so v7/v8 handling never diverges
         # between startup and a later load.
