@@ -219,6 +219,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             'quit': self._cmd_quit,
             # save / load
             'save_config': self._cmd_save_config,
+            'clear_save_error': self._cmd_clear_save_error,
             'load_config': self._cmd_load_config,
             'delete_config': self._cmd_delete_config,
             'preview_config': self._cmd_preview_config,

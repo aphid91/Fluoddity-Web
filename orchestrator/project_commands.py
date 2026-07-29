@@ -91,6 +91,17 @@ class ProjectCommands:
     # Commands
     # ------------------------------------------------------------------
 
+    def _cmd_clear_save_error(self):
+        """Forget the last save failure.
+
+        Dispatched when the save dialog OPENS. The dialog renders save_error
+        from status every frame (it must not read it once, right after
+        dispatch), so without this a previous failure would greet the user
+        again on a fresh dialog. The UI cannot clear it itself -- it owns none
+        of this state -- so it asks.
+        """
+        self._save_error = ""
+
     def _cmd_save_config(self, name, save_all):
         """Write the project to configs/custom/<name>.json."""
         self._save_error = ""

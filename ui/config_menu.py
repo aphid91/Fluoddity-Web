@@ -47,7 +47,11 @@ class ConfigMenu:
         self.show_save_dialog = False
         self._save_name = ""
         self._save_all_configs = False
-        self._save_error = ""
+        #: PRE-DISPATCH validation only -- the UI declining to ask ("Enter a
+        #: filename."). Errors from an attempted save arrive through
+        #: _status['save_error'] instead; see _save_dialog for why the two are
+        #: kept apart.
+        self._save_validation = ""
 
         #: Entry awaiting delete confirmation, or None. Held at UI level rather
         #: than inside the menu so the dialog survives the menu closing.
@@ -417,7 +421,12 @@ class ConfigMenu:
 
     def _open_save_dialog(self):
         self.show_save_dialog = True
-        self._save_error = ""
+        self._save_validation = ""
+        # A fresh dialog starts clean. The Orchestrator's save_error outlives
+        # the dialog that produced it (only a save attempt rewrites it), and
+        # since the dialog now renders it every frame rather than reading it
+        # once, a previous failure would otherwise be waiting here.
+        self._dispatch('clear_save_error')
         if not self._save_name:
             self._save_name = self._status['project_name'] or 'Untitled'
 
@@ -435,7 +444,9 @@ class ConfigMenu:
         imgui.text("Filename")
         changed, self._save_name = imgui.input_text("##name", self._save_name)
         if changed:
-            self._save_error = ""
+            # Typing answers the validation complaint. It does NOT clear the
+            # Orchestrator's save_error -- only another save attempt can.
+            self._save_validation = ""
 
         imgui.spacing()
         config_count = self._status['config_count']
@@ -450,22 +461,39 @@ class ConfigMenu:
         imgui.spacing()
         imgui.text_disabled(f"saves to configs/custom/")
 
-        if self._save_error:
+        # TWO ERROR CHANNELS, deliberately, and they mean different things:
+        #   _save_validation  the UI DECLINING TO DISPATCH at all ("Enter a
+        #                     filename."). The Orchestrator never hears about
+        #                     this, because nothing was ever asked of it.
+        #   status save_error the Orchestrator reporting an ATTEMPTED save that
+        #                     failed (bad name, unwritable path).
+        # Read from _status every frame rather than once after dispatch: the
+        # old code read it on the line after _dispatch and so depended on the
+        # command bus being synchronous, which the port's will not be.
+        error = self._save_validation or self._status['save_error']
+        if error:
             imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(1.0, 0.4, 0.4, 1.0))
-            imgui.text_wrapped(self._save_error)
+            imgui.text_wrapped(error)
             imgui.pop_style_color()
 
         imgui.spacing()
         if imgui.button("Save"):
             name = self._save_name.strip()
             if not name:
-                self._save_error = "Enter a filename."
+                self._save_validation = "Enter a filename."
             else:
+                # Cleared on dispatch: from here the Orchestrator's answer is
+                # the one that matters, and a stale validation message must not
+                # sit alongside it.
+                self._save_validation = ""
                 self._dispatch('save_config', name, self._save_all_configs)
-                # The handler reports failure by setting save_error in status;
-                # only close when it stayed clear.
-                self._save_error = self._status['save_error']
-                if not self._save_error:
+                # Closing is decided from the status the dispatch just
+                # refreshed. Under an async bus this frame's value may still be
+                # the previous one, in which case the dialog stays up one extra
+                # frame and closes on the next -- which is correct behaviour,
+                # not a race: it closes only once a clean save is actually
+                # reported.
+                if not self._status['save_error']:
                     self.show_save_dialog = False
         imgui.same_line()
         if imgui.button("Cancel"):
