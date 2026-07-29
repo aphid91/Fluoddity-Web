@@ -41,7 +41,7 @@ from pathlib import Path
 
 import moderngl
 
-from shared.gl_utils import read_shader, tryset, quad_vbo, quad_vao
+from shared.gl_utils import tryset, quad_vbo, reload_program
 from .camera_state import CameraState, CameraMode
 
 # Shader paths resolved relative to this module, so the app is not CWD-dependent.
@@ -106,49 +106,32 @@ class Camera:
         self._reload_accumulate()
 
     def _reload_present(self):
-        try:
-            program = self.ctx.program(
-                vertex_shader=read_shader(str(_SHARED_SHADER_DIR / 'fullscreen_quad.vert')),
-                fragment_shader=read_shader(str(_SHADER_DIR / 'camera.frag')),
-            )
-            self.present_program = program
-
-            if self.quad_vbo is None:
-                self.quad_vbo = quad_vbo(self.ctx)
-
-            # The VAO binds a program, so it must be rebuilt with the new one.
-            self.present_vao = quad_vao(self.ctx, program, self.quad_vbo)
-            print("Camera present shaders reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload camera present shaders: {e}")
+        if self.quad_vbo is None:
+            self.quad_vbo = quad_vbo(self.ctx)
+        self.present_program, self.present_vao = reload_program(
+            self.ctx, "Camera present shaders",
+            _SHARED_SHADER_DIR / 'fullscreen_quad.vert',
+            _SHADER_DIR / 'camera.frag',
+            self.present_program, self.present_vao, self.quad_vbo)
 
     def _reload_particles(self):
-        try:
-            program = self.ctx.program(
-                vertex_shader=read_shader(str(_SHADER_DIR / 'cam_brush.vert')),
-                fragment_shader=read_shader(str(_SHADER_DIR / 'cam_brush.frag')),
-            )
-            self.particle_program = program
-            self.particle_vao = self.ctx.vertex_array(program, [])
-            print("Camera particle shaders reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload camera particle shaders: {e}")
+        # vbo=None: cam_brush.vert has no vertex attributes -- it builds each
+        # particle's quad from gl_VertexID -- so this wants an empty VAO, not
+        # the fullscreen quad.
+        self.particle_program, self.particle_vao = reload_program(
+            self.ctx, "Camera particle shaders",
+            _SHADER_DIR / 'cam_brush.vert',
+            _SHADER_DIR / 'cam_brush.frag',
+            self.particle_program, self.particle_vao)
 
     def _reload_accumulate(self):
-        try:
-            program = self.ctx.program(
-                vertex_shader=read_shader(str(_SHARED_SHADER_DIR / 'fullscreen_quad.vert')),
-                fragment_shader=read_shader(str(_SHADER_DIR / 'accumulate.frag')),
-            )
-            self.accumulate_program = program
-
-            if self.quad_vbo is None:
-                self.quad_vbo = quad_vbo(self.ctx)
-
-            self.accumulate_vao = quad_vao(self.ctx, program, self.quad_vbo)
-            print("Camera accumulate shader reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload camera accumulate shader: {e}")
+        if self.quad_vbo is None:
+            self.quad_vbo = quad_vbo(self.ctx)
+        self.accumulate_program, self.accumulate_vao = reload_program(
+            self.ctx, "Camera accumulate shader",
+            _SHARED_SHADER_DIR / 'fullscreen_quad.vert',
+            _SHADER_DIR / 'accumulate.frag',
+            self.accumulate_program, self.accumulate_vao, self.quad_vbo)
 
     # ------------------------------------------------------------------
     # Rendering

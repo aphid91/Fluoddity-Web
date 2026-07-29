@@ -26,7 +26,7 @@ from pathlib import Path
 
 import moderngl
 
-from shared.gl_utils import read_shader, tryset, quad_vbo, quad_vao
+from shared.gl_utils import tryset, quad_vbo, reload_program
 
 _SHADER_DIR = Path(__file__).parent / "shaders"
 _SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
@@ -64,37 +64,26 @@ class Bloom:
     # ------------------------------------------------------------------
 
     def reload(self):
-        """Reload both bloom shaders from disk. Safe to call mid-execution."""
-        vert = str(_SHARED_SHADER_DIR / 'fullscreen_quad.vert')
+        """Reload both bloom shaders from disk. Safe to call mid-execution.
 
-        try:
-            program = self.ctx.program(
-                vertex_shader=read_shader(vert),
-                fragment_shader=read_shader(str(_SHADER_DIR / 'bloom_downsample.frag')),
-            )
-            # Only replaced on success: a failed compile leaves the old program
-            # running rather than dropping bloom entirely.
-            self.downsample_program = program
-            if self.quad_vbo is None:
-                self.quad_vbo = quad_vbo(self.ctx)
-            # The VAO binds a program, so it must be rebuilt with the new one.
-            self.downsample_vao = quad_vao(self.ctx, program, self.quad_vbo)
-            print("Bloom downsample shader reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload bloom downsample shader: {e}")
+        Each half reloads independently: a typo in one leaves the other's
+        program alone rather than taking the whole chain down.
+        """
+        vert = _SHARED_SHADER_DIR / 'fullscreen_quad.vert'
+        if self.quad_vbo is None:
+            self.quad_vbo = quad_vbo(self.ctx)
 
-        try:
-            program = self.ctx.program(
-                vertex_shader=read_shader(vert),
-                fragment_shader=read_shader(str(_SHADER_DIR / 'bloom_upsample.frag')),
-            )
-            self.upsample_program = program
-            if self.quad_vbo is None:
-                self.quad_vbo = quad_vbo(self.ctx)
-            self.upsample_vao = quad_vao(self.ctx, program, self.quad_vbo)
-            print("Bloom upsample shader reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload bloom upsample shader: {e}")
+        # Only replaced on success: a failed compile leaves the old program
+        # running rather than dropping bloom entirely.
+        self.downsample_program, self.downsample_vao = reload_program(
+            self.ctx, "Bloom downsample shader",
+            vert, _SHADER_DIR / 'bloom_downsample.frag',
+            self.downsample_program, self.downsample_vao, self.quad_vbo)
+
+        self.upsample_program, self.upsample_vao = reload_program(
+            self.ctx, "Bloom upsample shader",
+            vert, _SHADER_DIR / 'bloom_upsample.frag',
+            self.upsample_program, self.upsample_vao, self.quad_vbo)
 
     # ------------------------------------------------------------------
     # The chain

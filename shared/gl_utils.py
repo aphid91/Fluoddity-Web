@@ -101,6 +101,72 @@ def quad_vao(ctx: moderngl.Context, program: moderngl.Program,
     return ctx.vertex_array(program, [(vbo, '2f', 'in_position')])
 
 
+# ---------------------------------------------------------------------------
+# HOT-RELOAD (CLAUDE_README.md's contract, in one place)
+#
+# Every GPU module reloads shaders the same way: compile, and on failure keep
+# the LAST WORKING program rather than crashing or going black. That shape was
+# written out eight times across six modules; these two helpers are it, once.
+#
+# The contract each helper keeps:
+#   - the new program is adopted only if BOTH it and its VAO were built;
+#   - a failure returns exactly what was passed in, so the caller's assignment
+#     is unconditional and the old program survives;
+#   - success and failure both print, naming `label`, so a typo mid-edit says
+#     which shader it was.
+#
+# Callers are expected to re-push their lifetime-constant uniforms after
+# calling these: a freshly compiled program starts with every uniform unset.
+# ---------------------------------------------------------------------------
+
+
+def reload_program(ctx, label, vertex_path, fragment_path,
+                   old_program=None, old_vao=None, vbo=None):
+    """Recompile a render program and rebuild its VAO. Never raises.
+
+    Returns `(program, vao)` -- the new pair on success, the old pair
+    unchanged on failure. Assign it unconditionally:
+
+        self.program, self.vao = reload_program(...)
+
+    `vbo` selects the VAO shape, and the two shapes are not interchangeable:
+      - a fullscreen-quad VBO  -> a quad VAO bound to it (fullscreen passes);
+      - None                   -> an EMPTY vertex array, for shaders that
+                                  generate their geometry from gl_VertexID and
+                                  have no vertex attributes at all.
+    """
+    try:
+        program = ctx.program(
+            vertex_shader=read_shader(str(vertex_path)),
+            fragment_shader=read_shader(str(fragment_path)),
+        )
+        # Built before either is adopted: a VAO failure must not leave a new
+        # program paired with the old VAO, which is a mismatch neither the
+        # success nor the failure path would ever produce.
+        vao = quad_vao(ctx, program, vbo) if vbo is not None \
+            else ctx.vertex_array(program, [])
+        print(f"{label} reloaded successfully")
+        return program, vao
+    except Exception as e:
+        print(f"Failed to reload {label}: {e}")
+        return old_program, old_vao
+
+
+def reload_compute(ctx, label, source_path, old_program=None):
+    """Recompile a compute shader. Never raises.
+
+    The compute counterpart of reload_program: same contract, but there is no
+    VAO, so it returns the program alone.
+    """
+    try:
+        program = ctx.compute_shader(read_shader(str(source_path)))
+        print(f"{label} reloaded successfully")
+        return program
+    except Exception as e:
+        print(f"Failed to reload {label}: {e}")
+        return old_program
+
+
 MUTED_TRYSET_WARNINGS = {}
 
 

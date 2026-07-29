@@ -34,7 +34,7 @@ import moderngl
 #: ParticleSystem, persistence, and layout.py's common.glsl parse into this
 #: module's import graph for one function of arithmetic.
 from particle_system.sizing import canvas_dimensions
-from shared.gl_utils import read_shader, tryset, quad_vbo, quad_vao
+from shared.gl_utils import tryset, quad_vbo, reload_program
 
 # Shader paths resolved relative to this module, so the app is not CWD-dependent.
 _SHADER_DIR = Path(__file__).parent / "shaders"
@@ -118,28 +118,30 @@ class StrafeField:
         which is what makes it practical to tune the brush shader against a
         stroke you already like.
         """
-        try:
-            program = self.ctx.program(
-                vertex_shader=read_shader(str(_SHARED_SHADER_DIR / 'fullscreen_quad.vert')),
-                fragment_shader=read_shader(str(_SHADER_DIR / 'strafe_draw.frag')),
-            )
-            # Only replaced on success: a failed compile leaves the old program
-            # running rather than dropping the brush entirely.
-            self.program = program
+        if self.quad_vbo is None:
+            self.quad_vbo = quad_vbo(self.ctx)
+        # Only replaced on success: a failed compile leaves the old program
+        # running rather than dropping the brush entirely.
+        self.program, self.vao = reload_program(
+            self.ctx, "Strafe field shader",
+            _SHARED_SHADER_DIR / 'fullscreen_quad.vert',
+            _SHADER_DIR / 'strafe_draw.frag',
+            self.program, self.vao, self.quad_vbo)
+        self._set_constant_uniforms()
 
-            if self.quad_vbo is None:
-                self.quad_vbo = quad_vbo(self.ctx)
+    def _set_constant_uniforms(self):
+        """Push uniforms that never change while a program lives.
 
-            # The VAO binds a program, so it must be rebuilt with the new one.
-            self.vao = quad_vao(self.ctx, program, self.quad_vbo)
+        Called after every reload, because a freshly compiled program starts
+        with its uniforms unset. Named the same as ParticleSystem's, so the
+        convention is visible across modules rather than inlined here.
 
-            # Constant for the life of the program, so it is set here rather
-            # than on every stroke frame.
-            tryset(program, 'canvas_resolution',
-                   (float(self.canvas_size[0]), float(self.canvas_size[1])))
-            print("Strafe field shader reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload strafe field shader: {e}")
+        Safe to run after a FAILED reload too: self.program is then the old
+        program, which already had these set, and tryset re-setting them is a
+        no-op in effect.
+        """
+        tryset(self.program, 'canvas_resolution',
+               (float(self.canvas_size[0]), float(self.canvas_size[1])))
 
     # ------------------------------------------------------------------
     # Narrow accessors

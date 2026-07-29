@@ -32,7 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
-from shared.gl_utils import read_shader, tryset
+from shared.gl_utils import tryset, reload_compute
 from . import coords
 
 _SHADER_DIR = Path(__file__).parent / "shaders"
@@ -92,12 +92,9 @@ class EntityPicker:
 
     def reload(self):
         """Reload the pick shader from disk. Safe to call mid-execution."""
-        try:
-            source = read_shader(str(_SHADER_DIR / 'entity_pick.glsl'))
-            self.program = self.ctx.compute_shader(source)
-            print("Entity pick shader reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload entity pick shader: {e}")
+        self.program = reload_compute(
+            self.ctx, "Entity pick shader",
+            _SHADER_DIR / 'entity_pick.glsl', self.program)
 
     def request(self, entity_buffer, entity_count, target_world, radius_world):
         """Dispatch a pick. The result is available from `retrieve()` next frame."""

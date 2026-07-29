@@ -3,7 +3,7 @@ from pathlib import Path
 
 import moderngl
 
-from shared.gl_utils import read_shader, tryset, quad_vbo, quad_vao
+from shared.gl_utils import (tryset, quad_vbo, reload_program, reload_compute)
 from . import persistence
 from .config import BC_WRAP, pack_configs
 from .layout import SIZE_OF_CONFIG_DATA, SIZE_OF_ENTITY_STRUCT, ENTITY_DTYPE
@@ -97,9 +97,12 @@ class ParticleSystem:
         self._refresh_world_uniform()
         self._apply_boundary_sampling()
 
-        # Fullscreen quad for canvas update (initialized in reload)
+        # Built by reload(). Declared here because the reload helpers take the
+        # current pair as their fallback -- on a failed compile they hand it
+        # straight back, so it has to exist before the first call.
         self.quad_vbo = None
         self.canvas_vao = None
+        self.brush_vao = None
 
         # Frame counter
         self.frame_count = 0
@@ -192,49 +195,30 @@ class ParticleSystem:
 
     def _reload_entity_update(self):
         """Reload entity update compute shader."""
-        try:
-            source = read_shader(str(_SHADER_DIR / 'entity_update.glsl'))
-            new_program = self.ctx.compute_shader(source)
-            self.entity_update_program = new_program
-            print("Entity update shader reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload entity update shader: {e}")
+        self.entity_update_program = reload_compute(
+            self.ctx, "Entity update shader",
+            _SHADER_DIR / 'entity_update.glsl', self.entity_update_program)
 
     def _reload_brush_splat(self):
-        """Reload brush splat shaders."""
-        try:
-            vert_source = read_shader(str(_SHADER_DIR / 'brush.vert'))
-            frag_source = read_shader(str(_SHADER_DIR / 'brush.frag'))
-            new_program = self.ctx.program(
-                vertex_shader=vert_source,
-                fragment_shader=frag_source
-            )
-            self.brush_splat_program = new_program
-            self.brush_vao = self.ctx.vertex_array(self.brush_splat_program, [])
-            print("Brush splat shaders reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload brush splat shaders: {e}")
+        """Reload brush splat shaders.
+
+        vbo=None: brush.vert takes no vertex attributes -- it builds each
+        splat's quad from gl_VertexID -- so this wants an empty VAO.
+        """
+        self.brush_splat_program, self.brush_vao = reload_program(
+            self.ctx, "Brush splat shaders",
+            _SHADER_DIR / 'brush.vert', _SHADER_DIR / 'brush.frag',
+            self.brush_splat_program, self.brush_vao)
 
     def _reload_canvas_update(self):
         """Reload canvas update shaders."""
-        try:
-            vert_source = read_shader(str(_SHARED_SHADER_DIR / 'fullscreen_quad.vert'))
-            frag_source = read_shader(str(_SHADER_DIR / 'canvas.frag'))
-            new_program = self.ctx.program(
-                vertex_shader=vert_source,
-                fragment_shader=frag_source
-            )
-            self.canvas_update_program = new_program
-
-            # Create or recreate VAO with new program
-            if self.quad_vbo is None:
-                self.quad_vbo = quad_vbo(self.ctx)
-
-            self.canvas_vao = quad_vao(self.ctx, self.canvas_update_program,
-                                       self.quad_vbo)
-            print("Canvas update shaders reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload canvas update shaders: {e}")
+        if self.quad_vbo is None:
+            self.quad_vbo = quad_vbo(self.ctx)
+        self.canvas_update_program, self.canvas_vao = reload_program(
+            self.ctx, "Canvas update shaders",
+            _SHARED_SHADER_DIR / 'fullscreen_quad.vert',
+            _SHADER_DIR / 'canvas.frag',
+            self.canvas_update_program, self.canvas_vao, self.quad_vbo)
 
     def advance(self, strafe_field=None, shove=None):
         """Run one simulation step: splat into canvas, update entities, update canvas.

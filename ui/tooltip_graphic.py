@@ -33,7 +33,7 @@ from pathlib import Path
 import moderngl
 from imgui_bundle import imgui
 
-from shared.gl_utils import read_shader, tryset, quad_vbo, quad_vao
+from shared.gl_utils import tryset, quad_vbo, reload_program
 
 _SHADER_DIR = Path(__file__).parent / "shaders"
 _SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
@@ -56,7 +56,13 @@ class TooltipGraphic:
         self._vbo = quad_vbo(ctx)
         self._program = None
         self._vao = None
-        self._build_program()
+        self.reload()
+        if self._program is None:
+            # Startup is the one case where a bad shader IS fatal: there is no
+            # previous program to fall back to, so continuing would mean
+            # rendering the diagram with nothing. reload() has already printed
+            # the compile error.
+            raise RuntimeError("tooltip_graphic.frag failed to compile at startup")
 
         self._texture = ctx.texture((TEXTURE_SIZE, TEXTURE_SIZE), components=4)
         # LINEAR so the diagram stays smooth if imgui ever draws it at a size
@@ -68,37 +74,19 @@ class TooltipGraphic:
         #: up, and the texture outlives every frame that draws it.
         self.texture_id = imgui.ImTextureRef(self._texture.glo)
 
-    def _build_program(self):
-        """Compile the shader and bind the quad. Raises on a bad compile.
-
-        Only __init__ calls this unguarded: at construction there is no
-        previous program to fall back to, so a broken shader on startup is
-        genuinely fatal. reload() is the guarded path.
-        """
-        program = self.ctx.program(
-            vertex_shader=read_shader(str(_SHARED_SHADER_DIR / 'fullscreen_quad.vert')),
-            fragment_shader=read_shader(str(_SHADER_DIR / 'tooltip_graphic.frag')),
-        )
-        # Assigned only once both succeed, so a caller that catches the
-        # exception is left with a coherent program/VAO pair. A VAO binds a
-        # program, so it is rebuilt whenever the program is; the VBO it
-        # references is not.
-        vao = quad_vao(self.ctx, program, self._vbo)
-        self._program = program
-        self._vao = vao
-
     def reload(self):
         """Recompile the shader, keeping the render target.
 
         A compile error leaves the previous program in place and prints, so a
         typo mid-edit costs the tooltip's appearance rather than the session --
-        the same hot-reload contract every other GPU module honours.
+        the same hot-reload contract every other GPU module honours, through
+        the same helper.
         """
-        try:
-            self._build_program()
-            print("Tooltip graphic shader reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload tooltip graphic shader: {e}")
+        self._program, self._vao = reload_program(
+            self.ctx, "Tooltip graphic shader",
+            _SHARED_SHADER_DIR / 'fullscreen_quad.vert',
+            _SHADER_DIR / 'tooltip_graphic.frag',
+            self._program, self._vao, self._vbo)
 
     def render(self, elapsed: float, *, angle_mode: bool, distance_mode: bool,
                sensor_angle: float, sensor_distance: float):

@@ -27,7 +27,7 @@ from pathlib import Path
 
 import moderngl
 
-from shared.gl_utils import read_shader, tryset, quad_vbo, quad_vao
+from shared.gl_utils import tryset, quad_vbo, reload_program
 from .bloom import Bloom
 
 _SHADER_DIR = Path(__file__).parent / "shaders"
@@ -57,23 +57,15 @@ class Assembler:
 
     def reload(self):
         """Reload the assembly shader and the bloom chain. Safe mid-execution."""
-        try:
-            program = self.ctx.program(
-                vertex_shader=read_shader(str(_SHARED_SHADER_DIR / 'fullscreen_quad.vert')),
-                fragment_shader=read_shader(str(_SHADER_DIR / 'frame_assembly.frag')),
-            )
-            # Only replaced on success: a failed compile leaves the old program
-            # running rather than dropping the screen to black.
-            self.program = program
-
-            if self.quad_vbo is None:
-                self.quad_vbo = quad_vbo(self.ctx)
-
-            # The VAO binds a program, so it must be rebuilt with the new one.
-            self.vao = quad_vao(self.ctx, program, self.quad_vbo)
-            print("Frame assembly shader reloaded successfully")
-        except Exception as e:
-            print(f"Failed to reload frame assembly shader: {e}")
+        if self.quad_vbo is None:
+            self.quad_vbo = quad_vbo(self.ctx)
+        # Only replaced on success: a failed compile leaves the old program
+        # running rather than dropping the screen to black.
+        self.program, self.vao = reload_program(
+            self.ctx, "Frame assembly shader",
+            _SHARED_SHADER_DIR / 'fullscreen_quad.vert',
+            _SHADER_DIR / 'frame_assembly.frag',
+            self.program, self.vao, self.quad_vbo)
 
         self.bloom.reload()
 
