@@ -50,8 +50,8 @@ from particle_system.picker import MISS
 from preferences import Preferences
 from project import Project, History
 from strafe_field import StrafeField
+from tooltip_graphic import TooltipGraphic
 from ui import UI
-from ui.tooltip_graphic import TooltipGraphic
 
 from .clipboard_commands import ClipboardCommands, Checkpoint
 from .config_manager_commands import ConfigManagerCommands

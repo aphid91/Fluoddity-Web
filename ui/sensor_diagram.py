@@ -38,7 +38,10 @@ from __future__ import annotations
 from imgui_bundle import imgui
 
 from . import settings_spec as spec
-from . import tooltip_graphic
+#: Imported for TEXTURE_SIZE alone -- the diagram's own edge length, which the
+#: panel has to size its image and text column against. The RENDERER arrives
+#: through _status, not from here: the UI owns no GPU resources (rule 10).
+from tooltip_graphic import TEXTURE_SIZE
 
 #: Settings explained by the shader-drawn diagram instead of a plain tooltip,
 #: mapped to which quantity the diagram animates. Keyed by (source, field) so
@@ -161,7 +164,7 @@ class SensorDiagram:
                    | imgui.WindowFlags_.no_inputs.value),
         )
 
-        size = float(tooltip_graphic.TEXTURE_SIZE)
+        size = float(TEXTURE_SIZE)
         imgui.image(texture, imgui.ImVec2(size, size))
         imgui.push_text_wrap_pos(size + _TEXT_EXTRA)
         imgui.text_disabled(setting.label)

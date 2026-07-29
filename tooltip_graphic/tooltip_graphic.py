@@ -6,13 +6,19 @@ or Sensor Distance opens the ordinary imgui tooltip for that setting, with this
 texture drawn above the help text: a small animated diagram of a particle and
 its two sensors, showing what the slider means geometrically.
 
-WHY IT IS ITS OWN MODULE AND NOT PART OF ui/
+WHY IT IS ITS OWN TOP-LEVEL MODULE AND NOT PART OF ui/
 The UI package owns no GPU resources and holds no simulation truth (see
 ARCHITECTURE.md rule 10 and the module docstring in ui.py). A framebuffer is
-exactly the kind of thing it must not own. So this is built by the Orchestrator
+exactly the kind of thing it must not own. This is built by the Orchestrator
 with the shared `ctx`, the same way Camera and StrafeField are, and handed to
 the UI as a thing it can draw. The UI calls render() with two numbers and gets
 back a texture id; it never touches moderngl.
+
+It used to live at ui/tooltip_graphic.py, which meant the one moderngl-owning
+file in the codebase sat inside the package forbidden to touch GL, and the
+Orchestrator had to import past ui/__init__.py to reach it. Same class, same
+owner, same hand-off -- it just sits where the rule says it does now, with its
+own shaders/ folder like every other GPU module.
 
 WHY ONLY TWO SETTINGS
 The reference implementation drew the entire physics model in this diagram and
