@@ -91,9 +91,9 @@ class ConfigMenu:
         if imgui.begin_menu("Edit"):
             # Enabled state comes from the Orchestrator; with no history the
             # entries grey out rather than silently doing nothing.
-            can_undo = bool(self._status.get('can_undo'))
-            can_redo = bool(self._status.get('can_redo'))
-            label = self._status.get('undo_label') or ''
+            can_undo = bool(self._status['can_undo'])
+            can_redo = bool(self._status['can_redo'])
+            label = self._status['undo_label'] or ''
             undo_text = f"Undo {label}" if label else "Undo"
             if imgui.menu_item_simple(undo_text, "Ctrl+Z", False, can_undo):
                 self._dispatch('undo')
@@ -101,7 +101,7 @@ class ConfigMenu:
                 self._dispatch('redo')
             imgui.separator()
             # The config clipboard, under the keys people already reach for.
-            has_checkpoint = bool(self._status.get('checkpoints'))
+            has_checkpoint = bool(self._status['checkpoints'])
             if imgui.menu_item_simple("Set Checkpoint", "Ctrl+C"):
                 self._dispatch('set_checkpoint')
             if imgui.menu_item_simple("Load Latest Checkpoint", "Ctrl+V",
@@ -111,7 +111,7 @@ class ConfigMenu:
             imgui.end_menu()
 
         if imgui.begin_menu("Tools"):
-            active = self._status.get('mouse_mode')
+            active = self._status['mouse_mode']
             for value, tool_label, key in TOOLS:
                 clicked, _ = imgui.menu_item(tool_label, key, value == active)
                 if clicked:
@@ -142,7 +142,7 @@ class ConfigMenu:
             imgui.end_menu()
 
         if imgui.begin_menu("Simulation"):
-            paused = bool(self._status.get('paused'))
+            paused = bool(self._status['paused'])
             if imgui.menu_item_simple("Resume" if paused else "Pause", "SPACE"):
                 self._dispatch('toggle_pause')
             if imgui.menu_item_simple("Reset", "R"):
@@ -204,7 +204,7 @@ class ConfigMenu:
             self._load_preview.end()
             return
 
-        categories = self._status.get('config_categories') or {}
+        categories = self._status['config_categories'] or {}
         if not categories:
             imgui.text_disabled("no configs found")
             imgui.end_menu()
@@ -317,7 +317,7 @@ class ConfigMenu:
         here cannot clobber a preview in progress in the Load menu.
         """
         opened = imgui.begin_menu("Load Checkpoint...",
-                                  bool(self._status.get('checkpoints')))
+                                  bool(self._status['checkpoints']))
 
         # Opening edge: snapshot what we may need to restore. Taken on open
         # rather than per-hover so it captures the state the user is leaving.
@@ -330,7 +330,7 @@ class ConfigMenu:
             self._checkpoint_preview.end()
             return
 
-        checkpoints = self._status.get('checkpoints') or []
+        checkpoints = self._status['checkpoints'] or []
         if not checkpoints:
             imgui.text_disabled("no checkpoints this session")
             imgui.end_menu()
@@ -419,7 +419,7 @@ class ConfigMenu:
         self.show_save_dialog = True
         self._save_error = ""
         if not self._save_name:
-            self._save_name = self._status.get('project_name') or 'Untitled'
+            self._save_name = self._status['project_name'] or 'Untitled'
 
     def _save_dialog(self):
         if not self.show_save_dialog:
@@ -438,7 +438,7 @@ class ConfigMenu:
             self._save_error = ""
 
         imgui.spacing()
-        config_count = self._status.get('config_count', 1)
+        config_count = self._status['config_count']
         if imgui.radio_button("Save Config 0 only", not self._save_all_configs):
             self._save_all_configs = False
         if imgui.radio_button(f"Save entire ConfigBuffer ({config_count})",
@@ -464,7 +464,7 @@ class ConfigMenu:
                 self._dispatch('save_config', name, self._save_all_configs)
                 # The handler reports failure by setting save_error in status;
                 # only close when it stayed clear.
-                self._save_error = self._status.get('save_error', '')
+                self._save_error = self._status['save_error']
                 if not self._save_error:
                     self.show_save_dialog = False
         imgui.same_line()

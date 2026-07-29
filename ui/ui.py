@@ -101,6 +101,12 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
 
         # Panel-owned display values, refreshed each frame by the Orchestrator
         # via set_status(). The UI renders these; it does not source them.
+        #
+        # Panels read these by INDEXING (self._status['key']), not .get() with a
+        # local default: the Orchestrator guarantees every key of its
+        # STATUS_KEYS interface, every frame, before any panel builds. A
+        # KeyError here is a real bug -- a key the Orchestrator forgot -- and
+        # should be heard rather than smoothed over into a permanent '-'.
         self._status = {}
         self.show_debug_panel = True
 
@@ -299,7 +305,7 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         imgui.separator()
 
         imgui.text(f"mouse px    ({s.mouse_pos[0]:7.1f}, {s.mouse_pos[1]:7.1f})")
-        world = self._status.get('mouse_world')
+        world = self._status['mouse_world']
         if world is not None:
             imgui.text(f"mouse world ({world[0]:7.3f}, {world[1]:7.3f})")
         imgui.text(f"delta       ({s.mouse_delta[0]:7.1f}, {s.mouse_delta[1]:7.1f})")
@@ -318,31 +324,31 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         imgui.text(f"keys held   {self._describe_keys(s.keys_held)}")
         imgui.separator()
 
-        pan = self._status.get('cam_pan', (0.0, 0.0))
-        imgui.text(f"cam mode    {self._status.get('cam_mode', '-')}")
-        imgui.text(f"tool        {self._status.get('mouse_mode', '-')}"
+        pan = self._status['cam_pan']
+        imgui.text(f"cam mode    {self._status['cam_mode']}")
+        imgui.text(f"tool        {self._status['mouse_mode']}"
                    f"   (1/2/3)")
         imgui.text(f"cam pan     ({pan[0]:7.3f}, {pan[1]:7.3f})")
-        imgui.text(f"cam zoom    {self._status.get('cam_zoom', 1.0):.3f}x")
-        imgui.text(f"canvas      {self._status.get('canvas_size', '-')}")
-        imgui.text(f"window      {self._status.get('window_size', '-')}")
+        imgui.text(f"cam zoom    {self._status['cam_zoom']:.3f}x")
+        imgui.text(f"canvas      {self._status['canvas_size']}")
+        imgui.text(f"window      {self._status['window_size']}")
         imgui.separator()
 
-        imgui.text(f"hovered     {self._describe_pick(self._status.get('hovered'))}")
-        imgui.text(f"selected    {self._describe_pick(self._status.get('selected'))}")
+        imgui.text(f"hovered     {self._describe_pick(self._status['hovered'])}")
+        imgui.text(f"selected    {self._describe_pick(self._status['selected'])}")
         imgui.separator()
 
-        imgui.text(f"preset      {self._status.get('preset', '-')}")
-        imgui.text(f"entities    {self._status.get('entity_count', '-')}")
-        imgui.text(f"configs     {self._status.get('config_count', '-')}"
-                   f"  (sel {self._status.get('selected_config', 0)})")
-        imgui.text(f"checkpoints {len(self._status.get('checkpoints') or [])}")
-        imgui.text(f"history     {self._status.get('history_cursor', -1) + 1}"
-                   f"/{self._status.get('history_depth', 0)}")
-        imgui.text(f"frame       {self._status.get('frame_count', '-')}")
+        imgui.text(f"preset      {self._status['preset']}")
+        imgui.text(f"entities    {self._status['entity_count']}")
+        imgui.text(f"configs     {self._status['config_count']}"
+                   f"  (sel {self._status['selected_config']})")
+        imgui.text(f"checkpoints {len(self._status['checkpoints'] or [])}")
+        imgui.text(f"history     {self._status['history_cursor'] + 1}"
+                   f"/{self._status['history_depth']}")
+        imgui.text(f"frame       {self._status['frame_count']}")
         imgui.separator()
 
-        if imgui.button("Resume" if self._status.get('paused') else "Pause"):
+        if imgui.button("Resume" if self._status['paused'] else "Pause"):
             self._dispatch('toggle_pause')
         imgui.same_line()
         if imgui.button("Reload"):

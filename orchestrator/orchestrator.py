@@ -509,8 +509,49 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         if state.left_pressed:
             self.selected = self.hovered
 
+    #: THE STATUS INTERFACE, enumerated. This is the Orchestrator -> UI data
+    #: contract: 30 keys, one untyped dict, and until the port turns it into a
+    #: typed API this tuple is the only place it is written down.
+    #:
+    #: The guarantee that makes it usable: _report_status() supplies EVERY key
+    #: below, every frame, before the UI builds a single panel (run() calls it
+    #: immediately before ui.end_frame(), which is what invokes _build_ui).
+    #: That is why UI code indexes `self._status['key']` rather than defending
+    #: itself with .get('key', fallback) -- a KeyError means the Orchestrator
+    #: forgot a key, which is a bug worth hearing about, not something to paper
+    #: over with a default that silently renders as '-' forever.
+    #:
+    #: Three of these keys used to carry DIFFERENT defaults at different call
+    #: sites (config_count was 1 here and '-' there), which is the specific
+    #: failure mode this replaces.
+    STATUS_KEYS = (
+        # camera / cursor
+        'mouse_world', 'cam_mode', 'cam_pan', 'cam_zoom',
+        'canvas_size', 'window_size',
+        # simulation
+        'mouse_mode', 'paused', 'preset', 'entity_count', 'frame_count',
+        # history
+        'can_undo', 'can_redo', 'undo_label', 'history_depth', 'history_cursor',
+        # picking
+        'hovered', 'selected',
+        # project / configs
+        'config_categories', 'project_name', 'selected_config', 'config_count',
+        'max_configs', 'checkpoints',
+        # transient messages
+        'save_error', 'manager_message',
+        # settings payloads, from _settings_dicts()
+        'edit_config', 'edit_world', 'edit_prefs',
+        # set ONCE at construction, not per frame -- a fixed renderer, not a
+        # value. Listed because it is part of the same interface.
+        'tooltip_graphic',
+    )
+
     def _report_status(self):
-        """Push read-only status into the UI for display (ARCHITECTURE rule 10)."""
+        """Push read-only status into the UI for display (ARCHITECTURE rule 10).
+
+        Supplies every key in STATUS_KEYS except `tooltip_graphic`, which is
+        handed over once at construction.
+        """
         state = self.ui.state
         cam = self.camera.state
         window_size = self.window.size()

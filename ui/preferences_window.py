@@ -65,7 +65,7 @@ class PreferencesWindow:
             # Not registry-driven for the same reason the tier toggle is not:
             # it configures the interface, not the simulation. It does persist,
             # though, so unlike the tier it is a real preference field.
-            prefs = self._status.get('edit_prefs') or {}
+            prefs = self._status['edit_prefs'] or {}
             changed, value = imgui.checkbox(
                 "Sensor tooltip diagram",
                 bool(prefs.get('sensor_tooltip_diagram', True)))

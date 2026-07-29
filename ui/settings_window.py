@@ -110,7 +110,7 @@ class SettingsWindow:
         # over, so unhovering closes the diagram on the very next frame.
         self._diagram_hovered = None
 
-        project = self._status.get('project_name') or 'Untitled'
+        project = self._status['project_name'] or 'Untitled'
         # The imgui ID must stay stable as the project name changes, or the
         # window would forget its position and docking every time you load a
         # file. Everything after "##" is identity, not display.
@@ -214,10 +214,10 @@ class SettingsWindow:
         meant -- and a project whose file has since been deleted correctly finds
         nothing rather than dispatching a load of a missing path.
         """
-        project = self._status.get('project_name')
+        project = self._status['project_name']
         if not project:
             return None
-        for entries in (self._status.get('config_categories') or {}).values():
+        for entries in (self._status['config_categories'] or {}).values():
             for entry in entries:
                 if entry.name == project:
                     return entry
@@ -226,12 +226,16 @@ class SettingsWindow:
     # ------------------------------------------------------------------
 
     def _source_of(self, setting):
-        """The payload dict holding this setting's source, as a plain dict."""
-        return self._status.get({
+        """The payload dict holding this setting's source, as a plain dict.
+
+        `or {}` because _settings_dicts() legitimately sends empty payloads when
+        no settings window is open -- that is a falsy VALUE, not a missing key.
+        """
+        return self._status[{
             spec.CONFIG: 'edit_config',
             spec.WORLD: 'edit_world',
             spec.PREFS: 'edit_prefs',
-        }[setting.source]) or {}
+        }[setting.source]] or {}
 
     def _value_of(self, setting):
         """Current value for a setting, from whichever source owns it."""
@@ -486,7 +490,7 @@ class SettingsWindow:
         variation for a seed to select, so an active control would imply an
         effect it cannot have.
         """
-        config = self._status.get('edit_config') or {}
+        config = self._status['edit_config'] or {}
         inert = float(config.get('mutation_scale', 0.0)) <= 0.0
 
         if inert:
@@ -583,7 +587,7 @@ class SettingsWindow:
         own default -- the alternative silently disables the feature on any
         frame the prefs dict has not been built.
         """
-        prefs = self._status.get('edit_prefs') or {}
+        prefs = self._status['edit_prefs'] or {}
         return bool(prefs.get('sensor_tooltip_diagram', True))
 
     def _sensor_diagram_panel(self):
@@ -608,14 +612,14 @@ class SettingsWindow:
         opened inside another.
         """
         setting, mode = self._diagram_hovered
-        graphic = self._status.get('tooltip_graphic')
+        graphic = self._status['tooltip_graphic']
         # No renderer means the Orchestrator did not supply one. The UI owns no
         # GPU resources of its own, so a missing diagram is a cosmetic loss
         # rather than a broken window: fall back to nothing at all.
         if graphic is None:
             return
 
-        config = self._status.get('edit_config') or {}
+        config = self._status['edit_config'] or {}
         texture = graphic.render(
             imgui.get_time(),
             angle_mode=(mode == 'angle'),
@@ -665,8 +669,8 @@ class SettingsWindow:
         Buffers being edited are left alone -- imgui owns focus, and clobbering
         text mid-type would be hostile.
         """
-        self._gates.sync((self._status.get('project_name'),
-                          self._status.get('selected_config')),
+        self._gates.sync((self._status['project_name'],
+                          self._status['selected_config']),
                          self._gate_open)
 
         for setting in spec.SETTINGS:

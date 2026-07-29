@@ -46,9 +46,9 @@ class ConfigManagerWindow:
             imgui.end()
             return
 
-        configs = self._status.get('config_count', 1)
-        selected = self._status.get('selected_config', 0)
-        max_configs = self._status.get('max_configs', 64)
+        configs = self._status['config_count']
+        selected = self._status['selected_config']
+        max_configs = self._status['max_configs']
 
         imgui.text(f"ConfigBuffer: {configs} / {max_configs}")
         imgui.text_disabled("controls will edit the selected config")
@@ -94,7 +94,7 @@ class ConfigManagerWindow:
         if configs <= 1:
             imgui.end_disabled()
 
-        message = self._status.get('manager_message', '')
+        message = self._status['manager_message']
         if message:
             imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(1.0, 0.75, 0.35, 1.0))
             imgui.text_wrapped(message)
@@ -111,7 +111,7 @@ class ConfigManagerWindow:
         imgui.text("Append configs from a save")
         imgui.text_disabled("adds every config in the file")
 
-        categories = self._status.get('config_categories') or {}
+        categories = self._status['config_categories'] or {}
         if not categories:
             imgui.text_disabled("no configs found")
             return

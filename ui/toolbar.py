@@ -54,7 +54,7 @@ class Toolbar:
             imgui.end()
             return
 
-        current = self._status.get('mouse_mode')
+        current = self._status['mouse_mode']
 
         for index, (value, label, key) in enumerate(TOOLS):
             if index:
