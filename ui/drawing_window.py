@@ -79,12 +79,12 @@ class DrawingWindow:
         imgui.separator()
         # Both brush tools, because Brush Size and Draw Power drive both and
         # this is the window that owns them.
-        imgui.text_disabled("Shove tool [3] -- acts on particles:")
+        imgui.text_disabled("Shove tool [2] -- acts on particles:")
         imgui.text_disabled("  drag: push them away from the cursor")
         imgui.text_disabled("  right-drag: pull them in")
         imgui.text_disabled("  (leaves nothing behind)")
         imgui.spacing()
-        imgui.text_disabled("Draw tool [4] -- paints the field:")
+        imgui.text_disabled("Draw tool [3] -- paints the field:")
         imgui.text_disabled("  drag: push particles outward")
         imgui.text_disabled("  right-drag: erase")
         imgui.text_disabled("  (the field persists until erased)")
