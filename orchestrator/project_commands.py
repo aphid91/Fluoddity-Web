@@ -16,8 +16,8 @@ from pathlib import Path
 
 from particle_system import persistence
 from particle_system.config import BC_WRAP
-from particle_system.particle_system import (ParticleSystem, canvas_dimensions,
-                                             sizing_for)
+from particle_system.particle_system import ParticleSystem
+from particle_system.sizing import canvas_dimensions, sizing_for
 from strafe_field import StrafeField
 
 

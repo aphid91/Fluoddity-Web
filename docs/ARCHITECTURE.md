@@ -39,6 +39,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | `layout.py`  | Parses `common.glsl` struct declarations into numpy dtypes. The host packing can never drift from the shader's view of memory. Strict: raises `LayoutError` on any non-vec4 member. |
 | `coords.py`  | The Python mirror of the coordinate math in `common.glsl`. One of only two places allowed to write aspect-ratio or camera math. |
 | `config.py`  | `SimulationConfig` (-> `ConfigData`, per-population), `WorldSettings` (saved world state) and `WorldConfig` (-> `WorldData`, settings + runtime sizing). |
+| `sizing.py`  | Entity count and canvas resolution for a world size (`sizing_for`, `canvas_dimensions`), and the two constants they derive from. A leaf: imports only `math`, so `strafe_field` can shape its texture without importing the simulation. |
 | `picker.py`  | `EntityPicker`: nearest-entity-to-a-world-point, reduced on the GPU. Lives here because it reads the entity buffer. |
 | `persistence.py` | Reading/writing config files (v8), the legacy v7 reader, and categorized discovery of `configs/`. |
 
@@ -64,6 +65,24 @@ These are the load-bearing constraints. Follow them when extending the project.
    a persistent reference to it, so the double-buffer swap stays invisible to it.
    Example (commands): the UI reports `'next_preset'`; the Orchestrator loads the
    file, builds a new `Project`, and hands it to `ParticleSystem.apply_project()`.
+
+   More precisely, the rule is that modules never reference each other's
+   ***stateful* classes**. `particle_system`'s **leaf modules** — `coords`,
+   `config`, `sizing`, and the `layout` that `config` is built on — are
+   sanctioned pure/value imports: no state, no GPU resources, nothing to get out
+   of sync. `camera_state` imports `coords` for the view math, `strafe_field`
+   imports `sizing` to shape its texture, and `project` imports `config`'s value
+   types. Reimplementing that arithmetic per module is exactly the drift rule 9
+   exists to prevent, and routing pure functions through the Orchestrator would
+   buy nothing.
+
+   What this rule *does* forbid is reaching past a leaf into the implementation
+   module — importing from `particle_system.particle_system` pulls in
+   ParticleSystem, moderngl, persistence, and `layout.py`'s parse of
+   common.glsl. `particle_system/__init__.py` is deliberately free of
+   re-exports for that reason: hoisting the class to the package root made every
+   leaf import drag the whole simulation in behind it. Only the Orchestrator
+   imports the implementation module.
 
 4. **The moderngl `ctx` is the one sanctioned shared substrate.** It is created by
    AppWindow and injected once into each module at construction. You *cannot* pass

@@ -29,7 +29,11 @@ from pathlib import Path
 
 import moderngl
 
-from particle_system.particle_system import canvas_dimensions
+#: A leaf module by design -- see particle_system/sizing.py. Importing
+#: canvas_dimensions from particle_system.particle_system instead would drag
+#: ParticleSystem, persistence, and layout.py's common.glsl parse into this
+#: module's import graph for one function of arithmetic.
+from particle_system.sizing import canvas_dimensions
 from shared.gl_utils import read_shader, tryset, quad_vbo, quad_vao
 
 # Shader paths resolved relative to this module, so the app is not CWD-dependent.
