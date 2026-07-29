@@ -274,28 +274,38 @@ class ParticleSystem:
         """Narrow accessor: how many entities the simulation is running."""
         return self.entity_count_value
 
-    def pick(self, target_world, radius_world):
-        """Nearest entity to a world position, within `radius_world`.
+    def request_pick(self, target_world, radius_world):
+        """Dispatch a pick for the nearest entity within `radius_world`.
 
-        Deferred by one frame: this dispatches a pick for the given target and
-        returns the result of the PREVIOUS call. Reading the current frame's
-        result would stall the GPU, and WebGPU has no synchronous readback at
-        all -- see picker.py for the full reasoning.
+        Phase one of two. The answer is not available now -- reading it this
+        frame would stall the GPU, and WebGPU has no synchronous readback at
+        all (see picker.py). Call retrieve_pick() on a LATER frame.
 
-        Returns a PickResult; check `.hit` before using `.index`.
+        A second request before the result is read overwrites the first: the
+        picker has one result slot, so the newest dispatch is the only one
+        whose answer survives.
         """
-        result = self.picker.retrieve(self.entity_buffer, ENTITY_DTYPE)
         self.picker.request(self.entity_buffer, self.entity_count_value,
                             target_world, radius_world)
-        return result
+
+    def retrieve_pick(self):
+        """Read the result of the most recent completed dispatch.
+
+        Phase two. Returns MISS if no pick is in flight or nothing was in
+        range; check `.hit` before using `.index`.
+        """
+        return self.picker.retrieve(self.entity_buffer, ENTITY_DTYPE)
 
     def pick_blocking(self, target_world, radius_world):
         """Pick the CURRENT frame's answer, stalling until it is ready.
 
-        Prefer `pick()`. This exists for one-shot host-side queries (tests,
-        tooling) where a frame of latency is unacceptable. It forces a GPU sync
-        and does NOT translate to WebGPU, so it must not be used in the render
-        loop.
+        NOT USED BY THE APP, and must stay that way: it forces a GPU sync and
+        does not translate to WebGPU. It exists for host-side tooling and tests
+        -- notably the mutation probe, which compares a GPU pick against the
+        host's reproduction of the same rule and needs both from one frame.
+
+        The live click path is request_pick() + retrieve_pick(); see
+        orchestrator/selection_commands.py.
         """
         self.picker.request(self.entity_buffer, self.entity_count_value,
                             target_world, radius_world)

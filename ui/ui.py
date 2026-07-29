@@ -334,7 +334,9 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         imgui.text(f"window      {self._status['window_size']}")
         imgui.separator()
 
-        imgui.text(f"hovered     {self._describe_pick(self._status['hovered'])}")
+        # No "hovered" row: hover-picking would cost a full-buffer dispatch
+        # every frame, so the app only picks on click. The row that used to be
+        # here was permanently empty.
         imgui.text(f"selected    {self._describe_pick(self._status['selected'])}")
         imgui.separator()
 

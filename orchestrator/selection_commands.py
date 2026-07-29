@@ -73,12 +73,16 @@ class MouseMode(Enum):
 class SelectionCommands:
     """Selection handlers. Expects the Orchestrator's attributes."""
 
-    def _pick_at(self, pixel):
-        """Nearest entity to a screen pixel, or a miss.
+    def _pick_params(self, pixel):
+        """(target_world, radius_world) for a pick at a screen pixel.
 
-        Blocking on purpose: a click is a one-shot action and needs *this*
-        frame's answer. The deferred `pick()` returns the previous dispatch's
-        result, which is right for continuous hovering and wrong here.
+        The one place the pick inputs are built, so a dispatch and anything
+        that reasons about the same pick cannot disagree about where it was
+        aimed or how wide it searched.
+
+        The radius is specified in screen pixels and converted through the view
+        transform, so the tolerance feels identical at any zoom -- a
+        world-space radius would shrink on screen as you zoom out.
         """
         cam = self.camera.state
         window_size = self.window.size()
@@ -88,13 +92,40 @@ class SelectionCommands:
                                         cam.pan, cam.zoom)
         radius = radius_px_to_world(DEFAULT_PICK_RADIUS_PX, window_size,
                                     canvas_size, cam.pan, cam.zoom)
-        return self.system.pick_blocking(target, radius)
+        return target, radius
 
     def _cmd_select_particle(self, pixel):
-        """Adopt the rule of the particle under `pixel`.
+        """Begin adopting the rule of the particle under `pixel`.
 
-        A miss leaves everything untouched -- clicking empty space should do
-        nothing, not reset anything.
+        ASYNCHRONOUS: this dispatches the pick and records what it will need to
+        finish. The result is read next frame by _resolve_pending_selection(),
+        because reading it now would stall the GPU -- and WebGPU, the port
+        target, has no synchronous readback at all (see picker.py).
+
+        `before` is captured HERE, at click time, not when the result arrives:
+        history must record against the project as it was when the user
+        clicked. Anything that changes the project in the intervening frame
+        would otherwise be swallowed into this entry.
+
+        A SECOND CLICK WHILE ONE IS PENDING REPLACES IT -- last click wins, with
+        its own `before`. The dispatch is overwritten by the new one regardless
+        (the picker has a single result slot), so honouring the older click
+        would mean adopting a rule from a pick aimed somewhere else.
+        """
+        target, radius = self._pick_params(pixel)
+        self.system.request_pick(target, radius)
+        self._pending_selection = self.project
+
+    def _resolve_pending_selection(self):
+        """Finish a selection whose pick was dispatched on an earlier frame.
+
+        Called once per frame from the frame loop, BEFORE advance(), which is
+        also where the picking slot has always been in the frame order. It must
+        not live inside advance(): that is skipped while paused, and clicking
+        while paused has to keep working.
+
+        A miss is dropped silently -- clicking empty space should do nothing,
+        not reset anything.
 
         SELECTING ON AN UNAUTHORED CONFIG IS THE INTERESTING CASE. After
         Randomize Behavior the config's rule is all zeros -- a sentinel meaning
@@ -103,7 +134,12 @@ class SelectionCommands:
         mutated, on either side), and adopting the result writes it into the
         config as a real rule, so the sentinel stops firing from here on.
         """
-        result = self._pick_at(pixel)
+        if self._pending_selection is None:
+            return
+        before = self._pending_selection
+        self._pending_selection = None
+
+        result = self.system.retrieve_pick()
         self.selected = result
         if not result.hit:
             return
@@ -112,7 +148,6 @@ class SelectionCommands:
         rule = mutation.entity_rule(config, result.index,
                                     self.system.entity_count())
 
-        before = self.project
         self._set_project(self.project.adopt_rule(rule))
         self._record_history(before, f"select particle #{result.index}")
 

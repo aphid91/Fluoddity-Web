@@ -46,7 +46,7 @@ from camera.camera_state import PAN_PER_SECOND, ZOOM_PER_SECOND
 from particle_system import coords
 from particle_system.config import BC_WRAP
 from particle_system.particle_system import MAX_CONFIGS
-from particle_system.picker import DEFAULT_PICK_RADIUS_PX, radius_px_to_world, MISS
+from particle_system.picker import MISS
 from preferences import Preferences
 from project import Project, History
 from strafe_field import StrafeField
@@ -156,10 +156,22 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         self.presets = []
         self.preset_index = 0
 
-        #: Entity under the cursor / last clicked. Picking is on-demand, so
-        #: these only change when the user asks -- see run().
-        self.hovered = MISS
+        #: The last clicked entity. Picking is on-demand -- a dispatch scans
+        #: every entity -- so this changes only when the user selects.
+        #:
+        #: There is deliberately NO `hovered` counterpart. One existed, was
+        #: permanently MISS because nothing ever wrote it, and showed as an
+        #: always-empty debug row. Reinstating it would mean picking every
+        #: frame, which is precisely the per-frame cost the on-demand design
+        #: exists to avoid.
         self.selected = MISS
+
+        #: Project state at the moment of a click whose pick is still in
+        #: flight, or None. Selection is asynchronous (see
+        #: selection_commands.py): the click dispatches, the next frame reads
+        #: the answer, and history has to record against the state from when
+        #: the user clicked rather than from when the result landed.
+        self._pending_selection = None
 
         #: The active tool: what the mouse does on the canvas. Select by
         #: default -- it is the only tool whose effect is a single undoable
@@ -253,16 +265,25 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # Poll + snapshot input, open the imgui frame. Everything below
             # sees this frame's input.
             state = self.ui.begin_frame()
+
+            # FINISH LAST FRAME'S SELECTION FIRST, before _apply_canvas_input
+            # can dispatch this frame's. Reading a pick the same frame it was
+            # requested is exactly the GPU stall the two-phase design avoids
+            # (and WebGPU cannot do it at all -- see picker.py), so the read
+            # has to happen before the write, not after it.
+            #
+            # Here rather than inside advance(): advance() is skipped while
+            # paused, and clicking to select must keep working when it is.
+            self._resolve_pending_selection()
+
             self._apply_canvas_input(state)
 
             # PICKING IS DELIBERATELY NOT RUN PER FRAME. A pick dispatches over
             # every entity, which measured in the tens of milliseconds per
             # frame at large world sizes -- far too much for something whose
-            # answer is only wanted when the user acts.
-            #
-            # It is on-demand instead: a click, or an explicit request such as
-            # holding a key to inspect the particle under the cursor. Call
-            # _update_pick() from those paths, not from here.
+            # answer is only wanted when the user acts. It is on-demand: a
+            # SELECT-mode click requests one above, and the line at the top of
+            # the next frame reads it.
 
             # Physics rate is a live preference, read each frame. The field
             # texture is hoisted out of the loop: it cannot change mid-frame,
@@ -486,29 +507,6 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             'reticle_dashed': shoving,
         }
 
-    def _update_pick(self, state):
-        """Find the entity under the cursor. ON-DEMAND ONLY -- see run().
-
-        A pick dispatches over every entity, so this is called from user
-        actions (a click, an explicit inspect request), never per frame.
-
-        The radius is specified in screen pixels and converted through the view
-        transform, so the tolerance feels identical at any zoom -- a
-        world-space radius would shrink on screen as you zoom out.
-        """
-        cam = self.camera.state
-        window_size = self.window.size()
-        canvas_size = self.system.canvas_size
-
-        target = coords.screen_to_world(state.mouse_pos, window_size,
-                                        canvas_size, cam.pan, cam.zoom)
-        radius = radius_px_to_world(DEFAULT_PICK_RADIUS_PX, window_size,
-                                    canvas_size, cam.pan, cam.zoom)
-        self.hovered = self.system.pick(target, radius)
-
-        if state.left_pressed:
-            self.selected = self.hovered
-
     #: THE STATUS INTERFACE, enumerated. This is the Orchestrator -> UI data
     #: contract: 30 keys, one untyped dict, and until the port turns it into a
     #: typed API this tuple is the only place it is written down.
@@ -532,8 +530,9 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         'mouse_mode', 'paused', 'preset', 'entity_count', 'frame_count',
         # history
         'can_undo', 'can_redo', 'undo_label', 'history_depth', 'history_cursor',
-        # picking
-        'hovered', 'selected',
+        # picking (selection only -- see self.selected for why there is no
+        # 'hovered')
+        'selected',
         # project / configs
         'config_categories', 'project_name', 'selected_config', 'config_count',
         'max_configs', 'checkpoints',
@@ -574,7 +573,6 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             cam_zoom=cam.zoom,
             canvas_size=f"{canvas_size[0]}x{canvas_size[1]}",
             window_size=f"{window_size[0]}x{window_size[1]}",
-            hovered=self.hovered,
             selected=self.selected,
             config_categories=self.config_categories,
             save_error=self._save_error,

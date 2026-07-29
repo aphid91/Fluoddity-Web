@@ -745,14 +745,16 @@ Bounded at 100, session-only.
 
 ## Entity picking
 
-`ParticleSystem.pick(world_pos, radius)` returns the nearest entity, or a miss.
-Three design points are load-bearing:
+Picking is **two-phase**: `ParticleSystem.request_pick(world_pos, radius)`
+dispatches the reduction, and `retrieve_pick()` reads the answer on a *later*
+frame. Three design points are load-bearing:
 
 **On-demand, never per frame.** A pick dispatches over every entity, which
 measured in the tens of milliseconds per frame at large world sizes — far too
-much for an answer only wanted when the user acts. `_update_pick()` is called
-from user actions (a click, an explicit inspect request), not from the frame
-loop.
+much for an answer only wanted when the user acts. A SELECT-mode click requests
+one; nothing else does. There is deliberately **no hover-picking** and no
+`hovered` readout: that would mean a full dispatch every frame, which is the
+cost this design exists to avoid.
 
 **Reduced on the GPU, not read back.** A compute shader dispatches over every
 entity and reduces to a single 4-byte result. The reference instead copied the
@@ -772,13 +774,34 @@ deliberately not written to the result buffer: a thread that loses the atomic
 could still write afterwards. The index in the key is authoritative, and the
 host looks the position up from it.
 
-**The result is one frame old.** `pick()` dispatches for the current cursor and
-returns the *previous* frame's answer. Reading a buffer the same frame you wrote
-it forces a GPU sync, and WebGPU has no synchronous readback at all — so the
-deferred shape is both faster now and the one that ports. The ~16ms of latency
-is invisible for hovering and clicking. `pick_blocking()` exists for host-side
-tooling and tests; it stalls and does not port, so it must not be used in the
-render loop.
+**The result is one frame old, and selection is built around that.** Reading a
+buffer the same frame you wrote it forces a GPU sync, and WebGPU has no
+synchronous readback at all — so the deferred shape is both faster now and the
+one that ports. The ~16ms of latency is imperceptible on a click.
+
+A SELECT-mode click therefore does not select. It calls `request_pick()` and
+stores a **pending selection**: the `Project` as it stood *at click time*. The
+next frame's `_resolve_pending_selection()` retrieves the winner, adopts its
+rule, and records history against that stored state — not against the project as
+it stands when the result lands, which may have moved in between. A miss is
+dropped silently.
+
+Two ordering constraints hold this together:
+
+- The resolve runs at the **top of the frame, before `_apply_canvas_input()`**
+  can dispatch a new pick. Read-before-write; the other order would be reading a
+  pick issued microseconds earlier, which is the stall again.
+- It runs in the **frame loop, not inside `advance()`**, because `advance()` is
+  skipped while paused and clicking to select must still work when it is.
+
+A second click while one is pending **replaces** it, carrying its own
+click-time state (last click wins). The picker has a single result slot, so the
+older dispatch's answer is gone regardless; honouring it would mean adopting a
+rule from a pick aimed somewhere else.
+
+`pick_blocking()` remains for host-side tooling and tests — notably the
+comparison in `tests/test_async_pick.py`, which asserts the async path chooses
+the same entity. It stalls and does not port, and is no longer on any live path.
 
 **Distance is straight-line, in every boundary mode.** The obvious objection is
 that the world wraps, so a particle just past one edge is adjacent to a cursor
@@ -1322,11 +1345,13 @@ command, expect it to follow that shape -- and to need dividing by
 
 ## Deferred / known follow-ups
 
-- `ParticleSystem` sizing constants (`ENTITY_COUNT`, `CANVAS_DIM`, `WORLD_SIZE`)
-  are still module-level globals. Folding them into config is an optional future
+- Sizing constants (`ENTITIES_PER_WORLD_UNIT`, `BASE_CANVAS_DIM`, and the
+  `ENTITY_COUNT`/`CANVAS_DIM` derived from them) are module-level globals in
+  `particle_system/sizing.py`. Folding them into config is an optional future
   step; they're sizing constants, not per-preset physics, so they were left out
-  of `SimulationConfig`.
-- `CANVAS_ASPECT` is a module-level constant in `particle_system.py`. Non-square
+  of `SimulationConfig`. (`WORLD_SIZE`/`SQRT_WORLD_SIZE` are gone — they were
+  dead.)
+- `CANVAS_ASPECT` is a module-level constant, now in `sizing.py`. Non-square
   canvases are implemented and verified, but there is no UI to change the aspect
   at runtime — doing so requires reallocating the canvas textures and resetting
   the sim, which wants a deliberate command rather than a slider.
