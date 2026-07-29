@@ -1,6 +1,7 @@
 # Pre-Port Cleanup Plan
 
-**Date:** 2026-07-28 · **Branch:** `reorg-modular-structure` · **Status:** not started
+**Date:** 2026-07-28 · **Branch:** `Port-prep` · **Status:** COMPLETE — see the
+checklist at the foot of this file, including two findings the plan got wrong.
 
 This is the executable work plan derived from `docs/PORT_AUDIT.md`. It exists so an
 implementing agent (or human) can do the cleanup without the conversation that produced
@@ -437,13 +438,44 @@ Recorded so a future cleanup pass doesn't reopen them:
 
 ## Completion checklist
 
-- [ ] A1, A2 — bugs
-- [ ] B1–B7 — rule violations & duplication
-- [ ] C — dead code + repo hygiene
-- [ ] D1 — RG16F switch, **with recorded precision verdict in PORT_AUDIT.md**
-- [ ] D2 — async selection
-- [ ] E1–E8 — structural refactors
-- [ ] F — doc corrections; ARCHITECTURE.md consistent with the code again
-- [ ] Full manual pass: every preset loads; save/load/delete; undo/redo; checkpoints;
-      all three tools; pause; camera modes; hot reload with and without shader errors;
-      mutation probe test green
+**All items complete as of 2026-07-28.** One commit per lettered item, on
+`Port-prep`, in the order below.
+
+- [x] A1, A2 — bugs
+- [x] B1–B7 — rule violations & duplication (B3 executed as part of D2, as planned)
+- [x] C — dead code + repo hygiene
+- [x] D1 — RG16F switch, **with recorded precision verdict in PORT_AUDIT.md §1a**
+- [x] D2 — async selection
+- [x] E1–E8 — structural refactors (E6+E7 share one commit: one rule-2 change)
+- [x] F — doc corrections; ARCHITECTURE.md consistent with the code again
+- [x] Manual pass by the user: confirmed green after Phase D.
+
+### What the plan got wrong, for the record
+
+Two findings did not survive contact with the code, and the fixes differ from
+what is written above:
+
+- **B2** called `ENTITY_COUNT`/`CANVAS_DIM` part of a dead constant chain. Two
+  of the four were live (the `entity_count` fallback in `__init__`, and
+  `canvas_dimensions`' default `dim`). They are now *derived* through
+  `sizing_for(1.0)` rather than deleted; only `WORLD_SIZE`/`SQRT_WORLD_SIZE`
+  were genuinely dead. A third hardcoded `600000` turned up in `__init__`'s
+  `sqrt_world_size`.
+- **B6**'s relocation to a leaf module was necessary but **not sufficient**:
+  `particle_system/__init__.py` eagerly re-exported `ParticleSystem`, so
+  importing *any* submodule still executed `particle_system.py`. Emptying that
+  `__init__` (both re-exports had zero users) is what actually cut the import
+  graph.
+
+### Test suites added
+
+Headless GPU, in `tests/` — they need a GPU but no window:
+
+- `test_hot_reload.py` — the CLAUDE_README contract across all 11 reload paths
+  (68 checks): survives a corrupted shader, keeps the *same* program object,
+  recovers with a new one, and one broken bloom half spares the other.
+- `test_async_pick.py` — the async click path picks the same entity
+  `pick_blocking` would, across targets sampled from real entity positions.
+- `test_pending_selection.py` — the click/resolve bookkeeping (17 checks),
+  including that history records against click-time state. Verified to fail
+  when the record-time bug is deliberately reintroduced.

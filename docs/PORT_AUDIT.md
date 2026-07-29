@@ -9,6 +9,16 @@ everything that will be hard, inconvenient, or impossible to reproduce in
 WebGPU/WGSL/browser. The actionable items derived from both live in
 `docs/CLEANUP_PLAN.md` — read that for *what to do*; read this for *what is true*.
 
+> **STATUS (updated 2026-07-28, after the cleanup):** every Part I finding below
+> has been fixed, and both GPU blockers are resolved — `rg32float` became RG16F
+> (§1a, with the measured precision verdict recorded there) and `pick_blocking`
+> is off the live click path (§2's async selection). **The findings are left as
+> written, in the past tense of the audit**: this document records what was true
+> on the day it was run, and the file:line references point into the pre-cleanup
+> tree. For what the code does now, read `docs/ARCHITECTURE.md`; for what was
+> done about each finding, read the commits referenced in
+> `docs/CLEANUP_PLAN.md`'s checklist.
+
 **Verdict up front:** the codebase was clearly written with the port in mind and it
 shows. There are only two hard GPU blockers, both small and localized (`rg32float`
 filter/blend, and `pick_blocking`'s `ctx.finish()` on the live click path). The single

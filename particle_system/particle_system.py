@@ -253,7 +253,24 @@ class ParticleSystem:
         self.frame_count += 1
 
     def reset(self):
-        """Reset simulation state."""
+        """Reset the simulation.
+
+        THE ASSIGNMENT BELOW *IS* THE RESET -- it looks like bookkeeping, but
+        frame_count is a uniform, and zero is the sentinel every pass watches
+        for on the next step:
+
+            entity_update.glsl:392   regenerates every entity's position,
+                                     velocity and rule (and :380 re-assigns
+                                     config_index)
+            canvas.frag:39           writes the canvas to zero instead of
+                                     decaying it, clearing the trails
+            brush.frag:24            discards the frame's splats, so nothing is
+                                     deposited into the canvas being cleared
+
+        So nothing is torn down or reallocated here: the GPU rebuilds its own
+        state on the next advance(). Setting frame_count anywhere else, or
+        skipping the advance after this, would leave the reset half-applied.
+        """
         self.frame_count = 0
 
     @property

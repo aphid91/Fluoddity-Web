@@ -14,9 +14,9 @@ The moderngl `ctx` is the one sanctioned shared substrate: created by AppWindow
 and injected once into Camera and ParticleSystem at construction.
 
 THIS FILE HOLDS THE LOOP, THE WIRING AND THE STATE -- NOT THE HANDLERS.
-"Sole broker" means it routes, not that it implements. As features landed the
-class grew to 24 handlers in 574 lines, and its own section comments were
-marking the seams; those groups are now mixins:
+"Sole broker" means it routes, not that it implements. As features landed, the
+handlers outgrew the class and its own section comments were marking the seams;
+those groups are now mixins:
 
     project_commands         save / load / preview / preset cycling
     clipboard_commands       in-session checkpoints

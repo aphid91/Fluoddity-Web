@@ -51,9 +51,11 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         """
         window:   the GLFW window handle (from AppWindow).
         commands: dict[str, callable] of named handlers, supplied by the
-                  Orchestrator. Recognized: 'reload', 'reset', 'next_preset',
-                  'prev_preset'. Missing keys are ignored, so the UI can offer a
-                  control the Orchestrator has not wired up yet without crashing.
+                  Orchestrator. The command dict in orchestrator.py is the
+                  authoritative list -- it is enumerated there, once, and any
+                  count repeated here would rot. Missing keys are ignored, so
+                  the UI can offer a control the Orchestrator has not wired up
+                  yet without crashing.
         """
         self.window = window
         self.commands = commands or {}

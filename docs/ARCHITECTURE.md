@@ -1433,6 +1433,31 @@ command, expect it to follow that shape -- and to need dividing by
   pan/zoom and letterboxing land, **their inverse belongs inside that function**
   — not in its callers. The reference's six drifting copies of this transform
   are what rule 9 exists to prevent.
+
+Raised by the 2026-07-28 pre-port cleanup, and deliberately left open:
+
+- **`_preview_origin` is one shared slot for two browsing surfaces.** Safe only
+  because File > Load and Load Checkpoint are submenus of the same menu bar and
+  imgui cannot open two at once, so no second browse can begin before the first
+  clears it. If either ever becomes a free-floating window, it must become
+  per-surface — the natural home is the `PreviewSession` that already owns each
+  surface's snapshot.
+- **The trail-persistence clamp floor is now `1e-2`, not `1e-4`.** Raised
+  because the canvas is fp16 and the splat premultiply `(1-P)/P` would overflow
+  below it. It sits far below the slider (0.5–0.999) and below every observed
+  config (min 0.312), so nothing real is cut off — but a config typed with a
+  smaller value will now be clamped where it previously would not have been.
+- **~25% steady-state trail dimming at the very top of the persistence slider**,
+  from fp16 mantissa granularity rather than subnormals — so the value scale
+  does not fix it, and only returning to fp32 would. Negligible at the default;
+  measured and accepted (PORT_AUDIT §1a).
+- **`ndc_to_screen()` has no callers.** Kept deliberately as `screen_to_ndc`'s
+  inverse: a conversion table missing one direction invites the next caller to
+  write it inline, which is the drift rule 9 exists to prevent.
+- **The two untyped string interfaces remain**: the command dict and the status
+  dict. `STATUS_KEYS` now enumerates the latter and the UI indexes rather than
+  defaulting, so a missing key is loud — but typing them properly is the port's
+  job, where they become the TS API.
 - The UI is one debug panel and the input layer. Physics sliders, GUI detail
   tiers, tooltips, the menu bar and the config editor are each their own design
   conversation; the input plumbing they need is already in place.

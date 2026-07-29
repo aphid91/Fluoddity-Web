@@ -253,15 +253,16 @@ float e_size(Entity e)         { return e.misc.x; }
 int   e_config_index(Entity e) { return floatBitsToInt(e.misc.y); }
 
 // RAW OUTPUT FROM THE PARTICLE'S BRAIN, kept for rendering rather than physics.
-// entity_update writes these; the particle camera turns .x into a hue. They are
-// deliberately arbitrary -- an unreflected reuse of the black box's force terms,
-// tuned by eye -- so nothing downstream should read meaning into their scale.
+// entity_update writes these; the particle camera turns them into a hue.
 //
-// The RENDERER decides what they look like. Storing the raw signal instead of a
-// finished hue is what lets Color Sensitivity be dragged without re-running the
-// simulation, which is where the reference put it.
+// .x is a raw force term from the black box -- deliberately arbitrary, tuned by
+// eye, so nothing downstream should read meaning into its scale.
+// .y is the particle's COHORT INDEX, which cam_brush.frag reads when Color By
+// Cohort is on (see the mode switch at its line 63).
 //
-// .y is written but not yet consumed -- see the deferred notes in ARCHITECTURE.
+// The RENDERER decides what these look like. Storing the raw signals instead of
+// a finished hue is what lets Color Sensitivity be dragged without re-running
+// the simulation, which is where the reference put it.
 vec2 e_col_params(Entity e) { return e.misc.zw; }
 
 Entity make_entity(vec2 pos, vec2 vel, float size, int config_index,
