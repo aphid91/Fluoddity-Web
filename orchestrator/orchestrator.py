@@ -222,8 +222,12 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             'delete_checkpoint': self._cmd_delete_checkpoint,
             'load_checkpoint': self._cmd_load_checkpoint,
             'load_latest_checkpoint': self._cmd_load_latest_checkpoint,
-            'clipboard_snapshot': self._cmd_clipboard_snapshot,
-            'clipboard_restore': self._cmd_clipboard_restore,
+            # Same handlers as the Load menu's snapshot/restore: the
+            # Orchestrator's half of hover-preview is identical for both
+            # surfaces (see project_commands.py). Distinct names so the two
+            # surfaces can diverge later without a UI change.
+            'clipboard_snapshot': self._cmd_snapshot_configs,
+            'clipboard_restore': self._cmd_restore_configs,
             'clipboard_apply': self._cmd_clipboard_apply,
             # settings
             'edit_setting': self._cmd_edit_setting,

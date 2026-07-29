@@ -72,19 +72,12 @@ class ClipboardCommands:
         if self.checkpoints:
             self._cmd_load_checkpoint(self.checkpoints[0])
 
-    # Its own snapshot slot, separate from the Load menu's: two independent
-    # hover surfaces must not share one, or hovering in one would clobber the
-    # other (see ui/hover_preview.py).
-
-    def _cmd_clipboard_snapshot(self):
-        self._preview_origin = self.project
-        return self.project
-
-    def _cmd_clipboard_restore(self, snapshot):
-        # Half of hover-preview -- transient, so never recorded.
-        if snapshot is not None:
-            self._set_project(snapshot)
-        self._preview_origin = None
+    # No _cmd_clipboard_snapshot/_cmd_clipboard_restore here: they were
+    # byte-identical to the Load menu's, so 'clipboard_snapshot' and
+    # 'clipboard_restore' are wired to _cmd_snapshot_configs and
+    # _cmd_restore_configs in project_commands.py, which carries the reasoning.
+    # The two command names are kept distinct because they are the UI's
+    # vocabulary, and a future divergence should not need a UI change.
 
     def _cmd_clipboard_apply(self, checkpoint):
         # Hover-preview of a checkpoint; the committed load records instead.

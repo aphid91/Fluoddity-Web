@@ -158,9 +158,23 @@ class ProjectCommands:
                                                     name=entry.name,
                                                     world=saved.world))
 
-    # Hover-preview snapshot/restore. A Project IS the snapshot -- immutable, so
-    # holding a reference is enough. Each hover surface keeps its own, so two
-    # open at once cannot clobber each other (see ui/hover_preview.py).
+    # Hover-preview snapshot/restore, shared by BOTH browsing surfaces (the
+    # File > Load submenu and Load Checkpoint). One handler pair, wired to two
+    # command names each -- the Orchestrator's side of this is genuinely
+    # identical for both, and it used to be two byte-identical copies.
+    #
+    # A Project IS the snapshot: immutable, so holding a reference is enough.
+    # The per-surface isolation lives in ui/hover_preview.py, where each
+    # surface's PreviewSession holds the snapshot IT was handed -- that is what
+    # keeps two surfaces from restoring each other's state.
+    #
+    # `_preview_origin` below is a different thing and IS a single shared slot:
+    # it is not the snapshot, it is "where browsing started", read once by the
+    # committing load to record history against. Sharing it is safe because
+    # both surfaces are submenus of the same menu bar and imgui cannot have two
+    # open at once, so no second browse can begin before the first has
+    # committed or restored (either of which clears it). If a browsing surface
+    # ever becomes a free-floating window, this must become per-surface.
 
     def _cmd_snapshot_configs(self):
         # Remember where browsing started, so a committed load records against
