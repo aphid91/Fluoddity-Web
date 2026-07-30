@@ -40,10 +40,13 @@ _SHADER_DIR = Path(__file__).parent / "shaders"
 ENTITY_BUFFER_BINDING = 0
 PICK_RESULT_BINDING = 2
 
-# Must match entity_pick.glsl.
-INDEX_BITS = 20
+# Must match entity_pick.glsl, which is checked by tests/test_async_pick.py.
+# 24 bits of index covers 16.7M entities; the distance takes what is left,
+# because tie-breaking precision does not matter here (see the shader's
+# "WHERE THE 32 BITS GO").
+INDEX_BITS = 24
 INDEX_MASK = (1 << INDEX_BITS) - 1
-DIST_BITS = 12
+DIST_BITS = 8
 DIST_MAX = (1 << DIST_BITS) - 1
 
 #: Sentinel written before each dispatch; survives if nothing is in range.

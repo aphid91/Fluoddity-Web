@@ -5,7 +5,7 @@
 // GPU-side reduction into a tiny result buffer, rather than reading the whole
 // entity buffer back to the host. The reference did the latter: ~19 MB copied
 // and a full pipeline stall on every click. This dispatches over the entities
-// and returns 8 bytes.
+// and returns 4 bytes.
 //
 // THE ATOMIC TRICK
 // GLSL has no atomicMin for floats, so distance is packed into the high bits of
@@ -17,9 +17,19 @@
 // lowest index -- deterministic, which matters because otherwise the same click
 // could select different particles on different frames.
 //
-// Distance is quantized to DIST_BITS of precision over the search radius. That
-// is far finer than a pixel at any sane zoom, and only affects which of two
-// near-identical-distance particles wins a tie.
+// WHERE THE 32 BITS GO: 24 to the index, 8 to the distance. The index is the
+// part that must not overflow -- an entity past INDEX_MASK cannot be encoded,
+// so it silently stops being pickable, which reads as "the last cohorts don't
+// respond to clicks" rather than as a bug. 24 bits covers 16.7M entities, well
+// past any world size the UI offers.
+//
+// The distance gets what is left because its precision barely matters here:
+// 256 buckets across the radius only decides which of two near-equidistant
+// particles wins, and particles travel in dense clumps where clicking one
+// specific member is not a thing the user can do anyway. Coarser quantization
+// means more exact ties, and a tie is broken by lowest index -- still
+// deterministic, which is the property that actually matters (otherwise the
+// same click could select different particles on different frames).
 
 layout(local_size_x = 256) in;
 
@@ -44,9 +54,11 @@ uniform float max_dist;         // search radius in WORLD units; beyond this, mi
 // No canvas_resolution here: distance is straight-line (see below), so nothing
 // in this shader needs to know the world's shape.
 
-#define INDEX_BITS 20u          // up to ~1.05M entities
+// MUST MATCH picker.py. The two are checked against each other by
+// tests/test_async_pick.py, which parses this file.
+#define INDEX_BITS 24u          // up to ~16.7M entities
 #define INDEX_MASK ((1u << INDEX_BITS) - 1u)
-#define DIST_BITS  12u          // 4096 distance buckets across the radius
+#define DIST_BITS  8u           // 256 distance buckets across the radius
 #define DIST_MAX   ((1u << DIST_BITS) - 1u)
 
 void main() {

@@ -62,7 +62,78 @@ def _sample_targets(system, count=10):
     return targets
 
 
+def _shader_constants():
+    """INDEX_BITS/DIST_BITS as the .glsl defines them.
+
+    Parsed rather than duplicated: picker.py restates these numbers, and the
+    only thing keeping the two honest used to be a comment.
+    """
+    import re
+
+    src = (Path(__file__).resolve().parent.parent / 'particle_system'
+           / 'shaders' / 'entity_pick.glsl').read_text()
+    found = {}
+    for name in ('INDEX_BITS', 'DIST_BITS'):
+        m = re.search(rf'^#define\s+{name}\s+(\d+)u', src, re.M)
+        if m is None:
+            raise AssertionError(f"could not find #define {name} in entity_pick.glsl")
+        found[name] = int(m.group(1))
+    return found
+
+
+def check_key_packing() -> int:
+    """The key's index field must reach every entity the app can create.
+
+    THIS IS THE BUG THIS CHECK EXISTS FOR: the index field was 20 bits while
+    world size 2.0 creates 1.2M entities, so everything past 2^20 silently
+    stopped being pickable -- which presents as the highest-numbered cohorts
+    ignoring clicks, not as an error. Pure arithmetic, no GPU: it is comparing
+    two constants against the largest world the UI offers.
+    """
+    from particle_system import picker, sizing
+    from ui.settings_spec import SETTINGS
+
+    world_size_max = next(s.hi for s in SETTINGS if s.field == 'world_size')
+
+    failures = 0
+    shader = _shader_constants()
+
+    if shader['INDEX_BITS'] != picker.INDEX_BITS:
+        print(f"FAIL: INDEX_BITS differs -- glsl={shader['INDEX_BITS']} "
+              f"picker.py={picker.INDEX_BITS}")
+        failures += 1
+    if shader['DIST_BITS'] != picker.DIST_BITS:
+        print(f"FAIL: DIST_BITS differs -- glsl={shader['DIST_BITS']} "
+              f"picker.py={picker.DIST_BITS}")
+        failures += 1
+
+    total = shader['INDEX_BITS'] + shader['DIST_BITS']
+    if total != 32:
+        print(f"FAIL: the key is {total} bits, must be exactly 32")
+        failures += 1
+
+    # World Size's spec bound is soft -- any slider can be ctrl+clicked to type
+    # a value past it -- so this is the documented ceiling, not a hard one. It
+    # is the right thing to assert against: a headroom multiple beyond it is
+    # what keeps a typed-in oversize world from hitting the same silent wall.
+    biggest, _ = sizing.sizing_for(world_size_max)
+    if biggest - 1 > picker.INDEX_MASK:
+        print(f"FAIL: world size {world_size_max} makes {biggest} entities, but "
+              f"the key encodes only {picker.INDEX_MASK + 1} -- entities past "
+              f"that cannot be picked")
+        failures += 1
+    else:
+        headroom = (picker.INDEX_MASK + 1) / biggest
+        print(f"  max world {world_size_max} -> {biggest} entities; "
+              f"key holds {picker.INDEX_MASK + 1} ({headroom:.1f}x)  OK")
+
+    return failures
+
+
 def main() -> int:
+    print("Key packing:")
+    packing_failures = check_key_packing()
+
     ctx = moderngl.create_standalone_context(require=430)
     repo = Path(__file__).resolve().parent.parent
     config = sorted((repo / 'configs').glob('*.json'))[0]
@@ -106,7 +177,11 @@ def main() -> int:
     if failures:
         print(f"FAIL: {failures} target(s) disagreed")
         return 1
-    print("PASS: async and blocking picks agree on every target")
+    if packing_failures:
+        print(f"FAIL: {packing_failures} key-packing problem(s)")
+        return 1
+    print("PASS: async and blocking picks agree on every target, "
+          "and the key can index the largest world")
     return 0
 
 

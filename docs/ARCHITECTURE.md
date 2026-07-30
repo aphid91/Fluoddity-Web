@@ -1411,9 +1411,20 @@ command, expect it to follow that shape -- and to need dividing by
 - PARTICLES mode draws every entity with no culling. Off-screen sprites still
   cost a vertex-shader invocation; at 150k entities that is fine, but a visible
   cost if the entity count grows a lot.
-- The pick key encodes the entity index in 20 bits, capping picking at ~1.05M
-  entities. Well above the current 150k, but it is a hard limit, not a soft
-  one — raising it means trading bits against distance precision.
+- The pick key encodes the entity index in 24 bits, capping picking at ~16.7M
+  entities — about 7x the 2.4M that World Size's maximum of 4.0 produces. This
+  was 20 bits (~1.05M), which World Size 2.0 already exceeded: entities past
+  the mask failed the encodability guard in `entity_pick.glsl` and silently
+  stopped being pickable. Because cohort is `floor(cohorts * index / count)`,
+  the unpickable tail is a contiguous block of the highest-numbered cohorts, so
+  it presented as "the last ~12% of cohorts ignore clicks" rather than as an
+  error. The remaining 8 bits give 256 distance buckets, which is deliberately
+  coarse: it only decides which of two near-equidistant particles wins, and
+  particles travel in dense clumps where clicking one specific member is not
+  something the user can do. Ties break to the lowest index, so the result
+  stays deterministic. `tests/test_async_pick.py` parses the `.glsl` and checks
+  both constants against `picker.py` and against the largest world the settings
+  spec allows.
 - The picked entity is reported in the debug panel but not yet drawn
   differently. Highlighting it on the canvas needs a render-side channel (the
   Entity struct has reserved lanes for exactly this).
