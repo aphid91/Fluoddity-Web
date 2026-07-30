@@ -24,6 +24,14 @@ dist/
 build/
 *.egg-info/
 
+# Web port (web/) -- Node/Vite. dist/ and build/ are covered above.
+node_modules/
+.vite/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+
 # Application specific
 *.log
 preferences.config

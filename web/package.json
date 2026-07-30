@@ -1,0 +1,23 @@
+{
+  "name": "fluoddity-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "WebGPU/TypeScript port of Fluoddity2. See docs/WEB_PORT_PLAN.md.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"tools/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@webgpu/types": "^0.1.60",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
+  }
+}

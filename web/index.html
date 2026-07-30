@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fluoddity</title>
+    <style>
+      :root { color-scheme: dark; }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+
+      /* The canvas fills the viewport in CSS pixels; its backing store is sized
+         in device pixels by src/app/surface.ts. The two are not the same thing
+         and must not be conflated -- see that file's header. */
+      #app {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      #gpu-error {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 2rem;
+        text-align: center;
+        font: 16px/1.5 system-ui, sans-serif;
+        color: #eee;
+        background: #1a1a1a;
+      }
+
+      #gpu-error h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
+      #gpu-error p  { margin: 0; max-width: 44rem; color: #bbb; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
