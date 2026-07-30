@@ -40,15 +40,20 @@
 import { compileModule } from '../gpu/shaderModule.ts';
 import type { CameraState } from './cameraState.ts';
 import {
+  ACCUMULATE_UNIFORM_SIZE,
   CAM_BRUSH_UNIFORM_SIZE,
   CAMERA_VIEW_UNIFORM_SIZE,
+  packAccumulateUniforms,
   packCamBrushUniforms,
   packCameraViewUniforms,
   type CameraView,
 } from './cameraUniforms.ts';
 
+import { HDR_FORMAT, type RenderTargets } from '../app/renderTargets.ts';
+
 import cameraSource from './shaders/camera.wgsl';
 import camBrushSource from './shaders/camBrush.wgsl';
+import accumulateSource from './shaders/accumulate.wgsl';
 
 /** What `render()` is handed per sample. Nothing here is held between frames. */
 export interface CameraFrame {
@@ -80,13 +85,15 @@ export class Camera {
   readonly state: CameraState;
 
   /**
-   * The format the camera renders into.
-   *
-   * 5.1 draws straight to the swap chain, so this is the surface's preferred
-   * format. 5.3 replaces it with the HDR target's `rgba16float` and the
-   * swap-chain format moves to the assembler, where it belongs.
+   * The format the camera renders into: the HDR target's, not the swap chain's.
+   * Everything the Camera emits is LINEAR HDR -- the tone curve belongs to the
+   * assembler, and the accumulator has to average energy rather than display
+   * values or blur would darken as it smeared.
    */
-  private readonly targetFormat: GPUTextureFormat;
+  private readonly targetFormat = HDR_FORMAT;
+
+  /** The HDR and accumulation targets. Owned by the app, resized per frame. */
+  private readonly targets: RenderTargets;
 
   private trailPipeline: GPURenderPipeline | null = null;
   private trailUniformLayout: GPUBindGroupLayout | null = null;
@@ -104,8 +111,14 @@ export class Camera {
   private particleGroup: GPUBindGroup | null = null;
   private particleGroupBuffer: GPUBuffer | null = null;
 
+  private accumPipeline: GPURenderPipeline | null = null;
+  private accumLayout: GPUBindGroupLayout | null = null;
+  /** Rebuilt on resize: it references the HDR target's view. */
+  private accumGroup: GPUBindGroup | null = null;
+
   private readonly viewUniforms: GPUBuffer;
   private readonly camBrushUniforms: GPUBuffer;
+  private readonly accumUniforms: GPUBuffer;
   private readonly canvasSampler: GPUSampler;
 
   /**
@@ -127,14 +140,10 @@ export class Camera {
   /** Set by `beginFrame`; guards nothing yet, and grows a job in 5.3. */
   private samplesTaken = 0;
 
-  private constructor(
-    device: GPUDevice,
-    state: CameraState,
-    targetFormat: GPUTextureFormat,
-  ) {
+  private constructor(device: GPUDevice, state: CameraState, targets: RenderTargets) {
     this.device = device;
     this.state = state;
-    this.targetFormat = targetFormat;
+    this.targets = targets;
 
     this.viewUniforms = device.createBuffer({
       label: 'CameraViewUniforms',
@@ -144,6 +153,11 @@ export class Camera {
     this.camBrushUniforms = device.createBuffer({
       label: 'CamBrushUniforms',
       size: CAM_BRUSH_UNIFORM_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.accumUniforms = device.createBuffer({
+      label: 'AccumulateUniforms',
+      size: ACCUMULATE_UNIFORM_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -163,9 +177,9 @@ export class Camera {
   static async create(
     device: GPUDevice,
     state: CameraState,
-    targetFormat: GPUTextureFormat,
+    targets: RenderTargets,
   ): Promise<Camera> {
-    const camera = new Camera(device, state, targetFormat);
+    const camera = new Camera(device, state, targets);
     await camera.reload();
     return camera;
   }
@@ -181,12 +195,80 @@ export class Camera {
     // Both compiled before either pipeline is built, so a failure in one does
     // not skip the other -- the desktop reloads each half independently for the
     // same reason (`bloom.py:66-71`).
-    const [module, brushModule] = await Promise.all([
+    const [module, brushModule, accumModule] = await Promise.all([
       compileModule(this.device, 'camera.wgsl', cameraSource),
       compileModule(this.device, 'camBrush.wgsl', camBrushSource),
+      compileModule(this.device, 'accumulate.wgsl', accumulateSource),
     ]);
     this.buildTrail(module);
     this.buildParticles(brushModule);
+    this.buildAccumulate(accumModule);
+  }
+
+  private buildAccumulate(module: GPUShaderModule | null): void {
+    const device = this.device;
+    if (module === null) {
+      this.accumPipeline = null;
+      return;
+    }
+
+    this.accumLayout = device.createBindGroupLayout({
+      label: 'accumulate',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      ],
+    });
+
+    this.accumPipeline = device.createRenderPipeline({
+      label: 'accumulate',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.accumLayout] }),
+      vertex: { module, entryPoint: 'fullscreen_vs' },
+      fragment: {
+        module,
+        entryPoint: 'fs_main',
+        targets: [
+          {
+            format: HDR_FORMAT,
+            // The blend unit does the summing; the shader supplies the 1/N
+            // weight. See accumulate.wgsl for why this is not a
+            // read-modify-write.
+            blend: {
+              color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+              alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+            },
+          },
+        ],
+      },
+      primitive: { topology: 'triangle-strip' },
+    });
+
+    this.accumGroup = null; // The layout object is new; the old group is stale.
+  }
+
+  /** Rebuild the bind group that references the HDR view. Called after a resize. */
+  private ensureAccumGroup(): GPUBindGroup | null {
+    if (this.accumLayout === null) return null;
+    const hdr = this.targets.hdr;
+    if (hdr === null) return null;
+    if (this.accumGroup !== null) return this.accumGroup;
+
+    this.accumGroup = this.device.createBindGroup({
+      label: 'accumulate',
+      layout: this.accumLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.accumUniforms } },
+        { binding: 1, resource: hdr },
+        { binding: 2, resource: this.targets.sampler },
+      ],
+    });
+    return this.accumGroup;
+  }
+
+  /** Drop bind groups that reference the render targets. Call after a resize. */
+  invalidateTargets(): void {
+    this.accumGroup = null;
   }
 
   private buildTrail(module: GPUShaderModule | null): void {
@@ -290,6 +372,7 @@ export class Camera {
     return {
       cameraTrail: this.trailPipeline !== null,
       cameraParticles: this.particlePipeline !== null,
+      accumulate: this.accumPipeline !== null,
     };
   }
 
@@ -303,7 +386,7 @@ export class Camera {
    * Writes uniforms and nothing else -- no encoder exists yet, which is why the
    * accumulator's clear cannot live here (see 5.3).
    */
-  beginFrame(frame: CameraFrame, _samples: number): void {
+  beginFrame(frame: CameraFrame, samples: number): void {
     this.samplesTaken = 0;
     const view: CameraView = {
       canvasSize: frame.canvasSize,
@@ -322,6 +405,52 @@ export class Camera {
       0,
       packCamBrushUniforms(view, frame.colorSensitivity, frame.colorByCohort),
     );
+    queue.writeBuffer(this.accumUniforms, 0, packAccumulateUniforms(samples));
+  }
+
+  /**
+   * Clear the accumulator. Must be recorded before the first `render()`.
+   *
+   * A zero-draw render pass, which is a legal and cheap way to express "clear
+   * this attachment". Separate from `beginFrame` because clearing needs an
+   * ENCODER and `beginFrame` runs before one exists (it writes uniforms, which
+   * conversely cannot happen once an encoder is open).
+   *
+   * The alternative -- branching `loadOp` on `samplesTaken === 0` inside
+   * `accumulate` -- would reintroduce exactly the first-sample special case
+   * `camera.py:150-153` is proud of having removed ("Clearing once per cycle IS
+   * the reset... there is no first-sample special case"). One extra pass against
+   * 100+ is the better trade, and it keeps the clear and `result()`'s guard
+   * decided by the same variable in the same place. If the empty pass ever shows
+   * up in a profile, the `loadOp` branch is a one-line change.
+   */
+  clearAccumulator(encoder: GPUCommandEncoder): void {
+    const accum = this.targets.accum;
+    if (accum === null) return;
+    encoder
+      .beginRenderPass({
+        label: 'accumulate-clear',
+        colorAttachments: [
+          {
+            view: accum,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      })
+      .end();
+  }
+
+  /**
+   * The finished supersampled frame, linear HDR.
+   *
+   * Null before any sample has landed, which is what the caller checks rather
+   * than presenting an uninitialized buffer (`camera.py:179-187`).
+   */
+  result(): GPUTextureView | null {
+    if (this.samplesTaken === 0) return null;
+    return this.targets.accum;
   }
 
   /**
@@ -331,13 +460,48 @@ export class Camera {
    * simulation between frames, so the canvas double-buffer swap stays invisible
    * to it.
    */
-  render(encoder: GPUCommandEncoder, target: GPUTextureView, frame: CameraFrame): void {
+  render(encoder: GPUCommandEncoder, frame: CameraFrame): void {
+    const hdr = this.targets.hdr;
+    if (hdr === null) return;
+
     if (this.state.mode === 'particles') {
-      this.renderParticles(encoder, target, frame);
+      this.renderParticles(encoder, hdr, frame);
     } else {
-      this.renderTrail(encoder, target, frame);
+      this.renderTrail(encoder, hdr, frame);
     }
+    this.accumulate(encoder);
     this.samplesTaken += 1;
+  }
+
+  /**
+   * Add the sample just rendered into the running average.
+   *
+   * The 1/N weight is applied in the shader and the sum by the blend unit, so
+   * the accumulator is never read back -- see accumulate.wgsl for why that
+   * matters (it is undefined behaviour on the desktop and a hard validation
+   * error here).
+   */
+  private accumulate(encoder: GPUCommandEncoder): void {
+    const accum = this.targets.accum;
+    const group = this.ensureAccumGroup();
+    if (this.accumPipeline === null || accum === null || group === null) return;
+
+    const pass = encoder.beginRenderPass({
+      label: 'accumulate',
+      colorAttachments: [
+        {
+          view: accum,
+          // 'load', NEVER 'clear': this pass ADDS to the running sum. The clear
+          // happens once per cycle in clearAccumulator().
+          loadOp: 'load',
+          storeOp: 'store',
+        },
+      ],
+    });
+    pass.setPipeline(this.accumPipeline);
+    pass.setBindGroup(0, group);
+    pass.draw(4);
+    pass.end();
   }
 
   private renderParticles(
@@ -425,5 +589,7 @@ export class Camera {
 
   destroy(): void {
     this.viewUniforms.destroy();
+    this.camBrushUniforms.destroy();
+    this.accumUniforms.destroy();
   }
 }

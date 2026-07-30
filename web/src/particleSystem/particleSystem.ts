@@ -141,9 +141,14 @@ export class ParticleSystem {
   /** 1x1 stand-in for the Strafe Field, which arrives in Step 9. */
   private readonly dummyTextureView: GPUTextureView;
 
-  private readonly entityUpdateUniforms: GPUBuffer;
-  private readonly canvasUniforms: GPUBuffer;
-  private readonly brushUniforms: GPUBuffer;
+  // NOT readonly: `physicsSteps` is a live preference, and each of these holds
+  // one slice per sub-step. Raising the rate past the allocated slot count
+  // reallocates -- see `ensureUniformCapacity`.
+  private entityUpdateUniforms: GPUBuffer;
+  private canvasUniforms: GPUBuffer;
+  private brushUniforms: GPUBuffer;
+  /** Sub-step slices the three uniform buffers above are sized for. */
+  private uniformSlots: number;
   /** Stride between consecutive sub-steps' uniform slices. */
   private readonly entityUpdateStride: number;
   private readonly canvasStride: number;
@@ -156,6 +161,12 @@ export class ParticleSystem {
   private computeStateGroup: GPUBindGroup | null = null;
   private canvasUniformGroup: GPUBindGroup | null = null;
   private brushStateGroup: GPUBindGroup | null = null;
+
+  // Held so `buildStateGroups` can rebuild the three groups above without
+  // recompiling shaders -- which is what a physics-rate growth needs.
+  private computeStateLayout: GPUBindGroupLayout | null = null;
+  private canvasUniformLayout: GPUBindGroupLayout | null = null;
+  private brushStateLayout: GPUBindGroupLayout | null = null;
   /**
    * Texture groups, keyed [wrap ? 1 : 0][front-is-a ? 0 : 1]. Pre-built because
    * WebGPU samplers are immutable: the desktop flips `repeat_x/repeat_y` at
@@ -263,18 +274,13 @@ export class ParticleSystem {
     this.canvasStride = alignTo(CANVAS_UNIFORM_SIZE, align);
     this.brushStride = alignTo(BRUSH_UNIFORM_SIZE, align);
 
-    const uniformBuffer = (label: string, stride: number): GPUBuffer =>
-      device.createBuffer({
-        label,
-        size: stride * this.physicsSteps,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-    this.entityUpdateUniforms = uniformBuffer(
+    this.uniformSlots = Math.max(1, Math.trunc(this.physicsSteps));
+    this.entityUpdateUniforms = this.makeUniformBuffer(
       'entity-update-uniforms',
       this.entityUpdateStride,
     );
-    this.canvasUniforms = uniformBuffer('canvas-uniforms', this.canvasStride);
-    this.brushUniforms = uniformBuffer('brush-uniforms', this.brushStride);
+    this.canvasUniforms = this.makeUniformBuffer('canvas-uniforms', this.canvasStride);
+    this.brushUniforms = this.makeUniformBuffer('brush-uniforms', this.brushStride);
 
     this.uploadConfigs();
   }
@@ -348,21 +354,7 @@ export class ParticleSystem {
         }),
         compute: { module: entityModule, entryPoint: 'main' },
       });
-      this.computeStateGroup = device.createBindGroup({
-        label: 'entity-update-state',
-        layout: computeStateLayout,
-        entries: [
-          { binding: 0, resource: { buffer: this.entityBuffer } },
-          { binding: 1, resource: { buffer: this.configBuffer } },
-          {
-            binding: 2,
-            resource: {
-              buffer: this.entityUpdateUniforms,
-              size: ENTITY_UPDATE_UNIFORM_SIZE,
-            },
-          },
-        ],
-      });
+      this.computeStateLayout = computeStateLayout;
     }
 
     // --- canvas decay/diffuse --------------------------------------------
@@ -398,16 +390,7 @@ export class ParticleSystem {
         },
         primitive: { topology: 'triangle-strip' },
       });
-      this.canvasUniformGroup = device.createBindGroup({
-        label: 'canvas-uniforms',
-        layout: canvasUniformLayout,
-        entries: [
-          {
-            binding: 0,
-            resource: { buffer: this.canvasUniforms, size: CANVAS_UNIFORM_SIZE },
-          },
-        ],
-      });
+      this.canvasUniformLayout = canvasUniformLayout;
     }
 
     // --- brush splat ------------------------------------------------------
@@ -463,9 +446,59 @@ export class ParticleSystem {
           cullMode: 'none',
         },
       });
+      this.brushStateLayout = brushStateLayout;
+    }
+
+    this.buildStateGroups();
+    this.buildTextureGroups(computeTextureLayout, canvasTextureLayout);
+  }
+
+  /**
+   * The three bind groups that reference the per-sub-step uniform buffers.
+   *
+   * Split out of `reload()` because they must ALSO be rebuilt when the physics
+   * rate grows past the allocated slot count and those buffers are reallocated
+   * -- a bind group holds the buffer it was built against, so a bare swap would
+   * leave all three pointing at destroyed memory.
+   */
+  private buildStateGroups(): void {
+    const device = this.device;
+
+    if (this.computeStateLayout !== null) {
+      this.computeStateGroup = device.createBindGroup({
+        label: 'entity-update-state',
+        layout: this.computeStateLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.entityBuffer } },
+          { binding: 1, resource: { buffer: this.configBuffer } },
+          {
+            binding: 2,
+            resource: {
+              buffer: this.entityUpdateUniforms,
+              size: ENTITY_UPDATE_UNIFORM_SIZE,
+            },
+          },
+        ],
+      });
+    }
+
+    if (this.canvasUniformLayout !== null) {
+      this.canvasUniformGroup = device.createBindGroup({
+        label: 'canvas-uniforms',
+        layout: this.canvasUniformLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: { buffer: this.canvasUniforms, size: CANVAS_UNIFORM_SIZE },
+          },
+        ],
+      });
+    }
+
+    if (this.brushStateLayout !== null) {
       this.brushStateGroup = device.createBindGroup({
         label: 'brush-state',
-        layout: brushStateLayout,
+        layout: this.brushStateLayout,
         entries: [
           {
             binding: 0,
@@ -475,8 +508,6 @@ export class ParticleSystem {
         ],
       });
     }
-
-    this.buildTextureGroups(computeTextureLayout, canvasTextureLayout);
   }
 
   /**
@@ -645,9 +676,26 @@ export class ParticleSystem {
    * All uniforms are written BEFORE the encoder opens, because
    * `queue.writeBuffer` may not be interleaved with an encoder's passes. Each
    * sub-step then binds its own slice by dynamic offset.
+   *
+   * `onSubStep` runs AFTER each `advance()`, and exists for motion blur: a
+   * displayed frame is the average of several renders taken at different points
+   * in the simulation's advance, so the camera must see the simulation
+   * mid-advance rather than only at the end of it (`orchestrator.py:296-300`).
+   *
+   * NOTE what is NOT here: which sub-steps get sampled. That decision --
+   * `step % stride === sampleAt` -- stays in the caller, because ParticleSystem
+   * must not learn what motion blur is. It hands over "a sub-step just
+   * finished" and nothing more.
    */
-  runFrame(encoder: GPUCommandEncoder, shove: ShoveState | null = null): void {
+  runFrame(
+    encoder: GPUCommandEncoder,
+    shove: ShoveState | null = null,
+    onSubStep?: (encoder: GPUCommandEncoder, step: number) => void,
+  ): void {
     const steps = Math.max(1, Math.trunc(this.physicsSteps));
+    // Before anything is written: `physicsSteps` is live, so the buffers may be
+    // sized for a lower rate than this frame is about to use.
+    this.ensureUniformCapacity(steps);
     const world = this.worldConfig();
     const canvasRes = this.canvasSize;
 
@@ -682,8 +730,53 @@ export class ParticleSystem {
 
     for (let i = 0; i < steps; i++) {
       this.advance(encoder, i);
+      onSubStep?.(encoder, i);
     }
     this._frameCount += steps;
+  }
+
+  private makeUniformBuffer(label: string, stride: number): GPUBuffer {
+    return this.device.createBuffer({
+      label,
+      size: stride * this.uniformSlots,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  /**
+   * Grow the per-sub-step uniform buffers if the physics rate has risen.
+   *
+   * `physicsSteps` is a LIVE preference -- the desktop's Physics Rate slider
+   * moves it every frame if you drag it -- but each of these buffers holds one
+   * dynamic-offset slice per sub-step, so their size depends on it. Raising the
+   * rate above the allocated count would otherwise walk off the end of the
+   * buffer, which WebGPU reports as an out-of-bounds dynamic offset and which
+   * invalidates the whole command buffer: the screen freezes rather than
+   * degrading.
+   *
+   * Grows only, never shrinks. Lowering the rate leaves the slack allocated,
+   * which costs a few kilobytes and avoids reallocating on every frame of a
+   * slider drag that crosses a threshold repeatedly.
+   *
+   * The bind groups reference these buffers, so a reallocation must rebuild
+   * them -- hence `buildStateGroups` rather than a bare buffer swap.
+   */
+  private ensureUniformCapacity(steps: number): void {
+    if (steps <= this.uniformSlots) return;
+
+    this.entityUpdateUniforms.destroy();
+    this.canvasUniforms.destroy();
+    this.brushUniforms.destroy();
+
+    this.uniformSlots = steps;
+    this.entityUpdateUniforms = this.makeUniformBuffer(
+      'entity-update-uniforms',
+      this.entityUpdateStride,
+    );
+    this.canvasUniforms = this.makeUniformBuffer('canvas-uniforms', this.canvasStride);
+    this.brushUniforms = this.makeUniformBuffer('brush-uniforms', this.brushStride);
+
+    this.buildStateGroups();
   }
 
   /**

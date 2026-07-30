@@ -27,6 +27,62 @@ import {
 } from './particleSystem/defaultConfig.ts';
 import { Camera } from './camera/camera.ts';
 import { CameraState, CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
+import { blurSchedule, sampleAt } from './camera/blurSchedule.ts';
+import { RenderTargets } from './app/renderTargets.ts';
+import { compileModule } from './gpu/shaderModule.ts';
+import { DEFAULT_PREFERENCES } from './prefs/preferences.ts';
+
+import passthroughSource from './app/shaders/passthrough.wgsl';
+
+/**
+ * TEMPORARY, deleted in 5.4 along with `passthrough.wgsl` -- see that file.
+ */
+async function createPassthrough(
+  device: GPUDevice,
+  format: GPUTextureFormat,
+): Promise<{
+  layout: GPUBindGroupLayout;
+  render(encoder: GPUCommandEncoder, target: GPUTextureView, group: GPUBindGroup): void;
+} | null> {
+  const module = await compileModule(device, 'passthrough.wgsl', passthroughSource);
+  if (module === null) return null;
+
+  const layout = device.createBindGroupLayout({
+    label: 'passthrough',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+    ],
+  });
+  const pipeline = device.createRenderPipeline({
+    label: 'passthrough',
+    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+    vertex: { module, entryPoint: 'fullscreen_vs' },
+    fragment: { module, entryPoint: 'fs_main', targets: [{ format }] },
+    primitive: { topology: 'triangle-strip' },
+  });
+
+  return {
+    layout,
+    render(encoder, target, group) {
+      const pass = encoder.beginRenderPass({
+        label: 'passthrough',
+        colorAttachments: [
+          {
+            view: target,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, group);
+      pass.draw(4);
+      pass.end();
+    },
+  };
+}
 
 /**
  * The `?debug` readout.
@@ -142,11 +198,31 @@ async function start(): Promise<void> {
     }
   }
 
-  const camera = await Camera.create(device, cameraState, surface.format);
+  const targets = new RenderTargets(device);
+  const camera = await Camera.create(device, cameraState, targets);
+  const passthrough = await createPassthrough(device, surface.format);
+
+  // Display preferences. Step 7 loads these from localStorage; until then the
+  // defaults plus URL overrides, so the sweeps Step 5 must verify are reachable.
+  const prefs = {
+    ...DEFAULT_PREFERENCES,
+    physicsSteps: system.physicsSteps,
+    motionBlurSamples: Number(params.get('motionBlurSamples') ?? '') ||
+      DEFAULT_PREFERENCES.motionBlurSamples,
+  };
+  const stepsParam = Number(params.get('physicsSteps') ?? '');
+  if (Number.isFinite(stepsParam) && stepsParam >= 1) {
+    system.physicsSteps = Math.trunc(stepsParam);
+    prefs.physicsSteps = system.physicsSteps;
+  }
 
   // The startup summary. `compileModule` logs each module, but a NULL pipeline
   // is the thing that actually matters and it is easy to miss in the noise.
-  const status = { ...system.pipelineStatus(), ...camera.pipelineStatus() };
+  const status = {
+    ...system.pipelineStatus(),
+    ...camera.pipelineStatus(),
+    passthrough: passthrough !== null,
+  };
   const failed = Object.entries(status).filter(([, ok]) => !ok).map(([name]) => name);
   if (failed.length > 0) {
     console.error(`Pipelines that FAILED to build: ${failed.join(', ')}`);
@@ -161,6 +237,8 @@ async function start(): Promise<void> {
   const overlay = createDebugOverlay();
   let lastTime = performance.now();
   let frameMs = 0;
+  /** Rebuilt whenever the render targets are, since it holds the accum view. */
+  let passthroughGroup: GPUBindGroup | null = null;
 
   // frameCount starts at 0, which IS the reset sentinel -- the first advance()
   // spawns every entity and clears the canvas. Nothing else needs to happen.
@@ -173,6 +251,15 @@ async function start(): Promise<void> {
     lastTime = now;
 
     const windowSize = surface.size();
+
+    // BEFORE the encoder opens. A ResizeObserver callback firing between
+    // `createCommandEncoder` and `submit` would otherwise destroy a texture
+    // whose view is already recorded -- see renderTargets.ts.
+    if (targets.ensure(windowSize)) {
+      camera.invalidateTargets();
+      passthroughGroup = null;
+    }
+
     const frameState = {
       canvas: system.currentCanvasTexture(),
       canvasSize: system.canvasSize,
@@ -189,22 +276,52 @@ async function start(): Promise<void> {
       colorByCohort: colorByCohortOverride ?? preset.config.colorByCohort,
     };
 
+    // MOTION BLUR PUTS THE RENDER INSIDE THE PHYSICS LOOP. A displayed frame is
+    // the average of `samples` renders taken `stride` sub-steps apart, so the
+    // camera must see the simulation mid-advance rather than only at the end.
+    // With blur off this is one render, on the last sub-step.
+    //
+    // Step 7 adds the paused branch here: paused is one sample of a still
+    // image, since N samples of an unchanging scene is the same picture at N
+    // times the cost (`orchestrator.py:301-304`).
+    const schedule = blurSchedule(prefs.physicsSteps, prefs.motionBlurSamples);
+    const at = sampleAt(schedule);
+
     // Uniforms are written BEFORE the encoder opens -- `queue.writeBuffer`
     // cannot interleave with an open encoder's passes. Nothing the camera reads
     // varies per sample, so one write covers the whole frame; see camera.ts.
-    camera.beginFrame(frameState, 1);
+    camera.beginFrame(frameState, schedule.samples);
 
     const encoder = device.createCommandEncoder({ label: 'frame' });
-    system.runFrame(encoder);
-    // 5.3 moves this INSIDE runFrame's sub-step loop, which is what motion blur
-    // requires: a displayed frame is the average of N renders taken at
-    // different points in the advance (`orchestrator.py:296-300`).
-    camera.render(encoder, surface.context.getCurrentTexture().createView(), {
-      ...frameState,
-      // Re-pulled: the double-buffer swapped 30 times inside runFrame, so the
-      // view captured above is stale (`orchestrator.py:325-327`).
-      canvas: system.currentCanvasTexture(),
+    camera.clearAccumulator(encoder);
+    system.runFrame(encoder, null, (enc, step) => {
+      if (step % schedule.stride !== at) return;
+      camera.render(enc, {
+        ...frameState,
+        // Re-pulled PER SAMPLE, not hoisted: the canvas double-buffer swaps
+        // inside advance(), so a view captured before the loop is stale after
+        // the first sub-step (`orchestrator.py:325-327`).
+        canvas: system.currentCanvasTexture(),
+      });
     });
+
+    // AFTER the loop, not before: the camera binds its own targets for every
+    // sample above, so binding the swap chain any earlier would be undone.
+    const finished = camera.result();
+    if (finished !== null && passthrough !== null) {
+      passthroughGroup ??= device.createBindGroup({
+        layout: passthrough.layout,
+        entries: [
+          { binding: 0, resource: finished },
+          { binding: 1, resource: targets.sampler },
+        ],
+      });
+      passthrough.render(
+        encoder,
+        surface.context.getCurrentTexture().createView(),
+        passthroughGroup,
+      );
+    }
     device.queue.submit([encoder.finish()]);
 
     overlay?.update([
@@ -215,6 +332,8 @@ async function start(): Promise<void> {
       `canvas       ${system.canvasSize.join(' x ')}`,
       `window       ${windowSize.join(' x ')}`,
       `physicsSteps ${system.physicsSteps}`,
+      `blur         ${schedule.samples} samples, stride ${schedule.stride} ` +
+        `(requested ${prefs.motionBlurSamples})`,
       `frame        ${frameMs.toFixed(2)} ms  (${(1000 / frameMs).toFixed(0)} fps)`,
       `pipelines    ${Object.entries(status)
         .map(([n, ok]) => `${n}:${ok ? 'ok' : 'FAILED'}`)
