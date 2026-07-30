@@ -4,12 +4,18 @@ The TypeScript/WebGPU port of the Python app in the parent directory. The plan
 is `docs/WEB_PORT_PLAN.md`; the design contract it must honour is
 `docs/ARCHITECTURE.md`, whose 10 invariants are the spec.
 
-**Status: Steps 1–2 of 10 complete.** Scaffold, device acquisition, canvas
-sizing, the WGSL `#include` resolver, and the pure-math leaves (coordinates,
-sizing, camera state, config packing). There is no simulation yet — the canvas
-is black on purpose, and a black canvas is the expected successful output.
-Nothing from Step 2 is wired into the render loop yet; it is the arithmetic
-Steps 3–5 build on.
+**Status: Steps 1–3 of 10 complete.** Scaffold, device acquisition, canvas
+sizing, the WGSL `#include` resolver, the pure-math leaves (coordinates,
+sizing, camera state, config packing), and `src/shaders/common.wgsl` — the
+struct layout and coordinate math every later shader includes. There is no
+simulation yet — the canvas is black on purpose, and a black canvas is the
+expected successful output. Nothing from Steps 2–3 is wired into the render
+loop yet; it is the arithmetic and the shared shader code Steps 4–5 build on.
+
+Step 3 retired Step 1's `hello.wgsl` and `common_stub.wgsl`, so `main.ts`
+compiles no shader at present. `common.wgsl` is pure declarations and pure
+functions with no entry point and cannot form a pipeline on its own; Step 4's
+`entity_update.wgsl` is its first consumer.
 
 ## Running it
 
@@ -24,6 +30,25 @@ npm run typecheck  # tsc --noEmit, strict
 npm run build      # typecheck + production build
 ```
 
+### Checking that `common.wgsl` still compiles
+
+`npm test` checks its struct *layout*, but nothing in the suite compiles WGSL —
+that needs a real device, and with `hello.wgsl` retired nothing in the app
+compiles a shader until Step 4. Until then, verify by hand after editing it:
+run `npm run dev`, open the page, and in the browser console:
+
+```js
+const src = (await import('/src/shaders/common.wgsl')).default;
+const dev = await (await navigator.gpu.requestAdapter()).requestDevice();
+const info = await dev.createShaderModule({ code: src }).getCompilationInfo();
+console.table(info.messages);   // expect zero rows of type 'error'
+```
+
+Importing it (rather than fetching it) is what runs the `#include` resolver, so
+this checks the same text a real consumer would get. Note **headless Chrome
+returns a null adapter**, so this cannot currently be automated in CI — it needs
+a real browser window.
+
 ## Layout
 
 | Path | Role |
@@ -35,7 +60,7 @@ npm run build      # typecheck + production build
 | `src/particleSystem/` | `coords`, `sizing`, `config`, `pack`, `layout` — the pure leaves |
 | `src/camera/` | `cameraState` — pan/zoom/mode, no GPU |
 | `src/testing/` | Test-only access to the parity goldens |
-| `src/shaders/` | Shared shaders. Per-module `shaders/` dirs arrive in Steps 4–5 (invariant 6) |
+| `src/shaders/` | Shared shaders — `common.wgsl`. Per-module `shaders/` dirs arrive in Steps 4–5 (invariant 6) |
 
 ## Generated data
 
@@ -70,6 +95,42 @@ importantly `assertLaneMap`, which fails loudly if a `vec4` is added to
 `ConfigData` without the lane table in `config.ts` following. That failure would
 otherwise be silent: every lane after the insertion point shifts by four floats
 and the physics just goes subtly wrong.
+
+## `common.wgsl` and the two-copy layout hazard
+
+`src/shaders/common.wgsl` is the WGSL translation of
+`shared/shaders/common.glsl` (Step 3). It holds the GPU structs, the `cfg_*` /
+`world_*` / `e_*` accessors, and the coordinate math — and every shader from
+Step 4 onward `#include`s it.
+
+**Struct layout is now hand-authored in two files.** `common.glsl` is what the
+Python parser reads to emit `layout.generated.json`, which is what the host
+packs against; `common.wgsl` is what the GPU reads. A divergence between them
+does not crash and does not error — the host packs 416 bytes to one plan and
+the shader reads them to another, and the simulation is just subtly wrong.
+
+`src/shaders/common.wgsl.test.ts` closes that loop. It scans the struct
+declarations out of `common.wgsl` and asserts names, order, types, the
+`array<FourierCenter, 10>` shape and the vec4-only rule against the descriptor.
+It is the shader-side counterpart of `assertLaneMap`: that one guards host
+packing against the descriptor, this one guards the shader against it. Its
+scanner deliberately **throws on any member it cannot parse** rather than
+skipping it — a scanner that quietly ignored a member would pass while the
+layout drifted.
+
+Three translation decisions worth knowing before editing the file:
+
+- **`make_entity` was renamed on one overload.** WGSL has no function
+  overloading, so the 4-arg colourless form is `make_entity_reset`. It still
+  delegates to the 5-arg form with a zero colour.
+- **`world_bounce` returns a `BounceResult`** instead of taking `inout`
+  parameters. The velocity flips are decided against the *pre-fold* position;
+  reordering that changes the exact-boundary case.
+- **`edge_fold` uses `%`, `world_wrap` keeps `fract`.** GLSL's `mod` is floored
+  and WGSL's `%` is truncated, so they are not interchangeable. `%` is safe in
+  `edge_fold` because the dividend is `abs(x)` — non-negative by construction,
+  not by caller convention. `world_wrap`'s argument is freely signed, so
+  rewriting its `fract` as `%` would break wrap at the left and bottom edges.
 
 ## Parity testing
 

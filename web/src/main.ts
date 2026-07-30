@@ -14,9 +14,7 @@
  */
 
 import { acquireDevice, showUnavailableOverlay, WebGPUUnavailable } from './gpu/device.ts';
-import { compileModule } from './gpu/shaderModule.ts';
 import { createSurface } from './app/surface.ts';
-import helloWgsl from './shaders/hello.wgsl';
 
 async function start(): Promise<void> {
   const canvas = document.getElementById('app');
@@ -32,22 +30,19 @@ async function start(): Promise<void> {
 
   const surface = createSurface(canvas, device);
 
-  // `helloWgsl` arrives with its #include already expanded by the Vite plugin.
-  const module = await compileModule(device, 'hello', helloWgsl);
-
-  // Invariant 5: callers guard on null. A failed compile leaves us with no
-  // pipeline, and the loop below simply clears -- it does not crash, and it
-  // does not stop, so an HMR edit that fixes the shader recovers.
-  let pipeline: GPURenderPipeline | null = null;
-  if (module !== null) {
-    pipeline = device.createRenderPipeline({
-      label: 'hello',
-      layout: 'auto',
-      vertex: { module, entryPoint: 'vs_main' },
-      fragment: { module, entryPoint: 'fs_main', targets: [{ format: surface.format }] },
-      primitive: { topology: 'triangle-list' },
-    });
-  }
+  // NO SHADER IS COMPILED HERE, deliberately. Step 1's `hello.wgsl` and its
+  // `common_stub.wgsl` were retired by Step 3, which replaced the stub with the
+  // real `src/shaders/common.wgsl`. That file is pure declarations and pure
+  // functions with no entry point, so it cannot form a pipeline on its own --
+  // Step 4's `entity_update.wgsl` is its first consumer, and that is what wires
+  // shader compilation back in here.
+  //
+  // Until then `common.wgsl` is validated by `common.wgsl.test.ts` (struct
+  // layout, on every `npm test`) and by a manual browser compile check --
+  // see "Verification" in web/README.md.
+  //
+  // `gpu/shaderModule.ts` is consequently unused for now. Keep it: Step 4 is
+  // its caller, and invariant 5's log-don't-throw shape lives there.
 
   const frame = (): void => {
     if (deviceLost) return; // Stop cleanly rather than spinning on a dead device.
@@ -64,37 +59,12 @@ async function start(): Promise<void> {
       ],
     });
 
-    if (pipeline !== null) {
-      pass.setPipeline(pipeline);
-      pass.draw(3);
-    }
-
     pass.end();
     device.queue.submit([encoder.finish()]);
     requestAnimationFrame(frame);
   };
 
   requestAnimationFrame(frame);
-
-  // Vite's HMR: re-import and recompile the shader in place rather than
-  // reloading the page. This is dev-server ergonomics; it is NOT the runtime
-  // reload affordance invariant 5 says the port should not carry (the `U` key,
-  // the Simulation menu item, the Debug panel button) -- those stay gone.
-  if (import.meta.hot) {
-    import.meta.hot.accept('./shaders/hello.wgsl', async (mod) => {
-      const source: unknown = mod?.default;
-      if (typeof source !== 'string') return;
-      const next = await compileModule(device, 'hello', source);
-      if (next === null) return; // Logged, not fatal: keep the last good pipeline.
-      pipeline = device.createRenderPipeline({
-        label: 'hello',
-        layout: 'auto',
-        vertex: { module: next, entryPoint: 'vs_main' },
-        fragment: { module: next, entryPoint: 'fs_main', targets: [{ format: surface.format }] },
-        primitive: { topology: 'triangle-list' },
-      });
-    });
-  }
 }
 
 start().catch((err: unknown) => {
