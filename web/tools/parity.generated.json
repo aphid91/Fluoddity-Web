@@ -10677,6 +10677,523 @@
       }
     ]
   },
+  "blur": {
+    "_note": "blur_schedule(prefs) -> (samples, stride). `samples` is the count that will ACTUALLY occur, which is what 1/N must be computed from.",
+    "cases": [
+      {
+        "physicsSteps": 1,
+        "motionBlurSamples": 1,
+        "out": [
+          1,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 1,
+        "motionBlurSamples": 2,
+        "out": [
+          1,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 1,
+        "motionBlurSamples": 3,
+        "out": [
+          1,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 1,
+        "motionBlurSamples": 8,
+        "out": [
+          1,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 1,
+        "motionBlurSamples": 10,
+        "out": [
+          1,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 1,
+        "motionBlurSamples": 30,
+        "out": [
+          1,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 1,
+        "motionBlurSamples": 31,
+        "out": [
+          1,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 1,
+        "motionBlurSamples": 1000,
+        "out": [
+          1,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 2,
+        "motionBlurSamples": 1,
+        "out": [
+          1,
+          2
+        ]
+      },
+      {
+        "physicsSteps": 2,
+        "motionBlurSamples": 2,
+        "out": [
+          2,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 2,
+        "motionBlurSamples": 3,
+        "out": [
+          2,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 2,
+        "motionBlurSamples": 8,
+        "out": [
+          2,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 2,
+        "motionBlurSamples": 10,
+        "out": [
+          2,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 2,
+        "motionBlurSamples": 30,
+        "out": [
+          2,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 2,
+        "motionBlurSamples": 31,
+        "out": [
+          2,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 2,
+        "motionBlurSamples": 1000,
+        "out": [
+          2,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 7,
+        "motionBlurSamples": 1,
+        "out": [
+          1,
+          7
+        ]
+      },
+      {
+        "physicsSteps": 7,
+        "motionBlurSamples": 2,
+        "out": [
+          3,
+          3
+        ]
+      },
+      {
+        "physicsSteps": 7,
+        "motionBlurSamples": 3,
+        "out": [
+          4,
+          2
+        ]
+      },
+      {
+        "physicsSteps": 7,
+        "motionBlurSamples": 8,
+        "out": [
+          7,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 7,
+        "motionBlurSamples": 10,
+        "out": [
+          7,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 7,
+        "motionBlurSamples": 30,
+        "out": [
+          7,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 7,
+        "motionBlurSamples": 31,
+        "out": [
+          7,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 7,
+        "motionBlurSamples": 1000,
+        "out": [
+          7,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 30,
+        "motionBlurSamples": 1,
+        "out": [
+          1,
+          30
+        ]
+      },
+      {
+        "physicsSteps": 30,
+        "motionBlurSamples": 2,
+        "out": [
+          2,
+          15
+        ]
+      },
+      {
+        "physicsSteps": 30,
+        "motionBlurSamples": 3,
+        "out": [
+          3,
+          10
+        ]
+      },
+      {
+        "physicsSteps": 30,
+        "motionBlurSamples": 8,
+        "out": [
+          10,
+          3
+        ]
+      },
+      {
+        "physicsSteps": 30,
+        "motionBlurSamples": 10,
+        "out": [
+          10,
+          3
+        ]
+      },
+      {
+        "physicsSteps": 30,
+        "motionBlurSamples": 30,
+        "out": [
+          30,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 30,
+        "motionBlurSamples": 31,
+        "out": [
+          30,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 30,
+        "motionBlurSamples": 1000,
+        "out": [
+          30,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 60,
+        "motionBlurSamples": 1,
+        "out": [
+          1,
+          60
+        ]
+      },
+      {
+        "physicsSteps": 60,
+        "motionBlurSamples": 2,
+        "out": [
+          2,
+          30
+        ]
+      },
+      {
+        "physicsSteps": 60,
+        "motionBlurSamples": 3,
+        "out": [
+          3,
+          20
+        ]
+      },
+      {
+        "physicsSteps": 60,
+        "motionBlurSamples": 8,
+        "out": [
+          9,
+          7
+        ]
+      },
+      {
+        "physicsSteps": 60,
+        "motionBlurSamples": 10,
+        "out": [
+          10,
+          6
+        ]
+      },
+      {
+        "physicsSteps": 60,
+        "motionBlurSamples": 30,
+        "out": [
+          30,
+          2
+        ]
+      },
+      {
+        "physicsSteps": 60,
+        "motionBlurSamples": 31,
+        "out": [
+          60,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 60,
+        "motionBlurSamples": 1000,
+        "out": [
+          60,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 100,
+        "motionBlurSamples": 1,
+        "out": [
+          1,
+          100
+        ]
+      },
+      {
+        "physicsSteps": 100,
+        "motionBlurSamples": 2,
+        "out": [
+          2,
+          50
+        ]
+      },
+      {
+        "physicsSteps": 100,
+        "motionBlurSamples": 3,
+        "out": [
+          4,
+          33
+        ]
+      },
+      {
+        "physicsSteps": 100,
+        "motionBlurSamples": 8,
+        "out": [
+          9,
+          12
+        ]
+      },
+      {
+        "physicsSteps": 100,
+        "motionBlurSamples": 10,
+        "out": [
+          10,
+          10
+        ]
+      },
+      {
+        "physicsSteps": 100,
+        "motionBlurSamples": 30,
+        "out": [
+          34,
+          3
+        ]
+      },
+      {
+        "physicsSteps": 100,
+        "motionBlurSamples": 31,
+        "out": [
+          34,
+          3
+        ]
+      },
+      {
+        "physicsSteps": 100,
+        "motionBlurSamples": 1000,
+        "out": [
+          100,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 120,
+        "motionBlurSamples": 1,
+        "out": [
+          1,
+          120
+        ]
+      },
+      {
+        "physicsSteps": 120,
+        "motionBlurSamples": 2,
+        "out": [
+          2,
+          60
+        ]
+      },
+      {
+        "physicsSteps": 120,
+        "motionBlurSamples": 3,
+        "out": [
+          3,
+          40
+        ]
+      },
+      {
+        "physicsSteps": 120,
+        "motionBlurSamples": 8,
+        "out": [
+          8,
+          15
+        ]
+      },
+      {
+        "physicsSteps": 120,
+        "motionBlurSamples": 10,
+        "out": [
+          10,
+          12
+        ]
+      },
+      {
+        "physicsSteps": 120,
+        "motionBlurSamples": 30,
+        "out": [
+          30,
+          4
+        ]
+      },
+      {
+        "physicsSteps": 120,
+        "motionBlurSamples": 31,
+        "out": [
+          40,
+          3
+        ]
+      },
+      {
+        "physicsSteps": 120,
+        "motionBlurSamples": 1000,
+        "out": [
+          120,
+          1
+        ]
+      },
+      {
+        "physicsSteps": 121,
+        "motionBlurSamples": 1,
+        "out": [
+          1,
+          121
+        ]
+      },
+      {
+        "physicsSteps": 121,
+        "motionBlurSamples": 2,
+        "out": [
+          3,
+          60
+        ]
+      },
+      {
+        "physicsSteps": 121,
+        "motionBlurSamples": 3,
+        "out": [
+          4,
+          40
+        ]
+      },
+      {
+        "physicsSteps": 121,
+        "motionBlurSamples": 8,
+        "out": [
+          9,
+          15
+        ]
+      },
+      {
+        "physicsSteps": 121,
+        "motionBlurSamples": 10,
+        "out": [
+          11,
+          12
+        ]
+      },
+      {
+        "physicsSteps": 121,
+        "motionBlurSamples": 30,
+        "out": [
+          31,
+          4
+        ]
+      },
+      {
+        "physicsSteps": 121,
+        "motionBlurSamples": 31,
+        "out": [
+          41,
+          3
+        ]
+      },
+      {
+        "physicsSteps": 121,
+        "motionBlurSamples": 1000,
+        "out": [
+          121,
+          1
+        ]
+      }
+    ]
+  },
   "packing": {
     "intLaneBitPatterns": [
       {

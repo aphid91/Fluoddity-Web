@@ -3,19 +3,21 @@
  *
  * The desktop analogue is `main.py` (4 lines) plus the frame loop at
  * `orchestrator/orchestrator.py:256-365`. There is still no Orchestrator --
- * Step 7 builds it, along with the command/status API and the real frame loop's
- * ordering constraints (pick-read before pick-write; render inside the physics
- * loop for motion blur). Step 4's loop is the minimum that runs the engine:
- * advance the simulation, then show the canvas.
+ * Step 7 builds it, along with the command/status API. What is still missing
+ * from THIS loop and belongs to Step 7:
  *
- * WHAT IS DELIBERATELY MISSING, so it is not mistaken for an oversight:
- * no camera, no bloom, no tone curve, no overlays (Step 5); no picking
- * (Step 6); no UI, no input, no presets menu (Steps 7-10). `presentPass` below
- * is a throwaway that Step 5 deletes -- see debugPresent.wgsl.
+ *   - the pause branch (`orchestrator.py:304,320-322`): paused is one sample of
+ *     a still image, and `advance()` is skipped while the render is not
+ *   - `_apply_canvas_input` above the render, because painting binds its own
+ *     target
+ *   - pick-resolve before input can dispatch a new pick (read before write)
+ *   - `_overlay_args()`, which decides overlay visibility from the active tool
+ *
+ * WHAT IS DELIBERATELY MISSING ELSEWHERE: no picking (Step 6); no UI, no input,
+ * no presets menu (Steps 7-10); no strafe field (Step 9).
  */
 
 import { acquireDevice, showUnavailableOverlay, WebGPUUnavailable } from './gpu/device.ts';
-import { compileModule } from './gpu/shaderModule.ts';
 import { createSurface, type Surface } from './app/surface.ts';
 import { ParticleSystem } from './particleSystem/particleSystem.ts';
 import {
@@ -23,68 +25,8 @@ import {
   preset as presetByName,
   presetNames,
 } from './particleSystem/defaultConfig.ts';
-
-import presentSource from './app/debugPresent.wgsl';
-
-/** The throwaway present pass. Step 5 replaces this with the real camera. */
-interface PresentPass {
-  render(encoder: GPUCommandEncoder, target: GPUTextureView, canvas: GPUTextureView): void;
-}
-
-async function createPresentPass(
-  device: GPUDevice,
-  format: GPUTextureFormat,
-): Promise<PresentPass | null> {
-  const module = await compileModule(device, 'debugPresent.wgsl', presentSource);
-  if (module === null) return null;
-
-  const layout = device.createBindGroupLayout({
-    label: 'present',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
-      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
-    ],
-  });
-  const pipeline = device.createRenderPipeline({
-    label: 'debug-present',
-    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
-    vertex: { module, entryPoint: 'vs_main' },
-    fragment: { module, entryPoint: 'fs_main', targets: [{ format }] },
-    primitive: { topology: 'triangle-strip' },
-  });
-  const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-
-  return {
-    render(encoder, target, canvas) {
-      // The bind group is rebuilt per frame because the canvas double-buffer
-      // swaps underneath it -- the same reason the desktop hands the texture to
-      // the camera per frame rather than letting it hold a reference
-      // (ARCHITECTURE.md rule 3).
-      const group = device.createBindGroup({
-        layout,
-        entries: [
-          { binding: 0, resource: canvas },
-          { binding: 1, resource: sampler },
-        ],
-      });
-      const pass = encoder.beginRenderPass({
-        label: 'debug-present',
-        colorAttachments: [
-          {
-            view: target,
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          },
-        ],
-      });
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(0, group);
-      pass.draw(4);
-      pass.end();
-    },
-  };
-}
+import { Camera } from './camera/camera.ts';
+import { CameraState, CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
 
 /**
  * The `?debug` readout.
@@ -161,11 +103,40 @@ async function start(): Promise<void> {
     config: preset.config,
     world: preset.world,
   });
-  const present = await createPresentPass(device, surface.format);
+
+  // `?camera=trail|particles` overrides the default mode, so both can be A/B'd
+  // against the desktop without editing code. THE MODE TOGGLE IS A TEST: the
+  // two modes walk the same transform in opposite directions, so switching
+  // between them must not shift or mirror the image (`camera.py:14-18`). If it
+  // does, a Y flip is wrong. Step 8 gives this a real hotkey.
+  const cameraState = new CameraState();
+  // `?pan=x,y` and `?zoom=z` exist for the same reason as `?camera`: Step 8
+  // owns real input, and until then the transform is untestable without them.
+  // Cheap to keep, and Step 8 replaces them with WASD/QE and the scroll wheel.
+  const params = new URLSearchParams(window.location.search);
+  const zoomParam = Number(params.get('zoom'));
+  if (Number.isFinite(zoomParam) && zoomParam > 0) cameraState.setZoom(zoomParam);
+  const panParam = (params.get('pan') ?? '').split(',').map(Number);
+  if (panParam.length === 2 && panParam.every((v) => Number.isFinite(v))) {
+    cameraState.pan = [panParam[0]!, panParam[1]!];
+  }
+  const requestedMode = new URLSearchParams(window.location.search).get('camera');
+  if (requestedMode !== null) {
+    if ((CAMERA_MODES as readonly string[]).includes(requestedMode)) {
+      cameraState.mode = requestedMode as CameraMode;
+    } else {
+      console.warn(
+        `No camera mode "${requestedMode}". Available: ${CAMERA_MODES.join(', ')}. ` +
+          `Falling back to ${cameraState.mode}.`,
+      );
+    }
+  }
+
+  const camera = await Camera.create(device, cameraState, surface.format);
 
   // The startup summary. `compileModule` logs each module, but a NULL pipeline
   // is the thing that actually matters and it is easy to miss in the noise.
-  const status = { ...system.pipelineStatus(), debugPresent: present !== null };
+  const status = { ...system.pipelineStatus(), ...camera.pipelineStatus() };
   const failed = Object.entries(status).filter(([, ok]) => !ok).map(([name]) => name);
   if (failed.length > 0) {
     console.error(`Pipelines that FAILED to build: ${failed.join(', ')}`);
@@ -191,21 +162,38 @@ async function start(): Promise<void> {
     frameMs += ((now - lastTime) - frameMs) * 0.1;
     lastTime = now;
 
+    const windowSize = surface.size();
+    const frameState = {
+      canvas: system.currentCanvasTexture(),
+      canvasSize: system.canvasSize,
+      windowSize,
+    };
+
+    // Uniforms are written BEFORE the encoder opens -- `queue.writeBuffer`
+    // cannot interleave with an open encoder's passes. Nothing the camera reads
+    // varies per sample, so one write covers the whole frame; see camera.ts.
+    camera.beginFrame(frameState, 1);
+
     const encoder = device.createCommandEncoder({ label: 'frame' });
     system.runFrame(encoder);
-    present?.render(
-      encoder,
-      surface.context.getCurrentTexture().createView(),
-      system.currentCanvasTexture(),
-    );
+    // 5.3 moves this INSIDE runFrame's sub-step loop, which is what motion blur
+    // requires: a displayed frame is the average of N renders taken at
+    // different points in the advance (`orchestrator.py:296-300`).
+    camera.render(encoder, surface.context.getCurrentTexture().createView(), {
+      ...frameState,
+      // Re-pulled: the double-buffer swapped 30 times inside runFrame, so the
+      // view captured above is stale (`orchestrator.py:325-327`).
+      canvas: system.currentCanvasTexture(),
+    });
     device.queue.submit([encoder.finish()]);
 
     overlay?.update([
       `preset       ${preset.name}`,
+      `camera       ${cameraState.mode}`,
       `frameCount   ${system.frameCount}`,
       `entities     ${system.entityCount}`,
       `canvas       ${system.canvasSize.join(' x ')}`,
-      `window       ${surface.size().join(' x ')}`,
+      `window       ${windowSize.join(' x ')}`,
       `physicsSteps ${system.physicsSteps}`,
       `frame        ${frameMs.toFixed(2)} ms  (${(1000 / frameMs).toFixed(0)} fps)`,
       `pipelines    ${Object.entries(status)

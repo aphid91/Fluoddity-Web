@@ -71,6 +71,8 @@ from particle_system.config import (  # noqa: E402
 from particle_system.layout import LayoutError, load_layouts, parse_structs  # noqa: E402
 from particle_system import sizing  # noqa: E402
 from camera import camera_state  # noqa: E402
+from orchestrator.orchestrator import blur_schedule  # noqa: E402
+from preferences import Preferences  # noqa: E402
 
 COMMON_GLSL = REPO_ROOT / 'shared' / 'shaders' / 'common.glsl'
 LAYOUT_OUT = REPO_ROOT / 'web' / 'src' / 'particleSystem' / 'layout.generated.json'
@@ -243,6 +245,7 @@ def build_parity() -> dict:
         'sizing': _parity_sizing(),
         'coords': _parity_coords(),
         'camera': _parity_camera(),
+        'blur': _parity_blur(),
         'packing': _parity_packing(),
     }
 
@@ -381,6 +384,36 @@ def _parity_camera() -> dict:
         },
         'zoomAtPixel': zoom_cases,
         'panByFraction': pan_cases,
+    }
+
+
+def _parity_blur() -> dict:
+    """Golden blur_schedule() results.
+
+    blur_schedule returns the ACHIEVED sample count, not the requested one --
+    the two disagree whenever the request does not divide the physics rate, and
+    weighting the accumulator by the request darkens the frame by the ratio
+    between them at exactly those slider positions. That is the class of bug the
+    visual A/B cannot catch (a few percent, and only sometimes), so it gets
+    goldens even though the rest of the render pipeline deliberately does not.
+
+    See orchestrator.py:71-103 and web/src/camera/blurSchedule.ts.
+    """
+    return {
+        '_note': (
+            'blur_schedule(prefs) -> (samples, stride). `samples` is the count '
+            'that will ACTUALLY occur, which is what 1/N must be computed from.'
+        ),
+        'cases': [
+            {
+                'physicsSteps': steps,
+                'motionBlurSamples': requested,
+                'out': list(blur_schedule(Preferences(
+                    physics_steps=steps, motion_blur_samples=requested))),
+            }
+            for steps in (1, 2, 7, 30, 60, 100, 120, 121)
+            for requested in (1, 2, 3, 8, 10, 30, 31, 1000)
+        ],
     }
 
 
