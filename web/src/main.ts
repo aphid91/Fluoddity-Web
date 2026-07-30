@@ -18,7 +18,11 @@ import { acquireDevice, showUnavailableOverlay, WebGPUUnavailable } from './gpu/
 import { compileModule } from './gpu/shaderModule.ts';
 import { createSurface, type Surface } from './app/surface.ts';
 import { ParticleSystem } from './particleSystem/particleSystem.ts';
-import { defaultPreset } from './particleSystem/defaultConfig.ts';
+import {
+  defaultPreset,
+  preset as presetByName,
+  presetNames,
+} from './particleSystem/defaultConfig.ts';
 
 import presentSource from './app/debugPresent.wgsl';
 
@@ -133,7 +137,25 @@ async function start(): Promise<void> {
     );
   }
 
-  const preset = defaultPreset();
+  // `?preset=<name>` picks one of the shipped presets by filename stem, for
+  // A/B-ing against the desktop without editing code. Unknown names fall back
+  // to the default with a console warning that lists what IS available -- an
+  // unrecognised preset must not look like a broken engine.
+  //
+  // Step 7 replaces this with the real command/status API and a preset menu.
+  const requested = new URLSearchParams(window.location.search).get('preset');
+  let preset = defaultPreset();
+  if (requested !== null) {
+    try {
+      preset = presetByName(requested);
+    } catch {
+      console.warn(
+        `No preset "${requested}". Available: ${presetNames().join(', ')}. ` +
+          `Falling back to ${preset.name}.`,
+      );
+    }
+  }
+
   const system = await ParticleSystem.create({
     device,
     config: preset.config,

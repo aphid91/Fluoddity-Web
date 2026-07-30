@@ -38,6 +38,33 @@ ms/frame and per-pipeline compile status. Worth having open whenever you are
 judging the simulation: a pipeline that failed to build leaves a black canvas,
 which is also what a *correct* Step 1–3 build looks like.
 
+### Switching presets
+
+`?preset=<name>`, by filename stem — no rebuild, no code edit:
+
+```
+http://localhost:5173/?preset=hatmanv8
+http://localhost:5173/?debug&preset=9leafv8
+```
+
+An unknown name falls back to the default and logs the available ones, so a typo
+never looks like a broken engine. The default is `Starcrossedv8`, matching the
+desktop's own default at `particle_system.py:45`, so both halves of an A/B start
+on the same config without anyone having to pick it.
+
+**Adding a preset that isn't shipped yet** takes two steps, because the browser
+cannot read `configs/` — the presets are baked in at build time:
+
+1. Put the `.json` in `configs/` (v8 only) and add its filename to
+   `_PRESET_FILES` in `tools/generate_web_data.py`.
+2. Regenerate: `../Scratch.venv/Scripts/python.exe tools/generate_web_data.py`
+
+The generator loads each file through the desktop's own `persistence.load()`, so
+a missing file or a v7 file fails there with a message rather than reaching the
+browser. **This whole mechanism is temporary** — Step 9 replaces it with a
+manifest plus IndexedDB and a real loader, at which point presets are picked in
+the UI and none of the above applies.
+
 ### Checking that the shaders still compile
 
 Nothing in `npm test` compiles WGSL — that needs a real device, and **headless

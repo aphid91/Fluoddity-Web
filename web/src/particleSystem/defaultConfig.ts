@@ -180,6 +180,11 @@ export const PRESETS: Readonly<Record<string, Preset>> = Object.freeze(
  */
 export const DEFAULT_PRESET_NAME = 'Starcrossedv8';
 
+/** Every shipped preset's name, for menus and error messages. */
+export function presetNames(): readonly string[] {
+  return Object.keys(PRESETS);
+}
+
 /** Look up a preset by name, failing loudly rather than returning undefined. */
 export function preset(name: string): Preset {
   const found = PRESETS[name];
