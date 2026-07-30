@@ -615,6 +615,31 @@ export class ParticleSystem {
   }
 
   /**
+   * The entity buffer, for the camera's PARTICLES mode.
+   *
+   * Bound READ-ONLY in a vertex stage (`camBrush.wgsl`), the same way
+   * `brush.wgsl` reads it -- which is why the buffer already carries STORAGE
+   * usage and why both declare `read` rather than `read_write` (a vertex stage
+   * cannot write storage at all).
+   *
+   * Returns the same object as `entityBufferForReadback()`, and is deliberately
+   * a SEPARATE method rather than a rename of it. That one's name is
+   * load-bearing documentation that nothing in the app calls it -- an invariant
+   * the A/B harness relies on. This one IS an app path.
+   *
+   * Handed over per frame rather than held, matching `orchestrator.py:330`: the
+   * Camera keeps no reference to the simulation between frames
+   * (ARCHITECTURE.md rule 3, and `camera.py:36-37`). Note rule 3 is about the
+   * CONFIG buffer -- the colour settings reach the camera as loose uniforms for
+   * exactly that reason -- while the entity buffer is passed explicitly on the
+   * desktop too, so a public accessor is the faithful port rather than a
+   * loosening.
+   */
+  entityBufferForRendering(): GPUBuffer {
+    return this.entityBuffer;
+  }
+
+  /**
    * Record one frame: `physicsSteps` sub-steps into a single encoder.
    *
    * All uniforms are written BEFORE the encoder opens, because

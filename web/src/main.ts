@@ -120,6 +120,16 @@ async function start(): Promise<void> {
   if (panParam.length === 2 && panParam.every((v) => Number.isFinite(v))) {
     cameraState.pan = [panParam[0]!, panParam[1]!];
   }
+  // `?colorByCohort=1` / `?colorSensitivity=2` -- display-only overrides for
+  // A/B, since the config that carries them is not editable until Step 7.
+  const sensitivityParam = Number(params.get('colorSensitivity'));
+  const colorSensitivityOverride = Number.isFinite(sensitivityParam) && params.has('colorSensitivity')
+    ? sensitivityParam
+    : null;
+  const colorByCohortOverride = params.has('colorByCohort')
+    ? params.get('colorByCohort') !== '0'
+    : null;
+
   const requestedMode = new URLSearchParams(window.location.search).get('camera');
   if (requestedMode !== null) {
     if ((CAMERA_MODES as readonly string[]).includes(requestedMode)) {
@@ -167,6 +177,16 @@ async function start(): Promise<void> {
       canvas: system.currentCanvasTexture(),
       canvasSize: system.canvasSize,
       windowSize,
+      entities: system.entityBufferForRendering(),
+      entityCount: system.entityCount,
+      // From the loaded preset, overridable for A/B. Step 7's Project owns the
+      // selected config and replaces both with `project.config`.
+      //
+      // The override earns its keep on `colorByCohort`: all three shipped
+      // presets set it false, so without a way to force it on, `col_params.y`
+      // and the flat interpolation would ship untested until Step 10.
+      colorSensitivity: colorSensitivityOverride ?? preset.config.colorSensitivity,
+      colorByCohort: colorByCohortOverride ?? preset.config.colorByCohort,
     };
 
     // Uniforms are written BEFORE the encoder opens -- `queue.writeBuffer`

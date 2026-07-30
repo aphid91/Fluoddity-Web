@@ -40,12 +40,15 @@
 import { compileModule } from '../gpu/shaderModule.ts';
 import type { CameraState } from './cameraState.ts';
 import {
+  CAM_BRUSH_UNIFORM_SIZE,
   CAMERA_VIEW_UNIFORM_SIZE,
+  packCamBrushUniforms,
   packCameraViewUniforms,
   type CameraView,
 } from './cameraUniforms.ts';
 
 import cameraSource from './shaders/camera.wgsl';
+import camBrushSource from './shaders/camBrush.wgsl';
 
 /** What `render()` is handed per sample. Nothing here is held between frames. */
 export interface CameraFrame {
@@ -59,6 +62,17 @@ export interface CameraFrame {
   readonly canvas: GPUTextureView;
   readonly canvasSize: readonly [number, number];
   readonly windowSize: readonly [number, number];
+  /** The entity buffer, for PARTICLES mode. Never held between frames. */
+  readonly entities: GPUBuffer;
+  readonly entityCount: number;
+  /**
+   * From the SELECTED config, handed over rather than read from the config
+   * buffer -- which belongs to ParticleSystem (rule 3). With several configs
+   * loaded, the selected one sets the palette for all
+   * (`orchestrator.py:334-339`).
+   */
+  readonly colorSensitivity: number;
+  readonly colorByCohort: boolean;
 }
 
 export class Camera {
@@ -79,7 +93,19 @@ export class Camera {
   private trailTextureLayout: GPUBindGroupLayout | null = null;
   private trailUniformGroup: GPUBindGroup | null = null;
 
+  private particlePipeline: GPURenderPipeline | null = null;
+  private particleLayout: GPUBindGroupLayout | null = null;
+  /**
+   * Built once, unlike the canvas group: the entity buffer never swaps, so
+   * there is nothing here to invalidate. Rebuilt only if the buffer identity
+   * changes (a world-size rebuild), which `render` checks by holding the buffer
+   * it was built against.
+   */
+  private particleGroup: GPUBindGroup | null = null;
+  private particleGroupBuffer: GPUBuffer | null = null;
+
   private readonly viewUniforms: GPUBuffer;
+  private readonly camBrushUniforms: GPUBuffer;
   private readonly canvasSampler: GPUSampler;
 
   /**
@@ -115,6 +141,11 @@ export class Camera {
       size: CAMERA_VIEW_UNIFORM_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this.camBrushUniforms = device.createBuffer({
+      label: 'CamBrushUniforms',
+      size: CAM_BRUSH_UNIFORM_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
 
     // Clamp, not the boundary-mode sampler. `camera.frag:40-43` early-outs to
     // black outside [0,1], so the address mode is never reached -- binding the
@@ -147,8 +178,19 @@ export class Camera {
    * are gone (no browser meaning), but the isolation survives.
    */
   async reload(): Promise<void> {
+    // Both compiled before either pipeline is built, so a failure in one does
+    // not skip the other -- the desktop reloads each half independently for the
+    // same reason (`bloom.py:66-71`).
+    const [module, brushModule] = await Promise.all([
+      compileModule(this.device, 'camera.wgsl', cameraSource),
+      compileModule(this.device, 'camBrush.wgsl', camBrushSource),
+    ]);
+    this.buildTrail(module);
+    this.buildParticles(brushModule);
+  }
+
+  private buildTrail(module: GPUShaderModule | null): void {
     const device = this.device;
-    const module = await compileModule(device, 'camera.wgsl', cameraSource);
     if (module === null) {
       this.trailPipeline = null;
       return;
@@ -185,9 +227,70 @@ export class Camera {
     });
   }
 
+  private buildParticles(module: GPUShaderModule | null): void {
+    const device = this.device;
+    if (module === null) {
+      this.particlePipeline = null;
+      return;
+    }
+
+    this.particleLayout = device.createBindGroupLayout({
+      label: 'cam-brush',
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: 'uniform' },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.VERTEX,
+          buffer: { type: 'read-only-storage' },
+        },
+      ],
+    });
+
+    this.particlePipeline = device.createRenderPipeline({
+      label: 'camera-particles',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.particleLayout] }),
+      vertex: { module, entryPoint: 'vs_main' },
+      fragment: {
+        module,
+        entryPoint: 'fs_main',
+        targets: [
+          {
+            format: this.targetFormat,
+            // Additive: overlapping sprites accumulate into brighter regions,
+            // which is what makes density legible. Unrelated to the TEMPORAL
+            // accumulation of motion blur -- this one is within a single sample.
+            //
+            // moderngl's `blend_func = ONE, ONE` sets colour AND alpha; WebGPU
+            // requires both spelled out.
+            blend: {
+              color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+              alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+            },
+          },
+        ],
+      },
+      primitive: {
+        topology: 'triangle-strip',
+        // The strip reorder in camBrush.wgsl flips one triangle's winding.
+        cullMode: 'none',
+      },
+    });
+
+    // Invalidate: the layout object is new, so the old group no longer matches.
+    this.particleGroup = null;
+    this.particleGroupBuffer = null;
+  }
+
   /** True when every pipeline compiled. Surfaced for the startup summary. */
   pipelineStatus(): Readonly<Record<string, boolean>> {
-    return { cameraTrail: this.trailPipeline !== null };
+    return {
+      cameraTrail: this.trailPipeline !== null,
+      cameraParticles: this.particlePipeline !== null,
+    };
   }
 
   /**
@@ -208,7 +311,17 @@ export class Camera {
       pan: this.state.pan,
       zoom: this.state.zoom,
     };
-    this.device.queue.writeBuffer(this.viewUniforms, 0, packCameraViewUniforms(view));
+    // Both modes' uniforms, unconditionally. Writing only the active mode's
+    // would leave the other stale, and the mode can change between frames --
+    // 24 wasted bytes against a class of bug that appears one frame after a
+    // toggle and then corrects itself, which is the worst kind to reproduce.
+    const queue = this.device.queue;
+    queue.writeBuffer(this.viewUniforms, 0, packCameraViewUniforms(view));
+    queue.writeBuffer(
+      this.camBrushUniforms,
+      0,
+      packCamBrushUniforms(view, frame.colorSensitivity, frame.colorByCohort),
+    );
   }
 
   /**
@@ -219,9 +332,53 @@ export class Camera {
    * to it.
    */
   render(encoder: GPUCommandEncoder, target: GPUTextureView, frame: CameraFrame): void {
-    // 5.2 adds the PARTICLES branch on `this.state.mode` here.
-    this.renderTrail(encoder, target, frame);
+    if (this.state.mode === 'particles') {
+      this.renderParticles(encoder, target, frame);
+    } else {
+      this.renderTrail(encoder, target, frame);
+    }
     this.samplesTaken += 1;
+  }
+
+  private renderParticles(
+    encoder: GPUCommandEncoder,
+    target: GPUTextureView,
+    frame: CameraFrame,
+  ): void {
+    if (this.particlePipeline === null || this.particleLayout === null) return;
+
+    if (this.particleGroup === null || this.particleGroupBuffer !== frame.entities) {
+      this.particleGroup = this.device.createBindGroup({
+        label: 'cam-brush',
+        layout: this.particleLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.camBrushUniforms } },
+          { binding: 1, resource: { buffer: frame.entities } },
+        ],
+      });
+      this.particleGroupBuffer = frame.entities;
+    }
+
+    const pass = encoder.beginRenderPass({
+      label: 'camera-particles',
+      colorAttachments: [
+        {
+          view: target,
+          // Cleared per sample, like TRAIL: additive blending accumulates
+          // within a sample, so the previous sample's content must not be
+          // underneath it.
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        },
+      ],
+    });
+    pass.setPipeline(this.particlePipeline);
+    pass.setBindGroup(0, this.particleGroup);
+    // 4 vertices per entity, instanced. No vertex buffer -- the quad comes from
+    // the vertex index and the entity from the instance index.
+    pass.draw(4, frame.entityCount);
+    pass.end();
   }
 
   private renderTrail(
