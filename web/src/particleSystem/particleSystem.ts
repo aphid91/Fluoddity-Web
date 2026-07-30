@@ -1,0 +1,757 @@
+/**
+ * The simulation: entity buffer, trail canvas, and the three passes that
+ * advance them. The port of `particle_system/particle_system.py` (472 lines).
+ *
+ * ## What `advance()` does, and why the order looks wrong
+ *
+ * Three passes per sub-step, and the order is NOT the obvious one:
+ *
+ *     update_entities    compute; reads the canvas, rewrites every entity
+ *     update_canvas      decay + diffuse, front -> back, THEN SWAP
+ *     splat_into_canvas  additive brush into the (new) front
+ *
+ * `particle_system.py:241-245` says it plainly: "The ordering here is a little
+ * weird. It doesn't matter so much, but if I weren't trying to support legacy
+ * configs, the proper order would be update_entities / splat_into_canvas /
+ * update_canvas." It is ported as it IS, not as it should have been -- the
+ * shipped presets were tuned against this order. Do not tidy it.
+ *
+ * Because the swap happens at the end of pass 2, the splat lands on the
+ * freshly-decayed texture, and that same texture is what the camera reads.
+ *
+ * ## No memory barriers
+ *
+ * The Python calls `ctx.memory_barrier()` between passes. WebGPU has no
+ * analogue and needs none: passes within a submission observe each other's
+ * writes in order, and the implementation inserts the barriers. The ordering
+ * guarantee the barriers provided is structural here.
+ *
+ * ## One encoder per frame
+ *
+ * At the default physics rate, `advance()` runs 30x per frame -- 90 GPU passes,
+ * plus rendering. WebGPU's per-pass overhead is JS-side and higher than GL's,
+ * which docs/WEB_PORT_PLAN.md:558-564 flags as the most likely place this port
+ * becomes slower than the desktop. The plan's first-choice mitigation is
+ * batching sub-steps into one encoder, so that is what this does from the
+ * start: `runFrame()` opens ONE encoder, records every sub-step, and submits
+ * once.
+ *
+ * That is also why `frameCount` rides a DYNAMIC OFFSET rather than being
+ * rewritten per sub-step: `queue.writeBuffer` cannot be interleaved with an
+ * encoder's passes, so all 30 sub-steps' uniforms are written up front into one
+ * buffer and each pass binds its own slice.
+ */
+
+import {
+  type SimulationConfig,
+  type WorldSettings,
+  BC,
+  forUpload,
+} from './config.ts';
+import { ENTITY_STRIDE } from './layout.ts';
+import { packConfigs } from './pack.ts';
+import { canvasDimensions, ENTITIES_PER_WORLD_UNIT, ENTITY_COUNT } from './sizing.ts';
+import {
+  type ShoveState,
+  alignTo,
+  BRUSH_UNIFORM_SIZE,
+  CANVAS_UNIFORM_SIZE,
+  ENTITY_UPDATE_UNIFORM_SIZE,
+  packBrushUniforms,
+  packCanvasUniforms,
+  packEntityUpdateUniforms,
+} from './uniforms.ts';
+import { workgroupsFor } from './dispatch.ts';
+import { compileModule } from '../gpu/shaderModule.ts';
+
+import entityUpdateSource from './shaders/entityUpdate.wgsl';
+import canvasSource from './shaders/canvas.wgsl';
+import brushSource from './shaders/brush.wgsl';
+
+// Re-exported so callers have one import for the simulation. The definitions
+// live in `dispatch.ts` because this module imports `.wgsl`, which only
+// resolves through the Vite plugin -- so nothing under `node --test` can import
+// this file, and the dispatch arithmetic deserves a test.
+export { WORKGROUP_SIZE, workgroupsFor } from './dispatch.ts';
+
+/** The canvas texel format. RG16F, and deliberately not RG32F.
+ *
+ * Base WebGPU can neither LINEAR-filter nor blend `rg32float` -- both need
+ * optional device features -- while `rg16float` does everything this texture
+ * needs with none, at half the bandwidth. The precision cost is paid for in the
+ * shaders instead (`CANVAS_VALUE_SCALE` and the saturation clamp in
+ * common.wgsl). See `particle_system.py:28-34`; do not "upgrade" this without
+ * also deciding to narrow the device matrix.
+ */
+export const CANVAS_FORMAT: GPUTextureFormat = 'rg16float';
+
+export interface ParticleSystemOptions {
+  readonly device: GPUDevice;
+  readonly config: SimulationConfig;
+  readonly world: WorldSettings;
+  /** Defaults to `canvasDimensions()` -- 1024x1024 at world size 1. */
+  readonly canvasSize?: readonly [number, number];
+  /** Injectable so World Size can rebuild the system at a different scale. */
+  readonly entityCount?: number;
+  /** Sub-steps per frame. The desktop's Physics Rate; 30 is the default. */
+  readonly physicsSteps?: number;
+}
+
+/** A canvas texture and the views/bind groups that go with it. */
+interface CanvasTarget {
+  texture: GPUTexture;
+  view: GPUTextureView;
+}
+
+export class ParticleSystem {
+  private readonly device: GPUDevice;
+  readonly canvasSize: readonly [number, number];
+  readonly entityCount: number;
+  /**
+   * Derived from the ACTUAL entity count, not the module default, so a rebuilt
+   * system scales distances correctly. Feeds WorldData and is the single source
+   * of truth the shader reads.
+   */
+  readonly sqrtWorldSize: number;
+
+  /** Sub-steps per frame. */
+  physicsSteps: number;
+
+  /**
+   * The reset sentinel. Zero is watched by all three shaders -- see `reset()`.
+   * Read-only outside; only `advance()` and `reset()` write it.
+   */
+  private _frameCount = 0;
+  get frameCount(): number {
+    return this._frameCount;
+  }
+
+  private configs: readonly SimulationConfig[];
+  private world: WorldSettings;
+
+  private readonly entityBuffer: GPUBuffer;
+  private configBuffer: GPUBuffer;
+
+  /** front = read/most recent; back = the one being written. */
+  private front: CanvasTarget;
+  private back: CanvasTarget;
+
+  private readonly repeatSampler: GPUSampler;
+  private readonly clampSampler: GPUSampler;
+  /** 1x1 stand-in for the Strafe Field, which arrives in Step 9. */
+  private readonly dummyTextureView: GPUTextureView;
+
+  private readonly entityUpdateUniforms: GPUBuffer;
+  private readonly canvasUniforms: GPUBuffer;
+  private readonly brushUniforms: GPUBuffer;
+  /** Stride between consecutive sub-steps' uniform slices. */
+  private readonly entityUpdateStride: number;
+  private readonly canvasStride: number;
+  private readonly brushStride: number;
+
+  private computePipeline: GPUComputePipeline | null = null;
+  private canvasPipeline: GPURenderPipeline | null = null;
+  private brushPipeline: GPURenderPipeline | null = null;
+
+  private computeStateGroup: GPUBindGroup | null = null;
+  private canvasUniformGroup: GPUBindGroup | null = null;
+  private brushStateGroup: GPUBindGroup | null = null;
+  /**
+   * Texture groups, keyed [wrap ? 1 : 0][front-is-a ? 0 : 1]. Pre-built because
+   * WebGPU samplers are immutable: the desktop flips `repeat_x/repeat_y` at
+   * runtime (`_apply_boundary_sampling`), which here means swapping bind groups
+   * rather than mutating one. Four combinations, built once, never per frame.
+   */
+  private computeTextureGroups: GPUBindGroup[][] = [];
+  private canvasTextureGroups: GPUBindGroup[][] = [];
+  /** Which of the two canvas textures is currently the front. */
+  private frontIsA = true;
+  private readonly canvasA: CanvasTarget;
+  private readonly canvasB: CanvasTarget;
+
+  private constructor(opts: ParticleSystemOptions) {
+    this.device = opts.device;
+    this.canvasSize = opts.canvasSize ?? canvasDimensions();
+    this.entityCount = opts.entityCount ?? ENTITY_COUNT;
+    this.sqrtWorldSize = Math.sqrt(this.entityCount / ENTITIES_PER_WORLD_UNIT);
+    this.physicsSteps = opts.physicsSteps ?? 30;
+    this.configs = [opts.config];
+    this.world = opts.world;
+
+    const device = this.device;
+
+    // Entity buffer. Contents are written entirely GPU-side by the reset path
+    // in entityUpdate.wgsl, so allocation is all that is needed here.
+    //
+    // Sized EXACTLY entityCount * 32 so `arrayLength(&entities)` in the shader
+    // equals entityCount -- the shader's bounds check and every `/ N` cohort
+    // division depend on that identity.
+    this.entityBuffer = device.createBuffer({
+      label: 'EntityBuffer',
+      size: this.entityCount * ENTITY_STRIDE,
+      // COPY_SRC, like the canvas's, is for the A/B harness only.
+      usage:
+        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+
+    this.configBuffer = device.createBuffer({
+      label: 'ConfigBuffer',
+      size: packConfigs(this.configs).byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    const makeCanvas = (label: string): CanvasTarget => {
+      const texture = device.createTexture({
+        label,
+        size: { width: this.canvasSize[0], height: this.canvasSize[1] },
+        format: CANVAS_FORMAT,
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.RENDER_ATTACHMENT |
+          // COPY_SRC is for verification, not for the app: it is what lets the
+          // A/B harness read the canvas back and compare it against the
+          // desktop's own dump. Costs nothing when unused, and without it the
+          // only way to check the physics is to photograph a window.
+          GPUTextureUsage.COPY_SRC,
+      });
+      return { texture, view: texture.createView() };
+    };
+    this.canvasA = makeCanvas('canvas-a');
+    this.canvasB = makeCanvas('canvas-b');
+    this.front = this.canvasA;
+    this.back = this.canvasB;
+
+    // Both address modes, built up front. The desktop mutates one sampler;
+    // WebGPU samplers are immutable, so the mode is chosen by which bind group
+    // is bound. LINEAR filtering on both, matching `canvas_texture.filter`.
+    const samplerBase = {
+      magFilter: 'linear',
+      minFilter: 'linear',
+    } as const;
+    this.repeatSampler = device.createSampler({
+      label: 'canvas-repeat',
+      addressModeU: 'repeat',
+      addressModeV: 'repeat',
+      ...samplerBase,
+    });
+    this.clampSampler = device.createSampler({
+      label: 'canvas-clamp',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+      ...samplerBase,
+    });
+
+    // The Strafe Field is Step 9. Until then the shader's `strafe_field_active`
+    // flag is false and the sample is skipped -- but WebGPU validates a bind
+    // group whether or not the shader reads it, so a real texture must still be
+    // bound. (GL tolerated an unbound sampler here; this is the one place that
+    // difference costs anything.)
+    this.dummyTextureView = device
+      .createTexture({
+        label: 'strafe-field-placeholder',
+        size: { width: 1, height: 1 },
+        format: CANVAS_FORMAT,
+        usage: GPUTextureUsage.TEXTURE_BINDING,
+      })
+      .createView();
+
+    // One uniform slice per sub-step, so the whole frame's uniforms can be
+    // written before the encoder opens. Dynamic offsets must be a multiple of
+    // minUniformBufferOffsetAlignment (256 on most hardware).
+    const align = device.limits.minUniformBufferOffsetAlignment;
+    this.entityUpdateStride = alignTo(ENTITY_UPDATE_UNIFORM_SIZE, align);
+    this.canvasStride = alignTo(CANVAS_UNIFORM_SIZE, align);
+    this.brushStride = alignTo(BRUSH_UNIFORM_SIZE, align);
+
+    const uniformBuffer = (label: string, stride: number): GPUBuffer =>
+      device.createBuffer({
+        label,
+        size: stride * this.physicsSteps,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    this.entityUpdateUniforms = uniformBuffer(
+      'entity-update-uniforms',
+      this.entityUpdateStride,
+    );
+    this.canvasUniforms = uniformBuffer('canvas-uniforms', this.canvasStride);
+    this.brushUniforms = uniformBuffer('brush-uniforms', this.brushStride);
+
+    this.uploadConfigs();
+  }
+
+  /**
+   * Build a system and compile its shaders.
+   *
+   * Async because WGSL compilation errors surface asynchronously through
+   * `compilationInfo()`. Per invariant 5 a failed compile is LOGGED, NOT FATAL:
+   * the pipeline stays null and `advance()` skips that pass, exactly as the
+   * Python's `if self.brush_splat_program is None: return` guards do.
+   */
+  static async create(opts: ParticleSystemOptions): Promise<ParticleSystem> {
+    const system = new ParticleSystem(opts);
+    await system.reload();
+    return system;
+  }
+
+  /**
+   * Compile shaders and build pipelines. The analogue of `reload()`.
+   *
+   * The reload TRIGGERS are gone (invariant 5: reloading a shader edited on
+   * disk has no browser meaning), but the SHAPE survives -- setup isolated in
+   * one re-runnable helper, failure logged rather than thrown.
+   */
+  async reload(): Promise<void> {
+    const device = this.device;
+
+    const [entityModule, canvasModule, brushModule] = await Promise.all([
+      compileModule(device, 'entityUpdate.wgsl', entityUpdateSource),
+      compileModule(device, 'canvas.wgsl', canvasSource),
+      compileModule(device, 'brush.wgsl', brushSource),
+    ]);
+
+    // --- entity update (compute) -----------------------------------------
+    const computeStateLayout = device.createBindGroupLayout({
+      label: 'entity-update-state',
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'storage' },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'read-only-storage' },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'uniform', hasDynamicOffset: true },
+        },
+      ],
+    });
+    const computeTextureLayout = device.createBindGroupLayout({
+      label: 'entity-update-textures',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: {} },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: {} },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: {} },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: {} },
+      ],
+    });
+
+    if (entityModule !== null) {
+      this.computePipeline = device.createComputePipeline({
+        label: 'entity-update',
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [computeStateLayout, computeTextureLayout],
+        }),
+        compute: { module: entityModule, entryPoint: 'main' },
+      });
+      this.computeStateGroup = device.createBindGroup({
+        label: 'entity-update-state',
+        layout: computeStateLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.entityBuffer } },
+          { binding: 1, resource: { buffer: this.configBuffer } },
+          {
+            binding: 2,
+            resource: {
+              buffer: this.entityUpdateUniforms,
+              size: ENTITY_UPDATE_UNIFORM_SIZE,
+            },
+          },
+        ],
+      });
+    }
+
+    // --- canvas decay/diffuse --------------------------------------------
+    const canvasUniformLayout = device.createBindGroupLayout({
+      label: 'canvas-uniforms',
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: 'uniform', hasDynamicOffset: true },
+        },
+      ],
+    });
+    const canvasTextureLayout = device.createBindGroupLayout({
+      label: 'canvas-textures',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      ],
+    });
+
+    if (canvasModule !== null) {
+      this.canvasPipeline = device.createRenderPipeline({
+        label: 'canvas-update',
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [canvasUniformLayout, canvasTextureLayout],
+        }),
+        vertex: { module: canvasModule, entryPoint: 'vs_main' },
+        fragment: {
+          module: canvasModule,
+          entryPoint: 'fs_main',
+          targets: [{ format: CANVAS_FORMAT }],
+        },
+        primitive: { topology: 'triangle-strip' },
+      });
+      this.canvasUniformGroup = device.createBindGroup({
+        label: 'canvas-uniforms',
+        layout: canvasUniformLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: { buffer: this.canvasUniforms, size: CANVAS_UNIFORM_SIZE },
+          },
+        ],
+      });
+    }
+
+    // --- brush splat ------------------------------------------------------
+    // The entity buffer is read in the VERTEX stage here. Same buffer as the
+    // compute pass, different binding type (read-only) and different
+    // visibility, so it needs its own layout.
+    const brushStateLayout = device.createBindGroupLayout({
+      label: 'brush-state',
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: 'uniform', hasDynamicOffset: true },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.VERTEX,
+          buffer: { type: 'read-only-storage' },
+        },
+      ],
+    });
+
+    if (brushModule !== null) {
+      this.brushPipeline = device.createRenderPipeline({
+        label: 'brush-splat',
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [brushStateLayout],
+        }),
+        vertex: { module: brushModule, entryPoint: 'vs_main' },
+        fragment: {
+          module: brushModule,
+          entryPoint: 'fs_main',
+          targets: [
+            {
+              format: CANVAS_FORMAT,
+              // Pure additive: brush.wgsl already carries the full per-splat
+              // weight. moderngl's `blend_func = ONE, ONE` sets colour AND
+              // alpha; WebGPU requires both spelled out. The target is
+              // rg16float so alpha does not exist -- the state is moot, but
+              // omitting it is a validation error rather than a silent default.
+              blend: {
+                color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+                alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+              },
+            },
+          ],
+        },
+        primitive: {
+          topology: 'triangle-strip',
+          // The strip reorder in brush.wgsl flips the winding of one triangle.
+          // With culling off that is irrelevant -- stated explicitly so nobody
+          // "tightens" this to back-face culling and loses half of every splat.
+          cullMode: 'none',
+        },
+      });
+      this.brushStateGroup = device.createBindGroup({
+        label: 'brush-state',
+        layout: brushStateLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: { buffer: this.brushUniforms, size: BRUSH_UNIFORM_SIZE },
+          },
+          { binding: 1, resource: { buffer: this.entityBuffer } },
+        ],
+      });
+    }
+
+    this.buildTextureGroups(computeTextureLayout, canvasTextureLayout);
+  }
+
+  /**
+   * Pre-build the four texture bind groups: {repeat, clamp} x {A front, B front}.
+   *
+   * Both boundary modes and both buffer parities exist up front so neither a
+   * mode change nor the per-sub-step swap allocates anything.
+   */
+  private buildTextureGroups(
+    computeLayout: GPUBindGroupLayout,
+    canvasLayout: GPUBindGroupLayout,
+  ): void {
+    const device = this.device;
+    const samplers = [this.clampSampler, this.repeatSampler];
+    const fronts = [this.canvasA, this.canvasB];
+
+    this.computeTextureGroups = samplers.map((sampler) =>
+      fronts.map((front) =>
+        device.createBindGroup({
+          layout: computeLayout,
+          entries: [
+            { binding: 0, resource: front.view },
+            { binding: 1, resource: sampler },
+            { binding: 2, resource: this.dummyTextureView },
+            { binding: 3, resource: sampler },
+          ],
+        }),
+      ),
+    );
+
+    this.canvasTextureGroups = samplers.map((sampler) =>
+      fronts.map((front) =>
+        device.createBindGroup({
+          layout: canvasLayout,
+          entries: [
+            { binding: 0, resource: front.view },
+            { binding: 1, resource: sampler },
+          ],
+        }),
+      ),
+    );
+  }
+
+  /** Index into the pre-built texture groups for the current state. */
+  private textureGroupIndex(): readonly [number, number] {
+    const wrap = this.world.boundaryConditions === BC.WRAP ? 1 : 0;
+    return [wrap, this.frontIsA ? 0 : 1];
+  }
+
+  private uploadConfigs(): void {
+    const bytes = packConfigs(this.configs);
+    if (bytes.byteLength !== this.configBuffer.size) {
+      this.configBuffer.destroy();
+      this.configBuffer = this.device.createBuffer({
+        label: 'ConfigBuffer',
+        size: bytes.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+    }
+    this.device.queue.writeBuffer(this.configBuffer, 0, bytes);
+  }
+
+  /** The GPU-facing world record: saved settings plus runtime sizing. */
+  private worldConfig() {
+    return forUpload(this.world, this.sqrtWorldSize, this.configs.length);
+  }
+
+  /**
+   * Replace the configs and world settings.
+   *
+   * Rebuilds the config buffer and, if the boundary mode changed, simply
+   * selects a different pre-built bind group next frame -- there is nothing to
+   * re-apply, which is the whole benefit of building all four up front.
+   */
+  applyProject(configs: readonly SimulationConfig[], world: WorldSettings): void {
+    const sizeChanged = configs.length !== this.configs.length;
+    this.configs = configs;
+    this.world = world;
+    this.uploadConfigs();
+    if (sizeChanged) {
+      // The bind group holds the buffer; a reallocated buffer needs new groups.
+      void this.reload();
+    }
+  }
+
+  /**
+   * Reset the simulation.
+   *
+   * THE ASSIGNMENT BELOW *IS* THE RESET -- it looks like bookkeeping, but
+   * frameCount is a uniform, and zero is the sentinel every pass watches for on
+   * the next step:
+   *
+   *     entityUpdate.wgsl   regenerates every entity's position, velocity and
+   *                         rule (and re-assigns config_index)
+   *     canvas.wgsl         writes the canvas to zero instead of decaying it,
+   *                         clearing the trails
+   *     brush.wgsl          discards the frame's splats, so nothing is
+   *                         deposited into the canvas being cleared
+   *
+   * So nothing is torn down or reallocated here: the GPU rebuilds its own state
+   * on the next advance(). Setting frameCount anywhere else, or skipping the
+   * advance after this, would leave the reset half-applied.
+   */
+  reset(): void {
+    this._frameCount = 0;
+  }
+
+  /**
+   * The canvas the camera should read. Identity changes every sub-step, which
+   * is why this is a per-frame accessor rather than a field anyone can hold --
+   * see ARCHITECTURE.md rule 2 on the double-buffer swapping underfoot.
+   */
+  currentCanvasTexture(): GPUTextureView {
+    return this.front.view;
+  }
+
+  /**
+   * The same texture as an object, for `copyTextureToBuffer`.
+   *
+   * Exists for the A/B harness, which reads the canvas back and compares it
+   * against the desktop's dump of the same preset at the same frame count.
+   * Nothing in the app calls this; a view cannot be a copy source, so the
+   * object has to be reachable.
+   */
+  currentCanvasTextureObject(): GPUTexture {
+    return this.front.texture;
+  }
+
+  /**
+   * The entity buffer, for `copyBufferToBuffer`. Verification only, like
+   * `currentCanvasTextureObject` -- comparing mean |vel| and mean |pos| against
+   * the desktop's own dump is what localises a physics divergence to a step.
+   */
+  entityBufferForReadback(): GPUBuffer {
+    return this.entityBuffer;
+  }
+
+  /**
+   * Record one frame: `physicsSteps` sub-steps into a single encoder.
+   *
+   * All uniforms are written BEFORE the encoder opens, because
+   * `queue.writeBuffer` may not be interleaved with an encoder's passes. Each
+   * sub-step then binds its own slice by dynamic offset.
+   */
+  runFrame(encoder: GPUCommandEncoder, shove: ShoveState | null = null): void {
+    const steps = Math.max(1, Math.trunc(this.physicsSteps));
+    const world = this.worldConfig();
+    const canvasRes = this.canvasSize;
+
+    // Write every sub-step's uniforms up front. Only frameCount varies -- the
+    // world payload is identical across the frame, which is the same reasoning
+    // as the desktop's cached `_world_uniform` (ARCHITECTURE.md:658-665). It is
+    // rebuilt per sub-step here only because each slice must hold a full copy.
+    const entityBytes = new Uint8Array(this.entityUpdateStride * steps);
+    const canvasBytes = new Uint8Array(this.canvasStride * steps);
+    const brushBytes = new Uint8Array(this.brushStride * steps);
+    for (let i = 0; i < steps; i++) {
+      const fc = this._frameCount + i;
+      entityBytes.set(
+        new Uint8Array(
+          packEntityUpdateUniforms(world, canvasRes, [1, 1], fc, shove, false),
+        ),
+        i * this.entityUpdateStride,
+      );
+      canvasBytes.set(
+        new Uint8Array(packCanvasUniforms(world, fc)),
+        i * this.canvasStride,
+      );
+      brushBytes.set(
+        new Uint8Array(packBrushUniforms(world, canvasRes, fc)),
+        i * this.brushStride,
+      );
+    }
+    const queue = this.device.queue;
+    queue.writeBuffer(this.entityUpdateUniforms, 0, entityBytes);
+    queue.writeBuffer(this.canvasUniforms, 0, canvasBytes);
+    queue.writeBuffer(this.brushUniforms, 0, brushBytes);
+
+    for (let i = 0; i < steps; i++) {
+      this.advance(encoder, i);
+    }
+    this._frameCount += steps;
+  }
+
+  /**
+   * One sub-step. See the class header for why the pass order is what it is.
+   *
+   * `slot` selects this sub-step's uniform slice. No memory barriers: passes
+   * within a submission are ordered and WebGPU inserts them.
+   */
+  private advance(encoder: GPUCommandEncoder, slot: number): void {
+    this.updateEntities(encoder, slot);
+    this.updateCanvas(encoder, slot);
+    this.splatIntoCanvas(encoder, slot);
+  }
+
+  private updateEntities(encoder: GPUCommandEncoder, slot: number): void {
+    if (this.computePipeline === null || this.computeStateGroup === null) return;
+    const [wrap, parity] = this.textureGroupIndex();
+    const textures = this.computeTextureGroups[wrap]?.[parity];
+    if (textures === undefined) return;
+
+    const pass = encoder.beginComputePass({ label: 'entity-update' });
+    pass.setPipeline(this.computePipeline);
+    pass.setBindGroup(0, this.computeStateGroup, [slot * this.entityUpdateStride]);
+    pass.setBindGroup(1, textures);
+    pass.dispatchWorkgroups(workgroupsFor(this.entityCount));
+    pass.end();
+  }
+
+  private updateCanvas(encoder: GPUCommandEncoder, slot: number): void {
+    if (this.canvasPipeline === null || this.canvasUniformGroup === null) return;
+    const [wrap, parity] = this.textureGroupIndex();
+    const textures = this.canvasTextureGroups[wrap]?.[parity];
+    if (textures === undefined) return;
+
+    const pass = encoder.beginRenderPass({
+      label: 'canvas-update',
+      colorAttachments: [
+        {
+          view: this.back.view,
+          // 'clear' rather than 'load': the shader writes every texel
+          // unconditionally (both branches assign, and the frame-0 path returns
+          // a value), so the clear is a hint to tiled GPUs, not a correctness
+          // requirement.
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        },
+      ],
+    });
+    pass.setPipeline(this.canvasPipeline);
+    pass.setBindGroup(0, this.canvasUniformGroup, [slot * this.canvasStride]);
+    pass.setBindGroup(1, textures);
+    pass.draw(4);
+    pass.end();
+
+    // THE SWAP, and it happens here and nowhere else -- so the splat below
+    // lands on the texture this pass just wrote.
+    const oldFront = this.front;
+    this.front = this.back;
+    this.back = oldFront;
+    this.frontIsA = !this.frontIsA;
+  }
+
+  private splatIntoCanvas(encoder: GPUCommandEncoder, slot: number): void {
+    if (this.brushPipeline === null || this.brushStateGroup === null) return;
+
+    const pass = encoder.beginRenderPass({
+      label: 'brush-splat',
+      colorAttachments: [
+        {
+          view: this.front.view,
+          // 'load', NEVER 'clear'. The desktop renders into the canvas without
+          // clearing (particle_system.py:433); clearing here would erase the
+          // trails every sub-step.
+          loadOp: 'load',
+          storeOp: 'store',
+        },
+      ],
+    });
+    pass.setPipeline(this.brushPipeline);
+    pass.setBindGroup(0, this.brushStateGroup, [slot * this.brushStride]);
+    // 4 vertices per entity, instanced. No vertex buffer -- the quad comes from
+    // the vertex index and the entity from the instance index.
+    pass.draw(4, this.entityCount);
+    pass.end();
+  }
+
+  /** True when every pipeline compiled. Surfaced for the startup summary. */
+  pipelineStatus(): Readonly<Record<string, boolean>> {
+    return {
+      entityUpdate: this.computePipeline !== null,
+      canvas: this.canvasPipeline !== null,
+      brush: this.brushPipeline !== null,
+    };
+  }
+}

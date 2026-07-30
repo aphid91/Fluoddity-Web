@@ -152,6 +152,36 @@ record of which float means what, there are no spare lanes left in `sensor`/
 
 ## Step 4 — `entity_update` and the trail canvas
 
+**DONE.** The engine runs in the browser at parity. See `web/README.md` for the
+A/B results and the divergence list. Corrections to what this section said,
+recorded because a later step would otherwise re-derive them:
+
+- **`textureSize` is called 4-6×, not 4×**, and `:167` is `strafe_field_texture`
+  — a *different* texture. The canvas sites are `:151` (twice, via the two
+  sensor taps), `:232` (once or twice, via reset and the fence) and `:384`.
+- **`#ifdef HARD_FENCE` is at `:552`, not `:551`** (`:551` is the commented-out
+  `//#define`). It is defined nowhere in the repo, so the **`#else` soft fence
+  is the live branch** and the `reset(); return;` variant is dead.
+- **GLSL `==` on a vector returns a scalar bool; WGSL's returns `vec4<bool>`.**
+  `:439` needs `all(...) && all(...)`. Not mentioned below; the compiler catches
+  it, but it is a real semantic difference rather than a cast.
+- **WGSL function parameters are immutable.** `calculate_entity_behavior`
+  reassigns `L` and `R` (`:344-345`), which is legal in GLSL and not here.
+- **THE Y FLIP, which this section does not mention and which cost the most.**
+  OpenGL's framebuffer origin is bottom-left and WebGPU's is top-left, so every
+  stage that rasterizes into the canvas needs a flip the GLSL does not have —
+  `brush.wgsl` (negate NDC y) and `canvas.wgsl` (flip the quad's v). Getting
+  either wrong is *not* an upside-down picture: the canvas is a feedback loop,
+  so it reads the mirrored row and the physics quietly changes. Measured at ~3×
+  less canvas energy by sub-step 3.
+- **The three presets were replaced during Step 4.** `configs/` now holds
+  `Starcrossedv8.json`, `9leafv8.json` and `hatmanv8.json`, all v8. `Angles` is
+  gone. `particle_system.py:45` was updated to match — it pointed at the deleted
+  `Starcrossed.json` and the desktop app would not start.
+- **Step 4 needs a present pass**, since the camera is Step 5 and a black canvas
+  is also a *successful* Step 1-3 build. `web/src/app/debugPresent.wgsl` is that
+  throwaway; **Step 5 deletes it.**
+
 The heart of the port, and where "faithful" is decided.
 
 **`entity_update.glsl` (581 lines) → compute, workgroup 256.** Per entity: two
@@ -204,10 +234,10 @@ sampler up front and **swap bind groups**. Four things must agree on the mode or
 the boundary only half-exists (invariant 9): the entity update, the canvas
 samplers, the diffusion stencil, and every sensor read.
 
-**Verify:** the first real A/B. Load `Starcrossed.json` in both apps at world size
-1.0 and physics rate 30, reset both, watch them evolve. TRAIL mode only at this
-point — no bloom, no tone curve, no overlays. This is the step that must be right
-before anything else matters.
+**Verify:** the first real A/B. Load `Starcrossedv8.json` in both apps at world
+size 1.0 and physics rate 30, reset both, watch them evolve. TRAIL mode only at
+this point — no bloom, no tone curve, no overlays. This is the step that must be
+right before anything else matters.
 
 ---
 
@@ -216,6 +246,13 @@ before anything else matters.
 Everything from "the simulation advanced" to "pixels on screen." Order is
 load-bearing: **everything before the tone curve is linear**, and the curve runs
 exactly once, at the end.
+
+**Start by deleting `web/src/app/debugPresent.wgsl`** and the `presentPass`
+helper in `main.ts`. Step 4 added them only so the engine could be seen at all;
+they implement no camera, no letterbox, no bloom and no tone curve, and
+`camera.frag`'s port replaces both. Note the canvas is stored **top-left-origin**
+(see the Y-flip note in `web/README.md`), so the present pass samples it
+straight — `debugPresent.wgsl` documents which way round that lands.
 
 ```
 Camera                              Assembler
@@ -406,11 +443,13 @@ enumerate a directory, so:
 - Port the **v8 writer and reader only**. The `LEGACY COMPATIBILITY` v7 block is
   explicitly scoped for removal (`ARCHITECTURE.md` "Features scoped for removal")
   and **must not reach the port** — its spec is the v8 format alone.
-  **The three shipped presets are currently v7.** Jesse is re-saving them as v8
-  from the desktop app himself, so the port needs no conversion step and no
-  temporary v7 reader — but **confirm all three are v8 before starting Step 9**,
-  because a v7 file loaded by a v8-only reader is a silent partial parse, not an
-  error.
+  **All three shipped presets are v8** — re-saved during Step 4, and now named
+  `Starcrossedv8.json`, `9leafv8.json` and `hatmanv8.json`. The port needs no
+  conversion step and no temporary v7 reader. Step 4 reads them through
+  `web/src/particleSystem/presets.generated.json`, emitted at build time by
+  running the desktop's own `persistence.load()`; **Step 9 deletes that file,
+  `defaultConfig.ts` and the generator's `build_presets` section** and replaces
+  them with the manifest + IndexedDB path described here.
 - Keep `sanitize_filename()` — it's still right for IndexedDB keys.
 - **`snapshot_configs` returns a value synchronously** and `PreviewSession.begin()`
   depends on it (`ui.py:498-505` is the only path reading a command's return
@@ -526,9 +565,11 @@ the visual A/B.
 **The A/B protocol** (per your decision — no numeric matching, no lockstep):
 
 1. Run the desktop app: `Scratch.venv/Scripts/python.exe main.py`.
-2. Load the same preset in both — start with `Starcrossed.json`, then
-   `9LeafClovers.json` and `Angles.json`. (These are being re-saved as v8 by
-   Jesse; the port reads v8 only.)
+2. Load the same preset in both — start with `Starcrossedv8.json`, then
+   `hatmanv8.json` and `9leafv8.json`. (All three are v8; the port reads v8
+   only. `hatmanv8` is the one worth reaching for: 64 cohorts on a grid, so it
+   exercises the cohort, spawn and per-cohort-mutation paths the other two
+   leave untouched.)
 3. Match world size, physics rate, camera mode, and display prefs. Reset both.
 4. Run free and compare emergent character — structure, motion, how trails
    settle, how the population organizes.
@@ -576,7 +617,7 @@ Recorded so a later agent doesn't reopen them.
 | Config storage | **Build-time manifest + IndexedDB**, same `(category, name)` key identity |
 | Milestone 1 scope | **Engine-first, thin UI** — flat Tweakpane dump of the registry, no tabs/gates/tooltips/menus |
 | Gated controls | Real latch preferred; **disclosure-triangle fallback is pre-approved** rather than a blocker (Step 10) |
-| Shipped presets | Jesse re-saves all three as **v8**; the port reads v8 only, no legacy path |
+| Shipped presets | **Done.** All three are v8 (`Starcrossedv8`, `9leafv8`, `hatmanv8`); the port reads v8 only, no legacy path |
 | Hotkey collisions | **Deferred.** Build the focus-aware rebindable table (Step 8); choose bindings once the UI exists |
 
 ## Open questions

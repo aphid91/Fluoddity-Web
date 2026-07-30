@@ -2,19 +2,111 @@
  * Entry point.
  *
  * The desktop analogue is `main.py` (4 lines) plus the frame loop at
- * `orchestrator/orchestrator.py:256-365`. Step 1 has neither an Orchestrator
- * nor anything to orchestrate: this is the blocking `while not
- * window.should_close()` loop replaced by `requestAnimationFrame`, clearing to
- * black and nothing else.
+ * `orchestrator/orchestrator.py:256-365`. There is still no Orchestrator --
+ * Step 7 builds it, along with the command/status API and the real frame loop's
+ * ordering constraints (pick-read before pick-write; render inside the physics
+ * loop for motion blur). Step 4's loop is the minimum that runs the engine:
+ * advance the simulation, then show the canvas.
  *
- * Steps 2-7 grow this into the real frame loop, at which point the ordering
- * constraints documented on the Python loop (pick-read before pick-write;
- * render inside the physics loop for motion blur; screen bind after the loop)
- * become load-bearing here too.
+ * WHAT IS DELIBERATELY MISSING, so it is not mistaken for an oversight:
+ * no camera, no bloom, no tone curve, no overlays (Step 5); no picking
+ * (Step 6); no UI, no input, no presets menu (Steps 7-10). `presentPass` below
+ * is a throwaway that Step 5 deletes -- see debugPresent.wgsl.
  */
 
 import { acquireDevice, showUnavailableOverlay, WebGPUUnavailable } from './gpu/device.ts';
-import { createSurface } from './app/surface.ts';
+import { compileModule } from './gpu/shaderModule.ts';
+import { createSurface, type Surface } from './app/surface.ts';
+import { ParticleSystem } from './particleSystem/particleSystem.ts';
+import { defaultPreset } from './particleSystem/defaultConfig.ts';
+
+import presentSource from './app/debugPresent.wgsl';
+
+/** The throwaway present pass. Step 5 replaces this with the real camera. */
+interface PresentPass {
+  render(encoder: GPUCommandEncoder, target: GPUTextureView, canvas: GPUTextureView): void;
+}
+
+async function createPresentPass(
+  device: GPUDevice,
+  format: GPUTextureFormat,
+): Promise<PresentPass | null> {
+  const module = await compileModule(device, 'debugPresent.wgsl', presentSource);
+  if (module === null) return null;
+
+  const layout = device.createBindGroupLayout({
+    label: 'present',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+    ],
+  });
+  const pipeline = device.createRenderPipeline({
+    label: 'debug-present',
+    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+    vertex: { module, entryPoint: 'vs_main' },
+    fragment: { module, entryPoint: 'fs_main', targets: [{ format }] },
+    primitive: { topology: 'triangle-strip' },
+  });
+  const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+
+  return {
+    render(encoder, target, canvas) {
+      // The bind group is rebuilt per frame because the canvas double-buffer
+      // swaps underneath it -- the same reason the desktop hands the texture to
+      // the camera per frame rather than letting it hold a reference
+      // (ARCHITECTURE.md rule 3).
+      const group = device.createBindGroup({
+        layout,
+        entries: [
+          { binding: 0, resource: canvas },
+          { binding: 1, resource: sampler },
+        ],
+      });
+      const pass = encoder.beginRenderPass({
+        label: 'debug-present',
+        colorAttachments: [
+          {
+            view: target,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, group);
+      pass.draw(4);
+      pass.end();
+    },
+  };
+}
+
+/**
+ * The `?debug` readout.
+ *
+ * Step 4 has no UI at all, so without this a wrong frame count, a skipped pass
+ * or a pipeline that failed to compile is indistinguishable from a wrong
+ * physics constant -- they all just look like "the simulation is odd". It is
+ * also the instrument for the performance question the plan asks about from
+ * Step 5 onward (90 GPU passes per frame at the default rate).
+ */
+function createDebugOverlay(): { update(lines: readonly string[]): void } | null {
+  if (!new URLSearchParams(window.location.search).has('debug')) return null;
+
+  const el = document.createElement('pre');
+  el.id = 'debug-overlay';
+  el.style.cssText =
+    'position:fixed;top:0;left:0;margin:0;padding:8px 12px;z-index:10;' +
+    'font:12px/1.5 ui-monospace,monospace;color:#0f0;background:rgba(0,0,0,.65);' +
+    'pointer-events:none;white-space:pre;';
+  document.body.append(el);
+  return {
+    update(lines) {
+      el.textContent = lines.join('\n');
+    },
+  };
+}
 
 async function start(): Promise<void> {
   const canvas = document.getElementById('app');
@@ -28,39 +120,77 @@ async function start(): Promise<void> {
     showUnavailableOverlay('GPU device lost', info.message || String(info.reason));
   });
 
-  const surface = createSurface(canvas, device);
+  const surface: Surface = createSurface(canvas, device);
 
-  // NO SHADER IS COMPILED HERE, deliberately. Step 1's `hello.wgsl` and its
-  // `common_stub.wgsl` were retired by Step 3, which replaced the stub with the
-  // real `src/shaders/common.wgsl`. That file is pure declarations and pure
-  // functions with no entry point, so it cannot form a pipeline on its own --
-  // Step 4's `entity_update.wgsl` is its first consumer, and that is what wires
-  // shader compilation back in here.
-  //
-  // Until then `common.wgsl` is validated by `common.wgsl.test.ts` (struct
-  // layout, on every `npm test`) and by a manual browser compile check --
-  // see "Verification" in web/README.md.
-  //
-  // `gpu/shaderModule.ts` is consequently unused for now. Keep it: Step 4 is
-  // its caller, and invariant 5's log-don't-throw shape lives there.
+  // A vertex-visible storage buffer is what brush.wgsl needs to read entities
+  // in its vertex stage. WebGPU's compatibility mode can report zero of them,
+  // and the failure would otherwise be an opaque pipeline error.
+  if (device.limits.maxStorageBuffersPerShaderStage === 0) {
+    console.error(
+      'This adapter exposes no storage buffers per shader stage, so the brush ' +
+        'splat cannot read the entity buffer in its vertex stage. The trail ' +
+        'canvas will stay empty.',
+    );
+  }
 
+  const preset = defaultPreset();
+  const system = await ParticleSystem.create({
+    device,
+    config: preset.config,
+    world: preset.world,
+  });
+  const present = await createPresentPass(device, surface.format);
+
+  // The startup summary. `compileModule` logs each module, but a NULL pipeline
+  // is the thing that actually matters and it is easy to miss in the noise.
+  const status = { ...system.pipelineStatus(), debugPresent: present !== null };
+  const failed = Object.entries(status).filter(([, ok]) => !ok).map(([name]) => name);
+  if (failed.length > 0) {
+    console.error(`Pipelines that FAILED to build: ${failed.join(', ')}`);
+  } else {
+    console.log(
+      `All pipelines built. preset="${preset.name}" ` +
+        `entities=${system.entityCount} canvas=${system.canvasSize.join('x')} ` +
+        `physicsSteps=${system.physicsSteps}`,
+    );
+  }
+
+  const overlay = createDebugOverlay();
+  let lastTime = performance.now();
+  let frameMs = 0;
+
+  // frameCount starts at 0, which IS the reset sentinel -- the first advance()
+  // spawns every entity and clears the canvas. Nothing else needs to happen.
   const frame = (): void => {
     if (deviceLost) return; // Stop cleanly rather than spinning on a dead device.
 
-    const encoder = device.createCommandEncoder();
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: surface.context.getCurrentTexture().createView(),
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
-      ],
-    });
+    const now = performance.now();
+    // Exponential smoothing: a raw per-frame delta is too noisy to read.
+    frameMs += ((now - lastTime) - frameMs) * 0.1;
+    lastTime = now;
 
-    pass.end();
+    const encoder = device.createCommandEncoder({ label: 'frame' });
+    system.runFrame(encoder);
+    present?.render(
+      encoder,
+      surface.context.getCurrentTexture().createView(),
+      system.currentCanvasTexture(),
+    );
     device.queue.submit([encoder.finish()]);
+
+    overlay?.update([
+      `preset       ${preset.name}`,
+      `frameCount   ${system.frameCount}`,
+      `entities     ${system.entityCount}`,
+      `canvas       ${system.canvasSize.join(' x ')}`,
+      `window       ${surface.size().join(' x ')}`,
+      `physicsSteps ${system.physicsSteps}`,
+      `frame        ${frameMs.toFixed(2)} ms  (${(1000 / frameMs).toFixed(0)} fps)`,
+      `pipelines    ${Object.entries(status)
+        .map(([n, ok]) => `${n}:${ok ? 'ok' : 'FAILED'}`)
+        .join('  ')}`,
+    ]);
+
     requestAnimationFrame(frame);
   };
 

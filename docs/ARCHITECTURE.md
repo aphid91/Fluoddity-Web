@@ -31,7 +31,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | `project/`        | The `Project` value type (ConfigBuffer + world settings + name + selection, immutable) and `History`, the undo/redo timeline over those values. |
 | `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect, and the whole display pipeline: tone curve, motion blur, bloom, overlays). Persisted to `preferences.json`. |
 | `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`, `quad_vbo`/`quad_vao`, and `reload_program`/`reload_compute` — the one implementation of shader compilation) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
-| `configs/`        | Physics preset JSONs (`Starcrossed.json`, `9LeafClovers.json`, `Angles.json`). |
+| `configs/`        | Physics preset JSONs (`Starcrossedv8.json`, `9leafv8.json`, `hatmanv8.json`). |
 
 ### Key files in `particle_system/`
 

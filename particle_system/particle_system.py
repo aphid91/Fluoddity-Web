@@ -42,7 +42,7 @@ class ParticleSystem:
             canvas_size = canvas_dimensions()
 
         if config_path is None:
-            config_path = str(Path(__file__).parent.parent / "configs" / "Starcrossed.json")
+            config_path = str(Path(__file__).parent.parent / "configs" / "Starcrossedv8.json")
 
         self.ctx = ctx
         self.canvas_size = canvas_size
