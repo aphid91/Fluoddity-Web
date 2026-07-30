@@ -9,7 +9,9 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"tools/**/*.test.ts\""
+    "test": "node --test \"tools/**/*.test.ts\" \"src/**/*.test.ts\"",
+    "gen:web-data": "python tools/generate_web_data.py",
+    "gen:web-data:check": "python tools/generate_web_data.py --check"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
