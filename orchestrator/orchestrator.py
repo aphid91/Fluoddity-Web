@@ -7,7 +7,7 @@ here. Two examples of the pattern:
   - Data: each frame the Orchestrator pulls the current canvas texture from
     ParticleSystem (via a narrow accessor) and hands it to Camera. Camera never
     holds a persistent reference to it.
-  - Commands: UI reports named intents ('reload', 'next_preset', ...) which the
+  - Commands: UI reports named intents ('reset', 'next_preset', ...) which the
     Orchestrator translates into public method calls on the right module.
 
 The moderngl `ctx` is the one sanctioned shared substrate: created by AppWindow
@@ -21,7 +21,9 @@ those groups are now mixins:
     project_commands         save / load / preview / preset cycling
     clipboard_commands       in-session checkpoints
     settings_commands        slider edits, preference edits
-    config_manager_commands  multi-config editing (scoped for removal)
+    selection_commands       click-to-pick and its deferred resolve
+    drawing_commands         brush strokes into the strafe field
+    shove_commands           the shove tool
 
 The mixins own no state. They read and replace the attributes defined here,
 which keeps the state in one readable place while the behaviour lives next to
@@ -45,7 +47,6 @@ from camera import Camera
 from camera.camera_state import PAN_PER_SECOND, ZOOM_PER_SECOND
 from particle_system import coords
 from particle_system.config import BC_WRAP
-from particle_system.particle_system import MAX_CONFIGS
 from particle_system.picker import MISS
 from preferences import Preferences
 from project import Project, History
@@ -54,7 +55,6 @@ from tooltip_graphic import TooltipGraphic
 from ui import UI
 
 from .clipboard_commands import ClipboardCommands, Checkpoint
-from .config_manager_commands import ConfigManagerCommands
 from .drawing_commands import DrawingCommands
 from .project_commands import ProjectCommands
 from .selection_commands import SelectionCommands, MouseMode
@@ -104,8 +104,7 @@ def blur_schedule(prefs):
 
 
 class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
-                   ConfigManagerCommands, SelectionCommands, DrawingCommands,
-                   ShoveCommands):
+                   SelectionCommands, DrawingCommands, ShoveCommands):
 
     #: Where configs live. An attribute so the command mixins can reach it.
     _config_dir = _CONFIG_DIR
@@ -202,11 +201,9 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         self._preview_origin = None
 
         #: Transient UI messages.
-        self._manager_message = ""
         self._save_error = ""
 
         self.ui = UI(self.window.window, commands={
-            'reload': self._cmd_reload,
             'reset': self._cmd_reset,
             'toggle_pause': self._cmd_toggle_pause,
             'next_preset': self._cmd_next_preset,
@@ -225,11 +222,6 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             'preview_config': self._cmd_preview_config,
             'snapshot_configs': self._cmd_snapshot_configs,
             'restore_configs': self._cmd_restore_configs,
-            # config manager
-            'select_config': self._cmd_select_config,
-            'duplicate_config': self._cmd_duplicate_config,
-            'remove_config': self._cmd_remove_config,
-            'append_config_file': self._cmd_append_config_file,
             # config clipboard
             'set_checkpoint': self._cmd_set_checkpoint,
             'delete_checkpoint': self._cmd_delete_checkpoint,
@@ -536,9 +528,9 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         'selected',
         # project / configs
         'config_categories', 'project_name', 'selected_config', 'config_count',
-        'max_configs', 'checkpoints',
+        'checkpoints',
         # transient messages
-        'save_error', 'manager_message',
+        'save_error',
         # settings payloads, from _settings_dicts()
         'edit_config', 'edit_world', 'edit_prefs',
         # set ONCE at construction, not per frame -- a fixed renderer, not a
@@ -579,8 +571,6 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             save_error=self._save_error,
             project_name=self.project.name,
             selected_config=self.project.selected,
-            max_configs=MAX_CONFIGS,
-            manager_message=self._manager_message,
             checkpoints=self.checkpoints,
             # The three settings sources, as plain dicts the window reads by
             # field name. Snapshots, not references: the UI never holds live
@@ -616,16 +606,6 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
     # ------------------------------------------------------------------
     # Simple commands. Feature groups live in the command mixins.
     # ------------------------------------------------------------------
-
-    def _cmd_reload(self):
-        self.camera.reload()
-        self.assembler.reload()
-        self.system.reload()
-        # Does not reallocate the field texture, so a painted field survives --
-        # which is what makes it practical to tune the brush against a stroke
-        # you already like.
-        self.strafe_field.reload()
-        self.tooltip_graphic.reload()
 
     def _cmd_reset(self):
         self.system.reset()

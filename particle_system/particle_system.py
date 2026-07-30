@@ -14,10 +14,12 @@ from .sizing import ENTITIES_PER_WORLD_UNIT, ENTITY_COUNT, canvas_dimensions
 ENTITY_BUFFER_BINDING = 0
 CONFIG_BUFFER_BINDING = 1
 
-#: Upper bound on ConfigBuffer slots. The GPU side would happily take far more
-#: (up to the entity count), but a hard cap keeps the manager UI bounded and
-#: makes overflow a clear, reportable condition rather than silent growth.
-MAX_CONFIGS = 64
+# NO SLOT CAP HERE. There used to be a MAX_CONFIGS = 64, justified purely as
+# "keeps the manager UI bounded"; with that UI gone it had no reader, and
+# nothing on the GPU side ever enforced it (_upload_configs sizes to
+# len(self.configs)). The real bound is the entity count, since config_index
+# lives per entity. A port that re-exposes slot management should reintroduce an
+# explicit cap rather than rely on that.
 
 # Shader paths resolved relative to this module, so the app is not CWD-dependent.
 _SHADER_DIR = Path(__file__).parent / "shaders"

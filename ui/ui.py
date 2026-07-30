@@ -33,7 +33,6 @@ import glfw
 from imgui_bundle import imgui
 from imgui_bundle.python_backends import glfw_backend
 
-from .config_manager import ConfigManagerWindow
 from .config_menu import ConfigMenu
 from .drawing_window import DrawingWindow
 from .input_state import InputState
@@ -45,8 +44,7 @@ _MOUSE_BUTTONS = (glfw.MOUSE_BUTTON_LEFT, glfw.MOUSE_BUTTON_RIGHT,
                   glfw.MOUSE_BUTTON_MIDDLE)
 
 
-class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
-         PreferencesWindow, Toolbar, DrawingWindow):
+class UI(ConfigMenu, SettingsWindow, PreferencesWindow, Toolbar, DrawingWindow):
     def __init__(self, window, commands=None):
         """
         window:   the GLFW window handle (from AppWindow).
@@ -129,7 +127,6 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         self.show_advanced = False
 
         self._init_config_menu()
-        self._init_config_manager()
         self._init_settings_window()
         self._init_preferences_window()
         self._init_toolbar()
@@ -296,7 +293,6 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         self._settings_window()
         self._preferences_window()
         self._drawing_window()
-        self._config_manager_window()
         if self.show_debug_panel:
             self._debug_panel()
 
@@ -312,9 +308,6 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         if not expanded:
             imgui.end()
             return
-
-        imgui.text(f"FPS   {1.0 / s.dt if s.dt > 0 else 0.0:6.1f}   ({s.dt * 1000:.1f} ms)")
-        imgui.separator()
 
         imgui.text(f"mouse px    ({s.mouse_pos[0]:7.1f}, {s.mouse_pos[1]:7.1f})")
         world = self._status['mouse_world']
@@ -365,9 +358,6 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         if imgui.button("Resume" if self._status['paused'] else "Pause"):
             self._dispatch('toggle_pause')
         imgui.same_line()
-        if imgui.button("Reload"):
-            self._dispatch('reload')
-        imgui.same_line()
         if imgui.button("Reset"):
             self._dispatch('reset')
         imgui.same_line()
@@ -384,7 +374,7 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
             self._dispatch('reset_camera')
 
         imgui.text_disabled("WASD: pan   Q/E: zoom   scroll: zoom")
-        imgui.text_disabled("SPACE: pause   R: reset   U: reload shaders")
+        imgui.text_disabled("SPACE: pause   R: reset")
         imgui.text_disabled("B: randomize behavior   F: randomize seed")
         imgui.text_disabled("X: hide GUI")
         imgui.text_disabled("TAB: view   HOME: reset view")
@@ -490,7 +480,6 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         for key, command in (
             (glfw.KEY_SPACE, 'toggle_pause'),
             (glfw.KEY_R, 'reset'),
-            (glfw.KEY_U, 'reload'),
             (glfw.KEY_F, 'randomize_seed'),
             (glfw.KEY_B, 'randomize_behavior'),
             (glfw.KEY_RIGHT, 'next_preset'),

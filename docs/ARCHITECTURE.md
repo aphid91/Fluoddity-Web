@@ -26,11 +26,11 @@ Every file belongs to a module folder. Each folder is a Python package
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
 | `strafe_field/`   | The painted Strafe Field: one RG16F texture at canvas resolution, the airbrush shader that writes it (`strafe_draw.frag`), and clear/erase. Live-only — never saved, never in history. |
 | `tooltip_graphic/`| The shader-drawn sensor diagram: an offscreen RGBA8 target and `tooltip_graphic.frag`. Built by the Orchestrator with the shared `ctx` and handed to the UI as a texture id — which is why it is a module of its own rather than a file in `ui/`, the package that must not own GL. |
-| `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state and **no GPU resources**. One file per window (`config_menu`, `settings_window`, `preferences_window`, `config_manager`, `toolbar`, `drawing_window`), composed onto `UI` as mixins; `settings_spec.py` is the control registry, and `hover_preview.py`, `gated_controls.py`, `sensor_diagram.py` and `curved_slider.py` hold the pieces of behaviour extracted out of those windows. |
-| `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`, `drawing_commands`, `shove_commands`). |
+| `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state and **no GPU resources**. One file per window (`config_menu`, `settings_window`, `preferences_window`, `toolbar`, `drawing_window`), composed onto `UI` as mixins; `settings_spec.py` is the control registry, and `hover_preview.py`, `gated_controls.py`, `sensor_diagram.py` and `curved_slider.py` hold the pieces of behaviour extracted out of those windows. |
+| `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `selection_commands`, `drawing_commands`, `shove_commands`). |
 | `project/`        | The `Project` value type (ConfigBuffer + world settings + name + selection, immutable) and `History`, the undo/redo timeline over those values. |
 | `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect, and the whole display pipeline: tone curve, motion blur, bloom, overlays). Persisted to `preferences.json`. |
-| `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`, `quad_vbo`/`quad_vao`, and `reload_program`/`reload_compute` — the one implementation of the hot-reload contract) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
+| `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`, `quad_vbo`/`quad_vao`, and `reload_program`/`reload_compute` — the one implementation of shader compilation) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
 | `configs/`        | Physics preset JSONs (`Starcrossed.json`, `9LeafClovers.json`, `Angles.json`). |
 
 ### Key files in `particle_system/`
@@ -107,14 +107,28 @@ These are the load-bearing constraints. Follow them when extending the project.
    a GL context per frame, so this is a deliberate, documented exception to
    "avoid persistent coupling" — which otherwise applies to *domain* state only.
 
-5. **Hot-reload contract (from `CLAUDE_README.md`) is preserved.** This is a
-   teaching tool where users tinker with shaders live:
-   - Shader/buffer setup lives in isolated `reload()` / `_reload_*` helpers so it
-     can be re-run mid-execution.
-   - Failed shader compilation must **not** crash — log the error and keep the
-     last working program.
-   - Use `tryset()` for all uniforms (uniforms get optimized out when a shader is
-     edited, and ModernGL raises on missing ones).
+5. **Shader setup is isolated and compile failure is non-fatal.**
+   - Shader/buffer setup lives in `reload()` / `_reload_*` helpers, called from
+     each module's constructor. **These helpers ARE the startup compilation
+     path** — `assembler/bloom.py` compiles its programs nowhere else — so they
+     are not optional scaffolding around some other init.
+   - Failed compilation must **not** crash: log the error and leave the program
+     as it was, which at startup means `None`. Callers guard on `None`. The one
+     deliberate exception is `TooltipGraphic`, which raises in its constructor;
+     its own comment explains why startup is the place that should.
+   - Use `tryset()` for all uniforms — a uniform the compiler optimized out is
+     absent from the program, and ModernGL raises on assigning a missing one.
+
+   **The reload TRIGGERS are gone** (the `U` key, the Simulation ▸ Reload
+   Shaders item, the Debug panel's Reload button, `Orchestrator._cmd_reload`).
+   Reloading a shader edited on disk has no meaning in a browser, so the port
+   should not carry the affordance. What survives is the *shape*: setup isolated
+   in a re-runnable helper, failure logged rather than fatal. That shape is
+   worth keeping on its own merits — it costs nothing and it is what makes the
+   `shared/gl_utils.py` helpers callable at all — but nothing in the app calls
+   it a second time, and the port need not make it re-runnable.
+
+   The names still say "reload" for that reason. Read them as "compile".
 
 6. **Shader paths are module-relative.** Modules resolve their shaders via
    `Path(__file__).parent / "shaders"` (and `shared/shaders` for the cross-module
@@ -226,10 +240,15 @@ deletion**, not surgery:
 | Feature | Lives in | Why it goes |
 |---------|----------|-------------|
 | Legacy v7 config reading | marked block in `persistence.py`, own commit | The port's spec is the v8 format alone. |
-| Multi-config editing | `orchestrator/config_manager_commands.py`, `ui/config_manager.py`, the save dialog's "entire ConfigBuffer" radio | The initial port exposes only the primary config. The ConfigBuffer *system* stays; only its editing UI goes. |
 
 When adding something in this category, give it its own file or its own commit
 up front. Retrofitting the isolation later is the expensive path.
+
+**Already removed this way**, as evidence the isolation pays off: multi-config
+editing (`ui/config_manager.py` + `orchestrator/config_manager_commands.py`, one
+file deletion each plus a mixin unhook, taking the save dialog's ConfigBuffer
+radio pair and `Project`'s slot mutators with them) and the hot-reload triggers
+(see invariant 5). The ConfigBuffer *system* stayed; only its editing UI went.
 
 ### Legacy config support
 
@@ -575,17 +594,24 @@ undo next to it would be redundant.
 
 ## Config management
 
-**Config Manager** (`config_manager.py`) is a window, toggled from the **View**
-menu. It selects which `ConfigData` subsequent controls will edit — Config 0 by
-default, so a single-config buffer needs no interaction. Selection is *state
-only* today; per-config sliders will consume it when they land. It grows the
-buffer three ways: **Duplicate Selected**, **Load...** (appends every config in
-a saved file), and **Remove**.
+**The ConfigBuffer system ships; no UI exposes it.** `Project.configs` is a
+tuple of arbitrary length, `Project.selected` indexes it, the GPU carries a real
+`ConfigBuffer` SSBO, and the save format is a JSON *list* of configs. All of
+that is intact and load-bearing. What is gone is the editing UI: nothing in the
+app can add, duplicate, remove or re-select a slot, so in practice the buffer
+holds exactly what was loaded from disk — one config for every file that ships.
 
-Its Load... browser is deliberately plain — no hover-preview, no delete. Those
-belong to File > Load, whose job is *replacing* the buffer. This one *appends*,
-so previewing would mean repeatedly growing and shrinking the buffer under the
-cursor.
+This is deliberate for the port. Re-exposing slot management means adding
+mutators back to `project/project.py` (see the comment where they used to be)
+and a window to drive them; it does **not** mean reworking the value type, the
+buffer upload, or the file format. Two consequences worth knowing:
+
+- **A save writes the whole buffer**, always. The dialog once offered "Config 0
+  only" beside it, which could silently drop slots; with no way to create a
+  second slot the choice was between two identical outcomes anyway.
+- **`selected` is still read** (`Project.config`, `edit_selected`, the status
+  key) and still clamped in `__post_init__`, so a file with several configs
+  loads and renders correctly — it just cannot be navigated.
 
 **The config clipboard** holds in-session checkpoints of the **entire**
 ConfigBuffer — a scratch space for experimenting without committing to disk.
@@ -608,10 +634,13 @@ what removed the duplication. The commands in
 `orchestrator/clipboard_commands.py` did not change, which is the sign the
 window was UI and nothing else.
 
-`MAX_CONFIGS` (64) caps the buffer. The GPU would take far more, but a hard cap
-keeps the manager UI bounded and makes overflow a reportable condition rather
-than silent growth — appending a 3-config file with 2 slots free reports
-"Added 2 of 3".
+**There is no slot cap.** A `MAX_CONFIGS = 64` used to sit in
+`particle_system.py`, justified purely as keeping the manager UI bounded and
+making a failed append reportable ("Added 2 of 3"). With no append path it had
+no reader, and nothing on the GPU side ever enforced it — `_upload_configs`
+sizes the SSBO to `len(configs)`. The real bound is the entity count, since
+`config_index` lives per entity. **A port that re-exposes slot management should
+reintroduce an explicit cap** rather than inherit that as a guarantee.
 
 ### imgui gotcha: `end_child()` is unconditional
 
@@ -634,10 +663,10 @@ Two rules keep it honest:
   second for a value that changes when a slider moves. It is now computed in
   `_refresh_world_uniform()`, called from `apply_configs()` — the one place
   configs change.
-- **Uniforms constant for a program's lifetime are set at reload.** Texture
-  units and `canvas_resolution` go in `_set_constant_uniforms()`, re-run after
-  every shader reload because a freshly compiled program starts with its
-  uniforms unset.
+- **Uniforms constant for a program's lifetime are set at compile time.**
+  Texture units and `canvas_resolution` go in `_set_constant_uniforms()`, called
+  from `reload()` because a freshly compiled program starts with its uniforms
+  unset. Anything that recompiles a program must call it again.
 
 Only `frame_count` genuinely varies per sub-step. Together these halved the
 Python cost of `advance()` (52,201 → 30,601 calls per 300 sub-steps).
@@ -897,7 +926,7 @@ UI -> named command -> Orchestrator handler
      Ctrl+Z / Ctrl+Shift+Z = undo / redo
      Ctrl+C / Ctrl+V = set checkpoint / load newest checkpoint
      Ctrl+R = revert to the project's saved file (same as File > Load > it)
-     SPACE = pause/resume | R = reset | U = reload shaders
+     SPACE = pause/resume | R = reset
      B = randomize behavior | F = randomize mutation seed
      X = show/hide the GUI
      LEFT/RIGHT = prev/next preset
@@ -1428,14 +1457,16 @@ command, expect it to follow that shape -- and to need dividing by
 - The picked entity is reported in the debug panel but not yet drawn
   differently. Highlighting it on the canvas needs a render-side channel (the
   Entity struct has reserved lanes for exactly this).
-- `remove_config` does **not** renumber entities' `config_index`. An entity
-  pointing past the end is clamped in the shader, so removal degrades
-  gracefully rather than corrupting — but entities pointing at the removed slot
-  silently inherit whatever config took its place. Reassigning them belongs
-  with the feature that lets a user paint config assignments.
-- The Config Manager's selection has no visual effect yet. Highlighting the
-  selected config's entities is the natural companion to the picker's
-  highlight work.
+- **Nothing renumbers entities' `config_index`**, and no code path shrinks the
+  ConfigBuffer today, so this cannot currently bite. It is recorded because a
+  port that re-exposes slot management inherits the problem: an entity pointing
+  past the end is clamped in the shader (so shrinking degrades gracefully rather
+  than corrupting), but entities pointing at a removed slot silently inherit
+  whatever config took its place. Reassigning them belongs with the feature that
+  lets a user paint config assignments.
+- `Project.selected` has no visual effect. With no UI to change it, it is always
+  0 in practice; highlighting the selected config's entities is the natural
+  companion to the picker's highlight work, if slot selection returns.
 - `rule_seed` remains a uniform rather than a `ConfigData` lane, because it is
   consumed only by the cohort-mutation path that rule-9's deprecation note
   covers. If cohorts go, it goes with them.

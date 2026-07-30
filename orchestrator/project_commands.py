@@ -102,16 +102,19 @@ class ProjectCommands:
         """
         self._save_error = ""
 
-    def _cmd_save_config(self, name, save_all):
-        """Write the project to configs/custom/<name>.json."""
+    def _cmd_save_config(self, name):
+        """Write the project to configs/custom/<name>.json.
+
+        Always writes the whole ConfigBuffer. Saving only config 0 used to be
+        offered alongside this, and dropped the rest of the buffer on the floor.
+        """
         self._save_error = ""
         safe = persistence.sanitize_filename(name)
         if not safe:
             self._save_error = "That name has no usable characters."
             return
 
-        configs = (list(self.project.configs) if save_all
-                   else [self.project.configs[0]])
+        configs = list(self.project.configs)
         cam = self.camera.state
         path = persistence.custom_dir(self._config_dir) / f"{safe}.json"
         try:

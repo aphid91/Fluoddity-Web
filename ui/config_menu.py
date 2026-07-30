@@ -46,7 +46,6 @@ class ConfigMenu:
     def _init_config_menu(self):
         self.show_save_dialog = False
         self._save_name = ""
-        self._save_all_configs = False
         #: PRE-DISPATCH validation only -- the UI declining to ask ("Enter a
         #: filename."). Errors from an attempted save arrive through
         #: _status['save_error'] instead; see _save_dialog for why the two are
@@ -139,8 +138,6 @@ class ConfigMenu:
                 "Drawing Controls", "", self.show_drawing)
             _, self.show_preferences = imgui.menu_item(
                 "Preferences", "", self.show_preferences)
-            _, self.show_config_manager = imgui.menu_item(
-                "Config Manager", "", self.show_config_manager)
             _, self.show_debug_panel = imgui.menu_item(
                 "Debug Panel", "", self.show_debug_panel)
             imgui.end_menu()
@@ -156,9 +153,6 @@ class ConfigMenu:
                 self._dispatch('randomize_behavior')
             if imgui.menu_item_simple("Randomize Mutation Seed", "F"):
                 self._dispatch('randomize_seed')
-            imgui.separator()
-            if imgui.menu_item_simple("Reload Shaders", "U"):
-                self._dispatch('reload')
             imgui.end_menu()
 
         self._gui_toggle_button()
@@ -449,17 +443,12 @@ class ConfigMenu:
             self._save_validation = ""
 
         imgui.spacing()
-        config_count = self._status['config_count']
-        if imgui.radio_button("Save Config 0 only", not self._save_all_configs):
-            self._save_all_configs = False
-        if imgui.radio_button(f"Save entire ConfigBuffer ({config_count})",
-                              self._save_all_configs):
-            self._save_all_configs = True
-        if config_count == 1:
-            imgui.text_disabled("(only one config exists; both are equivalent)")
-
-        imgui.spacing()
-        imgui.text_disabled(f"saves to configs/custom/")
+        # A save always writes the WHOLE ConfigBuffer. There used to be a
+        # radio pair here choosing between config 0 and all of them, from when
+        # the Config Manager could add slots; with no UI to add one the choice
+        # was between two identical outcomes, and writing everything is the
+        # option that cannot silently drop a slot.
+        imgui.text_disabled("saves to configs/custom/")
 
         # TWO ERROR CHANNELS, deliberately, and they mean different things:
         #   _save_validation  the UI DECLINING TO DISPATCH at all ("Enter a
@@ -486,7 +475,7 @@ class ConfigMenu:
                 # the one that matters, and a stale validation message must not
                 # sit alongside it.
                 self._save_validation = ""
-                self._dispatch('save_config', name, self._save_all_configs)
+                self._dispatch('save_config', name)
                 # Closing is decided from the status the dispatch just
                 # refreshed. Under an async bus this frame's value may still be
                 # the previous one, in which case the dialog stays up one extra

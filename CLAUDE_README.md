@@ -30,6 +30,13 @@ Make things as simple as possible, but no simpler.
 
 ## Hot Reload Requirements
 
+> **SUPERSEDED — see ARCHITECTURE.md invariant 5.** The reload *triggers* (the `U`
+> key, Simulation ▸ Reload Shaders, the Debug panel button) were removed during
+> WebGPU port prep: reloading a shader edited on disk has no meaning in a browser.
+> Points 1–3 below still hold, but as properties of the **startup** compilation
+> path rather than of a live-editing feature — every module's `reload()` is called
+> from its constructor and is the only place its shaders are built.
+
 This is a teaching tool where users will frequently tinker with shaders and see results update
 immediately without restarting the program:
 

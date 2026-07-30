@@ -81,4 +81,17 @@ class PreferencesWindow:
         imgui.separator()
         imgui.text_disabled("Not saved with projects.")
 
+        # Performance readout. Not registry-driven and not a preference at all:
+        # a runtime measurement, so it has no settings_spec entry and is never
+        # persisted. It lives here because this is the window a user opens to
+        # ask how the editor is doing; it used to be the first row of the Debug
+        # panel, which is a developer tool.
+        #
+        # imgui's own rolling average rather than 1/dt: the raw reciprocal of a
+        # single frame's delta jitters too much to read.
+        imgui.separator()
+        fps = imgui.get_io().framerate
+        ms = 1000.0 / fps if fps > 0 else 0.0
+        imgui.text(f"Performance: {fps:.1f} FPS ({ms:.2f} ms/frame)")
+
         imgui.end()

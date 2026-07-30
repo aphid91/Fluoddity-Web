@@ -96,9 +96,6 @@ class Project:
     def renamed(self, name: str) -> "Project":
         return replace(self, name=name)
 
-    def selecting(self, index: int) -> "Project":
-        return replace(self, selected=index)
-
     def edited(self, index: int, field_name: str, value) -> "Project":
         """Change one field of one config."""
         if not (0 <= index < len(self.configs)):
@@ -136,38 +133,9 @@ class Project:
         return replace(self,
                        world=replace(self.world, **{field_name: value}))
 
-    def appended(self, configs, limit: int):
-        """Append configs up to `limit` slots.
-
-        Returns (project, added, rejected) so the caller can report a partial
-        append rather than silently dropping entries.
-        """
-        room = limit - len(self.configs)
-        if room <= 0:
-            return self, 0, len(configs)
-        accepted = list(configs)[:room]
-        rejected = len(configs) - len(accepted)
-        if not accepted:
-            return self, 0, rejected
-        grown = replace(self, configs=self.configs + tuple(accepted))
-        # Select the first appended config: the user just asked for it.
-        return grown.selecting(len(self.configs)), len(accepted), rejected
-
-    def duplicated(self, index: int, limit: int):
-        """Append a copy of `index`. Returns (project, ok)."""
-        if not (0 <= index < len(self.configs)) or len(self.configs) >= limit:
-            return self, False
-        grown = replace(self, configs=self.configs + (self.configs[index],))
-        return grown.selecting(len(grown.configs) - 1), True
-
-    def removed(self, index: int):
-        """Drop a config. Refuses to empty the buffer. Returns (project, ok).
-
-        Entities' config_index is NOT renumbered: the shader clamps, so removal
-        degrades gracefully. Reassigning entities belongs with the feature that
-        lets a user paint config assignments.
-        """
-        if len(self.configs) <= 1 or not (0 <= index < len(self.configs)):
-            return self, False
-        remaining = self.configs[:index] + self.configs[index + 1:]
-        return replace(self, configs=remaining), True
+    # NO SLOT MUTATORS HERE, deliberately. Growing and shrinking the buffer
+    # (appended / duplicated / removed / selecting) went out with the Config
+    # Manager window: nothing in the app can add or remove a slot now, so those
+    # methods had no callers. `configs` is still a tuple of arbitrary length and
+    # `selected` still indexes it, so re-exposing slot management means adding
+    # mutators back here -- not reworking the type.

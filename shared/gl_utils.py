@@ -102,21 +102,32 @@ def quad_vao(ctx: moderngl.Context, program: moderngl.Program,
 
 
 # ---------------------------------------------------------------------------
-# HOT-RELOAD (CLAUDE_README.md's contract, in one place)
+# SHADER COMPILATION, in one place
 #
-# Every GPU module reloads shaders the same way: compile, and on failure keep
-# the LAST WORKING program rather than crashing or going black. That shape was
-# written out eight times across six modules; these two helpers are it, once.
+# Every GPU module builds its programs the same way; that shape was written out
+# eight times across six modules, and these two helpers are it, once. They are
+# called from each module's reload() / _reload_* helpers, which are in turn
+# called from its constructor -- so this is the STARTUP compilation path.
+#
+# The names still say "reload" because these are re-runnable by design: setup
+# is isolated in those helpers so it CAN be called again on a live context.
+# Nothing in the app triggers that any more (the U key and the Reload Shaders
+# menu item went out with the WebGPU port prep, where editing a shader on disk
+# has no meaning), but the isolation is worth keeping -- it is what makes the
+# helpers callable at all, and it costs nothing.
 #
 # The contract each helper keeps:
 #   - the new program is adopted only if BOTH it and its VAO were built;
 #   - a failure returns exactly what was passed in, so the caller's assignment
-#     is unconditional and the old program survives;
-#   - success and failure both print, naming `label`, so a typo mid-edit says
-#     which shader it was.
+#     is unconditional and no half-built pair is ever adopted. At startup the
+#     old values are None, which is how a bad shader stays non-fatal: callers
+#     guard on None rather than dying (TooltipGraphic deliberately does die --
+#     see its constructor for why startup is the one place that should);
+#   - success and failure both print, naming `label`, so a typo says which
+#     shader it was.
 #
-# Callers are expected to re-push their lifetime-constant uniforms after
-# calling these: a freshly compiled program starts with every uniform unset.
+# Callers are expected to push their lifetime-constant uniforms after calling
+# these: a freshly compiled program starts with every uniform unset.
 # ---------------------------------------------------------------------------
 
 
