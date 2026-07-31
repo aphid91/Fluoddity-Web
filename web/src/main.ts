@@ -29,60 +29,9 @@ import { Camera } from './camera/camera.ts';
 import { CameraState, CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
 import { blurSchedule, sampleAt } from './camera/blurSchedule.ts';
 import { RenderTargets } from './app/renderTargets.ts';
-import { compileModule } from './gpu/shaderModule.ts';
+import { Assembler } from './assembler/assembler.ts';
+import { NO_OVERLAYS } from './assembler/assemblerUniforms.ts';
 import { DEFAULT_PREFERENCES } from './prefs/preferences.ts';
-
-import passthroughSource from './app/shaders/passthrough.wgsl';
-
-/**
- * TEMPORARY, deleted in 5.4 along with `passthrough.wgsl` -- see that file.
- */
-async function createPassthrough(
-  device: GPUDevice,
-  format: GPUTextureFormat,
-): Promise<{
-  layout: GPUBindGroupLayout;
-  render(encoder: GPUCommandEncoder, target: GPUTextureView, group: GPUBindGroup): void;
-} | null> {
-  const module = await compileModule(device, 'passthrough.wgsl', passthroughSource);
-  if (module === null) return null;
-
-  const layout = device.createBindGroupLayout({
-    label: 'passthrough',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
-      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
-    ],
-  });
-  const pipeline = device.createRenderPipeline({
-    label: 'passthrough',
-    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
-    vertex: { module, entryPoint: 'fullscreen_vs' },
-    fragment: { module, entryPoint: 'fs_main', targets: [{ format }] },
-    primitive: { topology: 'triangle-strip' },
-  });
-
-  return {
-    layout,
-    render(encoder, target, group) {
-      const pass = encoder.beginRenderPass({
-        label: 'passthrough',
-        colorAttachments: [
-          {
-            view: target,
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          },
-        ],
-      });
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(0, group);
-      pass.draw(4);
-      pass.end();
-    },
-  };
-}
 
 /**
  * The `?debug` readout.
@@ -200,15 +149,27 @@ async function start(): Promise<void> {
 
   const targets = new RenderTargets(device);
   const camera = await Camera.create(device, cameraState, targets);
-  const passthrough = await createPassthrough(device, surface.format);
+  const assembler = await Assembler.create(device, targets, surface.format);
 
   // Display preferences. Step 7 loads these from localStorage; until then the
   // defaults plus URL overrides, so the sweeps Step 5 must verify are reachable.
+  // Every one of these is a slider on the desktop.
+  const num = (name: string, fallback: number): number => {
+    const v = Number(params.get(name) ?? '');
+    return params.has(name) && Number.isFinite(v) ? v : fallback;
+  };
   const prefs = {
     ...DEFAULT_PREFERENCES,
     physicsSteps: system.physicsSteps,
-    motionBlurSamples: Number(params.get('motionBlurSamples') ?? '') ||
-      DEFAULT_PREFERENCES.motionBlurSamples,
+    motionBlurSamples: num('motionBlurSamples', DEFAULT_PREFERENCES.motionBlurSamples),
+    brightness: num('brightness', DEFAULT_PREFERENCES.brightness),
+    tonemapSoftness: num('tonemapSoftness', DEFAULT_PREFERENCES.tonemapSoftness),
+    bloomEnabled: params.has('bloom')
+      ? params.get('bloom') !== '0'
+      : DEFAULT_PREFERENCES.bloomEnabled,
+    bloomThreshold: num('bloomThreshold', DEFAULT_PREFERENCES.bloomThreshold),
+    bloomIntensity: num('bloomIntensity', DEFAULT_PREFERENCES.bloomIntensity),
+    bloomRadius: num('bloomRadius', DEFAULT_PREFERENCES.bloomRadius),
   };
   const stepsParam = Number(params.get('physicsSteps') ?? '');
   if (Number.isFinite(stepsParam) && stepsParam >= 1) {
@@ -221,7 +182,7 @@ async function start(): Promise<void> {
   const status = {
     ...system.pipelineStatus(),
     ...camera.pipelineStatus(),
-    passthrough: passthrough !== null,
+    ...assembler.pipelineStatus(),
   };
   const failed = Object.entries(status).filter(([, ok]) => !ok).map(([name]) => name);
   if (failed.length > 0) {
@@ -237,8 +198,6 @@ async function start(): Promise<void> {
   const overlay = createDebugOverlay();
   let lastTime = performance.now();
   let frameMs = 0;
-  /** Rebuilt whenever the render targets are, since it holds the accum view. */
-  let passthroughGroup: GPUBindGroup | null = null;
 
   // frameCount starts at 0, which IS the reset sentinel -- the first advance()
   // spawns every entity and clears the canvas. Nothing else needs to happen.
@@ -257,7 +216,7 @@ async function start(): Promise<void> {
     // whose view is already recorded -- see renderTargets.ts.
     if (targets.ensure(windowSize)) {
       camera.invalidateTargets();
-      passthroughGroup = null;
+      assembler.invalidateTargets();
     }
 
     const frameState = {
@@ -307,21 +266,22 @@ async function start(): Promise<void> {
 
     // AFTER the loop, not before: the camera binds its own targets for every
     // sample above, so binding the swap chain any earlier would be undone.
-    const finished = camera.result();
-    if (finished !== null && passthrough !== null) {
-      passthroughGroup ??= device.createBindGroup({
-        layout: passthrough.layout,
-        entries: [
-          { binding: 0, resource: finished },
-          { binding: 1, resource: targets.sampler },
-        ],
-      });
-      passthrough.render(
-        encoder,
-        surface.context.getCurrentTexture().createView(),
-        passthroughGroup,
-      );
-    }
+    assembler.present(
+      encoder,
+      camera.result(),
+      surface.context.getCurrentTexture().createView(),
+      {
+        canvasSize: system.canvasSize,
+        windowSize,
+        pan: cameraState.pan,
+        zoom: cameraState.zoom,
+      },
+      prefs,
+      // Step 8 supplies the reticle (no cursor yet) and Step 9 the field (no
+      // texture yet). The uniform lanes and both shader branches are already
+      // in place, so wiring them is a value change, not a shader change.
+      NO_OVERLAYS,
+    );
     device.queue.submit([encoder.finish()]);
 
     overlay?.update([

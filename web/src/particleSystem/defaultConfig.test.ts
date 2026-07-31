@@ -18,8 +18,15 @@ import { DEFAULT_PRESET_NAME, PRESETS, defaultPreset, preset } from './defaultCo
 
 const NAMES = Object.keys(PRESETS);
 
-test('the three shipped presets are present', () => {
-  assert.deepEqual(NAMES.sort(), ['9leafv8', 'Starcrossedv8', 'hatmanv8'].sort());
+test('the three A/B presets are present', () => {
+  // A SUBSET check, not an exact list: `_PRESET_FILES` in the generator is
+  // meant to grow, and a new preset should not fail the suite. These three are
+  // the ones the A/B protocol names (web/README.md), and the coverage guard
+  // below depends on what they specifically exercise -- so their ABSENCE is
+  // what matters here, not the presence of others.
+  for (const required of ['Starcrossedv8', '9leafv8', 'hatmanv8']) {
+    assert.ok(NAMES.includes(required), `the A/B preset ${required} is missing`);
+  }
 });
 
 test('the default preset is the desktop default', () => {

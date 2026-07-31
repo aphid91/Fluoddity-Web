@@ -88,7 +88,7 @@ PRESETS_OUT = REPO_ROOT / 'web' / 'src' / 'particleSystem' / 'presets.generated.
 #: inherits whatever shape that reader happened to take. Deleting this is a
 #: clean subtraction: drop the constant, drop _build_presets, drop the entry in
 #: main()'s `outputs`, and delete presets.generated.json and defaultConfig.ts.
-_PRESET_FILES = ['Starcrossedv8.json', '9leafv8.json', 'hatmanv8.json']
+_PRESET_FILES = ['Starcrossedv8.json', '9leafv8.json', 'hatmanv8.json','AALattice.json','AATopMembrane4.json','AATangle.json','AASegments.json']
 
 #: Sizes the port hardcodes as strides. The vec4-only rule already guarantees
 #: 16-byte alignment, so a struct can grow LEGALLY and still break every
