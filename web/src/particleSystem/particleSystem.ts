@@ -60,13 +60,22 @@ import {
   packBrushUniforms,
   packCanvasUniforms,
   packEntityUpdateUniforms,
+  packPickUniforms,
 } from './uniforms.ts';
 import { workgroupsFor } from './dispatch.ts';
+import {
+  type PickResult,
+  NO_HIT,
+  PICK_RESULT_SIZE,
+  PICK_UNIFORM_SIZE,
+  decodePickResult,
+} from './pick.ts';
 import { compileModule } from '../gpu/shaderModule.ts';
 
 import entityUpdateSource from './shaders/entityUpdate.wgsl';
 import canvasSource from './shaders/canvas.wgsl';
 import brushSource from './shaders/brush.wgsl';
+import entityPickSource from './shaders/entityPick.wgsl';
 
 // Re-exported so callers have one import for the simulation. The definitions
 // live in `dispatch.ts` because this module imports `.wgsl`, which only
@@ -157,16 +166,43 @@ export class ParticleSystem {
   private computePipeline: GPUComputePipeline | null = null;
   private canvasPipeline: GPURenderPipeline | null = null;
   private brushPipeline: GPURenderPipeline | null = null;
+  /** Pass A: reduce every entity to one packed key by atomicMin. */
+  private pickReducePipeline: GPUComputePipeline | null = null;
+  /** Pass B: one invocation; derives the winner's rule and position. */
+  private pickDerivePipeline: GPUComputePipeline | null = null;
 
   private computeStateGroup: GPUBindGroup | null = null;
   private canvasUniformGroup: GPUBindGroup | null = null;
   private brushStateGroup: GPUBindGroup | null = null;
+  private pickGroup: GPUBindGroup | null = null;
 
   // Held so `buildStateGroups` can rebuild the three groups above without
   // recompiling shaders -- which is what a physics-rate growth needs.
   private computeStateLayout: GPUBindGroupLayout | null = null;
   private canvasUniformLayout: GPUBindGroupLayout | null = null;
   private brushStateLayout: GPUBindGroupLayout | null = null;
+  private pickLayout: GPUBindGroupLayout | null = null;
+
+  // --- picking ------------------------------------------------------------
+  // See `requestPick` for the phase machine these four fields implement.
+
+  /** GPU-side result: the atomic key, the winner's position, and its rule. */
+  private readonly pickResult: GPUBuffer;
+  /** Host-visible copy. A buffer cannot be both STORAGE and MAP_READ. */
+  private readonly pickStaging: GPUBuffer;
+  private readonly pickUniforms: GPUBuffer;
+  private pickPhase: 'idle' | 'dispatched' | 'mapping' | 'ready' = 'idle';
+  /**
+   * The radius of the in-flight dispatch, needed to decode its quantized
+   * distance. `picker.py:90-92` keeps `_pending_radius` for the same reason:
+   * decoding with a later click's radius would scale the distance wrongly.
+   */
+  private pickRadius = 0;
+  /**
+   * Bumped on every request. A `mapAsync` callback whose generation no longer
+   * matches was abandoned by a later click and must not publish its result.
+   */
+  private pickGeneration = 0;
   /**
    * Texture groups, keyed [wrap ? 1 : 0][front-is-a ? 0 : 1]. Pre-built because
    * WebGPU samplers are immutable: the desktop flips `repeat_x/repeat_y` at
@@ -282,6 +318,36 @@ export class ParticleSystem {
     this.canvasUniforms = this.makeUniformBuffer('canvas-uniforms', this.canvasStride);
     this.brushUniforms = this.makeUniformBuffer('brush-uniforms', this.brushStride);
 
+    // --- picking ---------------------------------------------------------
+    // 336 bytes: the atomic key, the winner's position, and its 320-byte Rule.
+    // The rule is here because the port does NOT reproduce mutation.py's
+    // float32 host mirror -- see pick.ts and rule.wgsl.
+    //
+    // COPY_DST is not optional: it is how the NO_HIT sentinel gets written
+    // before each dispatch, and atomicMin without that reset would keep a stale
+    // winner forever.
+    this.pickResult = device.createBuffer({
+      label: 'PickResultBuffer',
+      size: PICK_RESULT_SIZE,
+      usage:
+        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    // MAP_READ | COPY_DST is the only pairing WebGPU allows for a mappable
+    // buffer -- which is the entire reason this second buffer exists rather
+    // than mapping `pickResult` directly.
+    this.pickStaging = device.createBuffer({
+      label: 'PickStagingBuffer',
+      size: PICK_RESULT_SIZE,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    // No dynamic offset: at most one pick per frame, so unlike the three
+    // per-sub-step buffers there is nothing to stride through.
+    this.pickUniforms = device.createBuffer({
+      label: 'pick-uniforms',
+      size: PICK_UNIFORM_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
     this.uploadConfigs();
   }
 
@@ -309,10 +375,11 @@ export class ParticleSystem {
   async reload(): Promise<void> {
     const device = this.device;
 
-    const [entityModule, canvasModule, brushModule] = await Promise.all([
+    const [entityModule, canvasModule, brushModule, pickModule] = await Promise.all([
       compileModule(device, 'entityUpdate.wgsl', entityUpdateSource),
       compileModule(device, 'canvas.wgsl', canvasSource),
       compileModule(device, 'brush.wgsl', brushSource),
+      compileModule(device, 'entityPick.wgsl', entityPickSource),
     ]);
 
     // --- entity update (compute) -----------------------------------------
@@ -449,6 +516,47 @@ export class ParticleSystem {
       this.brushStateLayout = brushStateLayout;
     }
 
+    // --- picking ----------------------------------------------------------
+    // ONE layout and ONE bind group for BOTH passes: they need exactly the same
+    // four resources, so sharing means one createBindGroup and one setBindGroup
+    // per pass rather than two of each.
+    //
+    // `entities` is read-only-storage here, unlike the entity-update pass. That
+    // is what lets rule.wgsl be shared between the two shaders -- see
+    // get_cohort's comment there.
+    const pickLayout = device.createBindGroupLayout({
+      label: 'entity-pick',
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'read-only-storage' },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'read-only-storage' },
+        },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      ],
+    });
+
+    if (pickModule !== null) {
+      const layout = device.createPipelineLayout({ bindGroupLayouts: [pickLayout] });
+      this.pickReducePipeline = device.createComputePipeline({
+        label: 'entity-pick-reduce',
+        layout,
+        compute: { module: pickModule, entryPoint: 'reduce' },
+      });
+      this.pickDerivePipeline = device.createComputePipeline({
+        label: 'entity-pick-derive',
+        layout,
+        compute: { module: pickModule, entryPoint: 'derive' },
+      });
+      this.pickLayout = pickLayout;
+    }
+
     this.buildStateGroups();
     this.buildTextureGroups(computeTextureLayout, canvasTextureLayout);
   }
@@ -505,6 +613,23 @@ export class ParticleSystem {
             resource: { buffer: this.brushUniforms, size: BRUSH_UNIFORM_SIZE },
           },
           { binding: 1, resource: { buffer: this.entityBuffer } },
+        ],
+      });
+    }
+
+    // The pick group references no per-sub-step buffer, so it does not strictly
+    // need rebuilding when those are reallocated -- it is built here anyway so
+    // there is one place that builds bind groups, rather than a second rule to
+    // remember.
+    if (this.pickLayout !== null) {
+      this.pickGroup = device.createBindGroup({
+        label: 'entity-pick',
+        layout: this.pickLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.entityBuffer } },
+          { binding: 1, resource: { buffer: this.configBuffer } },
+          { binding: 2, resource: { buffer: this.pickResult } },
+          { binding: 3, resource: { buffer: this.pickUniforms } },
         ],
       });
     }
@@ -670,6 +795,168 @@ export class ParticleSystem {
     return this.entityBuffer;
   }
 
+  // =========================================================================
+  // Picking
+  // =========================================================================
+  //
+  // THE PHASE MACHINE. `picker.py` needs one boolean (`_pending`) because its
+  // readback is synchronous by the time it is read. Here a buffer that is
+  // mapped, or mid-`mapAsync`, is NOT A LEGAL COPY TARGET, so the states have
+  // to be distinguished:
+  //
+  //   idle       nothing in flight; the staging buffer is free
+  //   dispatched passes and the copy are recorded; mapAsync not yet called
+  //   mapping    mapAsync in flight; staging cannot be copied into
+  //   ready      mapped; getMappedRange() is valid and an unmap() is owed
+  //
+  // `dispatched` is separate from `mapping` because mapAsync must be called
+  // AFTER submit(), never while the encoder is open.
+
+  /**
+   * Phase 1: dispatch a pick. The result arrives via `retrievePick()` on a
+   * later frame.
+   *
+   * Call this BEFORE the frame's encoder opens -- it writes two buffers, and
+   * `queue.writeBuffer` may not interleave with an open encoder's passes.
+   *
+   * A second call while one is in flight ABANDONS the first (last click wins,
+   * `selection_commands.py:111-113`). The dispatch is overwritten regardless --
+   * there is one result slot -- so honouring the older click would adopt a rule
+   * from a pick aimed somewhere else.
+   */
+  requestPick(targetWorld: readonly [number, number], radiusWorld: number): void {
+    if (this.pickReducePipeline === null || this.pickGroup === null) return;
+
+    // Abandon whatever was in flight. A buffer that is mapping or mapped cannot
+    // be copied into, so those two states have to be resolved before the new
+    // dispatch can record its copy.
+    this.pickGeneration++;
+    if (this.pickPhase === 'ready') {
+      // Mapped and never read. Release it; the result is stale now anyway.
+      this.pickStaging.unmap();
+      this.pickPhase = 'idle';
+    } else if (this.pickPhase === 'mapping') {
+      // Cannot unmap a buffer whose mapAsync has not settled, and cannot copy
+      // into it either. The generation bump makes the pending callback discard
+      // its result; this request waits for the buffer to come free. One frame,
+      // and only when two clicks land inside one GPU-latency window.
+      return;
+    }
+
+    const queue = this.device.queue;
+    // THE SENTINEL, and it is mandatory rather than defensive: atomicMin only
+    // ever LOWERS, so a stale winner would beat every candidate forever.
+    // `picker.py:107` writes it first thing for the same reason.
+    queue.writeBuffer(this.pickResult, 0, new Uint32Array([NO_HIT]));
+    queue.writeBuffer(
+      this.pickUniforms,
+      0,
+      packPickUniforms(this.worldConfig(), targetWorld, radiusWorld),
+    );
+
+    this.pickRadius = radiusWorld;
+    this.pickPhase = 'dispatched';
+  }
+
+  /**
+   * Record the two pick passes and the readback copy, if a pick is pending.
+   *
+   * Called from `runFrame`, so a pick rides the frame's existing encoder.
+   */
+  private recordPick(encoder: GPUCommandEncoder): void {
+    if (this.pickPhase !== 'dispatched') return;
+    if (this.pickReducePipeline === null || this.pickDerivePipeline === null) return;
+    if (this.pickGroup === null) return;
+
+    // TWO SEPARATE PASSES, not two dispatches in one. WebGPU orders passes
+    // within a submission and inserts the barriers between them; dispatches
+    // inside a SINGLE pass have no ordering guarantee, so `derive` would race
+    // the reduction whose answer it reads.
+    const reduce = encoder.beginComputePass({ label: 'entity-pick-reduce' });
+    reduce.setPipeline(this.pickReducePipeline);
+    reduce.setBindGroup(0, this.pickGroup);
+    reduce.dispatchWorkgroups(workgroupsFor(this.entityCount));
+    reduce.end();
+
+    // One invocation: it reads the settled key and derives that one entity's
+    // rule. Writing the rule from the reduce pass would let a thread that LOST
+    // the atomic overwrite the winner's -- see entityPick.wgsl.
+    const derive = encoder.beginComputePass({ label: 'entity-pick-derive' });
+    derive.setPipeline(this.pickDerivePipeline);
+    derive.setBindGroup(0, this.pickGroup);
+    derive.dispatchWorkgroups(1);
+    derive.end();
+
+    // Recorded in the SAME encoder, so it is ordered after `derive` by
+    // construction rather than by timing.
+    encoder.copyBufferToBuffer(this.pickResult, 0, this.pickStaging, 0, PICK_RESULT_SIZE);
+  }
+
+  /**
+   * Start the readback. Call AFTER `queue.submit()`.
+   *
+   * Separate from `recordPick` because `mapAsync` may not be called while the
+   * encoder is open, and separate from `retrievePick` because the map takes
+   * time -- that wait is the whole reason picking is two-phase.
+   */
+  beginPickReadback(): void {
+    if (this.pickPhase !== 'dispatched') return;
+
+    const generation = this.pickGeneration;
+    this.pickPhase = 'mapping';
+    this.pickStaging.mapAsync(GPUMapMode.READ).then(
+      () => {
+        if (generation !== this.pickGeneration) {
+          // A later click abandoned this one. Release the buffer so the next
+          // request can copy into it, and publish nothing.
+          this.pickStaging.unmap();
+          this.pickPhase = 'idle';
+          return;
+        }
+        this.pickPhase = 'ready';
+      },
+      () => {
+        // Device lost, or the buffer was destroyed. Invariant 5's shape: a
+        // failed readback drops the pick rather than killing the frame.
+        this.pickPhase = 'idle';
+      },
+    );
+  }
+
+  /**
+   * Phase 2: the result, or `null` if it is not ready yet.
+   *
+   * `null` AND A MISS ARE DIFFERENT, and the caller must keep them so. `null`
+   * means the readback has not landed and the pending click must keep waiting;
+   * a `PickResult` with `index < 0` means nothing was in range. `picker.py`
+   * conflates them because its retrieve() always answers -- treating `null` as
+   * a miss here would silently drop every click whose readback took longer than
+   * a frame.
+   *
+   * MUST BE CALLED AT THE TOP OF THE FRAME, before input can dispatch a new
+   * pick: there is one result slot, so a new dispatch clobbers the answer being
+   * read. And it must be called from the FRAME LOOP, not from inside
+   * `advance()` -- `advance()` is skipped while paused, and clicking to select
+   * has to keep working then (`orchestrator.py:263-279`).
+   */
+  retrievePick(): PickResult | null {
+    if (this.pickPhase !== 'ready') return null;
+
+    // `.slice(0)` is not optional: `unmap()` DETACHES the ArrayBuffer that
+    // getMappedRange returned, and reading a detached buffer throws -- at the
+    // exact moment a user clicks. 336 bytes.
+    const bytes = this.pickStaging.getMappedRange().slice(0);
+    this.pickStaging.unmap();
+    this.pickPhase = 'idle';
+
+    return decodePickResult(bytes, this.pickRadius);
+  }
+
+  /** Whether a dispatched pick has yet to be read. Diagnostics only. */
+  get pickPending(): boolean {
+    return this.pickPhase !== 'idle';
+  }
+
   /**
    * Record one frame: `physicsSteps` sub-steps into a single encoder.
    *
@@ -733,6 +1020,13 @@ export class ParticleSystem {
       onSubStep?.(encoder, i);
     }
     this._frameCount += steps;
+
+    // After the sub-steps, so the pick sees the positions the frame ended on --
+    // the same entities the user is looking at when they click. Inside the
+    // encoder because the passes need it; the RESOLVE, by contrast, lives in
+    // the frame loop outside runFrame, because picking must work while paused
+    // and runFrame is what a paused frame skips.
+    this.recordPick(encoder);
   }
 
   private makeUniformBuffer(label: string, stride: number): GPUBuffer {
@@ -870,6 +1164,10 @@ export class ParticleSystem {
       entityUpdate: this.computePipeline !== null,
       canvas: this.canvasPipeline !== null,
       brush: this.brushPipeline !== null,
+      // Both from one module, but reported separately: they are separate
+      // pipelines, and browserCheck.mjs greps this line for /FAILED/.
+      entityPickReduce: this.pickReducePipeline !== null,
+      entityPickDerive: this.pickDerivePipeline !== null,
     };
   }
 }

@@ -35,10 +35,16 @@ function expand(name: string): string {
   return resolveIncludes(path.join(here, name), { sharedDir: SHARED_DIR });
 }
 
-const SHADERS = ['entityUpdate.wgsl', 'canvas.wgsl', 'brush.wgsl', 'rule.wgsl'] as const;
+const SHADERS = [
+  'entityUpdate.wgsl',
+  'canvas.wgsl',
+  'brush.wgsl',
+  'rule.wgsl',
+  'entityPick.wgsl',
+] as const;
 
 /** The two shaders that derive a rule, and so must agree about how. */
-const RULE_CONSUMERS = ['entityUpdate.wgsl'] as const;
+const RULE_CONSUMERS = ['entityUpdate.wgsl', 'entityPick.wgsl'] as const;
 
 /** Strip `//` comments so a rule is not "satisfied" by prose about it. */
 function stripComments(source: string): string {
@@ -294,6 +300,121 @@ test('every get_cohort call passes arrayLength, not a host-supplied count', () =
       );
     }
   }
+});
+
+test('entityPick.wgsl binds entities READ-ONLY at the project-wide numbers', () => {
+  // Read-only is what lets rule.wgsl be shared: a function included by both
+  // shaders cannot name a binding they qualify differently, which is why
+  // get_cohort takes the entity count as a parameter. Making this read_write
+  // "to match entityUpdate" would remove the reason for that signature and
+  // invite someone to revert it.
+  const source = stripComments(expand('entityPick.wgsl'));
+  assert.match(
+    source,
+    /@group\(0\)\s*@binding\(0\)\s*var<storage,\s*read>\s*entities/,
+    'entityPick.wgsl must bind entities READ-ONLY at group 0 binding 0',
+  );
+  assert.match(
+    source,
+    /@group\(0\)\s*@binding\(1\)\s*var<storage,\s*read>\s*configs/,
+    'entityPick.wgsl must bind configs read-only at group 0 binding 1',
+  );
+  // Binding 2 mirrors PICK_RESULT_BINDING in picker.py:41.
+  assert.match(
+    source,
+    /@group\(0\)\s*@binding\(2\)\s*var<storage,\s*read_write>\s*result/,
+    'the pick result must be read_write at group 0 binding 2',
+  );
+});
+
+test('the pick reduce pass matches the host dispatch arithmetic', () => {
+  // Same hazard as entityUpdate's: workgroupsFor divides by WORKGROUP_SIZE, so
+  // a shrunken @workgroup_size under-dispatches and the entities past the last
+  // covered index simply stop being pickable -- silently, and only in the tail
+  // of the buffer.
+  const source = stripComments(expand('entityPick.wgsl'));
+  const match = /@compute\s*@workgroup_size\((\d+)\)\s*fn\s+reduce/.exec(source);
+  assert.ok(match !== null, 'entityPick.wgsl has no @compute reduce entry point');
+  assert.equal(Number(match[1]), WORKGROUP_SIZE, 'reduce disagrees with WORKGROUP_SIZE');
+});
+
+test('the pick derive pass runs exactly one invocation', () => {
+  // AT 256 THIS WOULD PROBABLY STILL LOOK RIGHT: every thread in the group
+  // computes the same rule from the same key, so the 320 bytes they race to
+  // write are identical. It would be a data race that happens to be benign on
+  // the hardware it was tried on -- the worst kind to leave in. Asserted.
+  const source = stripComments(expand('entityPick.wgsl'));
+  const match = /@compute\s*@workgroup_size\((\d+)\)\s*fn\s+derive/.exec(source);
+  assert.ok(match !== null, 'entityPick.wgsl has no @compute derive entry point');
+  assert.equal(Number(match[1]), 1, 'derive must be @workgroup_size(1) -- one invocation');
+});
+
+test('the reduce pass never writes a rule, and derive never writes the key', () => {
+  // THE INVARIANT THE TWO-PASS SPLIT EXISTS FOR. A thread that loses the
+  // atomicMin still runs its next instruction, so a rule written from the
+  // reduce pass could be a LOSER's rule -- the picked particle's index would be
+  // right and its rule would belong to someone else. Nothing downstream could
+  // detect that; it just adopts a plausible wrong rule.
+  const source = stripComments(expand('entityPick.wgsl'));
+  // Anchored on `fn reduce(` / `fn derive(` -- a bare 'fn derive' also matches
+  // `fn derive_entity_rule` from the rule.wgsl include, which sits BEFORE both
+  // entry points and would slice the reduce body away to nothing.
+  const reduceAt = source.indexOf('fn reduce(');
+  const deriveAt = source.indexOf('fn derive(');
+  assert.ok(reduceAt !== -1, 'entityPick.wgsl has no reduce entry point');
+  assert.ok(deriveAt > reduceAt, 'expected derive to follow reduce in the file');
+  const reduce = source.slice(reduceAt, deriveAt);
+  const derive = source.slice(deriveAt);
+
+  assert.ok(reduce.includes('atomicMin('), 'reduce must do the atomic reduction');
+  assert.ok(
+    !/result\.rule\s*=/.test(reduce),
+    'reduce writes result.rule -- a losing thread could overwrite the winner',
+  );
+  assert.ok(
+    !/result\.pos_[xy]\s*=/.test(reduce),
+    'reduce writes result.pos -- same hazard as the rule',
+  );
+  assert.ok(
+    !reduce.includes('derive_entity_rule('),
+    'reduce derives a rule; only the single-invocation derive pass may',
+  );
+  assert.ok(!derive.includes('atomicMin('), 'derive must not touch the key it reads');
+  assert.ok(derive.includes('derive_entity_rule('), 'derive must derive the rule');
+});
+
+test('the pick result stores its position as two f32s, not a vec2f', () => {
+  // `vec2f` HAS ALIGNMENT 8. At offset 4 -- in the padding that Rule's 16-byte
+  // alignment forces -- WGSL cannot place one, so it pushes pos to 8, the pad
+  // to 16 and the rule to 32, and the struct becomes 352 bytes. The host
+  // allocates PICK_RESULT_SIZE (336) and the driver then rejects the binding as
+  // too small, which is a hard error at the first click and NOT visible to
+  // `npm test`, since nothing here parses WGSL layout.
+  //
+  // Two f32s align to 4 and genuinely fit in the hole, so the position is free.
+  // Asserted because `vec2f` is the obvious, tidier-looking spelling and this
+  // is exactly the kind of thing a later cleanup would "fix".
+  const source = stripComments(expand('entityPick.wgsl'));
+  const struct = /struct\s+PickResult\s*\{([\s\S]*?)\}/.exec(source);
+  assert.ok(struct !== null, 'entityPick.wgsl declares no PickResult struct');
+  assert.ok(
+    !/vec2f/.test(struct[1]!),
+    'PickResult holds a vec2f; its alignment 8 would grow the struct to 352 bytes',
+  );
+  assert.match(struct[1]!, /pos_x\s*:\s*f32/, 'PickResult must store pos_x as an f32');
+  assert.match(struct[1]!, /pos_y\s*:\s*f32/, 'PickResult must store pos_y as an f32');
+});
+
+test('entityPick.wgsl selects its config the same way entityUpdate does', () => {
+  // A different clamp bound reads a different ConfigData than the physics used,
+  // and derives a rule the entity is not obeying. Both must clamp against
+  // world_config_count(world), which is why `world` rides in the pick uniform
+  // at all -- the desktop's pick shader needs no world.
+  const pick = stripComments(expand('entityPick.wgsl'));
+  const update = stripComments(expand('entityUpdate.wgsl'));
+  const clamp = /configs\[clamp\(config_index,\s*0,\s*world_config_count\(u\.world\)\s*-\s*1\)\]/;
+  assert.match(update, clamp, 'entityUpdate.wgsl changed how it selects a config');
+  assert.match(pick, clamp, 'entityPick.wgsl must select the config identically');
 });
 
 test('canvas.wgsl takes no sampler as a function parameter', () => {

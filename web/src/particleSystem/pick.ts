@@ -80,17 +80,24 @@ export const DEFAULT_PICK_RADIUS_PX = 40.0;
 /**
  * `PickResultBuffer` -- 336 bytes.
  *
- *   key   : atomic<u32>  (4)    offset 0
- *   pos   : vec2f        (8)    offset 4
- *   _pad  : u32          (4)    offset 12
- *   rule  : Rule         (320)  offset 16
+ *   key    : atomic<u32>  (4)    offset 0
+ *   pos_x  : f32          (4)    offset 4
+ *   pos_y  : f32          (4)    offset 8
+ *   _pad   : u32          (4)    offset 12
+ *   rule   : Rule         (320)  offset 16
  *
  * `Rule` is 16-byte aligned (it is built from `vec4f`), so `rule` cannot start
  * at offset 4 -- WGSL inserts 12 bytes of padding after the key whether or not
  * anything is written there. **THE POSITION RIDES IN THAT PADDING AND IS
  * THEREFORE FREE.** That is why the scalars come BEFORE the rule: appended
- * after it, `pos` would claim a whole new 16-byte lane and the buffer would be
- * 352 bytes for the same content.
+ * after it, they would claim a whole new 16-byte lane.
+ *
+ * THE POSITION IS TWO f32s AND NOT A vec2f. `vec2f` has ALIGNMENT 8, so WGSL
+ * cannot place one at offset 4: it would move to 8, push `_pad` to 16 and the
+ * rule to 32, and the struct would be 352 bytes -- at which point the driver
+ * rejects this 336-byte buffer as too small for the binding. Two f32s align to
+ * 4 and genuinely fit. (Measured, not reasoned: the 352 came back as a WebGPU
+ * validation error on the first click.)
  *
  * (docs/WEB_PORT_PLAN.md Step 6 says 324 = 4 + 320. That predates the padding
  * and the position; 336 is the real number.)

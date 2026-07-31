@@ -1,0 +1,208 @@
+// ============================================================================
+// entityPick.wgsl -- find the entity nearest a target, and derive its rule.
+//
+// The WGSL translation of `particle_system/shaders/entity_pick.glsl` (87 lines),
+// plus the rule derivation that file does not have. Structure and comments
+// follow it so the two stay diff-comparable.
+//
+// ---------------------------------------------------------------------------
+// THE ATOMIC TRICK (unchanged from the GLSL)
+// ---------------------------------------------------------------------------
+// There is no atomicMin for floats, so distance is packed into the high bits of
+// a u32 and the entity index into the low bits:
+//
+//     key = (quantized_distance << INDEX_BITS) | entity_index
+//
+// A single atomicMin over that key minimizes distance first and breaks ties by
+// lowest index -- deterministic, which matters because otherwise the same click
+// could select different particles on different frames.
+//
+// WHERE THE 32 BITS GO: 24 to the index, 8 to the distance. The index is the
+// part that must not overflow -- an entity past INDEX_MASK cannot be encoded,
+// so it silently stops being pickable, which reads as "the last cohorts don't
+// respond to clicks" rather than as a bug. 24 bits covers 16.7M entities, well
+// past any world size the UI offers. pick.test.ts asserts that bound.
+//
+// The distance gets what is left because its precision barely matters: 256
+// buckets across the radius only decides which of two near-equidistant
+// particles wins, and a tie is broken by lowest index -- still deterministic,
+// which is the property that actually matters.
+//
+// ---------------------------------------------------------------------------
+// WHY TWO ENTRY POINTS, AND WHY TWO SEPARATE PASSES
+// ---------------------------------------------------------------------------
+// `reduce` finds the winner. `derive` writes its rule and position.
+//
+// They cannot be one pass. A thread that LOSES the atomicMin still executes its
+// next instruction, so if the reducing threads also wrote the rule, a loser
+// could overwrite the winner's -- which is exactly why the desktop keeps the
+// index authoritative and puts nothing else in the result buffer
+// (entity_pick.glsl:43-47). Deriving from a single invocation, after the atomic
+// has settled, is what makes writing the rule safe at all.
+//
+// They also cannot be two dispatches in ONE compute pass: WebGPU orders passes
+// within a submission and inserts the barriers between them, but dispatches
+// inside a single pass have no ordering guarantee, so `derive` would race the
+// reduction it depends on. Two beginComputePass calls. See particleSystem.ts.
+//
+// ---------------------------------------------------------------------------
+// WHY THE RULE IS DERIVED HERE AT ALL
+// ---------------------------------------------------------------------------
+// The rule is not stored anywhere: Entity is 32 bytes (pos_vel + misc) and
+// entityUpdate re-derives the rule every step and discards it. The desktop
+// therefore recomputes it HOST-SIDE in float32 (particle_system/mutation.py) to
+// avoid a readback. That file is deliberately not ported -- JS has no float32
+// arithmetic, and mutation.py:149's pow(h, 2.0) trap has no reliable JS
+// equivalent. A wrong adopted rule looks like a legitimate result.
+//
+// So the GPU derives it, through the SAME derive_entity_rule() that
+// entityUpdate.wgsl calls (rule.wgsl). Not a copy -- the same function.
+// ============================================================================
+
+#include "common.wgsl"
+#include "rule.wgsl"
+
+// --- bindings --------------------------------------------------------------
+// Bindings 0 and 1 are fixed project-wide -- see the table in common.wgsl.
+// Binding 2 is the pick result, mirroring PICK_RESULT_BINDING in picker.py:41
+// and entity_pick.glsl:48.
+//
+// `entities` is READ-ONLY here, unlike entityUpdate.wgsl's read_write. That is
+// not incidental: rule.wgsl is shared between the two shaders, so nothing in it
+// may name this binding -- which is why get_cohort takes the entity count as a
+// parameter instead of calling arrayLength() itself.
+
+@group(0) @binding(0) var<storage, read> entities : array<Entity>;
+@group(0) @binding(1) var<storage, read> configs  : array<ConfigData>;
+
+// The result. 336 bytes; the layout is mirrored in pick.ts, which asserts it.
+//
+//   key   : atomic<u32>  offset 0
+//   pos_x : f32          offset 4    <- both ride in the 12 bytes of padding
+//   pos_y : f32          offset 8       that Rule's 16-byte alignment forces,
+//   _pad  : u32          offset 12      so the position costs nothing
+//   rule  : Rule         offset 16
+//
+// POSITION IS TWO f32s, NOT A vec2f, AND THAT IS THE WHOLE POINT. `vec2f` has
+// ALIGNMENT 8, so it cannot start at offset 4 -- WGSL would push it to 8, _pad
+// to 16 and `rule` to 32, making the struct 352 bytes and the position cost a
+// full 16-byte lane after all. Two f32s align to 4 and genuinely fit in the
+// hole. (Measured: the driver rejected the 336-byte buffer as "too small, the
+// pipeline requires 352" when this was a vec2f.)
+struct PickResult {
+    key   : atomic<u32>,
+    pos_x : f32,
+    pos_y : f32,
+    _pad  : u32,
+    rule  : Rule,
+}
+@group(0) @binding(2) var<storage, read_write> result : PickResult;
+
+struct PickUniforms {
+    world  : WorldData,
+    // xy: target (world space)   z: max_dist   w: reserved
+    params : vec4f,
+}
+@group(0) @binding(3) var<uniform> u : PickUniforms;
+
+// `pick_target`, not `target`: TARGET IS A RESERVED KEYWORD IN WGSL. The GLSL
+// spells this uniform `target` (entity_pick.glsl:52) and the obvious
+// translation does not compile -- a browser-only error, since nothing in
+// `npm test` parses WGSL.
+fn pick_target() -> vec2f { return u.params.xy; }
+fn max_dist() -> f32 { return u.params.z; }
+
+// --- the key ---------------------------------------------------------------
+// Mirrored in pick.ts; pick.test.ts parses THIS FILE for the two bit counts and
+// asserts they match, as tests/test_async_pick.py:65 does against the GLSL.
+const INDEX_BITS: u32 = 24u;
+const INDEX_MASK: u32 = (1u << INDEX_BITS) - 1u;
+const DIST_BITS:  u32 = 8u;           // 256 distance buckets across the radius
+const DIST_MAX:   u32 = (1u << DIST_BITS) - 1u;
+
+// Written by the host before every dispatch. atomicMin only ever LOWERS, so a
+// stale winner would beat every candidate forever if this were not reset.
+const NO_HIT: u32 = 0xFFFFFFFFu;
+
+//=========================================================================================
+// PASS A -- reduce
+//=========================================================================================
+
+@compute @workgroup_size(256)
+fn reduce(@builtin(global_invocation_id) gid: vec3u) {
+    let index = gid.x;
+    if (index >= arrayLength(&entities)) { return; }
+    if (index > INDEX_MASK) { return; }   // beyond what the key can encode
+
+    let e = entities[index];
+    let pos = e_pos(e);
+
+    // Straight-line, deliberately NOT toroidal. Picking is a UI affordance, and
+    // the wrap only changes the answer for a click within a particle radius of
+    // the seam -- not worth threading the boundary mode down here, and wrong in
+    // every mode but BC_WRAP anyway.
+    let d = pick_target() - pos;
+    let dist_sq = dot(d, d);
+    let limit = max_dist();
+    if (dist_sq > limit * limit) { return; }   // outside the radius
+
+    // Quantize distance into the high bits. Using the actual distance (not the
+    // square) spreads the buckets evenly in the units the user perceives.
+    let dist_norm = sqrt(dist_sq) / limit;               // [0,1]
+    let dist_q = u32(clamp(dist_norm, 0.0, 1.0) * f32(DIST_MAX));
+
+    let key = (dist_q << INDEX_BITS) | index;
+    atomicMin(&result.key, key);
+}
+
+//=========================================================================================
+// PASS B -- derive
+//=========================================================================================
+
+// ONE INVOCATION. @workgroup_size(1) is load-bearing: at 256 every thread in
+// the group would race to write the same rule to the same 320 bytes. It would
+// probably even LOOK correct, since they all compute the same value -- which is
+// why shaders.test.ts asserts the 1 rather than trusting review.
+//
+// The host dispatches this only after `reduce` has finished in a separate pass,
+// so `result.key` is settled by the time it is read.
+@compute @workgroup_size(1)
+fn derive() {
+    let key = atomicLoad(&result.key);
+    // Nothing was in range. Leave pos and rule alone -- the host reads the
+    // sentinel first and never looks at them.
+    if (key == NO_HIT) { return; }
+
+    let index = key & INDEX_MASK;
+    if (index >= arrayLength(&entities)) { return; }   // paranoia; cannot happen
+
+    let e = entities[index];
+
+    // The winner's position, from THE SAME READ of the same record that the
+    // rule below comes from. The desktop instead looks the position up
+    // host-side from the index (picker.py:142-145), on the argument that the
+    // index is authoritative so the two cannot disagree. That argument still
+    // holds; this is simply stronger, and it saves a second readback.
+    //
+    // Note this does NOT reopen the "losers must not write" hazard above: that
+    // applies to the reduce pass, where many threads compete. Here there is one
+    // invocation and no competitor.
+    let winner_pos = e_pos(e);
+    result.pos_x = winner_pos.x;
+    result.pos_y = winner_pos.y;
+
+    // Select the config exactly as entityUpdate.wgsl:496-497 does, INCLUDING
+    // the clamp bound -- a different bound could select a different ConfigData
+    // than the physics used, and derive a rule the entity is not obeying.
+    //
+    // The frame-0 special case there (ask assign_config_index directly, because
+    // nothing has been written yet) is not reproduced: a pick on frame 0 has
+    // nothing meaningful to select anyway, and the entity's stored index is
+    // valid on every frame a user could click.
+    let config_index = e_config_index(e);
+    let config = configs[clamp(config_index, 0, world_config_count(u.world) - 1)];
+
+    // THE SAME FUNCTION entityUpdate.wgsl calls, from rule.wgsl. Not a copy.
+    let cohort = get_cohort(index, config, arrayLength(&entities));
+    result.rule = derive_entity_rule(config.rule, cohort, config);
+}

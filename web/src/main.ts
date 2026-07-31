@@ -10,11 +10,16 @@
  *     a still image, and `advance()` is skipped while the render is not
  *   - `_apply_canvas_input` above the render, because painting binds its own
  *     target
- *   - pick-resolve before input can dispatch a new pick (read before write)
  *   - `_overlay_args()`, which decides overlay visibility from the active tool
  *
- * WHAT IS DELIBERATELY MISSING ELSEWHERE: no picking (Step 6); no UI, no input,
- * no presets menu (Steps 7-10); no strafe field (Step 9).
+ * Pick-resolve before input can dispatch a new pick is DONE (Step 6) -- it is
+ * the first thing `frame()` does. When Step 7 adds the pause branch, that call
+ * must stay OUTSIDE it: `runFrame` is what a paused frame skips, and clicking
+ * to select has to keep working while paused.
+ *
+ * WHAT IS DELIBERATELY MISSING ELSEWHERE: no UI, no real input, no presets menu
+ * (Steps 7-10); no strafe field (Step 9). Picking has no cursor yet either --
+ * `?pick=x,y` stands in for one until Step 8.
  */
 
 import { acquireDevice, showUnavailableOverlay, WebGPUUnavailable } from './gpu/device.ts';
@@ -32,6 +37,14 @@ import { RenderTargets } from './app/renderTargets.ts';
 import { Assembler } from './assembler/assembler.ts';
 import { NO_OVERLAYS } from './assembler/assemblerUniforms.ts';
 import { DEFAULT_PREFERENCES } from './prefs/preferences.ts';
+import { screenToWorld } from './particleSystem/coords.ts';
+import {
+  type PickResult,
+  DEFAULT_PICK_RADIUS_PX,
+  isHit,
+  radiusPxToWorld,
+} from './particleSystem/pick.ts';
+import { SelectionController, type SelectionHost } from './selection/selection.ts';
 
 /**
  * The `?debug` readout.
@@ -57,6 +70,20 @@ function createDebugOverlay(): { update(lines: readonly string[]): void } | null
       el.textContent = lines.join('\n');
     },
   };
+}
+
+/**
+ * Format a pick for the debug readout, as `ui.py:385-391` does:
+ * `#index (x, y) d=distance`, or `-` for nothing selected and `miss` for a
+ * click that found nothing in range.
+ */
+function describeSelected(result: PickResult | null): string {
+  if (result === null) return '-';
+  if (!isHit(result)) return 'miss';
+  return (
+    `#${result.index}  (${result.pos[0].toFixed(3)}, ${result.pos[1].toFixed(3)})  ` +
+    `d=${result.distance.toFixed(4)}`
+  );
 }
 
 async function start(): Promise<void> {
@@ -152,6 +179,29 @@ async function start(): Promise<void> {
         }
       : NO_OVERLAYS;
 
+  // `?pick=x,y` dispatches ONE pick at a screen pixel a few frames in, and logs
+  // the decoded result: index, distance, position, and the head of the derived
+  // rule.
+  //
+  // STEP 8 OWNS REAL INPUT, and there is none in web/ yet. This exists because
+  // without it the whole Step 6 path -- two dispatches, the atomic reduction,
+  // the mapAsync readback, the GPU-derived rule -- would ship unexercised until
+  // Step 8, by which point a mistranslation would look like a design choice.
+  // Same reasoning, and the same shape, as `?reticle`.
+  //
+  // IT IS ALSO WHAT browserCheck.mjs CAN DRIVE: that tool's only lever is the
+  // URL, so a query param is reachable by the existing verification path with
+  // no changes to it, where a click handler would need CDP input plumbing.
+  //
+  // THIS IS STEP 6's AND STEP 8 DELETES IT. Step 8's job is a real
+  // capture-aware handler in SELECT mode, which supersedes this entirely;
+  // leaving it behind would be a second way to dispatch a pick.
+  const pickParam = (params.get('pick') ?? '').split(',').map(Number);
+  const pickAt: readonly [number, number] | null =
+    pickParam.length === 2 && pickParam.every((v) => Number.isFinite(v))
+      ? [pickParam[0]!, pickParam[1]!]
+      : null;
+
   const requestedMode = new URLSearchParams(window.location.search).get('camera');
   if (requestedMode !== null) {
     if ((CAMERA_MODES as readonly string[]).includes(requestedMode)) {
@@ -208,6 +258,67 @@ async function start(): Promise<void> {
     );
   }
 
+  // --- selection ----------------------------------------------------------
+  // A stand-in for Step 7's Project: the adopted rule and a generation counter,
+  // as an IMMUTABLE record. Adoption returns a new object, so reference
+  // identity means "the project changed" -- which is what `_record_history`
+  // guards on (`selection_commands.py:198`), and what a spread copy anywhere in
+  // the chain would silently break.
+  //
+  // Step 7 replaces this with the real Project and its history stack. What must
+  // survive the swap is the ORDERING, not this type: resolve before input, and
+  // outside the paused branch.
+  interface StandInProject {
+    readonly rule: readonly number[] | null;
+    readonly revision: number;
+  }
+  let project: StandInProject = { rule: null, revision: 0 };
+  let selected: PickResult | null = null;
+
+  const selectionHost: SelectionHost<StandInProject, PickResult> = {
+    requestPick(pixel) {
+      const canvasSize = system.canvasSize;
+      const target = screenToWorld(
+        pixel,
+        surface.size(),
+        canvasSize,
+        cameraState.pan,
+        cameraState.zoom,
+      );
+      // Through the transform, not a fudge factor, so the tolerance is exactly
+      // 40 screen pixels at any zoom (`picker.py:150-162`).
+      const radius = radiusPxToWorld(
+        DEFAULT_PICK_RADIUS_PX,
+        surface.size(),
+        canvasSize,
+        cameraState.pan,
+        cameraState.zoom,
+      );
+      console.log(
+        `pick: dispatch at pixel (${pixel[0]}, ${pixel[1]}) -> world ` +
+          `(${target[0].toFixed(4)}, ${target[1].toFixed(4)}) radius ${radius.toFixed(4)}`,
+      );
+      system.requestPick(target, radius);
+    },
+    retrievePick: () => system.retrievePick(),
+    isHit,
+    currentProject: () => project,
+    adoptRule: (p, result) => ({ rule: result.rule, revision: p.revision + 1 }),
+    setProject: (p) => {
+      project = p;
+    },
+    recordHistory: (before, label) => {
+      // Step 7 owns the real history stack. Logging is enough to prove the
+      // entry is recorded against the CLICK-time state.
+      console.log(`history: "${label}" (before revision ${before.revision})`);
+    },
+    setSelected: (result) => {
+      selected = result;
+    },
+    describe: (result) => `select particle #${result.index}`,
+  };
+  const selection = new SelectionController(selectionHost);
+
   const overlay = createDebugOverlay();
   let lastTime = performance.now();
   let frameMs = 0;
@@ -217,8 +328,32 @@ async function start(): Promise<void> {
 
   // frameCount starts at 0, which IS the reset sentinel -- the first advance()
   // spawns every entity and clears the canvas. Nothing else needs to happen.
+  let frameIndex = 0;
+
   const frame = (): void => {
     if (deviceLost) return; // Stop cleanly rather than spinning on a dead device.
+
+    // FINISH LAST FRAME'S SELECTION FIRST, before anything below can dispatch
+    // a new pick. There is one result slot, so a new dispatch clobbers the
+    // answer being read -- the read has to happen before the write, not after.
+    //
+    // Here rather than inside runFrame(): Step 7 makes runFrame conditional on
+    // the pause state, and clicking to select must keep working while paused --
+    // which is precisely when a user wants to inspect a particle
+    // (`orchestrator.py:263-279`).
+    const resolved = selection.resolve();
+    if (resolved !== null) {
+      if (isHit(resolved)) {
+        const head = (resolved.rule ?? []).slice(0, 4).map((v) => v.toFixed(4));
+        console.log(
+          `pick: HIT #${resolved.index} at (${resolved.pos[0].toFixed(4)}, ` +
+            `${resolved.pos[1].toFixed(4)}) d=${resolved.distance.toFixed(5)} ` +
+            `rule[0..3]=[${head.join(', ')}] revision=${project.revision}`,
+        );
+      } else {
+        console.log('pick: MISS -- nothing in range, project untouched');
+      }
+    }
 
     const now = performance.now();
     // Exponential smoothing: a raw per-frame delta is too noisy to read.
@@ -259,6 +394,17 @@ async function start(): Promise<void> {
     // Step 7 adds the paused branch here: paused is one sample of a still
     // image, since N samples of an unchanging scene is the same picture at N
     // times the cost (`orchestrator.py:301-304`).
+    // The `?pick` one-shot. AFTER the resolve above, which is the ordering the
+    // real input path must also keep: input dispatches, the next frame reads.
+    //
+    // Delayed a few frames so the entities have actually spawned and moved --
+    // on frame 0 every entity is still at its reset position, so a pick would
+    // be testing the spawn pattern rather than the pick path.
+    if (pickAt !== null && frameIndex === 120) {
+      selection.select(pickAt);
+    }
+    frameIndex++;
+
     const schedule = blurSchedule(prefs.physicsSteps, prefs.motionBlurSamples);
     const at = sampleAt(schedule);
 
@@ -316,6 +462,11 @@ async function start(): Promise<void> {
     encodeMs += (performance.now() - tEncode - encodeMs) * 0.1;
     submitMs += (performance.now() - tSimAndCamera - submitMs) * 0.1;
 
+    // AFTER submit, and it has to be: mapAsync may not be called while the
+    // encoder that writes the buffer is still open. It resolves on a later
+    // frame, which is what makes the whole path two-phase.
+    system.beginPickReadback();
+
     overlay?.update([
       `preset       ${preset.name}`,
       `camera       ${cameraState.mode}`,
@@ -326,6 +477,9 @@ async function start(): Promise<void> {
       `physicsSteps ${system.physicsSteps}`,
       `blur         ${schedule.samples} samples, stride ${schedule.stride} ` +
         `(requested ${prefs.motionBlurSamples})`,
+      // The desktop's `selected` status key, rendered as `ui.py:385-391` does:
+      // `#index (x, y) d=distance`, or `-` when nothing is selected.
+      `selected     ${describeSelected(selected)}${system.pickPending ? '  (pick in flight)' : ''}`,
       `bloom        ${prefs.bloomEnabled ? 'on' : 'off'}`,
       `frame        ${frameMs.toFixed(2)} ms  (${(1000 / frameMs).toFixed(0)} fps)`,
       `encode       ${encodeMs.toFixed(2)} ms  (submit ${submitMs.toFixed(2)} ms)`,
