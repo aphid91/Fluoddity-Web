@@ -4,20 +4,21 @@ The TypeScript/WebGPU port of the Python app in the parent directory. The plan
 is `docs/WEB_PORT_PLAN.md`; the design contract it must honour is
 `docs/ARCHITECTURE.md`, whose 10 invariants are the spec.
 
-**Status: Steps 1–4 of 10 complete.** Scaffold, device acquisition, canvas
-sizing, the WGSL `#include` resolver, the pure-math leaves, `common.wgsl`, and
-**the engine**: `entityUpdate.wgsl` (the physics), `canvas.wgsl` (trail decay
-and diffusion) and `brush.wgsl` (the splat), driven by
-`src/particleSystem/particleSystem.ts`.
+**Status: Steps 1–5 of 10 complete.** Scaffold, device acquisition, canvas
+sizing, the WGSL `#include` resolver, the pure-math leaves, `common.wgsl`,
+**the engine** (`entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`, driven by
+`src/particleSystem/particleSystem.ts`) and **the render pipeline**: both camera
+modes, motion blur, bloom, brightness and the tone curve.
 
-**The simulation runs.** 600,000 entities, 30 sub-steps a frame, at parity with
-the desktop app — verified by loading the same preset in both, running to the
-same sub-step count, and comparing the canvas (see "Verification" below).
+**The simulation runs, and it looks right.** 600,000 entities, 30 sub-steps a
+frame, at parity with the desktop app — verified by loading the same preset in
+both, running to the same sub-step count, and comparing the canvas (see
+"Verification" below).
 
-There is still no camera, no bloom, no tone curve and no overlays (Step 5); no
-picking (Step 6); no UI and no input (Steps 7–10). What puts pixels on screen
-today is `src/app/debugPresent.wgsl`, a deliberately minimal present pass that
-Step 5 deletes.
+There is still no picking (Step 6); no UI, no input and no preferences UI
+(Steps 7–10); no strafe field (Step 9). The overlays' shader code and uniform
+lanes are in place but their state is hardcoded off — Step 8 supplies the
+cursor, Step 9 the field texture.
 
 ## Running it
 
@@ -34,9 +35,38 @@ npm run build      # typecheck + production build
 ```
 
 Add `?debug` to the URL for a readout of frame count, entity count, canvas size,
-ms/frame and per-pipeline compile status. Worth having open whenever you are
-judging the simulation: a pipeline that failed to build leaves a black canvas,
-which is also what a *correct* Step 1–3 build looks like.
+the resolved blur schedule, ms/frame, encode time and per-pipeline compile
+status. Worth having open whenever you are judging the simulation: a pipeline
+that failed to build leaves a black canvas, which is also what a *correct*
+Step 1–3 build looks like.
+
+### URL parameters
+
+Step 7 builds the real command/status API and Step 8 real input. Until then
+these exist so every part of the render pipeline is reachable for an A/B
+without a code edit. They are cheap to keep and cheap to delete.
+
+| Parameter | Effect |
+|---|---|
+| `?preset=<stem>` | Load a shipped preset by filename stem |
+| `?camera=trail\|particles` | Camera mode. **The mode toggle is a test** — see below |
+| `?zoom=<z>`, `?pan=<x>,<y>` | Camera transform, since there is no input yet |
+| `?physicsSteps=<n>` | Sub-steps per frame (the desktop's Physics Rate) |
+| `?motionBlurSamples=<n>` | Target sample count. 1 is off |
+| `?brightness=<b>`, `?tonemapSoftness=<s>` | Exposure and highlight compression |
+| `?bloom=1`, `?bloomThreshold=`, `?bloomIntensity=`, `?bloomRadius=` | The bloom chain |
+| `?colorByCohort=1`, `?colorSensitivity=<s>` | Palette, normally per-config |
+| `?reticle=<radius>`, `&dashed` | Force the brush reticle on at canvas centre |
+
+Two of these earn their keep beyond convenience:
+
+- **`?camera` is the flip test.** The two modes walk the same transform in
+  opposite directions, so switching between them must not shift or mirror the
+  image (`camera.py:14-18`). If it does, a Y flip is wrong.
+- **`?colorByCohort` and `?reticle` reach code nothing else does.** All three
+  shipped presets set `colorByCohort` false, and there is no cursor until
+  Step 8 — so without these, `col_params.y`, the flat interpolation and the
+  dashed ring's arc arithmetic would ship unexercised until Step 10.
 
 ### Switching presets
 
@@ -71,12 +101,29 @@ Nothing in `npm test` compiles WGSL — that needs a real device, and **headless
 Chrome returns a null adapter**, so it cannot be automated in CI. What the suite
 does cover is the class of error a compiler would not catch: binding numbers,
 the workgroup size matching the host's dispatch, the `textureDimensions` hoist
-still being hoisted, and the two Y flips (see below). See
-`src/particleSystem/shaders/shaders.test.ts`.
+still being hoisted, the quad permutations, and the Y flips (see below). See
+the three `shaders.test.ts` files under `src/*/shaders/`.
 
-For actual compilation, run `npm run dev`, open the page and read the console:
-`compileModule` logs each module by name, and `main.ts` prints a summary line
-listing any pipeline that failed. Four modules should report success.
+For actual compilation there is `tools/browserCheck.mjs`, which drives a real
+headed Chrome over CDP, loads the page and reports the console:
+
+```
+node tools/browserCheck.mjs                                  # with npm run dev running
+node tools/browserCheck.mjs --url "?debug&camera=particles"
+node tools/browserCheck.mjs --url "?debug&bloom=1" --shot out.png
+```
+
+It exits non-zero if any pipeline failed or the page logged an error, and
+`--shot` saves a screenshot — which is how the visual checks below were made.
+It is a **development** tool, not part of `npm test`: it needs a real GPU, a
+real Chrome and a dev server, none of which belong in CI. Eight modules should
+report success.
+
+**The two tools cover different halves and neither substitutes for the other.**
+WGSL forbids implicit-derivative sampling (`textureSample`, `fwidth`) outside
+uniform control flow, and Step 5 hit that twice — `camera.wgsl`'s letterbox
+early-out and `frameAssembly.wgsl`'s field sample. Those are hard compile
+errors, but only in a browser, so the Node suite would never have seen them.
 
 ## Layout
 
@@ -84,13 +131,23 @@ listing any pipeline that failed. Four modules should report success.
 |---|---|
 | `tools/wgslInclude.ts` | The `#include` resolver + its Vite plugin |
 | `tools/generate_web_data.py` | Emits the generated JSON below |
+| `tools/browserCheck.mjs` | Drives a real Chrome over CDP; the only thing that compiles WGSL |
 | `src/gpu/` | Stateless GPU helpers — the `shared/` analogue (invariant 1) |
-| `src/app/` | Canvas surface and sizing |
+| `src/app/` | Canvas surface and sizing; `renderTargets` (the HDR and accumulation buffers) |
 | `src/particleSystem/` | The simulation: the pure leaves (`coords`, `sizing`, `config`, `pack`, `layout`, `dispatch`), `uniforms`, and `particleSystem.ts` |
 | `src/particleSystem/shaders/` | The engine — `entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl` (invariant 6) |
-| `src/camera/` | `cameraState` — pan/zoom/mode, no GPU |
+| `src/camera/` | `cameraState` (pan/zoom/mode), `blurSchedule` and `cameraUniforms` (pure leaves), and `camera.ts` |
+| `src/camera/shaders/` | `camera.wgsl` (TRAIL), `camBrush.wgsl` (PARTICLES), `accumulate.wgsl` |
+| `src/assembler/` | `bloomChain` and `assemblerUniforms` (pure leaves), `bloom.ts`, `assembler.ts` |
+| `src/assembler/shaders/` | `bloomDownsample.wgsl`, `bloomUpsample.wgsl`, `frameAssembly.wgsl` |
+| `src/prefs/` | Display preferences. **Minimal** — Step 7 adds load/save |
 | `src/testing/` | Test-only access to the parity goldens |
-| `src/shaders/` | Shared shaders — `common.wgsl` |
+| `src/shaders/` | Shared shaders — `common.wgsl`, `fullscreenQuad.wgsl` |
+
+Every module that imports a `.wgsl` file is untestable under `node --test`,
+because `#include` resolution is a Vite plugin. That is why each has a pure leaf
+beside it (`blurSchedule`, `bloomChain`, `dispatch`, the uniform packers): the
+arithmetic stays testable without a browser.
 
 ## Generated data
 
@@ -183,8 +240,27 @@ less canvas energy by sub-step 3, and dynamics that settled into many small
 curls instead of large sweeping arcs. It reads as "the physics is different",
 which is the hardest kind of bug to attribute. `shaders.test.ts` asserts both.
 
-`debugPresent.wgsl` deliberately has **no** flip — the canvas is already stored
-top-left-origin, so sampling it straight puts world +y at the top of the screen.
+**Nothing in the render pipeline flips.** The canvas is stored top-left-origin,
+so sampling it straight puts world +y at the top of the screen. The rule is
+worth stating as a rule, because it has bitten twice and the two halves sound
+contradictory:
+
+> **Rasterizing INTO the canvas → flip. Sampling the canvas TO the screen → no
+> flip.**
+
+`camBrush.wgsl` is the case that looks wrong and is not. It mirrors
+`brush.wgsl` in almost every respect *and does not negate y*, because the
+difference is the **target**, not the shader: `brush` writes into the canvas
+texture (read back through y-up `world_to_uv`, hence the correction), while
+`camBrush` writes into the HDR screen target, whose only correctness partner is
+`camera.wgsl` walking the same transform backwards from an unflipped quad. The
+two camera modes agree exactly when neither flips.
+
+**That agreement is the test, and it is free:** switch `?camera=trail` to
+`?camera=particles` and watch whether the structure jumps. It must not
+(`camera.py:14-18`). `shaders.test.ts` asserts the absence of the flip too,
+since the failure — PARTICLES mirrored relative to TRAIL — is easy to miss on a
+roughly symmetric field.
 
 ### Expect divergence, not bit-exactness
 
@@ -197,6 +273,76 @@ produces a *completely different rule* — the same trap
 **So two runs of the same preset diverge into different-but-statistically-
 identical behaviour, and that is expected.** It is exactly why the plan chose
 visual A/B over golden vectors. Judge emergent character, not trajectory.
+
+## The render pipeline
+
+Everything from "the simulation advanced" to "pixels on screen". **Order is
+load-bearing: everything before the tone curve is linear, and the curve runs
+exactly once, at the end.**
+
+```
+Camera                                Assembler
+  TRAIL      canvas -> RGB, colorized   bloom       threshold, 5 mips down, tent up
+  PARTICLES  instanced sprites          brightness  linear exposure
+  accumulate acc += sample/N            tone curve  asinh, linear -> display
+                                        overlays    field, reticle  (AFTER the curve)
+```
+
+Three things about this are easy to get wrong and are worth knowing:
+
+**The tone curve acts on the colour's LENGTH, not per channel.** Per-channel
+would desaturate bright regions toward white as each channel compressed
+independently; acting on the length preserves hue and saturation. `asinh` is not
+a WGSL builtin — the helper is `log(x + sqrt(x*x + 1.0))`, which is only asinh
+for non-negative input, so the *host* clamps `tonemapSoftness` to `>= 0`
+(`preferences.py` enforces no lower bound).
+
+**`inv_samples` must be the achieved sample count, never the requested one.**
+`blurSchedule` returns both because they disagree whenever the request does not
+divide the physics rate — at 100 steps a request of 8 yields 9 samples. Weighting
+by the request darkens the frame by that ratio, at some slider positions and not
+others. This is the one part of Step 5 that gets numeric goldens
+(`_parity_blur`, 64 cases) precisely because the visual A/B cannot catch a few
+percent of brightness.
+
+**The bloom upsample must `loadOp: 'load'`.** moderngl simply does not clear, so
+the GLSL has nothing to say about it; WebGPU makes the choice explicit. A
+`'clear'` discards the entire down-chain and leaves only the smallest mip — not
+a blank screen, but a plausible, slightly-too-diffuse glow that reads as "the
+radius is too big".
+
+### Performance
+
+The port plan flags 90 GPU passes per frame as the likeliest place the web
+becomes slower than the desktop, and names **JS-side encoder overhead** as the
+suspected cause. Measured, at 1264×649, `Starcrossedv8`, `physicsSteps=30`,
+after settling — the `?debug` readout reports both:
+
+| Camera | Bloom | Samples | Frame | Encode |
+|---|---|---|---|---|
+| trail | off | 1 | 17.7 ms (56 fps) | 0.27 ms |
+| trail | on | 1 | 18.6 ms (54 fps) | 0.29 ms |
+| trail | on | 10 | 18.5 ms (54 fps) | 0.35 ms |
+| particles | off | 1 | 18.3 ms (55 fps) | 0.32 ms |
+| particles | on | 1 | 18.4 ms (54 fps) | 0.33 ms |
+| particles | on | 10 | 22.7 ms (44 fps) | 0.38 ms |
+
+**Encode time is under 0.4 ms in every configuration — about 2% of the frame.
+The port is not encoder-bound, and the plan's suspicion does not hold here.**
+The rest is GPU work. That changes which mitigations are worth anything:
+batching sub-steps into one encoder is already done and merging the three
+`advance()` passes would buy almost nothing, because pass *recording* is not
+what costs. If the rate ever needs to come down it will be for GPU reasons.
+
+Bloom costs ~1 ms. The worst row — PARTICLES with 10 blur samples, i.e. ten
+600k-instance additive draws with no culling — is the only one to leave 60 fps,
+and it is the row to watch if a cliff ever appears.
+
+One measurement artefact worth recording, because it looked alarming: the first
+bloom reading was **3 fps at frameCount 150**. That was startup transient — the
+mip chain allocates lazily on the first `process()` and the pipelines were still
+warming. Sweeping `physicsSteps` 1/10/20 all held 60 fps with bloom on, which is
+what localised it to startup rather than to the chain. Measure after settling.
 
 ## Verification: the A/B against the desktop
 
@@ -329,3 +475,28 @@ Deliberate, and each is commented at the site:
   encoder, so all 30 sub-steps' uniforms are written up front into one buffer
   and each pass binds its own 256-byte-aligned slice. The desktop just sets a
   uniform per sub-step.
+
+  The **camera's** uniforms deliberately do *not* do this. It looks like the
+  same situation — `render()` is called N times inside one encoder — but nothing
+  the camera reads varies per sample: `inv_samples` is fixed for the cycle, and
+  pan, zoom and both resolutions cannot change mid-frame. One write in
+  `beginFrame()`, before the encoder opens, covers the whole frame.
+- **The accumulator is cleared by a zero-draw render pass.** Clearing needs an
+  encoder and `beginFrame()` runs before one exists, so the desktop's
+  "clear once per cycle" (`camera.py:150-153`) cannot happen there. The
+  alternative — branching `loadOp` on the first sample — would reintroduce
+  exactly the special case that comment is proud of having removed. One empty
+  pass against 100+ is the better trade, and it keeps the clear and `result()`'s
+  guard decided by the same variable in the same place.
+- **`textureSampleLevel` everywhere in the fragment stages**, not just the
+  compute one. WGSL forbids implicit-derivative sampling in non-uniform control
+  flow, and two sites are exactly that: `camera.wgsl`'s letterbox early-out and
+  `frameAssembly.wgsl`'s field sample (guarded by the per-fragment `inside`).
+  No mips exist, so level 0 is numerically identical.
+- **The per-sub-step uniform buffers grow with the physics rate.** They hold one
+  slice per sub-step and `physicsSteps` is a live preference, so raising it past
+  the allocated count would walk off the end — reported as an out-of-bounds
+  dynamic offset, which invalidates the whole command buffer and freezes the
+  screen rather than degrading. `ensureUniformCapacity` grows them and never
+  shrinks, so dragging a slider across a threshold does not thrash. The desktop
+  has no equivalent because it sets a uniform per sub-step and allocates nothing.

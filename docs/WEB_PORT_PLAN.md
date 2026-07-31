@@ -243,6 +243,49 @@ right before anything else matters.
 
 ## Step 5 — The render pipeline
 
+**DONE.** Both camera modes, motion blur, bloom, brightness and the tone curve
+run in the browser. See `web/README.md` for the measurements and the divergence
+list. Corrections to what this section said, recorded because a later step would
+otherwise re-derive them:
+
+- **Two compile-blockers this section does not mention, both the same rule.**
+  WGSL forbids implicit-derivative sampling in **non-uniform control flow**, and
+  two sites are exactly that: `camera.frag`'s letterbox early-out (`:40-43`) and
+  `frame_assembly.frag`'s field sample (`:107`, guarded by the per-fragment
+  `inside`). Both need `textureSampleLevel` — numerically identical, no mips.
+  These are hard compile errors, not subtleties, and they surface **only in a
+  browser**, so `npm test` cannot see them. That is why Step 5 added
+  `web/tools/browserCheck.mjs`.
+- **`fwidth` is legal, and the note below is right about why** — but the
+  refactor that breaks it is specific and worth naming: `inside` is per-fragment
+  and sits two lines above the reticle's guard. Hoisting it into that guard is a
+  plausible-looking tidy-up that makes the shader fail to compile. Commented at
+  the site and asserted structurally.
+- **THE Y FLIP AGAIN, in the opposite direction.** `cam_brush` needs **no**
+  flip, although `brush.wgsl` — which it otherwise mirrors — negates y. The
+  difference is the *target*: `brush` writes into the canvas (read back y-up),
+  `cam_brush` writes into the screen, whose partner is `camera.wgsl` walking the
+  same transform backwards from an unflipped quad. The mode toggle is the test
+  and it is free.
+- **The bloom upsample must `loadOp: 'load'`.** No desktop analogue — moderngl
+  simply does not clear. A `'clear'` gives a plausible, slightly-too-diffuse
+  glow that reads as "the radius is too big".
+- **The accumulator clear needs an encoder, which `beginFrame` has not got.** A
+  zero-draw render pass rather than a `loadOp` branch, so `camera.py:150-153`'s
+  "no first-sample special case" survives.
+- **A pre-existing bug surfaced here.** The three per-sub-step uniform buffers
+  were sized once from the initial `physicsSteps`, which is a *live* preference.
+  Raising the rate overran them — an out-of-bounds dynamic offset, which
+  invalidates the command buffer and freezes the screen. Fixed in
+  `particleSystem.ts`; it would have hit Step 7 the moment the rate got a slider.
+- **The performance suspicion did not hold.** Encode time is **under 0.4 ms in
+  every configuration**, ~2% of the frame. The port is *not* encoder-bound, so
+  the mitigations this plan lists in preference order are mostly spent: batching
+  is already done, and merging the three `advance()` passes would buy almost
+  nothing. See the open question at the end of this document, now answered.
+
+The section as originally written follows.
+
 Everything from "the simulation advanced" to "pixels on screen." Order is
 load-bearing: **everything before the tone curve is linear**, and the curve runs
 exactly once, at the end.
@@ -628,6 +671,19 @@ Recorded so a later agent doesn't reopen them.
    rule-derivation touches the same code. **Default: port as-is**; migrating to
    N pre-populated config slots is a separate piece of work. Raise before Step 6
    if that default is wrong.
-2. **Physics rate default.** If 90 passes/frame is the perf cliff, is a lower
+2. **Physics rate default.** ~~If 90 passes/frame is the perf cliff, is a lower
    default rate on the web acceptable, or should sub-step batching be done
-   properly first? Decide when Step 5 produces a measurement, not before.
+   properly first?~~ **ANSWERED by Step 5's measurement: neither is needed.**
+   The default rate of 30 holds 54–56 fps in every configuration except
+   PARTICLES with 10 blur samples (44 fps), and **encode time is under 0.4 ms
+   throughout** — about 2% of the frame. The premise was that WebGPU's JS-side
+   per-pass overhead would dominate; it does not. Sub-step batching is already
+   done (`runFrame` opens one encoder for the whole frame), and merging the
+   three `advance()` passes would target a cost that is not there. Keep 30.
+
+   What to watch instead, if a cliff ever appears, is the **PARTICLES draw**:
+   600k instances with no culling, times the blur sample count. That is the only
+   row that leaves 60 fps and the only one whose cost scales with a user-facing
+   slider. Measured on one machine at 1264×649 — a lower-end GPU or a 4K window
+   would move these numbers, and the measurement protocol is in `web/README.md`
+   so the comparison stays like-for-like.

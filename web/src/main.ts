@@ -211,6 +211,9 @@ async function start(): Promise<void> {
   const overlay = createDebugOverlay();
   let lastTime = performance.now();
   let frameMs = 0;
+  // Smoothed like frameMs: a raw per-frame delta is too noisy to read.
+  let encodeMs = 0;
+  let submitMs = 0;
 
   // frameCount starts at 0, which IS the reset sentinel -- the first advance()
   // spawns every entity and clears the canvas. Nothing else needs to happen.
@@ -264,6 +267,13 @@ async function start(): Promise<void> {
     // varies per sample, so one write covers the whole frame; see camera.ts.
     camera.beginFrame(frameState, schedule.samples);
 
+    // Per-phase ENCODE time. This measures the JS-side cost of recording
+    // passes, which is the quantity the port plan flags as the likeliest place
+    // the web becomes slower than the desktop -- WebGPU's per-pass encoder
+    // overhead is meaningfully higher than GL's. It is NOT GPU time; the two
+    // can diverge by an order of magnitude, and the mitigation differs
+    // completely (encode-bound -> merge passes; GPU-bound -> reduce the rate).
+    const tEncode = performance.now();
     const encoder = device.createCommandEncoder({ label: 'frame' });
     camera.clearAccumulator(encoder);
     system.runFrame(encoder, null, (enc, step) => {
@@ -301,7 +311,10 @@ async function start(): Promise<void> {
       // a mistranslation would look like a design choice.
       overlays,
     );
+    const tSimAndCamera = performance.now();
     device.queue.submit([encoder.finish()]);
+    encodeMs += (performance.now() - tEncode - encodeMs) * 0.1;
+    submitMs += (performance.now() - tSimAndCamera - submitMs) * 0.1;
 
     overlay?.update([
       `preset       ${preset.name}`,
@@ -313,7 +326,9 @@ async function start(): Promise<void> {
       `physicsSteps ${system.physicsSteps}`,
       `blur         ${schedule.samples} samples, stride ${schedule.stride} ` +
         `(requested ${prefs.motionBlurSamples})`,
+      `bloom        ${prefs.bloomEnabled ? 'on' : 'off'}`,
       `frame        ${frameMs.toFixed(2)} ms  (${(1000 / frameMs).toFixed(0)} fps)`,
+      `encode       ${encodeMs.toFixed(2)} ms  (submit ${submitMs.toFixed(2)} ms)`,
       `pipelines    ${Object.entries(status)
         .map(([n, ok]) => `${n}:${ok ? 'ok' : 'FAILED'}`)
         .join('  ')}`,
