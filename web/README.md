@@ -4,21 +4,23 @@ The TypeScript/WebGPU port of the Python app in the parent directory. The plan
 is `docs/WEB_PORT_PLAN.md`; the design contract it must honour is
 `docs/ARCHITECTURE.md`, whose 10 invariants are the spec.
 
-**Status: Steps 1–5 of 10 complete.** Scaffold, device acquisition, canvas
+**Status: Steps 1–6 of 10 complete.** Scaffold, device acquisition, canvas
 sizing, the WGSL `#include` resolver, the pure-math leaves, `common.wgsl`,
 **the engine** (`entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`, driven by
-`src/particleSystem/particleSystem.ts`) and **the render pipeline**: both camera
-modes, motion blur, bloom, brightness and the tone curve.
+`src/particleSystem/particleSystem.ts`), **the render pipeline** (both camera
+modes, motion blur, bloom, brightness and the tone curve) and **picking**
+(`entityPick.wgsl`, with the rule derived on the GPU).
 
 **The simulation runs, and it looks right.** 600,000 entities, 30 sub-steps a
 frame, at parity with the desktop app — verified by loading the same preset in
 both, running to the same sub-step count, and comparing the canvas (see
 "Verification" below).
 
-There is still no picking (Step 6); no UI, no input and no preferences UI
-(Steps 7–10); no strafe field (Step 9). The overlays' shader code and uniform
-lanes are in place but their state is hardcoded off — Step 8 supplies the
-cursor, Step 9 the field texture.
+There is no UI, no real input and no preferences UI (Steps 7–10); no strafe
+field (Step 9). The overlays' shader code and uniform lanes are in place but
+their state is hardcoded off — Step 8 supplies the cursor, Step 9 the field
+texture. Picking works but has no cursor either: `?pick=x,y` stands in for one
+until Step 8, which deletes it.
 
 ## Running it
 
@@ -57,8 +59,9 @@ without a code edit. They are cheap to keep and cheap to delete.
 | `?bloom=1`, `?bloomThreshold=`, `?bloomIntensity=`, `?bloomRadius=` | The bloom chain |
 | `?colorByCohort=1`, `?colorSensitivity=<s>` | Palette, normally per-config |
 | `?reticle=<radius>`, `&dashed` | Force the brush reticle on at canvas centre |
+| `?pick=<x>,<y>` | Dispatch one pick at a screen pixel, and log the result |
 
-Two of these earn their keep beyond convenience:
+Three of these earn their keep beyond convenience:
 
 - **`?camera` is the flip test.** The two modes walk the same transform in
   opposite directions, so switching between them must not shift or mirror the
@@ -67,6 +70,12 @@ Two of these earn their keep beyond convenience:
   shipped presets set `colorByCohort` false, and there is no cursor until
   Step 8 — so without these, `col_params.y`, the flat interpolation and the
   dashed ring's arc arithmetic would ship unexercised until Step 10.
+- **`?pick` is the only way to exercise Step 6 at all.** There is no input, and
+  `browserCheck.mjs`'s only lever is the URL — a click handler would need CDP
+  input plumbing, where a query param needs nothing. It fires once, ~120 frames
+  in (so the entities have spawned and moved), and logs the dispatch, the hit or
+  miss, the decoded position and distance, and the head of the derived rule.
+  **Step 8 deletes it** when the real SELECT-mode handler lands.
 
 ### Switching presets
 
@@ -134,8 +143,9 @@ errors, but only in a browser, so the Node suite would never have seen them.
 | `tools/browserCheck.mjs` | Drives a real Chrome over CDP; the only thing that compiles WGSL |
 | `src/gpu/` | Stateless GPU helpers — the `shared/` analogue (invariant 1) |
 | `src/app/` | Canvas surface and sizing; `renderTargets` (the HDR and accumulation buffers) |
-| `src/particleSystem/` | The simulation: the pure leaves (`coords`, `sizing`, `config`, `pack`, `layout`, `dispatch`), `uniforms`, and `particleSystem.ts` |
-| `src/particleSystem/shaders/` | The engine — `entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl` (invariant 6) |
+| `src/particleSystem/` | The simulation: the pure leaves (`coords`, `sizing`, `config`, `pack`, `layout`, `dispatch`, `pick`), `uniforms`, and `particleSystem.ts` |
+| `src/particleSystem/shaders/` | The engine — `entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`, `entityPick.wgsl`, and `rule.wgsl` shared by two of them (invariant 6) |
+| `src/selection/` | The click-to-adopt ordering, with no GPU and no Project type |
 | `src/camera/` | `cameraState` (pan/zoom/mode), `blurSchedule` and `cameraUniforms` (pure leaves), and `camera.ts` |
 | `src/camera/shaders/` | `camera.wgsl` (TRAIL), `camBrush.wgsl` (PARTICLES), `accumulate.wgsl` |
 | `src/assembler/` | `bloomChain` and `assemblerUniforms` (pure leaves), `bloom.ts`, `assembler.ts` |
@@ -344,6 +354,81 @@ mip chain allocates lazily on the first `process()` and the pipelines were still
 warming. Sweeping `physicsSteps` 1/10/20 all held 60 fps with bloom on, which is
 what localised it to startup rather than to the chain. Measure after settling.
 
+## Picking, and why the rule is derived on the GPU
+
+Clicking a particle adopts its rule as the config's base rule — "that variant,
+do more of that." The catch is that **the rule is not stored anywhere**: an
+`Entity` is 32 bytes (`pos_vel` + `misc`), and `entityUpdate.wgsl` re-derives
+the rule every step and discards it.
+
+The desktop solves that by recomputing the rule host-side in float32
+(`particle_system/mutation.py`, 236 lines), avoiding a readback entirely. **That
+file is deliberately not ported.** JavaScript has no float32 arithmetic — every
+intermediate would need `Math.fround`, the hash would need `Math.imul` — and
+`mutation.py:149`'s `pow(h, 2.0)` has no reliable JS equivalent: `pow(h,2)` and
+`h*h` differ by one ULP, and the chaotic hash amplifies that into a *completely
+different rule* (measured on the desktop as internal seed 0.3088 vs 0.2605). A
+wrong adopted rule looks like a legitimate result, which makes it the worst
+failure mode available.
+
+So the GPU derives it and the host reads it back — 336 bytes instead of 4.
+
+**`rule.wgsl` is what makes this safe.** The generate-or-mutate branch, the hash
+family, `generate_random_centers`, `mutate_rule` and `get_cohort` live in one
+file included by *both* `entityUpdate.wgsl` and `entityPick.wgsl`, so the rule a
+click adopts is derived by the same `derive_entity_rule()` that decides what the
+particle obeys. Not a copy — the same function. (The plan assumed they would
+share this through `common.wgsl`; they cannot, because that file is included by
+two vertex stages and its own rules forbid it. A sibling include resolves for
+both.) `ARCHITECTURE.md:715-718` records what happened the one time the two
+copies drifted: selection adopted near-zero coefficients and the simulation
+appeared to die.
+
+**Two passes, not one.** `reduce` (`@workgroup_size(256)`) atomicMins a packed
+key — 8 bits of quantized distance in the high bits, 24 of entity index in the
+low — over every entity. `derive` (`@workgroup_size(1)`) then reads the settled
+key and writes the winner's rule and position. They must be separate because a
+thread that *loses* the atomic still runs its next instruction, so a rule
+written from the reduce pass could be a loser's: the index right, the rule
+someone else's, and nothing downstream able to tell. They must also be separate
+*compute passes*, not two dispatches in one — WebGPU orders passes within a
+submission but guarantees nothing between dispatches inside a single pass.
+
+**The phase machine.** `picker.py` needs one boolean; the port needs four
+states (`idle`/`dispatched`/`mapping`/`ready`), because a buffer that is mapped
+or mid-`mapAsync` is not a legal copy target. `mapAsync` must also be called
+after `submit()`, never while the encoder is open — hence `beginPickReadback()`
+as its own step. A second click while one is in flight abandons the first
+through a generation counter rather than corrupting the staging buffer;
+last-click-wins is enforced above it, in `SelectionController`.
+
+**The ordering constraints, which Step 7 must preserve.** `retrievePick()` is
+the first thing `frame()` does, *before* anything can dispatch a new pick —
+there is one result slot, so a new dispatch clobbers the answer being read. And
+the resolve lives in the frame loop, **not** inside `runFrame()`: that is what a
+paused frame skips, and clicking to select has to keep working while paused,
+which is precisely when you want it.
+
+### Verifying it
+
+The claim that matters — that the derived rule is the one the entity is actually
+obeying — can only be checked live. The discriminating test is cohort identity,
+on `hatmanv8` (64 cohorts on a grid):
+
+```
+node tools/browserCheck.mjs --url "?debug&preset=hatmanv8&pick=509,275"
+node tools/browserCheck.mjs --url "?debug&preset=hatmanv8&pick=517,285"
+```
+
+Two entities in the **same** cohort ring must return **bit-identical** rules
+(measured: #401548 and #394380 both `[1.4390, -0.3923, 0.2611, -1.7674]`), and
+entities in **different** cohorts must return different ones (`1.4274` /
+`1.4304` / `1.4393` at three other rings). Both directions are needed: a broken
+`get_cohort` fails one or the other. Also worth checking, and all confirmed:
+the position round-trips (dispatch world → hit within `d=0.00000`), a click in
+empty space records no history, and at `zoom=0.35` the world radius grows
+0.1233 → 0.3522 so the 40-pixel tolerance stays constant on screen.
+
 ## Verification: the A/B against the desktop
 
 Step 4's fidelity was checked by running both engines to the *same sub-step
@@ -500,3 +585,24 @@ Deliberate, and each is commented at the site:
   screen rather than degrading. `ensureUniformCapacity` grows them and never
   shrinks, so dragging a slider across a threshold does not thrash. The desktop
   has no equivalent because it sets a uniform per sub-step and allocates nothing.
+- **`mutation.py` is not ported; the picked rule is derived on the GPU.** The
+  biggest deliberate divergence in the port, and the reason Step 6 exists in the
+  shape it does. See "Picking" above.
+- **`retrievePick()` returns `null` as well as a miss, and they are different.**
+  `picker.py`'s `retrieve()` answers immediately, so "nothing pending" and
+  "nothing in range" can both be `MISS`. `mapAsync` means the answer can simply
+  not have arrived; `null` says so, and the pending click survives to the next
+  frame. Treating `null` as a miss would silently drop any click whose readback
+  took longer than one frame — which reads as "clicks sometimes don't register."
+- **The pick result's position is two `f32`s, not a `vec2f`.** `vec2f` has
+  alignment 8 and so cannot sit at offset 4, in the padding that `Rule`'s
+  16-byte alignment already forces; WGSL would push it to 8, the rule to 32, and
+  the struct to 352 bytes, at which point the driver rejects the 336-byte buffer
+  as too small for the binding. Two `f32`s align to 4 and fit, so the position
+  costs nothing. Asserted in `shaders.test.ts` because `vec2f` is the tidier
+  spelling and an obvious "cleanup".
+- **`pick_blocking` is not ported.** It exists on the desktop for
+  `tests/test_async_pick.py` only, and it works by stalling the pipeline —
+  which WebGPU cannot do at all. The Python's key-packing check ports (it is
+  pure arithmetic, now `pick.test.ts`); its GPU half is replaced by the browser
+  verification above.

@@ -712,18 +712,47 @@ one ULP — invisible — and `mutation.entity_rule()` reproduces what a particl
 is actually obeying. Selecting such a particle then writes the generated rule
 into the config as a real one, so the sentinel stops firing from that point on.
 
+That numerical argument is **about the host mirror, so it does not apply to the
+web port**, which has none. The *design* reason above does, unchanged and
+sufficient on its own: Mutation Scale must not silently reshape a rule the user
+never authored. The branch itself is identical on both sides.
+
 The host mirror must follow **both** branches. It once skipped the sentinel
 entirely, which was defensible only while nothing produced zero rules;
 Randomize Behavior does, and the mismatch showed up as selection adopting
-near-zero coefficients and the simulation appearing to die.
+near-zero coefficients and the simulation appearing to die. On the web there is
+no host mirror to keep in step -- `derive_entity_rule()` in
+`web/src/particleSystem/shaders/rule.wgsl` *is* both branches, and
+`entity_update` calls that same function.
 
-The particle's rule is **recomputed host-side** (`particle_system/mutation.py`),
-not read back from the GPU. The mutation is deterministic in
-`(rule, scale, seed, cohort)`, so Python can reproduce it -- avoiding the extra
-buffer and readback the original needed, and avoiding async readback in the
-port. The price is that the mirror must stay bit-exact with the shader; a probe
-test runs the simulation's own `mutate_rule` and compares. **Edit one side,
-edit both, and re-run that test.**
+**The desktop recomputes the rule host-side; the web port reads it back.** These
+genuinely differ, and both are deliberate.
+
+On the desktop the particle's rule comes from `particle_system/mutation.py`, not
+the GPU. The mutation is deterministic in `(rule, scale, seed, cohort)`, so
+Python can reproduce it -- avoiding the extra buffer and readback the original
+needed. The price is that the mirror must stay bit-exact with the shader; a
+probe test runs the simulation's own `mutate_rule` and compares. **Edit one
+side, edit both, and re-run that test.**
+
+**The web port deliberately has no mirror.** In JavaScript the float32
+discipline would have to be manual (`Math.fround` on every intermediate,
+`Math.imul` for the hash), and `np.power(h0, 2.0)` at `mutation.py:149` -- where
+`pow(h,2)` and `h*h` differ by one ULP that the chaotic hash amplifies into a
+completely different rule -- has no reliable JS equivalent. A wrong adopted rule
+*looks like a legitimate result*, which makes it the worst failure mode
+available. So `web/` derives the rule **on the GPU**: a second one-invocation
+dispatch reads the settled pick key and writes the winner's rule, and
+`retrievePick()` reads back 336 bytes (key, position, 320-byte `Rule`) instead
+of 4. The generate-or-mutate branch lives once, in `rule.wgsl`, included by both
+`entityUpdate.wgsl` and `entityPick.wgsl` -- so the two cannot drift, and
+`mutation.py`'s float32 discipline, the `pow` trap and the GPU-vs-host probe
+test all cease to exist on that side.
+
+One signature differs as a result: `get_cohort` takes the entity count as a
+parameter on the web. `rule.wgsl` is included by two shaders that bind the
+entity array with different access qualifiers (`read_write` in the update,
+`read` in the picker), and a shared function may not name either binding.
 
 **Tools** (`MouseMode`) exist because several behaviours all want the left
 button -- without one, every click would select on the way down and paint on

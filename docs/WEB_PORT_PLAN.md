@@ -341,6 +341,54 @@ exactness doesn't matter.
 
 ## Step 6 — Picking, and deleting the mutation mirror
 
+**DONE.** Picking works in the browser and the picked rule is derived on the
+GPU; `mutation.py` is not ported. See `web/README.md`'s "Picking" section for
+the design and the verification results. Corrections to what this section said,
+recorded because a later step would otherwise re-derive them:
+
+- **The shared-code assumption below is FALSE as written.** `:372-373` says both
+  shaders `#include "common.wgsl"` "so this is shared code, not a second copy."
+  They do — but `pcg_hash`, `hash`, `hash4`, `generate_random_centers`,
+  `get_cohort` and `mutate_rule` all lived in `entityUpdate.wgsl`, not in
+  `common.wgsl`, so there was nothing shared to inherit. They cannot simply move
+  there either: `common.wgsl` is included by `brush.wgsl` and `camBrush.wgsl` in
+  **vertex** stages, and its own rules 3 and 4 (`common.wgsl:38-52`) require it
+  to stay pure and stage-agnostic. The shared home is a **sibling**,
+  `rule.wgsl`, which the resolver finds from both includers (sibling-first
+  lookup, `wgslInclude.ts:125-141`). Step 6 therefore begins with a refactor of
+  the Step 4 physics shader, gated on a screenshot A/B before anything is built
+  on it.
+- **`get_cohort` needed a new signature.** It called `arrayLength(&entities)`,
+  and the two shaders bind that array with different access qualifiers
+  (`read_write` in the update, `read` in the picker), so a shared function may
+  not name it. It takes the entity count as a third parameter; both call sites
+  pass `arrayLength(&entities)`. Reverting compiles in `entityUpdate` and fails
+  **only in a browser**, so `shaders.test.ts` asserts it.
+- **The result buffer is 336 bytes, not the 324 at `:380`.** `Rule` is 16-byte
+  aligned, so WGSL inserts 12 bytes of padding after the `u32` key regardless.
+  The winner's position rides inside that padding and costs nothing — but only
+  if it is stored as **two `f32`s**: a `vec2f` has alignment 8, cannot sit at
+  offset 4, and pushes the struct to 352, at which point the driver rejects the
+  336-byte buffer as too small. That one was found by the browser, not by
+  reasoning.
+- **`target` is a reserved keyword in WGSL.** `entity_pick.glsl:52` names the
+  uniform exactly that, so the obvious translation does not compile. Renamed
+  `pick_target`. Like the Y flips and the non-uniform-derivative rule, this
+  surfaces only in a browser.
+- **The two dispatches need two `beginComputePass` calls**, not two dispatches
+  in one pass. WebGPU orders passes within a submission and inserts the barriers
+  between them, but guarantees nothing between dispatches inside a single pass —
+  so `derive` would race the reduction it reads.
+- **`retrieve_pick` needs a third answer.** `null` ("not ready yet") must stay
+  distinct from a miss ("nothing in range"): `mapAsync` means the result can
+  simply not have arrived, and collapsing the two silently drops any click whose
+  readback took longer than a frame. `picker.py` conflates them safely only
+  because its `retrieve()` always answers.
+- **The cohorts open question (`:668-673`) resolved as its stated default:**
+  ported as-is. Nothing in Step 6 needed them changed.
+
+The section as originally written follows.
+
 Picking is already WebGPU-shaped: `request_pick()` dispatches, `retrieve_pick()`
 reads on a **later** frame. `entity_pick.glsl` (87 lines) reduces with a single
 `atomicMin` over a packed key — 8 bits of quantized distance in the high bits,
@@ -639,6 +687,16 @@ even though `pick_blocking` itself doesn't port. `tests/test_pending_selection.p
 (160) covers the click-time-state and last-click-wins semantics. The GPU-vs-host
 mutation probe becomes unnecessary once Step 6 lands.
 
+**Done in Step 6**, with one correction: the *comparison* in `test_async_pick.py`
+could not be ported, because it compares against `pick_blocking`, and there is
+no second implementation on the web to disagree with. What ported is its
+`check_key_packing()` (pure arithmetic → `pick.test.ts`, including the
+`INDEX_MASK` bound against `sizingFor`, which exists for a real 20-bit bug).
+Its GPU half is replaced by the browser cohort-identity check. All five groups
+of `test_pending_selection.py` ported directly to `selection.test.ts`, plus two
+the async readback makes necessary — "not ready yet" must not resolve, and
+resolve must be a no-op when nothing is pending.
+
 **Performance gate (Step 5 onward).** At default `physics_steps=30` each frame is
 30 × 3 = **90 GPU passes** plus per-sample camera renders, 9 bloom passes and
 assembly. WebGPU's per-pass encoder overhead is JS-side and meaningfully higher
@@ -656,7 +714,7 @@ Recorded so a later agent doesn't reopen them.
 | Decision | Resolution |
 |---|---|
 | Fidelity verification | **Visual A/B**, no numeric golden vectors, no lockstep. The dynamics are sensitive enough to judge by eye |
-| `mutation.py` float32 mirror | **Not ported.** Read the picked entity's rule back from the GPU (Step 6). The 320-byte result slot and extra one-thread dispatch are accepted costs |
+| `mutation.py` float32 mirror | **Not ported — DONE in Step 6.** The picked entity's rule is read back from the GPU. The result slot is 336 bytes (not 324: alignment padding, which the position rides in for free) and the extra one-thread dispatch measured free |
 | Config storage | **Build-time manifest + IndexedDB**, same `(category, name)` key identity |
 | Milestone 1 scope | **Engine-first, thin UI** — flat Tweakpane dump of the registry, no tabs/gates/tooltips/menus |
 | Gated controls | Real latch preferred; **disclosure-triangle fallback is pre-approved** rather than a blocker (Step 10) |
@@ -665,12 +723,15 @@ Recorded so a later agent doesn't reopen them.
 
 ## Open questions
 
-1. **Cohorts.** `cohorts` + `rule_seed` + `mutation_scale` are marked a
-   deprecation candidate in `ARCHITECTURE.md` — `config_index` does the same job
-   more generally — but the shipped presets depend on them, and Step 6's GPU
-   rule-derivation touches the same code. **Default: port as-is**; migrating to
-   N pre-populated config slots is a separate piece of work. Raise before Step 6
-   if that default is wrong.
+1. **Cohorts.** ~~`cohorts` + `rule_seed` + `mutation_scale` are marked a
+   deprecation candidate in `ARCHITECTURE.md`...~~ **ANSWERED: ported as-is,**
+   which was the stated default. Step 6 touched `get_cohort` (it takes the
+   entity count as a parameter now, so `rule.wgsl` can be shared between the
+   update and the pick shaders) but changed nothing about what a cohort *is*.
+   Migrating to N pre-populated config slots remains separate work — and note
+   that cohort identity is now the **verification handle** for GPU rule
+   derivation: two entities in one cohort must derive bit-identical rules, two
+   in different cohorts must not. See `web/README.md`.
 2. **Physics rate default.** ~~If 90 passes/frame is the perf cliff, is a lower
    default rate on the web acceptable, or should sub-step batching be done
    properly first?~~ **ANSWERED by Step 5's measurement: neither is needed.**
