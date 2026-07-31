@@ -4,23 +4,35 @@ The TypeScript/WebGPU port of the Python app in the parent directory. The plan
 is `docs/WEB_PORT_PLAN.md`; the design contract it must honour is
 `docs/ARCHITECTURE.md`, whose 10 invariants are the spec.
 
-**Status: Steps 1–6 of 10 complete.** Scaffold, device acquisition, canvas
-sizing, the WGSL `#include` resolver, the pure-math leaves, `common.wgsl`,
-**the engine** (`entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`, driven by
-`src/particleSystem/particleSystem.ts`), **the render pipeline** (both camera
-modes, motion blur, bloom, brightness and the tone curve) and **picking**
-(`entityPick.wgsl`, with the rule derived on the GPU).
+**Status: Steps 1–7 of 10 complete. Milestone 1 is done.** Scaffold, device
+acquisition, canvas sizing, the WGSL `#include` resolver, the pure-math leaves,
+`common.wgsl`, **the engine** (`entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`,
+driven by `src/particleSystem/particleSystem.ts`), **the render pipeline** (both
+camera modes, motion blur, bloom, brightness and the tone curve), **picking**
+(`entityPick.wgsl`, with the rule derived on the GPU), and **the Orchestrator**
+— the frame loop, a typed command/status API, project/history/preferences, and
+a thin Tweakpane UI over the settings registry.
 
-**The simulation runs, and it looks right.** 600,000 entities, 30 sub-steps a
-frame, at parity with the desktop app — verified by loading the same preset in
-both, running to the same sub-step count, and comparing the canvas (see
-"Verification" below).
+**The simulation runs, it looks right, and it is drivable.** 600,000 entities,
+30 sub-steps a frame, at parity with the desktop app — verified by loading the
+same preset in both, running to the same sub-step count, and comparing the
+canvas (see "Verification" below).
 
-There is no UI, no real input and no preferences UI (Steps 7–10); no strafe
-field (Step 9). The overlays' shader code and uniform lanes are in place but
-their state is hardcoded off — Step 8 supplies the cursor, Step 9 the field
-texture. Picking works but has no cursor either: `?pick=x,y` stands in for one
-until Step 8, which deletes it.
+What is still missing, and which step owns it:
+
+- **Real input (Step 8).** `EMPTY_INPUT` is passed every frame, so the canvas
+  does not respond to the mouse or the keyboard. `applyCanvasInput` and
+  `applyCameraKeys` are written and wired; Step 8 supplies the events they read.
+  The panel drives everything else. `?pick=x,y` was **removed** — the pick path
+  is now reachable through `SelectionController` and Step 8's real handler
+  supersedes it.
+- **The strafe field (Step 9).** SHOVE and DRAW select as tools and show the
+  reticle; neither paints. The field overlay's shader code and uniform lanes are
+  in place with no texture behind them.
+- **Storage (Step 9).** Presets are the three baked in at build time; saving
+  reports through `saveError` rather than writing.
+- **The real UI (Step 10).** `src/ui/thinPanel.ts` is deliberately flat — no
+  tabs, no gates, no tooltips, no menus.
 
 ## Running it
 
@@ -44,38 +56,41 @@ Step 1–3 build looks like.
 
 ### URL parameters
 
-Step 7 builds the real command/status API and Step 8 real input. Until then
-these exist so every part of the render pipeline is reachable for an A/B
-without a code edit. They are cheap to keep and cheap to delete.
+**Step 7 deleted most of these**, and that is the point: every display
+preference is now a real control in the panel, so a query parameter that sets
+one is a second way to do the same thing. What survives is the set
+`browserCheck.mjs` needs — its only lever is the URL, so anything an automated
+check must reach before the first frame has to be here.
 
 | Parameter | Effect |
 |---|---|
+| `?debug` | The timing/pipeline readout overlay |
 | `?preset=<stem>` | Load a shipped preset by filename stem |
 | `?camera=trail\|particles` | Camera mode. **The mode toggle is a test** — see below |
-| `?zoom=<z>`, `?pan=<x>,<y>` | Camera transform, since there is no input yet |
-| `?physicsSteps=<n>` | Sub-steps per frame (the desktop's Physics Rate) |
-| `?motionBlurSamples=<n>` | Target sample count. 1 is off |
-| `?brightness=<b>`, `?tonemapSoftness=<s>` | Exposure and highlight compression |
-| `?bloom=1`, `?bloomThreshold=`, `?bloomIntensity=`, `?bloomRadius=` | The bloom chain |
-| `?colorByCohort=1`, `?colorSensitivity=<s>` | Palette, normally per-config |
-| `?reticle=<radius>`, `&dashed` | Force the brush reticle on at canvas centre |
-| `?pick=<x>,<y>` | Dispatch one pick at a screen pixel, and log the result |
-
-Three of these earn their keep beyond convenience:
+| `?zoom=<z>`, `?pan=<x>,<y>` | Camera transform, since there is no input until Step 8 |
+| `?nopanel` | Suppress the Tweakpane panel |
 
 - **`?camera` is the flip test.** The two modes walk the same transform in
   opposite directions, so switching between them must not shift or mirror the
-  image (`camera.py:14-18`). If it does, a Y flip is wrong.
-- **`?colorByCohort` and `?reticle` reach code nothing else does.** All three
-  shipped presets set `colorByCohort` false, and there is no cursor until
-  Step 8 — so without these, `col_params.y`, the flat interpolation and the
-  dashed ring's arc arithmetic would ship unexercised until Step 10.
-- **`?pick` is the only way to exercise Step 6 at all.** There is no input, and
-  `browserCheck.mjs`'s only lever is the URL — a click handler would need CDP
-  input plumbing, where a query param needs nothing. It fires once, ~120 frames
-  in (so the entities have spawned and moved), and logs the dispatch, the hit or
-  miss, the decoded position and distance, and the head of the derived rule.
-  **Step 8 deletes it** when the real SELECT-mode handler lands.
+  image (`camera.py:14-18`). If it does, a Y flip is wrong. Also reachable from
+  the panel's Toggle Camera Mode button; kept here because a screenshot
+  comparison wants the mode set *before* the first frame, not after a click.
+- **`?nopanel` exists for the visual A/B.** `--shot` is how the comparisons in
+  this file were made, and a 320px panel over the right-hand third of the frame
+  would change what those screenshots compare.
+- **`?zoom` and `?pan` are the ones Step 8 makes redundant.** There is no
+  cursor and no WASD yet, so they are currently the only way to move the view.
+
+Gone, and where each went: `?physicsSteps`, `?motionBlurSamples`,
+`?brightness`, `?tonemapSoftness` and the four `?bloom*` are panel controls
+(Simulation and Display groups). `?colorByCohort` and `?colorSensitivity` are
+panel controls in the Appearance group. `?reticle`/`&dashed` is now what
+selecting the Shove or Draw tool does — dashed for Shove, solid for Draw, which
+is the real behaviour rather than a forced one. **`?pick` is gone entirely**:
+it existed because Step 6 had no other way to dispatch a pick, and the plan
+said Step 8 would delete it. Step 7 removed it early because `SelectionController`
+is now wired into the frame loop, and leaving it would be a second dispatch path
+for Step 8 to reconcile.
 
 ### Switching presets
 
@@ -125,8 +140,10 @@ node tools/browserCheck.mjs --url "?debug&bloom=1" --shot out.png
 It exits non-zero if any pipeline failed or the page logged an error, and
 `--shot` saves a screenshot — which is how the visual checks below were made.
 It is a **development** tool, not part of `npm test`: it needs a real GPU, a
-real Chrome and a dev server, none of which belong in CI. Eight modules should
-report success.
+real Chrome and a dev server, none of which belong in CI. **Ten** modules should
+report success, and the `?debug` overlay lists **eleven** pipelines —
+`entityPick.wgsl` builds two of them (`entityPickReduce` and
+`entityPickDerive`), which is why the counts differ.
 
 **The two tools cover different halves and neither substitutes for the other.**
 WGSL forbids implicit-derivative sampling (`textureSample`, `fwidth`) outside
@@ -150,7 +167,10 @@ errors, but only in a browser, so the Node suite would never have seen them.
 | `src/camera/shaders/` | `camera.wgsl` (TRAIL), `camBrush.wgsl` (PARTICLES), `accumulate.wgsl` |
 | `src/assembler/` | `bloomChain` and `assemblerUniforms` (pure leaves), `bloom.ts`, `assembler.ts` |
 | `src/assembler/shaders/` | `bloomDownsample.wgsl`, `bloomUpsample.wgsl`, `frameAssembly.wgsl` |
-| `src/prefs/` | Display preferences. **Minimal** — Step 7 adds load/save |
+| `src/orchestrator/` | `orchestrator.ts` (the frame loop and the wiring), `commands.ts` (the typed boundary), and the three command modules the desktop's mixins became |
+| `src/project/` | `project.ts` (the immutable save-file value) and `history.ts` (undo/redo with coalescing) |
+| `src/prefs/` | `preferences.ts` — the full editor-preference set, `localStorage`-backed |
+| `src/ui/` | `settingsSpec.ts` (the 35-entry registry), `thinPanel.ts` (the flat Tweakpane dump), `inputState.ts` (the type Step 8 fills in) |
 | `src/testing/` | Test-only access to the parity goldens |
 | `src/shaders/` | Shared shaders — `common.wgsl`, `fullscreenQuad.wgsl` |
 
@@ -429,6 +449,126 @@ the position round-trips (dispatch world → hit within `d=0.00000`), a click in
 empty space records no history, and at `zoom=0.35` the world radius grows
 0.1233 → 0.3522 so the 40-pixel tolerance stays constant on screen.
 
+## The Orchestrator, and the boundary that is now typed
+
+`orchestrator/orchestrator.ts` owns the frame loop, the wiring and the state —
+**not the handlers.** "Sole broker" means it routes, not that it implements,
+which is the same split the desktop draws.
+
+### The mixins became composition
+
+The desktop flattens six command mixins into one class through Python's MRO, and
+**the MRO is load-bearing**: the mixins own no state, they read and replace
+attributes defined on the Orchestrator, and they call each other's methods
+freely. TypeScript has no multiple inheritance, so each group became a module:
+
+| Desktop mixin | Port |
+|---|---|
+| `project_commands.py` | `projectCommands.ts` — the preset catalog and cycling. Save/load/delete are **Step 9**, which owns storage |
+| `clipboard_commands.py` | `clipboardCommands.ts` — a `CheckpointStore` that owns its own invariants |
+| `settings_commands.py` | `settingsCommands.ts` — pure functions returning the new project or preferences |
+| `selection_commands.py` | already ported in Step 6 (`selection/selection.ts`) |
+| `drawing_commands.py`, `shove_commands.py` | **Step 9**, with the strafe field |
+
+**What that mechanically prevents:** on the desktop, `ShoveCommands` reaching
+`self.prefs` is invisible in its signature, so nothing stops a mixin growing a
+dependency on state it has no business seeing. Here every dependency is an
+argument, and adding one shows up in the diff.
+
+The settings modules are pure — they take the current values and return the new
+ones — which keeps "the Orchestrator is the one place project state changes"
+true, and makes the routing testable with no GPU and no device.
+
+### The two untyped dicts are now discriminated unions
+
+`ARCHITECTURE.md` invariant 10 is enforced rather than aspirational on the
+desktop, and the price is that the boundary is two untyped string dicts: a
+29-entry command table and a 30-key `STATUS_KEYS`. `orchestrator/commands.ts`
+types both, and gains two things a dict cannot have:
+
+- **The command `switch` has a `never` default arm**, so adding a `Command`
+  member without a handler is a build error rather than a silently ignored
+  click. The Python's dict can only fail at dispatch, on a key the UI typed.
+- **`Status` is a total interface with no optional members**, so the compiler
+  enforces at the one build site what `STATUS_KEYS` enforced by convention and a
+  comment. That guarantee is why UI code reads `status.preset` directly instead
+  of defending itself with a fallback — a missing key is a bug worth hearing
+  about, and three keys once carried *different* defaults at different call
+  sites, which is the failure this replaces.
+
+A union rather than an interface of methods, deliberately: the desktop's UI
+*holds* the command table and dispatches by name, which is what lets a toolbar
+build itself from a list without knowing what any button does. A union preserves
+that while making the arguments typed.
+
+### THE RETAINED-MODE FEEDBACK LOOP
+
+**The one real bug in Step 7, and the one Step 10 will meet again.**
+
+Tweakpane is retained-mode: writing a proxy and calling `pane.refresh()` makes
+it fire `change` on every binding whose value moved — and **it cannot
+distinguish a value the user dragged from one the app just pushed in.** So
+loading a preset fed that preset's own values straight back through
+`editSetting`. Measured: one `Next >` recorded **four** history entries (depth
+1 → 5), and the top of the undo stack read `"edit Sensor Distance"` instead of
+`"load 9leafv8"`. Undo then stepped back through phantom edits rather than
+unloading the preset, which reads as "undo is broken" and is not.
+
+**imgui cannot have this bug** — immediate mode reports a change only when the
+user moves something — so nothing in the desktop code or in the port plan
+anticipates it. A `refreshing` flag guards every dispatching handler, set around
+the refresh in a `try`/`finally` so a throw inside a handler cannot wedge the
+panel permanently read-only.
+
+This is a real difference between the two UI models, not a Tweakpane quirk. Any
+retained-mode binding Step 10 adds needs the same guard.
+
+### The thin UI, and what it deliberately ignores
+
+`ui/thinPanel.ts` is a flat dump of `settingsSpec.ts`: bindings driven by
+`kind`/`lo`/`hi`/`options`, `group` as a plain folder, `tier` as one checkbox.
+It ignores `revealsOn`, `gates`, `curve` and `inverted` — all Step 10's.
+
+**GATED controls render as plain sliders, and that is the correct degradation
+rather than a compromise:** on/off is derived from the value itself, so nothing
+extra is stored. The stored value, the save format, undo and preview are
+identical either way; only the widget differs.
+
+`curve` and `inverted` are different in kind, and the file is honest about it —
+they change *what value* a given slider position produces. Ignoring them means
+Hazard Rate's slider is linear rather than cubed and Trail Stiffness reads as
+its stored diffusion. The values are still correct and still save correctly; the
+travel just is not shaped yet. **What would be a bug is applying one of them and
+not the other on the way back out**, which is why neither is applied.
+
+The panel holds a `CommandBus` and nothing else — no `Orchestrator`, no
+`ParticleSystem`, no `Project`. That is invariant 10 expressed as a type: the
+file *cannot* reach simulation state, because it holds nothing that leads there.
+
+### Verifying it
+
+`settingsSpec.test.ts` is the one worth knowing about. A `Setting`'s `field` is
+a plain string in a data table, so **the compiler cannot check it**, and an
+entry naming a field that does not exist produces a control that renders, drags,
+and does nothing — silently, because `editSelected` and `withValue` both return
+the receiver unchanged for an unknown field (which is the right behaviour, and
+exactly what makes the failure quiet). The test asserts all 35 entries against
+the real interfaces, and `settingsCommands.test.ts` asserts the same 35 end to
+end through the routing.
+
+It also pins the two dropdown orders against `BC` and `IC` themselves. **Order
+is the enum**: each label's index is the value uploaded, so reordering a tuple
+silently changes what every saved config means.
+
+The command path itself was verified by driving the real panel over CDP —
+clicking actual Tweakpane buttons and reading the resulting status back. Reset
+restarts `frameCount`, the camera toggle round-trips, preset cycling works in
+both directions (including the negative-modulo wrap that plain `%` gets wrong in
+JavaScript where Python's does not), a slider edit reaches the config and
+survives the refresh cycle, and undo restores the pre-load values. That is what
+caught the feedback loop above; `npm test` could not have, and neither could
+`browserCheck.mjs`, whose only lever is the URL.
+
 ## Verification: the A/B against the desktop
 
 Step 4's fidelity was checked by running both engines to the *same sub-step
@@ -606,3 +746,39 @@ Deliberate, and each is commented at the site:
   which WebGPU cannot do at all. The Python's key-packing check ports (it is
   pure arithmetic, now `pick.test.ts`); its GPU half is replaced by the browser
   verification above.
+- **Preferences validate on the way in; the desktop's do not.** `json.loads`
+  there feeds a dataclass that never checks types, so a hand-edited
+  `"physics_steps": "lots"` reaches the GPU as a string. In JavaScript that
+  lands as `NaN` in a uniform and freezes the simulation, so `coerce` rejects
+  the key and keeps the default. Unknown keys are dropped in both (a downgrade
+  must survive a newer version's file); wrong-typed known keys are the port's
+  addition. It matters more here for a second reason: a corrupt entry in
+  `localStorage` **outlives a page reload**, where a bad `preferences.json` can
+  be deleted with a file manager.
+- **`History` measures its coalescing window in MILLISECONDS.**
+  `performance.now()` where the Python has `time.monotonic()`, so
+  `COALESCE_WINDOW` is 500 rather than 0.5. Getting the conversion wrong does
+  not error — it makes every edit coalesce forever, or none of them, and both
+  read as "undo is behaving oddly". `now` is injectable so `history.test.ts`
+  drives the boundary from both sides instead of sleeping.
+- **The panel guards against its own refresh.** See "THE RETAINED-MODE FEEDBACK
+  LOOP" above — the largest behavioural difference Step 7 introduced, and one
+  the desktop's immediate-mode UI cannot have.
+- **`asRecord` drops non-primitive fields, where `dataclasses.asdict` deep-copies
+  them.** The only one that matters is `rule`: 80 floats no control binds to,
+  compared every frame by the panel refresh if they were carried. The desktop's
+  closed-panel early-out exists to avoid that copy; the port keeps the early-out
+  *and* drops the field.
+- **`Orchestrator.rebuildSystem` builds the replacement before dropping the old
+  one.** Pipeline compilation is async here and synchronous there, so a failed
+  compile mid-rebuild would otherwise leave the app with no simulation at all.
+  The desktop's `_rebuild_system` can assign directly because its
+  `ParticleSystem(...)` either returns or raises.
+
+  **It also leaks the outgoing system's GPU buffers**, because
+  `ParticleSystem` exposes no `destroy()` the way `Camera` does — and dropping
+  a reference does not free GPU memory. ~19 MB of entity buffer per rebuild at
+  600k entities. Bounded in practice (only World Size and Canvas Aspect reach
+  here, both typed inputs committed on Enter rather than dragged), and left for
+  Step 9, which touches the same rebuild path to resize the strafe field and
+  where the fix is a change to `ParticleSystem` rather than to the Orchestrator.

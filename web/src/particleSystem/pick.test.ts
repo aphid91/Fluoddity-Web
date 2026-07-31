@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveIncludes } from '../../tools/wgslInclude.ts';
 import { sizingFor } from './sizing.ts';
 import { layoutOf } from './layout.ts';
+import { SETTINGS } from '../ui/settingsSpec.ts';
 import {
   DEFAULT_PICK_RADIUS_PX,
   DIST_BITS,
@@ -70,13 +71,14 @@ test('the index field reaches every entity the app can create', () => {
   // pickable. That reads as "the last cohorts ignore clicks", not as an error,
   // which is why it is asserted rather than reasoned about.
   //
-  // DIVERGENCE FROM THE PYTHON, deliberate: test_async_pick.py reads
-  // world_size's `hi` out of ui/settings_spec.py. That spec is not ported yet
-  // (Step 7 owns it), so the bound is restated here. When Step 7 lands the
-  // settings registry, this should read from it instead -- a hardcoded bound
-  // that drifts from the actual slider is exactly the silence this guards.
-  const WORLD_SIZE_MAX = 4.0; // ui/settings_spec.py, world_size `hi`
-  const [entityCount] = sizingFor(WORLD_SIZE_MAX);
+  // Read from the REGISTRY, as `test_async_pick.py` reads it out of
+  // `ui/settings_spec.py`. Step 7 landed `settingsSpec.ts`, so the hardcoded
+  // 4.0 this used to carry is gone -- a restated bound that drifts from the
+  // actual slider is exactly the silence this test guards against.
+  const worldSize = SETTINGS.find((s) => s.field === 'worldSize');
+  assert.ok(worldSize !== undefined, 'no World Size entry in the settings registry');
+  const [entityCount] = sizingFor(worldSize.hi);
+  const WORLD_SIZE_MAX = worldSize.hi;
   assert.ok(
     entityCount - 1 <= INDEX_MASK,
     `world size ${WORLD_SIZE_MAX} makes ${entityCount} entities, but the index ` +

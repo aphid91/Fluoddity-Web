@@ -1528,7 +1528,12 @@ Raised by the 2026-07-28 pre-port cleanup, and deliberately left open:
 - **The two untyped string interfaces remain**: the command dict and the status
   dict. `STATUS_KEYS` now enumerates the latter and the UI indexes rather than
   defaulting, so a missing key is loud — but typing them properly is the port's
-  job, where they become the TS API.
+  job, where they become the TS API. **Done in the port** (`web/`, Step 7):
+  `src/orchestrator/commands.ts` has both as a discriminated `Command` union and
+  a total `Status` interface, which buys two things this dict cannot have — a
+  `never` default arm making an unhandled command a build error, and no optional
+  members, so the compiler enforces the every-key-every-frame guarantee that is
+  a convention here. This entry still describes the desktop accurately.
 - The UI is one debug panel and the input layer. Physics sliders, GUI detail
   tiers, tooltips, the menu bar and the config editor are each their own design
   conversation; the input plumbing they need is already in place.

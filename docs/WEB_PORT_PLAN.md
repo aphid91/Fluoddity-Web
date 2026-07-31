@@ -447,6 +447,65 @@ note on cohorts (`rule_seed` + `mutation_scale`) intersects this code.
 
 ## Step 7 — The command/status API and the thin UI
 
+**DONE.** The engine is drivable from a browser UI. `Orchestrator` owns the
+frame loop, the command bus and the status contract are typed, and a flat
+Tweakpane dump of the registry drives all 35 settings. See `web/README.md`'s
+"The Orchestrator" section for the design and the verification. Corrections to
+what this section said, recorded because a later step would otherwise re-derive
+them:
+
+- **THE RETAINED-MODE FEEDBACK LOOP, which this section does not mention and
+  which was the only real bug in the step.** Tweakpane fires `change` on every
+  binding whose value moved when the app calls `pane.refresh()` — and it cannot
+  distinguish a value the USER dragged from one the APP just pushed in. So
+  loading a preset fed that preset's own values straight back through
+  `edit_setting`: one `Next >` recorded **four** history entries (depth 1 → 5)
+  and the undo stack read "edit Sensor Distance" instead of "load 9leafv8".
+  Undo then stepped back through phantom edits rather than unloading the
+  preset. **imgui cannot have this bug** — immediate mode reports a change only
+  when the user moves something — so nothing in the desktop code or in this
+  plan anticipates it. A `refreshing` flag guards every dispatching handler.
+  **Step 10 inherits this the moment it binds anything retained.**
+- **`_settings_dicts`'s closed-panel optimization is load-bearing here too, but
+  for a different reason than the desktop's.** The desktop skips it to avoid
+  `asdict` deep-copying the 80-float rule each frame. The port ALSO drops `rule`
+  from the payload entirely, because no control binds to it — and the panel
+  refreshes from that payload every frame, so carrying it would mean 80 floats
+  compared per frame to decide nothing.
+- **The status contract got stronger than "typed".** `Status` is a total
+  interface with no optional members, so the compiler enforces at the one build
+  site what `STATUS_KEYS` enforced by convention and a comment. Likewise the
+  command `switch` has a `never` default arm, so adding a `Command` member
+  without a handler is a build error rather than a silently ignored click.
+- **Three commands are declared and answer honestly rather than being omitted.**
+  `saveConfig` needs Step 9's storage, so it reports through `saveError` — which
+  the panel already renders every frame — rather than pretending to succeed.
+  Dropping it would have left Step 9 to discover the whole command path missing.
+  `clearStrafeField` and the SHOVE/DRAW tools are the same case.
+- **`sizingFor` returns a tuple, not a record.** Trivial, and worth a line
+  because both call sites in the Orchestrator are `const [entityCount, dim] =`.
+- **The desktop has no tests for `project.py` or `history.py`.** Python's
+  `dataclasses.replace` always builds a new object, so the reference-identity
+  contract cannot be violated there; TypeScript's spread has to be written
+  correctly at each site. `project.test.ts` and `history.test.ts` are therefore
+  new coverage, not ports — and they assert BOTH directions (a real edit must
+  return a new object; a no-op must return the receiver), because each failure
+  is silent and they look nothing alike.
+- **`?nopanel` was added.** `browserCheck.mjs --shot` is how the visual A/B is
+  taken, and a 320px panel over the right-hand third of the frame would change
+  what those screenshots compare.
+- **A known leak was left for Step 9, deliberately.** A disruptive preference
+  change rebuilds the `ParticleSystem`, and the outgoing one's GPU buffers are
+  never freed — `ParticleSystem` has no `destroy()` the way `Camera` does, and
+  dropping a JS reference does not release GPU memory. ~19 MB per rebuild at
+  600k entities, bounded because only World Size and Canvas Aspect reach that
+  path and both are typed inputs committed on Enter. **Step 9 already touches
+  this method** (the strafe field is canvas-sized, so a rebuild must resize it,
+  which is why `_rebuild_system` calls `strafe_field.release()`), and the fix
+  belongs in `ParticleSystem` rather than the Orchestrator. Fix it there.
+
+The section as originally written follows.
+
 The rewrite boundary is already an API. `ui/` imports **no** simulation module
 (invariant 10 is enforced, not aspirational — `toolbar.py` mirrors `MouseMode` by
 string value; `ui.py:384` duck-types to avoid importing `PickResult`). So:
@@ -716,7 +775,7 @@ Recorded so a later agent doesn't reopen them.
 | Fidelity verification | **Visual A/B**, no numeric golden vectors, no lockstep. The dynamics are sensitive enough to judge by eye |
 | `mutation.py` float32 mirror | **Not ported — DONE in Step 6.** The picked entity's rule is read back from the GPU. The result slot is 336 bytes (not 324: alignment padding, which the position rides in for free) and the extra one-thread dispatch measured free |
 | Config storage | **Build-time manifest + IndexedDB**, same `(category, name)` key identity |
-| Milestone 1 scope | **Engine-first, thin UI** — flat Tweakpane dump of the registry, no tabs/gates/tooltips/menus |
+| Milestone 1 scope | **Engine-first, thin UI** — flat Tweakpane dump of the registry, no tabs/gates/tooltips/menus. **DONE in Step 7**, exactly as scoped: Tweakpane 4, `group` as a plain folder, `tier` as one checkbox, and `revealsOn`/`gates`/`curve`/`inverted` carried in the registry but not rendered |
 | Gated controls | Real latch preferred; **disclosure-triangle fallback is pre-approved** rather than a blocker (Step 10) |
 | Shipped presets | **Done.** All three are v8 (`Starcrossedv8`, `9leafv8`, `hatmanv8`); the port reads v8 only, no legacy path |
 | Hotkey collisions | **Deferred.** Build the focus-aware rebindable table (Step 8); choose bindings once the UI exists |

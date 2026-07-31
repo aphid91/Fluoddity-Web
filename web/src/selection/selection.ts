@@ -16,7 +16,7 @@
  * `node --test`, and `selection.test.ts` is a direct port of
  * `tests/test_pending_selection.py` (160 lines, five groups). The desktop keeps
  * this state on the Orchestrator (`orchestrator/selection_commands.py:97-152`);
- * Step 7 builds the Orchestrator and will hold one of these.
+ * `orchestrator/orchestrator.ts` holds one of these, built in `selectionHost()`.
  *
  * ## Generic over the project type, deliberately
  *
@@ -73,9 +73,10 @@ export class PendingSelection<P> {
 /**
  * What `SelectionController` needs from the rest of the app.
  *
- * Named as an interface rather than taking the real collaborators because those
- * are Step 7's (the Orchestrator, the Project, the command bus) -- and because
- * the ordering this class enforces is testable only against fakes. The shape
+ * Named as an interface rather than taking the real collaborators (the
+ * Orchestrator, the Project, the command bus) because the ordering this class
+ * enforces is testable only against fakes -- which is still true now that those
+ * collaborators exist, and is why they stay behind this seam. The shape
  * mirrors the `Harness` in `tests/test_pending_selection.py:48-66`, which is
  * the same list of collaborators for the same reason.
  */
@@ -121,8 +122,11 @@ export interface SelectionHost<P, R> {
  *     is skipped while paused, and clicking to select must keep working when it
  *     is -- which is precisely when a user wants to inspect a particle.
  *
- * `orchestrator.py:260-279` states both, and Step 7's frame loop must preserve
- * them when it takes this over from `main.ts`.
+ * `orchestrator.py:260-279` states both. `Orchestrator.frame()` now owns them:
+ * `resolve()` is the first thing it does, and it sits ABOVE the paused branch
+ * rather than inside it. Nothing in this file enforces either -- they are
+ * properties of where the caller puts these two methods, which is exactly why
+ * that call site carries the comments too.
  */
 export class SelectionController<P, R> {
   private readonly pending = new PendingSelection<P>();
