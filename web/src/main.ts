@@ -119,6 +119,11 @@ async function start(): Promise<void> {
   // owns real input, and until then the transform is untestable without them.
   // Cheap to keep, and Step 8 replaces them with WASD/QE and the scroll wheel.
   const params = new URLSearchParams(window.location.search);
+  /** A numeric query param, or `fallback` when absent or unparseable. */
+  const num = (name: string, fallback: number): number => {
+    const v = Number(params.get(name) ?? '');
+    return params.has(name) && Number.isFinite(v) ? v : fallback;
+  };
   const zoomParam = Number(params.get('zoom'));
   if (Number.isFinite(zoomParam) && zoomParam > 0) cameraState.setZoom(zoomParam);
   const panParam = (params.get('pan') ?? '').split(',').map(Number);
@@ -134,6 +139,18 @@ async function start(): Promise<void> {
   const colorByCohortOverride = params.has('colorByCohort')
     ? params.get('colorByCohort') !== '0'
     : null;
+
+  // See the note at the `present` call below.
+  const reticleRadius = num('reticle', 0);
+  const overlays =
+    reticleRadius > 0
+      ? {
+          ...NO_OVERLAYS,
+          reticleCenter: [0.5, 0.5] as const,
+          reticleRadius,
+          reticleDashed: params.has('dashed'),
+        }
+      : NO_OVERLAYS;
 
   const requestedMode = new URLSearchParams(window.location.search).get('camera');
   if (requestedMode !== null) {
@@ -154,10 +171,6 @@ async function start(): Promise<void> {
   // Display preferences. Step 7 loads these from localStorage; until then the
   // defaults plus URL overrides, so the sweeps Step 5 must verify are reachable.
   // Every one of these is a slider on the desktop.
-  const num = (name: string, fallback: number): number => {
-    const v = Number(params.get(name) ?? '');
-    return params.has(name) && Number.isFinite(v) ? v : fallback;
-  };
   const prefs = {
     ...DEFAULT_PREFERENCES,
     physicsSteps: system.physicsSteps,
@@ -277,10 +290,16 @@ async function start(): Promise<void> {
         zoom: cameraState.zoom,
       },
       prefs,
-      // Step 8 supplies the reticle (no cursor yet) and Step 9 the field (no
-      // texture yet). The uniform lanes and both shader branches are already
-      // in place, so wiring them is a value change, not a shader change.
-      NO_OVERLAYS,
+      // Step 8 supplies the reticle from the real cursor and Step 9 the field.
+      // The uniform lanes and both shader branches are already in place, so
+      // wiring them is a value change, not a shader change.
+      //
+      // `?reticle=<radius>` (optionally `&dashed`) forces the ring on at a
+      // fixed centre. It exists because the dashed ring's `arc` derivation is
+      // the most easily-mistranslated arithmetic in frameAssembly.wgsl, and
+      // without this it would sit unexercised until Step 10 -- by which point
+      // a mistranslation would look like a design choice.
+      overlays,
     );
     device.queue.submit([encoder.finish()]);
 
