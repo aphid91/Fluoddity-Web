@@ -35,7 +35,10 @@ function expand(name: string): string {
   return resolveIncludes(path.join(here, name), { sharedDir: SHARED_DIR });
 }
 
-const SHADERS = ['entityUpdate.wgsl', 'canvas.wgsl', 'brush.wgsl'] as const;
+const SHADERS = ['entityUpdate.wgsl', 'canvas.wgsl', 'brush.wgsl', 'rule.wgsl'] as const;
+
+/** The two shaders that derive a rule, and so must agree about how. */
+const RULE_CONSUMERS = ['entityUpdate.wgsl'] as const;
 
 /** Strip `//` comments so a rule is not "satisfied" by prose about it. */
 function stripComments(source: string): string {
@@ -46,6 +49,11 @@ function stripComments(source: string): string {
       return i === -1 ? line : line.slice(0, i);
     })
     .join('\n');
+}
+
+/** How many times `re` matches. `re` must carry the /g flag. */
+function count(source: string, re: RegExp): number {
+  return [...source.matchAll(re)].length;
 }
 
 test('every shader expands with common.wgsl included', () => {
@@ -205,6 +213,87 @@ test('the two canvas-writing stages agree on the Y flip', () => {
     /0\.5\s*-\s*p\.y\s*\*\s*0\.5/,
     'canvas.wgsl fullscreen quad must flip v so each fragment reads its own texel',
   );
+});
+
+test('rule.wgsl is the single source of the generate-or-mutate branch', () => {
+  // WHAT THIS CATCHES: someone inlining the sentinel branch back into one of
+  // the shaders "for clarity", after which the two can silently disagree about
+  // what rule an entity obeys. That disagreement is a WRONG ADOPTED RULE, which
+  // looks like a legitimate result -- the worst failure mode Step 6 exists to
+  // eliminate, and the one ARCHITECTURE.md:715-718 records actually happening.
+  //
+  // Asserted on the EXPANDED source, so exactly one definition means the
+  // include supplied it and nothing redeclared it.
+  for (const name of RULE_CONSUMERS) {
+    const src = stripComments(expand(name));
+    assert.equal(count(src, /fn\s+derive_entity_rule\s*\(/g), 1,
+      `${name} must have exactly one derive_entity_rule (from rule.wgsl)`);
+    assert.equal(count(src, /fn\s+mutate_rule\s*\(/g), 1,
+      `${name} must have exactly one mutate_rule (from rule.wgsl)`);
+    assert.equal(count(src, /fn\s+generate_random_centers\s*\(/g), 1,
+      `${name} must have exactly one generate_random_centers (from rule.wgsl)`);
+    // And the sentinel test appears ONCE -- inside derive_entity_rule, nowhere
+    // else. An open-coded copy is the drift this test exists to prevent.
+    assert.equal(count(src, /centers\[5\]\.amplitude\s*==\s*vec4f\(0\.0\)/g), 1,
+      `${name} open-codes the zero-rule sentinel outside derive_entity_rule`);
+  }
+});
+
+test('pow(h, 2.0) survives in generate_random_centers', () => {
+  // NOT a style check. freq_scale and frequency.x draw from the SAME hash lane,
+  // and pow(h,2) differs from h*h by 1 ULP, which the chaotic hash amplifies
+  // into a completely different rule (measured: seed 0.3088 vs 0.2605 --
+  // mutation.py:149). Now that this rule is READ BACK and adopted into the
+  // config on click, "simplifying" this line changes what selection gives you.
+  const src = stripComments(expand('rule.wgsl'));
+  assert.match(
+    src,
+    /pow\(hash\(vec2f\(seed,\s*f32\(i\s*\*\s*8\s*\+\s*0\)\)\),\s*2\.0\)/,
+    'generate_random_centers must use pow(hash(...), 2.0), not h*h',
+  );
+});
+
+test('get_cohort takes the entity count as a parameter', () => {
+  // rule.wgsl is included by two shaders that bind `entities` with DIFFERENT
+  // access qualifiers (read_write in entityUpdate, read in entityPick), so a
+  // shared function may not name that binding at all.
+  //
+  // Reverting this to arrayLength(&entities) COMPILES IN entityUpdate and fails
+  // only in entityPick -- i.e. in a browser, not in `npm test`. Hence the
+  // assertion here, where it is cheap to see.
+  const src = stripComments(expand('rule.wgsl'));
+  assert.match(
+    src,
+    /fn\s+get_cohort\s*\(\s*index\s*:\s*u32\s*,\s*config\s*:\s*ConfigData\s*,\s*entity_count\s*:\s*u32\s*\)/,
+    'get_cohort must take (index, config, entity_count)',
+  );
+  assert.ok(
+    !src.includes('arrayLength('),
+    'rule.wgsl must name no binding -- it is included by shaders that bind differently',
+  );
+});
+
+test('every get_cohort call passes arrayLength, not a host-supplied count', () => {
+  // The entity buffer is sized exactly entityCount * 32, so arrayLength and the
+  // host's count agree TODAY. Passing the host's number anyway would make the
+  // physics and the picker able to divide by different values if that ever
+  // changed -- and a cohort mismatch means the picker derives a rule the entity
+  // is not obeying, silently.
+  for (const name of RULE_CONSUMERS) {
+    const src = stripComments(expand(name));
+    // `(?<!fn\s)` skips the DECLARATION, which the include puts in this same
+    // expanded text -- without it the assertion reads the signature's
+    // `entity_count: u32` as a call argument and fails on correct code.
+    const calls = [...src.matchAll(/(?<!fn\s)get_cohort\s*\(([^)]*\([^)]*\)[^)]*|[^)]*)\)/g)];
+    assert.ok(calls.length > 0, `${name} calls get_cohort nowhere`);
+    for (const call of calls) {
+      assert.match(
+        call[1]!,
+        /arrayLength\(&entities\)\s*$/,
+        `${name}: get_cohort(${call[1]}) must pass arrayLength(&entities)`,
+      );
+    }
+  }
 });
 
 test('canvas.wgsl takes no sampler as a function parameter', () => {

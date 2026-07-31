@@ -62,6 +62,11 @@
 // ============================================================================
 
 #include "common.wgsl"
+// The rule derivation -- hash family, generate_random_centers, get_cohort,
+// mutate_rule and the generate-or-mutate branch. Shared with entityPick.wgsl so
+// the rule a picked particle ADOPTS is derived by the same code that decides
+// what it obeys here. See that file's header for why it is not in common.wgsl.
+#include "rule.wgsl"
 
 // --- bindings --------------------------------------------------------------
 // Group 0 is the simulation state; group 1 is the textures. They are split
@@ -105,33 +110,10 @@ fn canvas_res() -> vec2f { return u.canvas_res.xy; }
 //=========================================================================================
 //------------------------------------RANDOM / HASH / NOISE--------------------------------
 //====================================VVVVVVVVVVVVVVVVVVVVV================================
-
-// PCG hash - bit-exact across all platforms.
-// The u32 multiplies wrap in WGSL exactly as they do in GLSL, so this is a
-// verbatim translation. (JavaScript would have needed Math.imul; the GPU does
-// not -- which is part of why Step 6 moves rule derivation onto the GPU.)
-fn pcg_hash(seed: u32) -> u32 {
-    let state = seed * 747796405u + 2891336453u;
-    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-fn hash(co: vec2f) -> f32 {
-    let u_bits = vec2u(bitcast<u32>(co.x), bitcast<u32>(co.y));
-    let h = pcg_hash(u_bits.x ^ pcg_hash(u_bits.y));
-    return f32(h) / f32(0xffffffffu);
-}
-
-// Three implicit promotions in four lines on the GLSL side (:68-70); the int
-// literals are written as floats here and the values are identical.
-fn hash4(co: vec2f) -> vec4f {
-    return vec4f(
-        hash(co),
-        hash(co * -1.0 + 5.0),
-        hash(co.yx - 100.0),
-        hash(co.yx * -1.0 + 25.0)
-    );
-}
+//
+// pcg_hash, hash and hash4 now live in rule.wgsl, included above -- the picker
+// needs the same hash family to derive the same rule. Nothing about them
+// changed in the move.
 
 // Fourier basis evaluation.
 // This is how the entities evaluate their Rule.
@@ -160,37 +142,6 @@ fn fourier_noise(centers: array<FourierCenter, 10>, signals: vec4f) -> vec4f {
     }
 
     return result;
-}
-
-// Given a seed, return 10 random FourierCenters: enough for a Rule.
-//
-// DO NOT REWRITE `pow(h, 2.0)` AS `h*h`. `freq_scale` and `frequency.x` draw
-// from the SAME hash lane (`i*8+0`), so frequency.x is `(h*2-1) * (1+2*pow(h,2))`.
-// pow(h,2) and h*h differ by 1 ULP, and the chaotic hash amplifies that into a
-// completely different rule -- measured on the desktop as seed 0.3088 vs 0.2605
-// (see the comment at mutation.py:149, and entity_update.glsl:446-451).
-fn generate_random_centers(seed: f32) -> array<FourierCenter, 10> {
-    var centers : array<FourierCenter, 10>;
-
-    for (var i = 0; i < 10; i++) {
-        // Generate frequency vectors
-        // Bias towards lower frequencies for smoother base behaviors
-        // Range: [-2, 2] with bias towards [-1, 1]
-        let freq_scale = 1.0 + 2.0 * pow(hash(vec2f(seed, f32(i * 8 + 0))), 2.0);
-        centers[i].frequency.x = (hash(vec2f(seed, f32(i * 8 + 0))) * 2.0 - 1.0) * freq_scale;
-        centers[i].frequency.y = (hash(vec2f(seed, f32(i * 8 + 1))) * 2.0 - 1.0) * freq_scale;
-        centers[i].frequency.z = (hash(vec2f(seed, f32(i * 8 + 2))) * 2.0 - 1.0) * freq_scale;
-        centers[i].frequency.w = (hash(vec2f(seed, f32(i * 8 + 3))) * 2.0 - 1.0) * freq_scale;
-
-        // Generate amplitude vectors
-        // Range: [-1, 1]
-        centers[i].amplitude.x = hash(vec2f(seed, f32(i * 8 + 4))) * 2.0 - 1.0;
-        centers[i].amplitude.y = hash(vec2f(seed, f32(i * 8 + 5))) * 2.0 - 1.0;
-        centers[i].amplitude.z = hash(vec2f(seed, f32(i * 8 + 6))) * 2.0 - 1.0;
-        centers[i].amplitude.w = hash(vec2f(seed, f32(i * 8 + 7))) * 2.0 - 1.0;
-    }
-
-    return centers;
 }
 
 //=====================================^^^^^^^^^^^^^^^^^^==================================
@@ -283,11 +234,10 @@ fn safenorm(p: vec2f) -> vec2f {
     return normalize(p);
 }
 
-// Simply assigns each to a cohort based on its index.
-// floor(get_cohort(index)) should be used for cohort equality tests.
-fn get_cohort(index: u32, config: ConfigData) -> f32 {
-    return f32(cfg_cohorts(config)) * f32(index) / f32(arrayLength(&entities));
-}
+// get_cohort now lives in rule.wgsl (the picker needs the same cohort to derive
+// the same rule). It takes the entity count as a THIRD ARGUMENT there, because
+// a shared function cannot name a binding that the two including shaders
+// qualify differently -- so every call below passes arrayLength(&entities).
 
 // Decide which ConfigData slot an entity uses. Phase 1 puts everyone on slot 0,
 // which is behavior-identical to the old single-uniform setup. To split the
@@ -308,7 +258,7 @@ fn assign_config_index(index: u32) -> i32 {
 // Grid and Ring are expressed in world extent rather than the reference's
 // inline aspect fudge, so they stay correct on a non-square canvas.
 fn initial_position(index: u32, config: ConfigData) -> vec2f {
-    let cohort_val = get_cohort(index, config);
+    let cohort_val = get_cohort(index, config, arrayLength(&entities));
     let extent = world_half_extent_from_res(canvas_res());
 
     // vec2(x) in GLSL is a SPLAT, not a (x, 0) constructor -- vec2f(x) here
@@ -357,7 +307,7 @@ fn initial_position(index: u32, config: ConfigData) -> vec2f {
 fn reset(index: u32, config: ConfigData) {
     let size = select(0.0, 0.0015 / world_sqrt_world_size(u.world),
                       index < arrayLength(&entities));
-    let cohort_val = get_cohort(index, config);
+    let cohort_val = get_cohort(index, config, arrayLength(&entities));
 
     let pos = initial_position(index, config);
     let vel = 0.00005 * (vec2f(hash(vec2f(cohort_val, f32(index))),
@@ -367,26 +317,8 @@ fn reset(index: u32, config: ConfigData) {
     entities[index] = make_entity_reset(pos, vel, size, assign_config_index(index));
 }
 
-// Randomly change noise function parameters, scaled by parameter 'amount'.
-// Each cohort gets a unique mutation for any given rule.
-//
-// GLSL took `inout Rule`; WGSL has no inout, so the mutated rule comes back as
-// a return value and the call site assigns it.
-fn mutate_rule(current_rule: Rule, amount: f32, cohort: f32) -> Rule {
-    var rule = current_rule;
-    let seed = hash(rule.centers[4].frequency.xy
-                    + rule.centers[7].amplitude.yx
-                    + rule.centers[1].frequency.zw) + cohort;
-
-    for (var i = 0; i < 10; i++) {
-        // Operand order kept as the GLSL writes it (`-.5 + vec2(...)`), since
-        // reassociating a float add is not required to be value-preserving.
-        let amp_mutation = amount * (-1.0 + 2.0 * hash4(-0.5 + vec2f(-f32(i) + seed, f32(i))));
-        rule.centers[i].amplitude += amp_mutation;
-        rule.centers[i].frequency *= 1.0 + amount * 0.5 * (hash(vec2f(seed, f32(i))) - 0.5);
-    }
-    return rule;
-}
+// mutate_rule now lives in rule.wgsl, beside the generate-or-mutate branch that
+// chooses between it and generate_random_centers.
 
 // Gravity-like force expansion: maps a linear -1..1 slider (gravity_force /
 // gravity_strafe) to a logarithmic physical force, so a small knob covers a
@@ -499,7 +431,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let sqrt_world_size = world_sqrt_world_size(u.world);
     let canvas_resolution = canvas_res();
 
-    let cohort = get_cohort(index, config);
+    let cohort = get_cohort(index, config, arrayLength(&entities));
     var rule = config.rule;
     // Hazard Rate == probability each frame to reset this particle
     let hazard_reset = cfg_hazard_rate(config)
@@ -551,32 +483,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var ltap = get_can(pos + left_sensor_offset, bc);
     var rtap = get_can(pos + right_sensor_offset, bc);
 
-    // If a few arbitrary coefficients are exactly 0, then assume target_rule is
-    // all 0s (no target) and generate a random rule instead.
-    //
-    // GLSL's `==` on a vector is whole-vector equality returning a scalar bool;
-    // WGSL's is componentwise and returns vec4<bool>, hence all().
-    let rule_seed = cfg_mutation_seed(config) + floor(cohort);
-    if (all(rule.centers[0].frequency == vec4f(0.0))
-        && all(rule.centers[5].amplitude == vec4f(0.0))) {
-        // A GENERATED RULE IS ALREADY RANDOM, so it is NOT mutated on top.
-        // The seed alone decides it, and rerolling the seed rerolls the whole
-        // rule -- there is nothing for Mutation Scale to add that the seed does
-        // not already do, and mutating here would mean Mutation Scale silently
-        // changed a rule the user never authored.
-        //
-        // It also keeps the rule REPRODUCIBLE ON THE HOST. mutate_rule derives
-        // its own seed by hashing the rule's coefficients, and hash() is
-        // chaotic, so a 1-ULP difference in a generated coefficient (the GPU
-        // fuses a multiply-add here that numpy cannot) would send the mutation
-        // somewhere else entirely. Skipping it means particle selection can
-        // reproduce exactly what a particle obeys -- see particle_system/mutation.py.
-        rule = Rule(generate_random_centers(rule_seed));
-    }
-    else {
-        // Each cohort gets a random mutation
-        rule = mutate_rule(rule, cfg_mutation_scale(config), rule_seed);
-    }
+    // The generate-or-mutate branch, and the rule_seed it turns on, live in
+    // rule.wgsl -- ONE copy, shared with entityPick.wgsl, so the rule a clicked
+    // particle adopts is derived by exactly the code that decides what it obeys
+    // here. Inlining it back would recreate the drift that ARCHITECTURE.md
+    // :715-718 records; shaders.test.ts asserts there is only one copy.
+    rule = derive_entity_rule(rule, cohort, config);
 
     // Rescale sensor values.
     let sensor_scaling = sqrt_world_size * 38.855 * cfg_sensor_gain(config);
