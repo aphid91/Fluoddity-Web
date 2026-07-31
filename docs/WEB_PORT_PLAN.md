@@ -52,8 +52,11 @@ Step 6 deletes rather than ports.
 - **Milestone 1 is engine-first with a thin UI** — a flat Tweakpane dump of the
   registry, no tabs/gates/tooltips/menus — so physics parity is never blocked on
   UI design questions.
-- **Hotkey collisions (Ctrl+C/V, Ctrl+R, Tab) are deferred.** Step 8 builds a
-  focus-aware rebindable table; the actual bindings get chosen once the UI exists.
+- ~~**Hotkey collisions (Ctrl+C/V, Ctrl+R, Tab) are deferred.** Step 8 builds a
+  focus-aware rebindable table; the actual bindings get chosen once the UI
+  exists.~~ **ANSWERED in Step 8: the table is Ctrl-free.** Every collider moved
+  to a bare key rather than being gated, so no app hotkey `preventDefault`s a
+  Ctrl combination and the browser keeps Ctrl+C/V/R/Z outright. See Step 8.
 
 ### Reference docs — read these first
 
@@ -540,6 +543,67 @@ string value; `ui.py:384` duck-types to avoid importing `PickResult`). So:
 
 ## Step 8 — Input, and the browser's opinions
 
+**DONE.** The canvas responds to the mouse and the keyboard: click to select,
+wheel to zoom, WASD/QE to navigate, and a focus-aware hotkey table. See
+`web/README.md`'s "Input, and how capture is resolved" section for the design
+and the verification. Corrections to what this section said, recorded because a
+later step would otherwise re-derive them:
+
+- **THE HOTKEY COLLISIONS RESOLVED BY MOVING EVERY COLLIDER TO A BARE KEY**,
+  not by gating Ctrl combinations on focus. `C`, `V`, `M`, `Z`/`Shift+Z` replace
+  Ctrl+C, Ctrl+V, Tab and Ctrl+Z. The payoff is that **no app hotkey ever calls
+  `preventDefault` on a Ctrl combination**, so the failure this section names —
+  "`preventDefault` then breaks copying text out of Tweakpane fields" — cannot
+  occur rather than being handled. Ctrl+R and Tab are unbound entirely: the
+  first needs Step 9's storage to have anything to revert to, and the second is
+  worth more to DOM focus traversal than as a second binding for `M`.
+- **The table needed a focus gate anyway**, exactly as this section says, and
+  it tests the **event target** rather than `document.activeElement` — the two
+  disagree during focus transitions, and the target is what actually received
+  the keystroke.
+- **`InputState` needed two more fields than Step 7 wrote**: `keysPressed` (the
+  one-shots the table reads) and `shift`. The desktop's `mods` bitmask narrows
+  to a single boolean because a Ctrl-free table has nothing else to
+  discriminate on.
+- **THE SPLIT THIS SECTION DOES NOT MENTION, and it is the structural
+  decision.** `node --test` has no DOM, so everything that decides anything
+  lives in a pure `inputTracker.ts` that never touches `window`, and
+  `inputBinding.ts` is reduced to translating events into calls on it. Without
+  that split none of the asymmetries below could be tested at all — and every
+  one of them fails silently.
+- **`onPointerUp` deliberately has NO capture parameter.** "Releases are never
+  capture-filtered" is stated below as a rule to follow; making it unexpressible
+  in the API is stronger than following it, since the bug cannot be
+  reintroduced by an edit to the caller.
+- **`onFocusLost()` is new work with no desktop analogue.** A browser tab that
+  loses focus stops delivering `keyup`, so a held `KeyW` at alt-tab time would
+  leave the view panning by itself on return. GLFW keeps delivering to an
+  unfocused window, so nothing in `ui.py` anticipates this.
+- **THE COORDINATE CONVERSION, which is the quiet one.** `clientX/Y` are CSS
+  pixels and `zoomAtPixel` takes device pixels. The scale is `surface.size()`
+  over `getBoundingClientRect()`, **not `devicePixelRatio`** — they agree at
+  100% browser zoom and drift at fractional zoom. Getting it wrong is not a
+  broken pick, it is a pick that lands near-but-not-on the cursor with an error
+  that grows across the frame.
+- **`deltaY` needs `deltaMode` normalisation**, not just negation. Firefox
+  reports LINE for a real wheel where Chrome reports PIXEL, so a single divisor
+  would zoom ~100× faster in one browser than the other.
+- **`main.ts` now keeps two clocks and they are not interchangeable.** `dt` must
+  be the raw delta; `frameMs` is smoothed for the overlay and would make panning
+  lag the keyboard. The first frame's `dt` is forced to zero — its `elapsed`
+  measures device acquisition and pipeline compilation, easily hundreds of ms,
+  and would land as one enormous camera step.
+- **`?zoom` and `?pan` were NOT made redundant**, as the README previously
+  predicted. `browserCheck.mjs` drives the page by URL and cannot synthesize
+  input, so they remain the only way to place the camera for a screenshot.
+- **The verification is unit tests plus CDP**, not `browserCheck.mjs`, whose
+  only lever is the URL. The camera checks were run against a **paused** frame
+  so the simulation could not change the picture — that is what makes "the pan
+  stops when W is released" (luma 2.04 → 2.05) an actual assertion rather than
+  a guess.
+
+The section as originally written follows.
+
 `ui/input_state.py` (86 lines, 24 fields, frozen and rebuilt once per frame so
 every consumer in a frame sees identical input) ports directly. What changes is
 where capture is resolved.
@@ -778,7 +842,7 @@ Recorded so a later agent doesn't reopen them.
 | Milestone 1 scope | **Engine-first, thin UI** — flat Tweakpane dump of the registry, no tabs/gates/tooltips/menus. **DONE in Step 7**, exactly as scoped: Tweakpane 4, `group` as a plain folder, `tier` as one checkbox, and `revealsOn`/`gates`/`curve`/`inverted` carried in the registry but not rendered |
 | Gated controls | Real latch preferred; **disclosure-triangle fallback is pre-approved** rather than a blocker (Step 10) |
 | Shipped presets | **Done.** All three are v8 (`Starcrossedv8`, `9leafv8`, `hatmanv8`); the port reads v8 only, no legacy path |
-| Hotkey collisions | **Deferred.** Build the focus-aware rebindable table (Step 8); choose bindings once the UI exists |
+| Hotkey collisions | **RESOLVED in Step 8: the table is Ctrl-free.** Every collider moved to a bare key — `C`, `V`, `M`, `Z`/`Shift+Z` for checkpoint, restore, camera mode and undo/redo. Ctrl+R and Tab are unbound. Nothing `preventDefault`s a Ctrl combination, so the browser keeps Ctrl+C/V/R/Z and copying out of a text field never breaks. Every hotkey is gated on "no editable element focused" |
 
 ## Open questions
 

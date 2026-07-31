@@ -13,10 +13,6 @@
  *
  * ## What is still missing, and which step owns it
  *
- *   - **Real input (Step 8).** `EMPTY_INPUT` is passed every frame, so the
- *     canvas does not respond to the mouse or the keyboard. The Orchestrator's
- *     `applyCanvasInput`/`applyCameraKeys` are written and wired; Step 8
- *     supplies the events they read. The panel drives everything else.
  *   - **The strafe field (Step 9).** SHOVE and DRAW select as tools and show
  *     the reticle; neither paints.
  *   - **Storage (Step 9).** Presets are the three baked in at build time;
@@ -29,7 +25,7 @@ import { acquireDevice, showUnavailableOverlay, WebGPUUnavailable } from './gpu/
 import { createSurface, type Surface } from './app/surface.ts';
 import { CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
-import { EMPTY_INPUT } from './ui/inputState.ts';
+import { bindInput } from './ui/inputBinding.ts';
 import { ThinPanel } from './ui/thinPanel.ts';
 
 /**
@@ -143,8 +139,25 @@ async function start(): Promise<void> {
   const panel = params.has('nopanel') ? null : new ThinPanel({ bus: orchestrator });
   orchestrator.panelOpen = panel !== null;
 
+  // --- input (Step 8) --------------------------------------------------------
+  // Every listener lives in `ui/inputBinding.ts`; what comes back is a tracker
+  // to freeze once per frame. `toggleUi` is the `X` key: the panel's own
+  // business, so it is handled here rather than sent through the command bus
+  // (`ui.py:471-473`). `panelOpen` follows it, so the Orchestrator stops
+  // building settings payloads for a panel nobody can see.
+  const input = bindInput({
+    surface,
+    dispatch: (command) => orchestrator.dispatch(command),
+    toggleUi: () => {
+      if (panel === null) return; // `?nopanel`: nothing to toggle.
+      panel.setHidden(!panel.hidden);
+      orchestrator.panelOpen = panel.isOpen;
+    },
+  });
+
   const overlay = createDebugOverlay();
   let lastTime = performance.now();
+  let firstFrame = true;
   let frameMs = 0;
   // Smoothed like frameMs: a raw per-frame delta is too noisy to read.
   let orchestratorMs = 0;
@@ -153,15 +166,28 @@ async function start(): Promise<void> {
     if (deviceLost) return; // Stop cleanly rather than spinning on a dead device.
 
     const now = performance.now();
-    // Exponential smoothing: a raw per-frame delta is too noisy to read.
-    frameMs += (now - lastTime - frameMs) * 0.1;
+    const elapsed = now - lastTime;
+    // Exponential smoothing: a raw per-frame delta is too noisy to READ. This
+    // one is for the overlay only.
+    frameMs += (elapsed - frameMs) * 0.1;
     lastTime = now;
 
-    // STEP 8 REPLACES THIS with a real input snapshot. Everything downstream is
-    // already written against `InputState`, so that is a change to what is
-    // passed here rather than to anything that reads it.
+    // **THE RAW DELTA, NOT `frameMs`.** Camera panning is `speed * dt`, and a
+    // smoothed dt lags the real clock -- so a pan would keep accelerating for
+    // several frames after the key went down and keep coasting after it came
+    // up. `frameMs` is smoothed precisely because it is unreadable otherwise,
+    // which is the opposite of what integration wants.
+    //
+    // `firstFrame` keeps the contract at `inputState.ts:84-91`: dt is zero on
+    // the first frame, and `applyCameraKeys` early-returns on a non-positive
+    // one. The first `elapsed` measures the gap since `start()` ran, which is
+    // however long device acquisition and pipeline compilation took -- easily
+    // hundreds of milliseconds, and it would land as one enormous camera step.
+    const dt = firstFrame ? 0 : elapsed / 1000;
+    firstFrame = false;
+
     const tOrchestrator = performance.now();
-    orchestrator.frame(EMPTY_INPUT);
+    orchestrator.frame(input.tracker.freeze(dt));
     orchestratorMs += (performance.now() - tOrchestrator - orchestratorMs) * 0.1;
 
     // AFTER the frame, so the panel shows what the simulation actually holds --

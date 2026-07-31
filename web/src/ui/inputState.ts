@@ -2,18 +2,19 @@
  * InputState: one frame's input, frozen.
  * The type half of `ui/input_state.py` (86 lines, 24 fields).
  *
- * ## Why this exists in Step 7 when Step 8 owns input
+ * ## Who fills this in
  *
- * The frame loop consumes input, so it needs the TYPE to be written against --
+ * Written in Step 7 as the TYPE the frame loop is coded against --
  * `applyCanvasInput` and `applyCameraKeys` are ports of real desktop methods
- * and would otherwise have nothing to read. What Step 7 does NOT build is the
- * event plumbing: no `pointerdown` handlers, no `setPointerCapture`, no
- * capture arbitration, no hotkey table. That is Step 8's, and it is the larger
- * half.
+ * and would otherwise have had nothing to read. **Step 8 built the producer**,
+ * and split it in two so that the half with the decisions in it is testable
+ * without a DOM:
  *
- * So this file is the contract plus `EMPTY_INPUT`. A Step 7 app is drivable
- * through the Tweakpane panel and shows a live simulation; it does not yet
- * respond to the mouse or the keyboard on the canvas.
+ *   - `inputTracker.ts` -- accumulates events and freezes this snapshot. Pure;
+ *     never touches `window`. The port of `ui.py:82-255`.
+ *   - `inputBinding.ts` -- the DOM listeners, which only translate events into
+ *     tracker calls. The port of `ui.py:141-190`.
+ *   - `hotkeys.ts` -- the focus-aware table, read from `keysPressed` below.
  *
  * ## Rebuilt once per frame, never mutated
  *
@@ -79,6 +80,29 @@ export interface InputState {
    * `applyCameraKeys` for why these deliberately bypass the hotkey table.
    */
   readonly keysHeld: ReadonlySet<string>;
+
+  /**
+   * Physical key codes that went down THIS frame. One-shot, canvas only.
+   *
+   * **Auto-repeat IS included**, matching the desktop: `ui.py:154-156` treats
+   * GLFW's PRESS and REPEAT identically, so a held key re-enters this set every
+   * repeat tick. That is harmless for the one-shots the hotkey table dispatches
+   * (holding `R` re-resets, which is what a held reset key should do) and it is
+   * exactly why continuous motion reads `keysHeld` instead -- repeat RATE is an
+   * OS setting, so panning through this set would move at a speed the app does
+   * not control.
+   */
+  readonly keysPressed: ReadonlySet<string>;
+
+  /**
+   * Shift, from the most recent key event. The trimmed port of `mods`.
+   *
+   * Only Shift, because the hotkey table is deliberately Ctrl-free (see
+   * `hotkeys.ts`) and `Shift+Z` is the one binding a modifier discriminates.
+   * The desktop carries a full GLFW bitmask; porting one would mean four fields
+   * nothing reads.
+   */
+  readonly shift: boolean;
 }
 
 /**
@@ -98,4 +122,6 @@ export const EMPTY_INPUT: InputState = Object.freeze({
   rightDragging: false,
   scroll: 0,
   keysHeld: Object.freeze(new Set<string>()),
+  keysPressed: Object.freeze(new Set<string>()),
+  shift: false,
 });

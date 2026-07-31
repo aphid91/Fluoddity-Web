@@ -4,28 +4,24 @@ The TypeScript/WebGPU port of the Python app in the parent directory. The plan
 is `docs/WEB_PORT_PLAN.md`; the design contract it must honour is
 `docs/ARCHITECTURE.md`, whose 10 invariants are the spec.
 
-**Status: Steps 1–7 of 10 complete. Milestone 1 is done.** Scaffold, device
+**Status: Steps 1–8 of 10 complete. Milestone 1 is done.** Scaffold, device
 acquisition, canvas sizing, the WGSL `#include` resolver, the pure-math leaves,
 `common.wgsl`, **the engine** (`entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`,
 driven by `src/particleSystem/particleSystem.ts`), **the render pipeline** (both
 camera modes, motion blur, bloom, brightness and the tone curve), **picking**
-(`entityPick.wgsl`, with the rule derived on the GPU), and **the Orchestrator**
+(`entityPick.wgsl`, with the rule derived on the GPU), **the Orchestrator**
 — the frame loop, a typed command/status API, project/history/preferences, and
-a thin Tweakpane UI over the settings registry.
+a thin Tweakpane UI over the settings registry — and **input**: pointer, wheel
+and keyboard, with capture resolved at the handler and a focus-aware hotkey
+table.
 
-**The simulation runs, it looks right, and it is drivable.** 600,000 entities,
-30 sub-steps a frame, at parity with the desktop app — verified by loading the
-same preset in both, running to the same sub-step count, and comparing the
-canvas (see "Verification" below).
+**The simulation runs, it looks right, and it is drivable by hand.** 600,000
+entities, 30 sub-steps a frame, at parity with the desktop app — verified by
+loading the same preset in both, running to the same sub-step count, and
+comparing the canvas (see "Verification" below).
 
 What is still missing, and which step owns it:
 
-- **Real input (Step 8).** `EMPTY_INPUT` is passed every frame, so the canvas
-  does not respond to the mouse or the keyboard. `applyCanvasInput` and
-  `applyCameraKeys` are written and wired; Step 8 supplies the events they read.
-  The panel drives everything else. `?pick=x,y` was **removed** — the pick path
-  is now reachable through `SelectionController` and Step 8's real handler
-  supersedes it.
 - **The strafe field (Step 9).** SHOVE and DRAW select as tools and show the
   reticle; neither paints. The field overlay's shader code and uniform lanes are
   in place with no texture behind them.
@@ -67,7 +63,7 @@ check must reach before the first frame has to be here.
 | `?debug` | The timing/pipeline readout overlay |
 | `?preset=<stem>` | Load a shipped preset by filename stem |
 | `?camera=trail\|particles` | Camera mode. **The mode toggle is a test** — see below |
-| `?zoom=<z>`, `?pan=<x>,<y>` | Camera transform, since there is no input until Step 8 |
+| `?zoom=<z>`, `?pan=<x>,<y>` | Camera transform, set before the first frame |
 | `?nopanel` | Suppress the Tweakpane panel |
 
 - **`?camera` is the flip test.** The two modes walk the same transform in
@@ -78,8 +74,10 @@ check must reach before the first frame has to be here.
 - **`?nopanel` exists for the visual A/B.** `--shot` is how the comparisons in
   this file were made, and a 320px panel over the right-hand third of the frame
   would change what those screenshots compare.
-- **`?zoom` and `?pan` are the ones Step 8 makes redundant.** There is no
-  cursor and no WASD yet, so they are currently the only way to move the view.
+- **`?zoom` and `?pan` survived Step 8** rather than being made redundant by it.
+  The wheel and WASD now move the view, but `browserCheck.mjs` drives the page
+  by URL alone and cannot synthesize input, so these remain the only way to
+  place the camera for a screenshot.
 
 Gone, and where each went: `?physicsSteps`, `?motionBlurSamples`,
 `?brightness`, `?tonemapSoftness` and the four `?bloom*` are panel controls
@@ -170,7 +168,7 @@ errors, but only in a browser, so the Node suite would never have seen them.
 | `src/orchestrator/` | `orchestrator.ts` (the frame loop and the wiring), `commands.ts` (the typed boundary), and the three command modules the desktop's mixins became |
 | `src/project/` | `project.ts` (the immutable save-file value) and `history.ts` (undo/redo with coalescing) |
 | `src/prefs/` | `preferences.ts` — the full editor-preference set, `localStorage`-backed |
-| `src/ui/` | `settingsSpec.ts` (the 35-entry registry), `thinPanel.ts` (the flat Tweakpane dump), `inputState.ts` (the type Step 8 fills in) |
+| `src/ui/` | `settingsSpec.ts` (the 35-entry registry), `thinPanel.ts` (the flat Tweakpane dump), and the input layer: `inputState.ts` (the snapshot), `inputTracker.ts` (pure accumulator), `hotkeys.ts` (the table), `inputBinding.ts` (the DOM listeners) |
 | `src/testing/` | Test-only access to the parity goldens |
 | `src/shaders/` | Shared shaders — `common.wgsl`, `fullscreenQuad.wgsl` |
 
@@ -569,6 +567,146 @@ survives the refresh cycle, and undo restores the pre-load values. That is what
 caught the feedback loop above; `npm test` could not have, and neither could
 `browserCheck.mjs`, whose only lever is the URL.
 
+## Input, and how capture is resolved
+
+The port of `ui/input_state.py` and `ui.py`'s five GLFW callbacks. Split across
+three files, and **the split is the design**:
+
+| File | Role | Testable headless? |
+|---|---|---|
+| `ui/inputState.ts` | The frozen per-frame snapshot. The type half, written in Step 7 | — |
+| `ui/inputTracker.ts` | Accumulates events, freezes one `InputState` per frame | **Yes** — imports no DOM |
+| `ui/hotkeys.ts` | The binding table, `matchHotkey`, the focus gate | **Yes** — pure |
+| `ui/inputBinding.ts` | The DOM listeners. Translates events into tracker calls | No |
+
+`npm test` runs under `node --test` with no DOM, so everything that *decides*
+anything lives in the two pure files and the listener layer holds no state. That
+is not tidiness: the asymmetries below all fail silently, and a tracker that
+touched `document` could not be tested at all.
+
+### Capture, which the browser makes genuinely different
+
+The desktop gets arbitration free. `ui.py:66-80` installs its GLFW callbacks
+*after* imgui's and keeps imgui's bound methods, so every handler forwards the
+event and then reads `want_capture_mouse` — already updated, synchronously,
+mid-callback.
+
+The DOM hit-tests *before* dispatching, so there is no such flag to read. Capture
+is instead reconstructed from the browser's own decision: `event.target === canvas`.
+Same answer, arrived at from the opposite direction. Anything not on the canvas
+belongs to the UI, which covers the Tweakpane panel without this code having to
+know the panel exists.
+
+**The three asymmetries carry across unchanged**, each implemented at its site in
+`inputTracker.ts`:
+
+- **A captured press is dropped entirely** — it sets neither held nor dragging,
+  so a press landing on the panel can never open a canvas drag.
+- **A release is never capture-filtered.** `onPointerUp` deliberately *has no*
+  `capturedByUi` parameter, so a filtered release is not expressible through the
+  API. A button that went down on the canvas must come up over the panel or the
+  canvas stays grabbed forever.
+- **A drag belongs to whoever received the press**, and survives the cursor
+  wandering over the UI.
+
+`onFocusLost()` has **no desktop analogue and is genuinely needed**: a browser
+tab that loses focus stops delivering `keyup`, so a held `KeyW` at alt-tab time
+would still be in `keysHeld` on return and the view would pan by itself with the
+keyboard untouched. GLFW keeps delivering to an unfocused window, so `ui.py`
+never had to think about it.
+
+### Two conversions that are easy to get subtly wrong
+
+**CSS pixels → framebuffer pixels.** `clientX/Y` are CSS pixels; `zoomAtPixel`
+and `screenToWorld` take device pixels. The scale is the ratio of `surface.size()`
+to `getBoundingClientRect()` — **not** `devicePixelRatio`, which agrees at 100%
+browser zoom and drifts at fractional zoom, for the same reason `surface.ts`
+prefers `devicePixelContentBoxSize`. Getting this wrong puts picks
+near-but-not-on the cursor with an error that grows across the frame, which reads
+as "picking is a bit imprecise" rather than as a bug.
+
+**`deltaY` → notches.** Negated, because `deltaY` is positive-down and
+`InputState.scroll` is notches positive-up. Normalised by `deltaMode`: Firefox
+reports LINE for a real wheel where Chrome reports PIXEL, so without it one
+browser would zoom ~100× faster than the other. Accumulated within the frame
+(`+=`), because `zoomAtPixel` takes notches as an exponent and a fast flick
+should be worth proportionally more.
+
+### The hotkey table, and its deliberate divergence
+
+A **table** rather than `ui.py:422-491`'s straight-line `if` chain, because the
+plan asks for something rebindable and only data can be rebound.
+
+**The table is deliberately Ctrl-free**, which is the one place Step 8 diverges
+from the desktop on purpose. The plan deferred four colliding bindings to
+whoever built the table; the choice made was to move every collider to a bare key
+rather than intercept a browser combination:
+
+| Key | Command | Desktop was |
+|---|---|---|
+| `C` | Set checkpoint | Ctrl+C |
+| `V` | Load latest checkpoint | Ctrl+V |
+| `M` | Toggle camera mode | Tab |
+| `Z` / `Shift+Z` | Undo / redo | Ctrl+Z / Ctrl+Shift+Z |
+
+The payoff: **no app hotkey ever calls `preventDefault` on a Ctrl combination**,
+so the browser keeps Ctrl+C, Ctrl+V, Ctrl+R and Ctrl+Z unconditionally. The
+failure the plan warns about — "`preventDefault` then breaks copying text out of
+Tweakpane fields" — cannot occur, because there is nothing to prevent.
+
+Two are absent rather than moved. **Ctrl+R (revert to saved)** is unbound: it
+needs Step 9's storage to have anything to revert to, and the browser reloads the
+page. **Tab** is left to DOM focus traversal — the plan calls that collision
+"worse than with imgui, since Tweakpane is real focusable DOM", and that cuts
+both ways: keyboard traversal of a real panel is worth more than a second
+binding for a command that now has `M`.
+
+Everything uncollided keeps its desktop key: `1`/`2`/`3` tool, `X` hide UI,
+`Space` pause, `R` reset, `B` behaviour, `F` seed, `←`/`→` preset, `Home` reset
+camera.
+
+**Every hotkey is gated on "no editable element focused"** (`isEditableTarget`,
+tested against the *event target* rather than `document.activeElement` — the two
+disagree during focus transitions, and the target is what actually received the
+keystroke). Without it, typing `Starcrossed` into a save dialog would reset the
+simulation on the `r` and checkpoint on the `c`.
+
+**WASD and Q/E are not in the table**, and must not be. They read `keysHeld`
+against `dt` in `applyCameraKeys`; routing them through a one-shot table would
+make each one step per key-*repeat*, whose rate is an OS setting.
+
+### `dt` is the raw delta, not `frameMs`
+
+`main.ts` keeps two clocks and they are not interchangeable. `frameMs` is
+exponentially smoothed because a raw per-frame delta is unreadable in the
+overlay; `dt` must be raw because panning is `speed * dt` and a smoothed dt lags
+the real clock — a pan would keep accelerating for several frames after the key
+went down and coast after it came up. The first frame's `dt` is forced to zero:
+its `elapsed` measures however long device acquisition and pipeline compilation
+took, which would otherwise land as one enormous camera step.
+
+### How it was verified
+
+`inputTracker.test.ts` and `hotkeys.test.ts` cover the logic headless — the
+asymmetries, the one-shot drain, scroll accumulation, focus loss, table
+ambiguity and the focus gate. The DOM wiring was then driven over CDP with
+`Input.dispatchMouseEvent`/`dispatchKeyEvent`, since `browserCheck.mjs` cannot
+synthesize input:
+
+- a canvas click selects (entity `#15285` at world `(-0.343, -0.187)`), and the
+  click landing at the right world point is what confirms the device-pixel
+  conversion
+- a click on the panel does **not** select
+- `M`, `Space`, `Digit1`/`Digit3` and `X` all fire; `X` round-trips the panel
+- typing `M` into a focused Tweakpane input does **not** toggle the camera
+
+The camera checks were run **against a paused frame**, so the simulation itself
+could not change the picture and every difference was the camera's doing:
+average-luminance stable at 6.01 across a second; wheel zoom moved it to 13.02;
+`Home` restored it to exactly 6.01; holding `W` panned to 2.04; and releasing `W`
+left it at 2.05 — that last one being the check that `keysHeld` actually drains,
+which is the difference between a pan that stops and a view that drifts forever.
+
 ## Verification: the A/B against the desktop
 
 Step 4's fidelity was checked by running both engines to the *same sub-step
@@ -782,3 +920,25 @@ Deliberate, and each is commented at the site:
   here, both typed inputs committed on Enter rather than dragged), and left for
   Step 9, which touches the same rebuild path to resize the strafe field and
   where the fix is a change to `ParticleSystem` rather than to the Orchestrator.
+- **The hotkey table is Ctrl-free, so five bindings differ from the desktop.**
+  `C`, `V`, `M`, `Z` and `Shift+Z` where the desktop has Ctrl+C, Ctrl+V, Tab,
+  Ctrl+Z and Ctrl+Shift+Z; Ctrl+R and Tab are unbound entirely. **This is a
+  decision, not an oversight** — it is what lets the browser keep Ctrl+C/V/R/Z
+  unconditionally, so copying text out of a Tweakpane field never breaks. See
+  "The hotkey table" above before "restoring" any of them.
+- **`InputState` carries 10 fields where the desktop's carries 24.** The
+  missing 14 have no consumer on the desktop either: `mouse_prev`,
+  `mouse_delta`, the middle button, every `*_released`, `keys_released`,
+  `any_*_pressed` and both `*_captured` flags are read only by `ui.py`'s debug
+  panel. `held` and `dragging` are merged for the same reason — nothing reads
+  `held`, and two flags always written together and read by nobody is worse
+  than one. The desktop's `mods` bitmask narrows to a single `shift`, which is
+  all a Ctrl-free table can discriminate on.
+- **`onFocusLost()` has no desktop analogue.** A browser tab that loses focus
+  stops delivering `keyup`; GLFW keeps delivering to an unfocused window. See
+  "Input" above.
+- **A hidden panel refreshes nothing.** `X` sets `display: none` and `refresh()`
+  early-outs, so Tweakpane does not walk every binding to update widgets nobody
+  can see. `isOpen` follows it, which also stops the Orchestrator building
+  settings payloads. The desktop's `gui_hidden` skips the draw calls for the
+  same reason.

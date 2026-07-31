@@ -147,6 +147,9 @@ export class ThinPanel {
    */
   private refreshing = false;
 
+  /** Set by `X`, through `setHidden`. See `hidden`. */
+  private hiddenFlag = false;
+
   /**
    * Monitors -- read-only rows -- are refreshed by writing into these proxies,
    * the same trick the bindings use. Separate because they never dispatch.
@@ -399,6 +402,12 @@ export class ThinPanel {
    * `pane.refresh()` is what makes Tweakpane re-read them.
    */
   refresh(status: Status): void {
+    // A hidden panel refreshes nothing: `pane.refresh()` walks every binding
+    // and re-reads every proxy, which is real per-frame work to update widgets
+    // nobody can see. The next `setHidden(false)` is followed by the frame
+    // loop's own `refresh()`, so what reappears is current rather than stale.
+    if (this.hiddenFlag) return;
+
     // `pane.refresh()` fires `change` on every binding whose value moved, and
     // cannot tell an app-pushed value from a user-dragged one. The flag is what
     // tells the handlers apart -- see `refreshing`. `finally` because a throw
@@ -437,9 +446,39 @@ export class ThinPanel {
     this.readout.saveError = status.saveError;
   }
 
-  /** Whether the panel is open, so the Orchestrator can skip building payloads. */
+  /**
+   * Whether the panel is open, so the Orchestrator can skip building payloads.
+   *
+   * Hiding it counts as closed: `_settings_dicts`'s closed-panel optimization
+   * exists so a panel nobody can see does not cost a payload per frame, and a
+   * hidden panel is exactly that case.
+   */
   get isOpen(): boolean {
-    return true;
+    return !this.hidden;
+  }
+
+  /**
+   * Whether `X` has hidden the panel. The port of `ui.py`'s `gui_hidden`.
+   *
+   * Handled by the UI rather than through the command bus, as the desktop does
+   * (`ui.py:471-473`): no simulation state changes, so there is nothing for the
+   * Orchestrator to broker -- "rule 10 cuts both ways".
+   */
+  get hidden(): boolean {
+    return this.hiddenFlag;
+  }
+
+  /**
+   * Show or hide the panel.
+   *
+   * `display` rather than removing the container, so Tweakpane keeps its DOM
+   * and its state -- an open folder stays open across a hide, and no binding is
+   * rebuilt. It also means a hidden panel cannot hold focus, so the hotkey
+   * table's editable-target gate cannot be tripped by an input nobody can see.
+   */
+  setHidden(hidden: boolean): void {
+    this.hiddenFlag = hidden;
+    this.container.style.display = hidden ? 'none' : '';
   }
 
   dispose(): void {
