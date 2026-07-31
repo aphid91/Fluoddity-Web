@@ -36,7 +36,11 @@ function stripComments(source: string): string {
     .join('\n');
 }
 
-const SHADERS = ['frameAssembly.wgsl'] as const;
+const SHADERS = [
+  'frameAssembly.wgsl',
+  'bloomDownsample.wgsl',
+  'bloomUpsample.wgsl',
+] as const;
 
 test('every assembler shader expands with its includes resolved', () => {
   for (const name of SHADERS) {
@@ -166,6 +170,47 @@ test('the overlays run AFTER the tone curve', () => {
   const overlays = source.search(/let\s+canvas_uv\s*=\s*screen_ndc_to_canvas_uv/);
   assert.ok(curve > 0 && overlays > 0);
   assert.ok(curve < overlays, 'the tone curve must precede the overlay block');
+});
+
+test('the downsample takes four half-texel taps', () => {
+  // Each tap lands exactly between four source texels so bilinear filtering
+  // averages them for free -- four samples covering a 4x4 neighbourhood. An
+  // offset of 1.0 instead of 0.5 would sample texel centres and lose half the
+  // neighbourhood, which reads as a slightly sharper bloom rather than as a bug.
+  const source = stripComments(expand('bloomDownsample.wgsl'));
+  const offsets = [...source.matchAll(/vec2f\(\s*(-?[01]\.5)\s*,\s*(-?[01]\.5)\s*\)/g)]
+    .map((m) => `${m[1]},${m[2]}`);
+  assert.deepEqual(offsets, ['-0.5,-0.5', '0.5,-0.5', '-0.5,0.5', '0.5,0.5']);
+  assert.match(source, /\*\s*0\.25/, 'the four taps must be averaged');
+});
+
+test('the threshold preserves hue rather than clamping per channel', () => {
+  // Subtracting from the MAX channel and rescaling keeps the colour vector's
+  // direction. Clamping each channel independently would tint bright colours
+  // toward white -- a plausible-looking bloom that is subtly wrong.
+  const source = stripComments(expand('bloomDownsample.wgsl'));
+  assert.match(source, /max\(\s*color\.r\s*,\s*max\(\s*color\.g\s*,\s*color\.b\s*\)\s*\)/);
+  assert.match(source, /color\s*\*=\s*max\(0\.0,\s*brightness\s*-\s*u\.params\.z\)/);
+});
+
+test('the upsample is a 1-2-1 / 2-4-2 / 1-2-1 tent over 16', () => {
+  // Nine taps. A wrong weight is invisible in isolation and changes the
+  // falloff's shape, which is exactly what the A/B is asked to judge by eye.
+  const source = stripComments(expand('bloomUpsample.wgsl'));
+  const weights = [...source.matchAll(/\.rgb\s*\*\s*([0-9.]+)/g)].map((m) => m[1]);
+  assert.deepEqual(weights, ['1.0', '2.0', '1.0', '2.0', '4.0', '2.0', '1.0', '2.0', '1.0']);
+  assert.match(source, /sum\s*\/=\s*16\.0/, 'the tent must be normalised by 16');
+});
+
+test('both bloom shaders read the SOURCE texel size', () => {
+  // bloom.py:113,121 takes the texel size from `src`, the level being READ.
+  // Using the destination's would halve every offset -- a narrower blur that
+  // reads as a tuning difference, not as a bug. The comment is the only place
+  // this is recorded, so assert the uniform is at least named for it.
+  for (const name of ['bloomDownsample.wgsl', 'bloomUpsample.wgsl']) {
+    const source = expand(name);
+    assert.match(source, /SOURCE/, `${name} should record that the texel size is the source's`);
+  }
 });
 
 test('bloom is composited BEFORE brightness and the curve', () => {

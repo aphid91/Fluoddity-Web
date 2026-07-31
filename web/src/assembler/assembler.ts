@@ -45,19 +45,27 @@ import {
   type OverlayState,
 } from './assemblerUniforms.ts';
 
+import { Bloom } from './bloom.ts';
+
 import frameAssemblySource from './shaders/frameAssembly.wgsl';
 
 export class Assembler {
   private readonly device: GPUDevice;
   private readonly targets: RenderTargets;
   private readonly outputFormat: GPUTextureFormat;
+  readonly bloom: Bloom;
 
   private pipeline: GPURenderPipeline | null = null;
   private uniformLayout: GPUBindGroupLayout | null = null;
   private textureLayout: GPUBindGroupLayout | null = null;
   private uniformGroup: GPUBindGroup | null = null;
-  /** Rebuilt on resize; 5.5 adds a second variant for bloom-on. */
-  private textureGroup: GPUBindGroup | null = null;
+  /**
+   * Two variants, built on demand and kept: the bloom slot's texture identity
+   * flips between mip 0 and the dummy as the preference is toggled, and
+   * rebuilding per frame would allocate on every frame bloom is on.
+   */
+  private textureGroupBloomOff: GPUBindGroup | null = null;
+  private textureGroupBloomOn: GPUBindGroup | null = null;
 
   private readonly uniforms: GPUBuffer;
   /** 1x1 stand-ins. See the class header. */
@@ -72,6 +80,9 @@ export class Assembler {
     this.device = device;
     this.targets = targets;
     this.outputFormat = outputFormat;
+    // Shares the HDR chain's linear-clamp sampler: the tent filter reaches past
+    // the edge, and repeat would wrap a bright edge's glow to the far side.
+    this.bloom = new Bloom(device, targets.sampler);
 
     this.uniforms = device.createBuffer({
       label: 'FrameAssemblyUniforms',
@@ -105,14 +116,17 @@ export class Assembler {
     return assembler;
   }
 
-  /** Reload the assembly shader. Safe mid-execution; invariant 5's shape. */
+  /**
+   * Reload the assembly shader and the bloom chain. Safe mid-execution;
+   * invariant 5's shape -- a failed compile leaves the old pipeline rather than
+   * dropping the screen to black.
+   */
   async reload(): Promise<void> {
     const device = this.device;
-    const module = await compileModule(
-      device,
-      'frameAssembly.wgsl',
-      frameAssemblySource,
-    );
+    const [module] = await Promise.all([
+      compileModule(device, 'frameAssembly.wgsl', frameAssemblySource),
+      this.bloom.reload(),
+    ]);
     if (module === null) {
       this.pipeline = null;
       return;
@@ -153,17 +167,22 @@ export class Assembler {
       layout: this.uniformLayout,
       entries: [{ binding: 0, resource: { buffer: this.uniforms } }],
     });
-    this.textureGroup = null;
+    this.invalidateTargets();
   }
 
-  /** True when the pipeline compiled. Surfaced for the startup summary. */
+  /** True when every pipeline compiled. Surfaced for the startup summary. */
   pipelineStatus(): Readonly<Record<string, boolean>> {
-    return { frameAssembly: this.pipeline !== null };
+    return {
+      frameAssembly: this.pipeline !== null,
+      ...this.bloom.pipelineStatus(),
+    };
   }
 
   /** Drop bind groups that reference the render targets. Call after a resize. */
   invalidateTargets(): void {
-    this.textureGroup = null;
+    this.textureGroupBloomOff = null;
+    this.textureGroupBloomOn = null;
+    this.bloom.invalidate();
   }
 
   /**
@@ -184,26 +203,30 @@ export class Assembler {
     if (this.pipeline === null || this.textureLayout === null) return;
     if (this.uniformGroup === null || source === null) return;
 
-    // 5.5 passes the real mip 0 here and flips `bloomAvailable` to true.
-    const bloomView = this.dummyHdrView;
-    const bloomAvailable = false;
+    // Bloom runs FIRST and into its own targets, so it must be recorded before
+    // the output pass -- and, being lazy, it allocates nothing until the first
+    // frame the preference is actually on.
+    let bloomView: GPUTextureView | null = null;
+    if (prefs.bloomEnabled && prefs.bloomIntensity > 0.0) {
+      const size = this.targets.size;
+      if (size !== null) {
+        bloomView = this.bloom.process(
+          encoder,
+          source,
+          size,
+          prefs.bloomThreshold,
+          prefs.bloomRadius,
+        );
+      }
+    }
 
     this.device.queue.writeBuffer(
       this.uniforms,
       0,
-      packFrameAssemblyUniforms(view, prefs, bloomAvailable, overlays),
+      packFrameAssemblyUniforms(view, prefs, bloomView !== null, overlays),
     );
 
-    this.textureGroup ??= this.device.createBindGroup({
-      label: 'frame-assembly-textures',
-      layout: this.textureLayout,
-      entries: [
-        { binding: 0, resource: source },
-        { binding: 1, resource: bloomView },
-        { binding: 2, resource: this.dummyFieldView },
-        { binding: 3, resource: this.targets.sampler },
-      ],
-    });
+    const textures = this.ensureTextureGroup(source, bloomView);
 
     const pass = encoder.beginRenderPass({
       label: 'frame-assembly',
@@ -218,12 +241,46 @@ export class Assembler {
     });
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.uniformGroup);
-    pass.setBindGroup(1, this.textureGroup);
+    pass.setBindGroup(1, textures);
     pass.draw(4);
     pass.end();
   }
 
+  /**
+   * The texture group for this frame's bloom state.
+   *
+   * Two variants rather than one rebuilt per frame: the bloom slot alternates
+   * between mip 0 and the 1x1 dummy, and both are stable for the life of the
+   * render targets. `bloomView` of null means the chain did not run -- either
+   * the preference is off or its shaders failed to compile -- and the uniform's
+   * intensity is zero to match, so the dummy is bound but never sampled.
+   */
+  private ensureTextureGroup(
+    source: GPUTextureView,
+    bloomView: GPUTextureView | null,
+  ): GPUBindGroup {
+    const build = (bloom: GPUTextureView): GPUBindGroup =>
+      this.device.createBindGroup({
+        label: 'frame-assembly-textures',
+        layout: this.textureLayout!,
+        entries: [
+          { binding: 0, resource: source },
+          { binding: 1, resource: bloom },
+          { binding: 2, resource: this.dummyFieldView },
+          { binding: 3, resource: this.targets.sampler },
+        ],
+      });
+
+    if (bloomView === null) {
+      this.textureGroupBloomOff ??= build(this.dummyHdrView);
+      return this.textureGroupBloomOff;
+    }
+    this.textureGroupBloomOn ??= build(bloomView);
+    return this.textureGroupBloomOn;
+  }
+
   destroy(): void {
     this.uniforms.destroy();
+    this.bloom.destroy();
   }
 }
