@@ -39,6 +39,7 @@
 import type { WorldConfig } from './config.ts';
 import { packWorldConfig } from './pack.ts';
 import { WORLD_DATA_SIZE } from './layout.ts';
+import { PICK_UNIFORM_SIZE } from './pick.ts';
 
 /**
  * `EntityUpdateUniforms` -- 80 bytes.
@@ -166,6 +167,33 @@ export function packBrushUniforms(
 
   // flags: x frame_count(i), yzw reserved
   i32[AFTER_WORLD + 4] = frameCount;
+
+  return buffer;
+}
+
+/**
+ * Pack the pick passes' uniforms. Both passes share one buffer.
+ *
+ * `world` is not decoration: the DERIVE pass selects the winner's config with
+ * `configs[clamp(i, 0, world_config_count(world) - 1)]`, exactly as
+ * entityUpdate.wgsl:497 does. A different clamp bound could select a different
+ * ConfigData than the physics used, and derive a rule the entity is not obeying
+ * -- which is a wrong adopted rule, and looks like a legitimate result.
+ *
+ * The desktop needs no world here (`entity_pick.glsl` takes only `target` and
+ * `max_dist`), because it does not derive the rule on the GPU at all.
+ */
+export function packPickUniforms(
+  world: WorldConfig,
+  target: readonly [number, number],
+  maxDist: number,
+): ArrayBuffer {
+  const { buffer, f32 } = withWorld(world, PICK_UNIFORM_SIZE);
+
+  // params: xy target (world space), z max_dist, w reserved
+  f32[AFTER_WORLD + 0] = target[0];
+  f32[AFTER_WORLD + 1] = target[1];
+  f32[AFTER_WORLD + 2] = maxDist;
 
   return buffer;
 }
