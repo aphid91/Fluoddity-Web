@@ -115,6 +115,17 @@ async function start(): Promise<void> {
     cameraState.pan = [panParam[0]!, panParam[1]!];
   }
 
+  // `?bus` exposes the command bus for automated checks.
+  //
+  // OFF BY DEFAULT and gated on the URL, like `?preset` and `?nopanel`, because
+  // it is the same kind of affordance: `configCheck.mjs` has to dispatch a save
+  // and read the status back, and a page driven only by synthetic clicks cannot
+  // do that on a panel whose real dialog is Step 10's. Nothing in the app reads
+  // this -- it exists for the verification tools and disappears without them.
+  if (params.has('bus')) {
+    (window as unknown as Record<string, unknown>)['__fluoddity'] = orchestrator;
+  }
+
   // The startup summary. `compileModule` logs each module, but a NULL pipeline
   // is the thing that actually matters and it is easy to miss in the noise.
   const status = orchestrator.pipelineStatus();

@@ -1,9 +1,11 @@
 # Fluoddity Web Port — 10-Step Plan
 
-**Status:** approved 2026-07-29, not started. This is the execution plan for the
-WebGPU/Tweakpane port. It is a companion to two existing docs, not a replacement:
-`ARCHITECTURE.md` is the design contract and remains the spec; `PORT_AUDIT.md` is
-the construct-by-construct portability survey this plan is built on.
+**Status:** approved 2026-07-29. **Steps 1-9 are DONE; Step 10 (the full UI)
+remains.** The engine is feature-complete against the desktop and runs in the
+browser. This is the execution plan for the WebGPU/Tweakpane port; it is a
+companion to two existing docs, not a replacement: `ARCHITECTURE.md` is the
+design contract and remains the spec; `PORT_AUDIT.md` is the
+construct-by-construct portability survey this plan is built on.
 
 ## Context
 
@@ -643,6 +645,63 @@ The table must gate every app hotkey on "no editable element focused."
 
 ## Step 9 — Config storage and the Strafe Field
 
+**DONE.** The field paints, the Shove tool pushes, and configs are fetched from a
+build-time manifest with user saves in IndexedDB. `defaultConfig.ts`,
+`presets.generated.json` and the generator's `build_presets` are deleted. See
+`web/README.md`'s "The Strafe Field" and "Config storage" sections for the design
+and the verification. Corrections to what this section said, recorded because a
+later step would otherwise re-derive them:
+
+- **THE Y FLIP, WHICH THIS SECTION DOES NOT MENTION AND WHICH IS THE MOST
+  DANGEROUS ONE IN THE PORT.** `strafeDraw.wgsl` rasterizes into a texture that
+  `entityUpdate.wgsl` reads through `world_to_uv_bc` — the same Y-up mapping the
+  canvas uses — so it needs the same v flip `canvas.wgsl` carries, and must not
+  use `fullscreenQuad.wgsl`. What makes it worse than Step 4's two: **without the
+  flip the overlay CONFIRMS the bug.** `frameAssembly.wgsl` samples the field
+  with the same unflipped uv the mouse produced, so a mirrored field still draws
+  the stroke where you painted it while the physics pushes the other way. No
+  screenshot of the app catches that. `tools/fieldCheck.mjs` exists to check the
+  overlay path and the physics path separately.
+- **`snapshot_configs` (`:668-671`) was never a problem.** That paragraph worries
+  that an async bus loses its synchronous return. In the port the value never
+  crossed the boundary: `snapshotConfigs` stores `previewOrigin` on the
+  Orchestrator and `restoreConfigs` reads it back. Nothing to lose. The one thing
+  it did owe: `previewConfig` sets `previewOrigin` if null, so hovering without a
+  prior snapshot still restores.
+- **The 512² cap is on TOTAL TEXELS, not per edge.** `:673` says "capped canvas
+  shape (512² texels)", which is right and reads as if it meant `min(w,512)`. A
+  700×300 canvas is 210k texels and runs at FULL resolution. Misreading it
+  changes the field's *shape*, and since world↔uv is normalized that is a silent
+  skew rather than an error.
+- **`setWrap` has no GPU work to do.** Wrap is a *sampler* property in WebGPU and
+  the field owns no sampler — its readers bind it beside the canvas in a bind
+  group already built per address mode, so the two cannot disagree. The call
+  stays in `setProject` for invariant 9's accounting, and says in its body why it
+  does nothing.
+- **`Command` needed FOUR new members, not the three implied.** `loadConfig`,
+  `deleteConfig`, `previewConfig` — and `revertConfig`, which Step 8 blocked on
+  this step (`hotkeys.ts:35-37`). It ships with **no key bound**: Step 8's table
+  is Ctrl-free so the browser keeps Ctrl+R, and choosing a bare key is a UI
+  decision belonging with Step 10.
+- **The two storage failure modes are deliberately asymmetric.** A missing
+  manifest THROWS into the device-failure banner; a denied IndexedDB does not,
+  and degrades to read-only. The second will not reproduce on a dev machine.
+- **`ParticleSystem.destroy()` needed a precondition Step 7's note did not
+  mention.** It must `unmap()` `pickStaging` and bump the pick generation first:
+  a rebuild landing inside a click's readback window would otherwise destroy a
+  buffer with a `mapAsync` in flight. Handled by construction, since forcing that
+  interleaving in a test is impractical.
+- **THE PHYSICS-PATH MEASUREMENT DOES NOT REDUCE TO A NUMBER.** Three scalar
+  proxies for "the trails changed *here*" were tried and all three moved less
+  than the run-to-run variation of a chaotic simulation; the best separated
+  cleanly on one run and inverted on the next with no code change. `fieldCheck`'s
+  pass 2 therefore **prints and does not vote** — the screenshots answer it
+  instantly and are what actually verified the flip. Also: use **hatmanv8**, not
+  Starcrossed, for anything spatial; Starcrossed leaves most of the frame black,
+  so there is nothing in three quadrants to disturb.
+
+The section as originally written follows.
+
 Two independent pieces of feature work.
 
 **Storage (manifest + IndexedDB).** `persistence.discover()`
@@ -838,7 +897,7 @@ Recorded so a later agent doesn't reopen them.
 |---|---|
 | Fidelity verification | **Visual A/B**, no numeric golden vectors, no lockstep. The dynamics are sensitive enough to judge by eye |
 | `mutation.py` float32 mirror | **Not ported — DONE in Step 6.** The picked entity's rule is read back from the GPU. The result slot is 336 bytes (not 324: alignment padding, which the position rides in for free) and the extra one-thread dispatch measured free |
-| Config storage | **Build-time manifest + IndexedDB**, same `(category, name)` key identity |
+| Config storage | **DONE in Step 9.** Build-time manifest + IndexedDB, same `(category, name)` key identity — which is what made it a swap: `Status.configCategories` was written as `category -> names` in Step 7 and did not change at all. `path` became a manifest detail nothing outside `configStore.ts` reads |
 | Milestone 1 scope | **Engine-first, thin UI** — flat Tweakpane dump of the registry, no tabs/gates/tooltips/menus. **DONE in Step 7**, exactly as scoped: Tweakpane 4, `group` as a plain folder, `tier` as one checkbox, and `revealsOn`/`gates`/`curve`/`inverted` carried in the registry but not rendered |
 | Gated controls | Real latch preferred; **disclosure-triangle fallback is pre-approved** rather than a blocker (Step 10) |
 | Shipped presets | **Done.** All three are v8 (`Starcrossedv8`, `9leafv8`, `hatmanv8`); the port reads v8 only, no legacy path |

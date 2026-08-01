@@ -71,6 +71,8 @@ export class Assembler {
   /** 1x1 stand-ins. See the class header. */
   private readonly dummyHdrView: GPUTextureView;
   private readonly dummyFieldView: GPUTextureView;
+  /** The painted field the overlay samples, or the 1x1 dummy. */
+  private strafeFieldView: GPUTextureView;
 
   private constructor(
     device: GPUDevice,
@@ -104,6 +106,20 @@ export class Assembler {
         .createView();
     this.dummyHdrView = dummy('bloom-placeholder', HDR_FORMAT);
     this.dummyFieldView = dummy('strafe-field-placeholder', CANVAS_FORMAT);
+    this.strafeFieldView = this.dummyFieldView;
+  }
+
+  /**
+   * Bind the real Strafe Field for the overlay, replacing the 1x1 placeholder.
+   *
+   * MUST invalidate the cached texture groups: the field sits in BOTH bloom
+   * variants, so a swap that skipped this would keep the overlay sampling the
+   * old texture -- and after a rebuild that texture is destroyed, which is a
+   * validation error rather than a wrong picture. Loud, at least.
+   */
+  setStrafeField(view: GPUTextureView): void {
+    this.strafeFieldView = view;
+    this.invalidateTargets();
   }
 
   static async create(
@@ -266,7 +282,7 @@ export class Assembler {
         entries: [
           { binding: 0, resource: source },
           { binding: 1, resource: bloom },
-          { binding: 2, resource: this.dummyFieldView },
+          { binding: 2, resource: this.strafeFieldView },
           { binding: 3, resource: this.targets.sampler },
         ],
       });

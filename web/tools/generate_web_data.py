@@ -26,9 +26,10 @@ caused it.
 THREE OUTPUTS
   layout.generated.json   struct sizes, member offsets, float-lane indices
   parity.generated.json   golden values from running the real Python functions
-  presets.generated.json  the shipped configs, as the desktop's reader returns
-                          them. TEMPORARY -- Step 9 replaces it with a manifest
-                          plus IndexedDB and deletes it.
+  public/configs/         every shipped preset, copied verbatim, plus the
+                          manifest.json that indexes them. The browser cannot
+                          enumerate a directory, so persistence.discover() runs
+                          here instead and ships its answer.
 
 ON THE PARITY FILE AND THE PROJECT'S "NO GOLDEN VECTORS" DECISION
 docs/WEB_PORT_PLAN.md decides that port fidelity is verified by visual A/B, not
@@ -77,18 +78,15 @@ from preferences import Preferences  # noqa: E402
 COMMON_GLSL = REPO_ROOT / 'shared' / 'shaders' / 'common.glsl'
 LAYOUT_OUT = REPO_ROOT / 'web' / 'src' / 'particleSystem' / 'layout.generated.json'
 PARITY_OUT = REPO_ROOT / 'web' / 'tools' / 'parity.generated.json'
-PRESETS_OUT = REPO_ROOT / 'web' / 'src' / 'particleSystem' / 'presets.generated.json'
 
-#: The shipped presets, exported for Step 4's A/B.
+#: Where the shipped presets and their index are written.
 #:
-#: TODO(Step 9): DELETE THIS AND ITS OUTPUT FILE. Step 9 builds the real
-#: storage path -- a build-time manifest.json plus IndexedDB, with a v8 reader
-#: in TypeScript. This exists only because Step 4 needs real config values to
-#: compare against the desktop, and writing a reader in Step 4 would mean Step 9
-#: inherits whatever shape that reader happened to take. Deleting this is a
-#: clean subtraction: drop the constant, drop _build_presets, drop the entry in
-#: main()'s `outputs`, and delete presets.generated.json and defaultConfig.ts.
-_PRESET_FILES = ['Starcrossedv8.json', '9leafv8.json', 'hatmanv8.json','AALattice.json','AATopMembrane4.json','AATangle.json','AASegments.json']
+#: Under `public/` because Vite copies that directory verbatim to the build root,
+#: with no bundling and no content hash -- so the app FETCHES these at runtime
+#: rather than importing them. That is what stops presets from being code:
+#: adding one is a file drop plus a regenerate, not a rebuild of a .ts module.
+PUBLIC_CONFIG_DIR = REPO_ROOT / 'web' / 'public' / 'configs'
+MANIFEST_OUT = PUBLIC_CONFIG_DIR / 'manifest.json'
 
 #: Sizes the port hardcodes as strides. The vec4-only rule already guarantees
 #: 16-byte alignment, so a struct can grow LEGALLY and still break every
@@ -524,55 +522,80 @@ def _parity_packing() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# presets.generated.json -- TODO(Step 9): delete this whole section
+# public/configs/ -- the shipped presets, and the index that finds them
 # ---------------------------------------------------------------------------
 
-def build_presets() -> dict:
-    """The shipped presets, as the desktop's own reader returns them.
+def build_manifest() -> tuple[dict, list[tuple[Path, bytes]]]:
+    """The preset index, plus the raw bytes of every preset it names.
 
-    WHY THE READER AND NOT THE FILE. The saved format uses a THIRD set of names
-    again (`sensor.gain`, `force.global_mult`), and persistence.load() is what
-    maps them onto SimulationConfig's fields and fills in the defaults for
-    fields a given file predates. Emitting `_config_as_camel(saved.configs[0])`
-    therefore ships what the desktop actually RUNS -- which is the other half of
-    the A/B -- rather than a hand transcription of what the file says. That
-    transcription is exactly the error class the parity goldens exist to delete.
+    WHY THIS EXISTS. `persistence.discover()` globs `configs/` and iterates its
+    subfolders; NO BROWSER CAN ENUMERATE A DIRECTORY. So the enumeration happens
+    here, at build time, using the desktop's own discover() -- which means the
+    categories, their order and their membership are decided by exactly one
+    implementation rather than by two that can drift.
 
-    TODO(Step 9): delete. See the note on _PRESET_FILES.
+    WHY THE FILES ARE COPIED VERBATIM rather than pre-digested into camelCase
+    (which is what the deleted build_presets did). The port has a real v8 reader
+    now, and the point of shipping the desktop's own bytes is that the reader is
+    exercised against what the desktop actually WRITES. A pre-digested blob would
+    make a format mismatch invisible until a user opened their own save.
+
+    EVERY FILE IS STILL PARSED HERE, through persistence.load(), even though the
+    output is the raw bytes. That is the value of doing this in Python: a
+    malformed or v7 file fails AT BUILD TIME with the desktop's own error message,
+    rather than at runtime in a browser with the port's.
+
+    Returns (manifest_document, [(destination_path, file_bytes), ...]).
     """
-    from particle_system import persistence  # local: Step 9 deletes this whole section
+    from particle_system import persistence
 
-    presets = {}
-    for filename in _PRESET_FILES:
-        path = REPO_ROOT / 'configs' / filename
-        if not path.exists():
-            raise SystemExit(
-                f'generator: preset {filename} is missing from configs/.\n'
-                f'  web/src/particleSystem/defaultConfig.ts reads these by name. '
-                f'If a preset was renamed, update _PRESET_FILES.'
-            )
-        saved = persistence.load(str(path))
-        presets[path.stem] = {
-            # Only config 0. Every shipped preset has exactly one, and Step 4
-            # runs a single population (assign_config_index returns 0).
-            'config': _config_as_camel(saved.configs[0]),
-            'world': {
-                'trailPersistence': saved.world.trail_persistence,
-                'trailDiffusion': saved.world.trail_diffusion,
-                'boundaryConditions': saved.world.boundary_conditions,
-            },
-            'configCount': len(saved.configs),
-        }
+    config_dir = REPO_ROOT / 'configs'
+    discovered = persistence.discover(config_dir)
+
+    categories = []
+    files: list[tuple[Path, bytes]] = []
+    for category, entries in discovered.items():
+        # configs/custom/ is the DESKTOP's user-save folder -- it is untracked
+        # working state on whoever's machine ran this, not something to ship.
+        # The browser's equivalent is IndexedDB, which is per-user by
+        # construction. Skipped by name, and this comment is here because
+        # "why is my saved config missing from the build" is a reasonable
+        # question with a non-obvious answer.
+        if category == persistence.CUSTOM_DIRNAME:
+            continue
+
+        manifest_entries = []
+        for entry in entries:
+            # Parsed but discarded: this is the build-time validation. A v7 file
+            # raises ConfigFormatError here, with persistence.py's message.
+            persistence.load(str(entry.path))
+            relative = f'{category}/{entry.path.name}'
+            manifest_entries.append({'name': entry.name, 'path': relative})
+            files.append((PUBLIC_CONFIG_DIR / category / entry.path.name,
+                          entry.path.read_bytes()))
+
+        if manifest_entries:
+            categories.append({'name': category, 'entries': manifest_entries})
+
+    if not categories:
+        raise SystemExit(
+            f'generator: no configs found under {config_dir}.\n'
+            f'  The web app cannot start without at least one shipped preset.'
+        )
 
     return {
         '_comment': (
-            'GENERATED by web/tools/generate_web_data.py by loading configs/*.json '
-            'through the desktop reader. TEMPORARY: Step 9 replaces this with a '
-            'build-time manifest plus IndexedDB and deletes this file. Do not edit '
-            'by hand. Regenerate with: npm run gen:web-data'
+            'GENERATED by web/tools/generate_web_data.py from configs/, using the '
+            'desktop persistence.discover(). Do not edit by hand. '
+            'Regenerate with: npm run gen:web-data'
         ),
-        'presets': presets,
-    }
+        'version': persistence.FORMAT_VERSION,
+        # AN ARRAY, NOT AN OBJECT. Core-first-then-alphabetical ordering is
+        # load-bearing (it is the LEFT/RIGHT preset cycle), and JSON object key
+        # order is insertion-ordered in practice but not by specification. An
+        # array puts the order in the data rather than in an assumption.
+        'categories': categories,
+    }, files
 
 
 # ---------------------------------------------------------------------------
@@ -656,11 +679,11 @@ def main() -> int:
 
     self_test()
 
+    manifest, preset_files = build_manifest()
     outputs = [
         (LAYOUT_OUT, build_layout()),
         (PARITY_OUT, build_parity()),
-        # TODO(Step 9): drop this entry with the rest of the preset export.
-        (PRESETS_OUT, build_presets()),
+        (MANIFEST_OUT, manifest),
     ]
 
     if args.check:
@@ -670,6 +693,15 @@ def main() -> int:
             if not path.exists():
                 stale.append(f'{path.relative_to(REPO_ROOT)} does not exist')
             elif path.read_text(encoding='utf-8') != expected:
+                stale.append(f'{path.relative_to(REPO_ROOT)} is out of date')
+        # The copied presets too, byte for byte -- otherwise editing a config in
+        # configs/ without regenerating would ship the OLD one to the browser
+        # while the desktop ran the new one, which is an A/B comparing two
+        # different things and no error anywhere.
+        for path, payload in preset_files:
+            if not path.exists():
+                stale.append(f'{path.relative_to(REPO_ROOT)} does not exist')
+            elif path.read_bytes() != payload:
                 stale.append(f'{path.relative_to(REPO_ROOT)} is out of date')
         if stale:
             for message in stale:
@@ -682,6 +714,14 @@ def main() -> int:
             return 1
         print('Generated web data is current.')
         return 0
+
+    # Presets first, so a partial run never leaves a manifest naming files that
+    # are not there -- an app that cannot load its default preset is worse than
+    # one whose menu is a regenerate behind.
+    for path, payload in preset_files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        print(f'wrote {path.relative_to(REPO_ROOT)}')
 
     for path, data in outputs:
         path.parent.mkdir(parents=True, exist_ok=True)

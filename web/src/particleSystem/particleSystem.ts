@@ -147,8 +147,30 @@ export class ParticleSystem {
 
   private readonly repeatSampler: GPUSampler;
   private readonly clampSampler: GPUSampler;
-  /** 1x1 stand-in for the Strafe Field, which arrives in Step 9. */
+  /**
+   * 1x1 stand-in bound to the Strafe Field's slot until a real field arrives.
+   *
+   * The texture is held, not just its view: a view cannot be destroyed and does
+   * not need to be, but the texture behind it is a real (if tiny) allocation and
+   * `destroy()` has to be able to free it.
+   */
+  private readonly dummyTexture: GPUTexture;
   private readonly dummyTextureView: GPUTextureView;
+
+  /**
+   * The Strafe Field's view and resolution, or the 1x1 placeholder.
+   *
+   * SET ONCE, BEFORE THE SYSTEM GOES LIVE. `computeTextureGroups` is a prebuilt
+   * 2x2 that holds this view, so replacing the field mid-life would leave four
+   * stale bind groups. Nothing needs to: the field's size derives from
+   * `canvasSize`, which is fixed for a system, and the only thing that changes it
+   * is `Orchestrator.rebuildSystem`, which builds a whole new ParticleSystem
+   * anyway. See `setStrafeField`.
+   */
+  private strafeFieldView: GPUTextureView;
+  private strafeFieldSize: readonly [number, number] = [1, 1];
+  /** False while the placeholder is bound; the shader then skips the sample. */
+  private strafeFieldBound = false;
 
   // NOT readonly: `physicsSteps` is a live preference, and each of these holds
   // one slice per sub-step. Raising the rate past the allocated slot count
@@ -182,6 +204,10 @@ export class ParticleSystem {
   private canvasUniformLayout: GPUBindGroupLayout | null = null;
   private brushStateLayout: GPUBindGroupLayout | null = null;
   private pickLayout: GPUBindGroupLayout | null = null;
+  // Held for the same reason, one level down: `setStrafeField` rebuilds the
+  // texture groups, and the field's view is baked into them.
+  private computeTextureLayout: GPUBindGroupLayout | null = null;
+  private canvasTextureLayout: GPUBindGroupLayout | null = null;
 
   // --- picking ------------------------------------------------------------
   // See `requestPick` for the phase machine these four fields implement.
@@ -288,19 +314,19 @@ export class ParticleSystem {
       ...samplerBase,
     });
 
-    // The Strafe Field is Step 9. Until then the shader's `strafe_field_active`
-    // flag is false and the sample is skipped -- but WebGPU validates a bind
-    // group whether or not the shader reads it, so a real texture must still be
-    // bound. (GL tolerated an unbound sampler here; this is the one place that
-    // difference costs anything.)
-    this.dummyTextureView = device
-      .createTexture({
-        label: 'strafe-field-placeholder',
-        size: { width: 1, height: 1 },
-        format: CANVAS_FORMAT,
-        usage: GPUTextureUsage.TEXTURE_BINDING,
-      })
-      .createView();
+    // The fallback until `setStrafeField` binds a real one. The shader's
+    // `strafe_field_active` flag is false meanwhile and the sample is skipped --
+    // but WebGPU validates a bind group whether or not the shader reads it, so a
+    // real texture must still be bound. (GL tolerated an unbound sampler here;
+    // this is the one place that difference costs anything.)
+    this.dummyTexture = device.createTexture({
+      label: 'strafe-field-placeholder',
+      size: { width: 1, height: 1 },
+      format: CANVAS_FORMAT,
+      usage: GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.dummyTextureView = this.dummyTexture.createView();
+    this.strafeFieldView = this.dummyTextureView;
 
     // One uniform slice per sub-step, so the whole frame's uniforms can be
     // written before the encoder opens. Dynamic offsets must be a multiple of
@@ -557,8 +583,33 @@ export class ParticleSystem {
       this.pickLayout = pickLayout;
     }
 
+    this.computeTextureLayout = computeTextureLayout;
+    this.canvasTextureLayout = canvasTextureLayout;
+
     this.buildStateGroups();
-    this.buildTextureGroups(computeTextureLayout, canvasTextureLayout);
+    this.buildTextureGroups();
+  }
+
+  /**
+   * Bind the real Strafe Field, replacing the 1x1 placeholder.
+   *
+   * CALL ONCE, BEFORE THE SYSTEM GOES LIVE. This rebuilds all four compute
+   * texture groups, which is cheap here and would not be mid-frame -- and more to
+   * the point, a field swapped under a running system would leave any bind group
+   * recorded earlier in the frame pointing at the old texture. The Orchestrator
+   * pairs a field with a system at construction and replaces both together; see
+   * `rebuildSystem`.
+   *
+   * `size` is the FIELD's resolution, which is not the canvas's once
+   * `MAX_FIELD_DIM` bites. It rides in the entity-update uniform so
+   * `get_strafe_field` maps world->uv against the texture it is actually
+   * sampling (`fieldSize.ts`).
+   */
+  setStrafeField(view: GPUTextureView, size: readonly [number, number]): void {
+    this.strafeFieldView = view;
+    this.strafeFieldSize = size;
+    this.strafeFieldBound = true;
+    this.buildTextureGroups();
   }
 
   /**
@@ -640,40 +691,50 @@ export class ParticleSystem {
    *
    * Both boundary modes and both buffer parities exist up front so neither a
    * mode change nor the per-sub-step swap allocates anything.
+   *
+   * THE STRAFE FIELD SHARES THE CANVAS'S SAMPLER (binding 3 takes the same one
+   * as binding 1), which is not a shortcut -- it is what makes the field track
+   * the boundary mode for free. The desktop has to say so twice
+   * (`_apply_boundary_sampling` for the canvas, `StrafeField.set_wrap` for the
+   * field); here the two cannot disagree, because one variant of this group is
+   * built per sampler and both slots read from it.
    */
-  private buildTextureGroups(
-    computeLayout: GPUBindGroupLayout,
-    canvasLayout: GPUBindGroupLayout,
-  ): void {
+  private buildTextureGroups(): void {
     const device = this.device;
     const samplers = [this.clampSampler, this.repeatSampler];
     const fronts = [this.canvasA, this.canvasB];
 
-    this.computeTextureGroups = samplers.map((sampler) =>
-      fronts.map((front) =>
-        device.createBindGroup({
-          layout: computeLayout,
-          entries: [
-            { binding: 0, resource: front.view },
-            { binding: 1, resource: sampler },
-            { binding: 2, resource: this.dummyTextureView },
-            { binding: 3, resource: sampler },
-          ],
-        }),
-      ),
-    );
+    if (this.computeTextureLayout !== null) {
+      const computeLayout = this.computeTextureLayout;
+      this.computeTextureGroups = samplers.map((sampler) =>
+        fronts.map((front) =>
+          device.createBindGroup({
+            layout: computeLayout,
+            entries: [
+              { binding: 0, resource: front.view },
+              { binding: 1, resource: sampler },
+              { binding: 2, resource: this.strafeFieldView },
+              { binding: 3, resource: sampler },
+            ],
+          }),
+        ),
+      );
+    }
 
-    this.canvasTextureGroups = samplers.map((sampler) =>
-      fronts.map((front) =>
-        device.createBindGroup({
-          layout: canvasLayout,
-          entries: [
-            { binding: 0, resource: front.view },
-            { binding: 1, resource: sampler },
-          ],
-        }),
-      ),
-    );
+    if (this.canvasTextureLayout !== null) {
+      const canvasLayout = this.canvasTextureLayout;
+      this.canvasTextureGroups = samplers.map((sampler) =>
+        fronts.map((front) =>
+          device.createBindGroup({
+            layout: canvasLayout,
+            entries: [
+              { binding: 0, resource: front.view },
+              { binding: 1, resource: sampler },
+            ],
+          }),
+        ),
+      );
+    }
   }
 
   /** Index into the pre-built texture groups for the current state. */
@@ -997,7 +1058,17 @@ export class ParticleSystem {
       const fc = this._frameCount + i;
       entityBytes.set(
         new Uint8Array(
-          packEntityUpdateUniforms(world, canvasRes, [1, 1], fc, shove, false),
+          packEntityUpdateUniforms(
+            world,
+            canvasRes,
+            // The FIELD's resolution, not the canvas's -- `get_strafe_field`
+            // maps world->uv against the texture it samples, and the two differ
+            // once MAX_FIELD_DIM bites.
+            this.strafeFieldSize,
+            fc,
+            shove,
+            this.strafeFieldBound,
+          ),
         ),
         i * this.entityUpdateStride,
       );
@@ -1156,6 +1227,50 @@ export class ParticleSystem {
     // the vertex index and the entity from the instance index.
     pass.draw(4, this.entityCount);
     pass.end();
+  }
+
+  /**
+   * Free every GPU resource this system owns.
+   *
+   * DROPPING THE JS REFERENCE DOES NOT FREE GPU MEMORY. A disruptive preference
+   * change (World Size, Canvas Aspect) rebuilds the system, and without this the
+   * outgoing one's buffers leaked -- ~19 MB per rebuild at 600k entities, the
+   * entity buffer alone.
+   *
+   * Called on a system that is already off the frame path, never on a live one:
+   * `Orchestrator.rebuildSystem` builds the replacement, swaps it in, and only
+   * then destroys the old one, so a failed rebuild leaves the running system
+   * untouched.
+   *
+   * WHAT IS NOT HERE, deliberately. Texture VIEWS have no `destroy()` and need
+   * none -- destroying the texture releases them. Bind groups, layouts and
+   * pipelines likewise: they are GC'd once nothing references them, and unlike
+   * buffers they hold no allocation worth reclaiming eagerly. And the STRAFE
+   * FIELD is not freed here, because this system does not own it: the
+   * Orchestrator constructs both and destroys both.
+   */
+  destroy(): void {
+    // THE PICK STAGING BUFFER HAS A PRECONDITION. Destroying a buffer that is
+    // mapped, or has a `mapAsync` in flight, is an error -- and a rebuild landing
+    // inside a click's readback window is exactly when that happens. Bumping the
+    // generation makes any in-flight continuation abandon (`beginPickReadback`
+    // already checks it), and `unmap()` is legal on an unmapped buffer, so the
+    // pair covers all four phases without needing to know which one we are in.
+    this.pickGeneration++;
+    this.pickPhase = 'idle';
+    this.pickStaging.unmap();
+
+    this.entityBuffer.destroy();
+    this.configBuffer.destroy();
+    this.canvasA.texture.destroy();
+    this.canvasB.texture.destroy();
+    this.entityUpdateUniforms.destroy();
+    this.canvasUniforms.destroy();
+    this.brushUniforms.destroy();
+    this.pickResult.destroy();
+    this.pickStaging.destroy();
+    this.pickUniforms.destroy();
+    this.dummyTexture.destroy();
   }
 
   /** True when every pipeline compiled. Surfaced for the startup summary. */

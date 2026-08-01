@@ -4,31 +4,34 @@ The TypeScript/WebGPU port of the Python app in the parent directory. The plan
 is `docs/WEB_PORT_PLAN.md`; the design contract it must honour is
 `docs/ARCHITECTURE.md`, whose 10 invariants are the spec.
 
-**Status: Steps 1–8 of 10 complete. Milestone 1 is done.** Scaffold, device
-acquisition, canvas sizing, the WGSL `#include` resolver, the pure-math leaves,
-`common.wgsl`, **the engine** (`entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`,
-driven by `src/particleSystem/particleSystem.ts`), **the render pipeline** (both
-camera modes, motion blur, bloom, brightness and the tone curve), **picking**
+**Status: Steps 1–9 of 10 complete.** Scaffold, device acquisition, canvas
+sizing, the WGSL `#include` resolver, the pure-math leaves, `common.wgsl`, **the
+engine** (`entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`, driven by
+`src/particleSystem/particleSystem.ts`), **the render pipeline** (both camera
+modes, motion blur, bloom, brightness and the tone curve), **picking**
 (`entityPick.wgsl`, with the rule derived on the GPU), **the Orchestrator**
 — the frame loop, a typed command/status API, project/history/preferences, and
-a thin Tweakpane UI over the settings registry — and **input**: pointer, wheel
-and keyboard, with capture resolved at the handler and a focus-aware hotkey
-table.
+a thin Tweakpane UI over the settings registry — **input**: pointer, wheel and
+keyboard, with capture resolved at the handler and a focus-aware hotkey table —
+and **the Strafe Field and config storage**: a painted vector field with its
+Shove counterpart, and shipped presets fetched from a build-time manifest with
+user saves in IndexedDB.
 
-**The simulation runs, it looks right, and it is drivable by hand.** 600,000
-entities, 30 sub-steps a frame, at parity with the desktop app — verified by
-loading the same preset in both, running to the same sub-step count, and
-comparing the canvas (see "Verification" below).
+**The engine is feature-complete against the desktop.** 600,000 entities, 30
+sub-steps a frame, at parity — verified by loading the same preset in both,
+running to the same sub-step count, and comparing the canvas (see
+"Verification" below).
 
-What is still missing, and which step owns it:
+What is still missing:
 
-- **The strafe field (Step 9).** SHOVE and DRAW select as tools and show the
-  reticle; neither paints. The field overlay's shader code and uniform lanes are
-  in place with no texture behind them.
-- **Storage (Step 9).** Presets are the three baked in at build time; saving
-  reports through `saveError` rather than writing.
 - **The real UI (Step 10).** `src/ui/thinPanel.ts` is deliberately flat — no
-  tabs, no gates, no tooltips, no menus.
+  tabs, no gates, no tooltips, no menus. The four custom widgets
+  (`hover_preview`, `curved_slider`, `sensor_diagram`, `gated_controls`), the
+  menu bar, the save dialog and the delete modal are all Step 10's.
+- **Two consequences of that thinness, worth knowing before using the app.** The
+  Presets folder is built once at construction, so a config saved this session
+  does not appear in it until a reload. And the Save folder's name field doubles
+  as the delete target, because there is no per-row X button yet.
 
 ## Running it
 
@@ -104,18 +107,30 @@ never looks like a broken engine. The default is `Starcrossedv8`, matching the
 desktop's own default at `particle_system.py:45`, so both halves of an A/B start
 on the same config without anyone having to pick it.
 
-**Adding a preset that isn't shipped yet** takes two steps, because the browser
-cannot read `configs/` — the presets are baked in at build time:
+**Adding a preset** is one step now that the presets are data rather than code:
+drop the `.json` into `configs/` (v8 only) and regenerate.
 
-1. Put the `.json` in `configs/` (v8 only) and add its filename to
-   `_PRESET_FILES` in `tools/generate_web_data.py`.
-2. Regenerate: `../Scratch.venv/Scripts/python.exe tools/generate_web_data.py`
+```
+../Scratch.venv/Scripts/python.exe tools/generate_web_data.py
+```
 
-The generator loads each file through the desktop's own `persistence.load()`, so
-a missing file or a v7 file fails there with a message rather than reaching the
-browser. **This whole mechanism is temporary** — Step 9 replaces it with a
-manifest plus IndexedDB and a real loader, at which point presets are picked in
-the UI and none of the above applies.
+The generator runs the desktop's own `persistence.discover()` over `configs/`,
+copies every tracked file verbatim into `web/public/configs/`, and writes the
+`manifest.json` the app fetches. There is no list of filenames to maintain and
+no `.ts` module to rebuild — that is the point of the manifest. Each file is
+still parsed through `persistence.load()` at generation time, so a v7 or
+malformed file fails **there**, with the desktop's own message, rather than in a
+browser.
+
+`configs/custom/` is skipped deliberately: it is the desktop's user-save folder,
+untracked working state belonging to whoever ran the generator. The browser's
+equivalent is IndexedDB, which is per-user by construction.
+
+**Saving** writes to IndexedDB under `Custom`, through the Save folder in the
+panel. Saves survive a reload; shipped presets cannot be deleted (they are part
+of the build, so a delete would appear to work and reappear). If a browser
+denies storage — private browsing, blocked permissions — shipped presets still
+load and only saving is unavailable, reported through `status().canSave`.
 
 ### Checking that the shaders still compile
 
@@ -138,10 +153,18 @@ node tools/browserCheck.mjs --url "?debug&bloom=1" --shot out.png
 It exits non-zero if any pipeline failed or the page logged an error, and
 `--shot` saves a screenshot — which is how the visual checks below were made.
 It is a **development** tool, not part of `npm test`: it needs a real GPU, a
-real Chrome and a dev server, none of which belong in CI. **Ten** modules should
-report success, and the `?debug` overlay lists **eleven** pipelines —
-`entityPick.wgsl` builds two of them (`entityPickReduce` and
-`entityPickDerive`), which is why the counts differ.
+real Chrome and a dev server, none of which belong in CI. **Eleven** modules
+should report success, and the `?debug` overlay lists **thirteen** pipelines —
+`entityPick.wgsl` and `strafeDraw.wgsl` each build two (reduce/derive and
+draw/erase), which is why the counts differ.
+
+Two further browser tools cover what the URL alone cannot reach, because they
+need synthetic input and a page reload respectively:
+
+```
+node tools/fieldCheck.mjs --keep-shots ../field   # the Strafe Field, and the Y flip
+node tools/configCheck.mjs                        # storage, across a reload
+```
 
 **The two tools cover different halves and neither substitutes for the other.**
 WGSL forbids implicit-derivative sampling (`textureSample`, `fwidth`) outside
@@ -179,13 +202,19 @@ arithmetic stays testable without a browser.
 
 ## Generated data
 
-Three JSON files are produced by Python and **committed to git**:
+Produced by Python and **committed to git**:
 
-| File | Contents |
+| Output | Contents |
 |---|---|
 | `src/particleSystem/layout.generated.json` | Struct sizes, member offsets, float-lane indices, parsed out of `common.glsl` |
 | `tools/parity.generated.json` | Golden values produced by *calling* the desktop Python functions |
-| `src/particleSystem/presets.generated.json` | The shipped presets, as `persistence.load()` returns them. **Temporary** — Step 9 replaces it with a manifest plus IndexedDB and deletes it |
+| `public/configs/manifest.json` | The preset index: categories and names, in `discover()`'s order |
+| `public/configs/<category>/*.json` | Every shipped preset, copied verbatim from `configs/` |
+
+The presets are **fetched, not imported**. `public/` is copied to the build root
+untouched, so adding one is a file drop plus a regenerate rather than a rebuild
+of a `.ts` module — and the bytes the browser parses are the desktop's own,
+which is what keeps the port's v8 reader honest about what the desktop writes.
 
 They are committed because a browser build cannot shell out to Python and
 `npm run build` must work from a clean checkout with no venv. A committed
@@ -707,6 +736,127 @@ average-luminance stable at 6.01 across a second; wheel zoom moved it to 13.02;
 left it at 2.05 — that last one being the check that `keysHeld` actually drains,
 which is the difference between a pan that stops and a view that drifts forever.
 
+## The Strafe Field, and the third Y flip
+
+`src/strafeField/` is a painted `rg16float` vector field whose texels are added
+straight to particle positions every physics step. That makes it **advection,
+not force**: it bypasses velocity, so drag never damps it and nothing can swim
+upstream against it.
+
+Not ping-ponged, unlike the canvas: the brush shader never *reads* the field, and
+each fragment writes only its own texel, so there is no read-write hazard to
+double-buffer away.
+
+### THE FLIP, AND WHY IT IS THE MOST DANGEROUS ONE IN THE PORT
+
+`strafeDraw.wgsl` rasterizes **into** a texture that `entityUpdate.wgsl` samples
+through `world_to_uv_bc` — the same Y-up mapping `get_can` uses for the canvas.
+So it falls on the same side of the rule as `canvas.wgsl` and `brush.wgsl`, and
+carries the same v flip. It deliberately does **not** use `fullscreenQuad.wgsl`,
+whose header excludes exactly this case.
+
+What makes it worse than the two Step 4 flips: **without it the overlay confirms
+the bug.** `frameAssembly.wgsl` samples the field with the same unflipped canvas
+uv the mouse produced, so a mirrored field would still *draw* the stroke exactly
+where you painted it, while the physics pushed particles the other way. There is
+no screenshot of the app that catches that — the debug view agrees with the
+error. Hence `tools/fieldCheck.mjs`, which checks the overlay path and the
+physics path separately (see "Verifying it" below).
+
+### The rest of it, briefly
+
+- **Two pipelines, one shader module.** Blend state is per-pipeline in WebGPU:
+  draw accumulates `(ONE, ONE)`, erase runs unblended so it can write literal
+  zero. `erase_mode` stays a uniform *as well*, because the shader branch differs
+  in what it writes and where it discards — the pipelines differ only in blending.
+- **`loadOp: 'load'` on both.** A `'clear'` wipes the field every stroke frame,
+  which reads as "the brush only paints while I'm moving". Same trap as the bloom
+  upsample.
+- **The size cap is on TOTAL TEXELS**, not per edge: `w*h <= 512²`, so a 700×300
+  canvas runs at full resolution. Reading it as `min(w,512)` changes the field's
+  *shape*, and since world↔uv is normalized that is a silent skew, not an error.
+- **`setWrap` issues no GPU work,** and that is worth saying rather than hiding.
+  Wrap is a *sampler* property here, and the field owns no sampler: its readers
+  bind it alongside the canvas, in a bind group already built per address mode.
+  The call stays in `setProject` because invariant 9 wants four things to agree
+  on the boundary mode and this is the accounting for the fourth.
+- **Painting happens once per rendered frame, above the physics loop.** Inside
+  it, a stroke would be `physicsSteps`× stronger and brush weight would track the
+  physics rate. `applyCanvasInput` records the stroke; `frame()` encodes it.
+- **Shove is the opposite** — per sub-step, because it has nothing to persist in.
+  Its strength is `gain * power / steps * (steps / 30)`, which equals
+  `gain * power / 30` and is **deliberately not collapsed**: the two factors mean
+  different things, and `shoveCommands.test.ts` pins it at three rates.
+
+### Verifying it
+
+`node tools/fieldCheck.mjs --keep-shots ../field` (with `npm run dev` running).
+Three passes: the overlay path, the physics path, and the eraser. It loads
+**hatmanv8**, not the default — Starcrossed concentrates into a small structure
+and leaves most of the frame black, against which every quadrant statistic tried
+here measured noise.
+
+**Pass 2 is advisory and does not vote.** Three scalar proxies for "the trails
+changed *here*" were tried (mean luma, fraction-empty, largest empty square) and
+all three moved less than the run-to-run variation of a chaotic simulation; the
+last separated cleanly on one run and inverted on the next with no code change.
+The evidence for the physics path is the **screenshots**, which answer it
+instantly: a correct build shows a clean disc in the upper-left of `2-painted`
+and nothing there in `2-control`. That is what was actually used to verify the
+flip, and dressing it up as a threshold would be worse than saying so.
+
+Passes 1 and 3 do vote, and separate by two orders of magnitude (+117 vs +0.06
+on the overlay) because they measure a painted overlay rather than an emergent
+simulation.
+
+## Config storage: a manifest and IndexedDB
+
+`persistence.discover()` globs `configs/` and iterates its subfolders. **No
+browser can enumerate a directory**, so the enumeration moved to build time and
+the runtime became two sources merged into one catalog.
+
+| Module | Job |
+|---|---|
+| `src/config/persistence.ts` | The v8 reader and writer, and `sanitizeName`. Pure — no fetch, no IDB, no DOM |
+| `src/config/manifest.ts` | Fetch and validate `public/configs/manifest.json` |
+| `src/config/idb.ts` | One IndexedDB object store, four operations, no library |
+| `src/config/configStore.ts` | Merges both into `category → ordered names` |
+
+- **`(category, name)` is the identity**, as it already was on the desktop
+  (`ConfigEntry.key` is the pair, not the path). That is what makes this a swap
+  rather than a redesign: `path` becomes a manifest implementation detail that
+  nothing outside `configStore.ts` reads, and `Status.configCategories` — written
+  in Step 7 as `category → names` — did not change at all.
+- **v7 is absent by construction.** There is no `version <= 7` arm, not even one
+  that throws a nicer message: that would be a v7 code path carrying v7
+  assumptions. A version that is not 8 is unrecognized, full stop.
+- **The reader's tolerances all ported**, each with its Python line cited,
+  because each fails silently. `mutation_seed` → `rule_seed` → `0.0` is the worst:
+  a missing fallback loads seed 0.0, and the chaotic hash turns that into a
+  completely different rule that still looks legitimate.
+- **The failure modes are deliberately asymmetric.** A missing manifest
+  **throws** into the same banner a missing GPU adapter uses — an app with no
+  presets is not usable, and the likeliest cause is a build that did not copy
+  `public/`. A denied IndexedDB does **not**: shipped presets still load and only
+  saving is unavailable. This one will not reproduce on a dev machine.
+- **Async, with `dispatch` still `void`.** Handlers start work and report through
+  `Status.configBusy` and `Status.saveError`, which the panel already reads every
+  frame. Loads carry a generation counter — the same last-request-wins idiom
+  `SelectionController` uses — so a load resolving after a newer one cannot
+  clobber it. `configBusy` clears in **both** arms; a rejected promise leaving
+  "Saving…" up forever is the failure mode.
+- **The camera is restored on a committed load only** — not on hover-preview
+  (settings only) and not on the LEFT/RIGHT cycle, where a view that jumped on
+  every keypress would make browsing unusable. Via `setZoom`, never
+  `state.zoom =`: the setter rejects a non-finite value, and a hand-edited file
+  is exactly where a NaN comes from.
+
+### Verifying it
+
+`node tools/configCheck.mjs` (with `npm run dev` running). Thirteen checks, of
+which one is the point: **a save survives a full page reload.** Everything before
+that passes just as well against an in-memory `Map`.
+
 ## Verification: the A/B against the desktop
 
 Step 4's fidelity was checked by running both engines to the *same sub-step
@@ -913,13 +1063,14 @@ Deliberate, and each is commented at the site:
   The desktop's `_rebuild_system` can assign directly because its
   `ParticleSystem(...)` either returns or raises.
 
-  **It also leaks the outgoing system's GPU buffers**, because
-  `ParticleSystem` exposes no `destroy()` the way `Camera` does — and dropping
-  a reference does not free GPU memory. ~19 MB of entity buffer per rebuild at
-  600k entities. Bounded in practice (only World Size and Canvas Aspect reach
-  here, both typed inputs committed on Enter rather than dragged), and left for
-  Step 9, which touches the same rebuild path to resize the strafe field and
-  where the fix is a change to `ParticleSystem` rather than to the Orchestrator.
+  **It also destroys the outgoing system and its field**, which the desktop has
+  no need to do: dropping a JS reference does not free GPU memory, so without
+  `ParticleSystem.destroy()` each rebuild leaked ~19 MB of entity buffer at 600k
+  entities. The system and the field are replaced *together*, because the field
+  is sized from the canvas, and destroyed last so nothing above can throw between
+  the swap and the free. `destroy()` unmaps `pickStaging` and bumps the pick
+  generation first: a rebuild landing inside a click's readback window would
+  otherwise destroy a buffer with a `mapAsync` in flight.
 - **The hotkey table is Ctrl-free, so five bindings differ from the desktop.**
   `C`, `V`, `M`, `Z` and `Shift+Z` where the desktop has Ctrl+C, Ctrl+V, Tab,
   Ctrl+Z and Ctrl+Shift+Z; Ctrl+R and Tab are unbound entirely. **This is a
@@ -942,3 +1093,30 @@ Deliberate, and each is commented at the site:
   can see. `isOpen` follows it, which also stops the Orchestrator building
   settings payloads. The desktop's `gui_hidden` skips the draw calls for the
   same reason.
+- **`snapshot_configs`'s synchronous return was never a problem here.** The plan
+  (`WEB_PORT_PLAN.md:668-671`) flags it as a hazard: `PreviewSession.begin()`
+  assigns the handler's return value, so an async bus would silently lose the
+  restore. In the port that value never crosses the boundary — `snapshotConfigs`
+  stores `previewOrigin` on the Orchestrator and `restoreConfigs` reads it back,
+  so there is nothing for an async bus to drop. Recorded because it is the kind
+  of thing a later reader will go looking for and not find.
+- **Shipped presets cannot be deleted; on the desktop they can.** There the X
+  button unlinks a real file on the user's own disk. Here they are part of the
+  build, so a delete would appear to work and reappear on the next reload —
+  `ConfigStore.remove` refuses, and the message goes to `saveError`.
+- **IndexedDB may be unavailable, and the app must survive it.** Private
+  browsing or denied storage permissions make it absent or unopenable. Shipped
+  presets still load and only saving is lost, reported through `canSave`. There
+  is no desktop analogue: a filesystem is always there. **This will not reproduce
+  on a development machine**, which is why it is handled by construction rather
+  than left to be discovered.
+- **`canvasDimensions` now has a second caller, and it is the first to pass a
+  real aspect ratio.** `fieldDimensions` composes it when the field is over
+  budget. Its documented half-to-even rounding divergence from Python's `round()`
+  therefore becomes reachable in a second place — still accepted, since a
+  one-texel difference in a linearly-sampled field is invisible.
+- **The panel's Presets folder is built once and goes stale within a session.** A
+  config saved now appears in the catalog (`status().configCategories`) and in
+  the LEFT/RIGHT cycle immediately, but not in the folder's buttons until a
+  reload. Rebuilding a Tweakpane folder mid-session belongs with Step 10's real
+  load menu; the thin panel is not the place to solve it.

@@ -163,6 +163,7 @@ export class ThinPanel {
     selected: '-',
     history: '',
     saveError: '',
+    configBusy: '',
   };
 
   /**
@@ -177,6 +178,16 @@ export class ThinPanel {
     camera: 'particles',
     advancedTier: false,
   };
+
+  /**
+   * The save dialog's name field, such as it is in a thin panel.
+   *
+   * NOT REFRESHED FROM STATUS, unlike everything else here -- it is the user's
+   * own text, and overwriting it each frame would make it impossible to type in.
+   * The real dialog is Step 10's; this is enough to drive the storage path and
+   * to let `configCheck.mjs` save something.
+   */
+  private readonly saveAs = { name: '' };
 
   constructor(opts: ThinPanelOptions) {
     this.bus = opts.bus;
@@ -260,9 +271,11 @@ export class ThinPanel {
     });
 
     const presets = pane.addFolder({ title: 'Presets', expanded: false });
-    // Flat buttons rather than a dropdown: the categories exist in status and
-    // Step 9 will fill them properly, so a menu built now would be rebuilt
-    // then. Prev/Next are the desktop's actual bindings.
+    // Flat buttons rather than a dropdown, and BUILT ONCE at construction. The
+    // catalog grows when the user saves, so this list goes stale until the page
+    // reloads -- accepted here because rebuilding a Tweakpane folder mid-session
+    // is Step 10's problem along with the real load menu. The Save folder below
+    // says so where a user would notice.
     presets.addButton({ title: '< Prev' }).on('click', () => {
       this.send({ kind: 'prevPreset' });
     });
@@ -274,10 +287,27 @@ export class ThinPanel {
         presets
           .addButton({ title: name, label: category })
           .on('click', () => {
-            this.send({ kind: 'loadPreset', name });
+            // (category, name), not just the name: two categories may hold the
+            // same name, and the identity is the pair.
+            this.send({ kind: 'loadConfig', category, name });
           });
       }
     }
+
+    const save = pane.addFolder({ title: 'Save', expanded: false });
+    save.addBinding(this.saveAs, 'name', { label: 'Name' });
+    save.addButton({ title: 'Save to Custom' }).on('click', () => {
+      // No `refreshing` guard needed: a button's click is always the user's.
+      // The guard exists for BINDINGS, whose `change` fires on a programmatic
+      // refresh too.
+      this.send({ kind: 'saveConfig', name: this.saveAs.name });
+    });
+    save.addButton({ title: 'Revert to Saved' }).on('click', () => {
+      this.send({ kind: 'revertConfig' });
+    });
+    save.addButton({ title: 'Delete (Custom)' }).on('click', () => {
+      this.send({ kind: 'deleteConfig', category: 'Custom', name: this.saveAs.name });
+    });
 
     const edit = pane.addFolder({ title: 'Edit', expanded: false });
     edit.addButton({ title: 'Undo' }).on('click', () => {
@@ -389,6 +419,10 @@ export class ThinPanel {
     folder.addBinding(this.readout, 'selected', { readonly: true, label: 'Selected' });
     folder.addBinding(this.readout, 'history', { readonly: true, label: 'History' });
     folder.addBinding(this.readout, 'saveError', { readonly: true, label: 'Message' });
+    // Storage is async and `dispatch` returns void, so this row is how a load or
+    // a save that has not landed yet reports itself. Read from status every
+    // frame, like everything else here.
+    folder.addBinding(this.readout, 'configBusy', { readonly: true, label: 'Storage' });
   }
 
   /**
@@ -444,6 +478,7 @@ export class ThinPanel {
     this.readout.history = `${status.historyCursor + 1}/${status.historyDepth}` +
       (status.undoLabel === '' ? '' : `  (undo: ${status.undoLabel})`);
     this.readout.saveError = status.saveError;
+    this.readout.configBusy = status.configBusy;
   }
 
   /**

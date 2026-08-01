@@ -71,6 +71,21 @@ export const CAMERA_MODES = ['trail', 'particles'] as const;
 
 export type CameraMode = (typeof CAMERA_MODES)[number];
 
+/**
+ * A mode by its saved string value, or `null` if unrecognized.
+ *
+ * For the camera block of a save file, which stores `CameraMode.value` as a
+ * plain string (`persistence.py:171-175`). `null` rather than a default because
+ * the caller must LEAVE THE MODE ALONE on an unrecognized value -- the desktop's
+ * for-loop simply finds no match and falls through, which is the same behaviour
+ * spelled differently (`project_commands.py:249-253`).
+ */
+export function cameraModeFromValue(value: string): CameraMode | null {
+  return (CAMERA_MODES as readonly string[]).includes(value)
+    ? (value as CameraMode)
+    : null;
+}
+
 /** The next mode in declaration order, wrapping. */
 export function nextCameraMode(mode: CameraMode): CameraMode {
   const index = CAMERA_MODES.indexOf(mode);

@@ -109,14 +109,22 @@ export interface CheckpointView {
  * as distinct members below for the reason the Python keeps them -- they are
  * the UI's vocabulary, and a future divergence should not need a UI change.
  *
- * ## What is NOT here yet, and why that is not a gap
+ * ## The storage commands name `(category, name)`, not an entry object
  *
- * Save, load, delete and preview (`save_config`, `load_config`,
- * `delete_config`, `preview_config`) all need persistence, which is **Step 9**.
- * They are declared, and `orchestrator.ts` handles them by reporting through
- * `saveError` rather than by pretending to succeed -- so the UI wiring exists
- * and Step 9 fills in the storage behind it. Silently dropping them would leave
- * Step 9 to discover the whole command path is missing.
+ * `loadConfig`, `deleteConfig` and `previewConfig` take two strings rather than
+ * a `ConfigEntry`. The UI holds a `CommandBus` and nothing else, and a
+ * `ConfigEntry` would be a STORAGE type crossing into the panel -- it carries a
+ * `source` discriminator and a manifest path, neither of which the UI has any
+ * business knowing. Two strings are data. `ConfigStore.entry()` resolves them,
+ * and an unknown pair reports through `saveError` rather than throwing: a preset
+ * deleted in another tab must not crash the one you are in.
+ *
+ * ## These are asynchronous, and `dispatch` still returns void
+ *
+ * Storage is async and the bus is not. Handlers start the work, return
+ * immediately, and report through `Status` -- which the panel reads every frame
+ * anyway. Making `dispatch` async would turn every button click into a promise
+ * the caller has to handle, for no gain. See `orchestrator.ts`'s storage cases.
  */
 export type Command =
   // --- simple ---
@@ -127,12 +135,30 @@ export type Command =
   | { readonly kind: 'setMouseMode'; readonly mode: MouseMode }
   | { readonly kind: 'undo' }
   | { readonly kind: 'redo' }
-  // --- presets (Step 9 replaces the shipped-preset list with the manifest) ---
+  // --- presets: the LEFT/RIGHT cycle over the whole catalog ---
   | { readonly kind: 'nextPreset' }
   | { readonly kind: 'prevPreset' }
   | { readonly kind: 'loadPreset'; readonly name: string }
-  // --- save / load. Step 9 owns the storage behind these. ---
+  // --- storage. See the header on why these carry (category, name). ---
   | { readonly kind: 'saveConfig'; readonly name: string }
+  | { readonly kind: 'loadConfig'; readonly category: string; readonly name: string }
+  | { readonly kind: 'deleteConfig'; readonly category: string; readonly name: string }
+  /**
+   * Apply a config for hover-preview: settings only, no camera, no history.
+   *
+   * Browsing forty configs must not leave forty undo entries
+   * (`project_commands.py:161-165`), and it must not move the view either.
+   */
+  | { readonly kind: 'previewConfig'; readonly category: string; readonly name: string }
+  /**
+   * Reload the project from wherever it was loaded or last saved.
+   *
+   * The desktop's Ctrl+R. NO KEY IS BOUND to it here: Step 8's table is
+   * Ctrl-free so the browser keeps Ctrl+R for page reload, and picking a bare
+   * key for it is a UI decision that belongs with Step 10's real interface. The
+   * command exists so the path is built and testable meanwhile.
+   */
+  | { readonly kind: 'revertConfig' }
   | { readonly kind: 'clearSaveError' }
   // --- config clipboard: in-session checkpoints ---
   | { readonly kind: 'setCheckpoint' }
@@ -212,19 +238,45 @@ export interface Status {
 
   // --- project / configs ---
   /**
-   * Shipped presets, grouped into load-menu categories. Step 9 replaces the
-   * generated list with the manifest, and adds the user's IndexedDB saves as
-   * further categories -- the SHAPE is what Step 9 inherits, so it is
-   * `category -> names` now rather than a flat list.
+   * Every config the app can load, grouped into menu categories: the shipped
+   * presets from the build-time manifest, plus the user's IndexedDB saves under
+   * "Custom". Core first, then alphabetical.
+   *
+   * The SHAPE predates the storage behind it -- it was written as
+   * `category -> names` in Step 7 precisely so that swapping a generated list
+   * for real storage would not touch this interface, the panel, or `status()`.
    */
   readonly configCategories: Readonly<Record<string, readonly string[]>>;
   readonly projectName: string;
   readonly selectedConfig: number;
   readonly configCount: number;
   readonly checkpoints: readonly CheckpointView[];
+  /**
+   * Whether the project has a storage origin to revert to.
+   *
+   * False until something is loaded or saved -- there is nothing to revert TO
+   * before that, which is exactly why Step 8 left the desktop's Ctrl+R unbound.
+   */
+  readonly canRevert: boolean;
+  /**
+   * Whether saving is possible at all.
+   *
+   * False when the browser denied IndexedDB (private browsing, blocked storage).
+   * Shipped presets still load in that state, so the app works; only saving does
+   * not. Surfaced so the UI can say so BEFORE a user types a name.
+   */
+  readonly canSave: boolean;
 
   // --- transient messages ---
   readonly saveError: string;
+  /**
+   * In-flight storage work, or `''` when idle.
+   *
+   * Storage is async and `dispatch` returns void, so this is how a load or a
+   * save that has not landed yet reports itself. The panel renders it beside
+   * `saveError`, which it already reads every frame.
+   */
+  readonly configBusy: string;
 
   /**
    * The three settings sources, as plain records the panel reads by field name.

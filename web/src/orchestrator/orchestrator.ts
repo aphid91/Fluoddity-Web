@@ -50,9 +50,15 @@ import { RenderTargets } from '../app/renderTargets.ts';
 import { Assembler } from '../assembler/assembler.ts';
 import { NO_OVERLAYS, type OverlayState } from '../assembler/assemblerUniforms.ts';
 import { Camera } from '../camera/camera.ts';
-import { CameraState, PAN_PER_SECOND, ZOOM_PER_SECOND } from '../camera/cameraState.ts';
+import {
+  CameraState,
+  PAN_PER_SECOND,
+  ZOOM_PER_SECOND,
+  cameraModeFromValue,
+} from '../camera/cameraState.ts';
 import { blurSchedule, sampleAt } from '../camera/blurSchedule.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
+import { StrafeField } from '../strafeField/strafeField.ts';
 import { screenToWorld, worldToUv } from '../particleSystem/coords.ts';
 import {
   type PickResult,
@@ -60,8 +66,15 @@ import {
   isHit,
   radiusPxToWorld,
 } from '../particleSystem/pick.ts';
+import { BC } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
-import { defaultPreset, preset as presetByName, presetNames } from '../particleSystem/defaultConfig.ts';
+import {
+  type ConfigEntry,
+  ConfigStore,
+  CUSTOM_CATEGORY,
+  DEFAULT_PRESET_NAME,
+} from '../config/configStore.ts';
+import { type SavedCamera, sanitizeName, toDocument } from '../config/persistence.ts';
 import {
   type Preferences,
   loadPreferences,
@@ -74,6 +87,7 @@ import {
   adoptRule,
   configCount,
   makeProject,
+  renamed,
   selectedConfig,
 } from '../project/project.ts';
 import { History } from '../project/history.ts';
@@ -86,13 +100,10 @@ import {
   type Status,
 } from './commands.ts';
 import { type Checkpoint, CheckpointStore } from './clipboardCommands.ts';
+import { type PendingStroke, strokeFor } from './drawingCommands.ts';
+import { shoveState } from './shoveCommands.ts';
 import { applySettingEdit, randomizeBehavior, randomizeSeed } from './settingsCommands.ts';
-import {
-  type PresetCatalog,
-  buildCatalog,
-  loadPresetInto,
-  switchPreset,
-} from './projectCommands.ts';
+import { type PresetCatalog, loadSavedInto, switchPreset } from './projectCommands.ts';
 
 /** Everything `Orchestrator.create` needs. All GPU-adjacent, all injected. */
 export interface OrchestratorOptions {
@@ -111,6 +122,37 @@ export class Orchestrator implements CommandBus {
   private readonly camera: Camera;
   private readonly assembler: Assembler;
   private system: ParticleSystem;
+  /**
+   * The painted field. Paired with `system`: both are sized from the canvas, so
+   * `rebuildSystem` replaces the two together and destroys the two together.
+   */
+  private strafeField: StrafeField;
+
+  /**
+   * Where the cursor was on the previous frame of the stroke in progress, in
+   * FIELD uv. `null` between strokes -- see `drawingCommands.ts`.
+   */
+  private strokePrevUv: readonly [number, number] | null = null;
+
+  /**
+   * This frame's stroke, recorded by `applyCanvasInput` and consumed by
+   * `frame()`.
+   *
+   * The indirection exists because painting needs a command ENCODER and
+   * `applyCanvasInput` has none -- it runs above the encoder deliberately, so
+   * that a stroke lands once per rendered frame rather than once per physics
+   * sub-step. Recording intent here is what lets both facts hold at once.
+   */
+  private pendingStroke: PendingStroke | null = null;
+
+  /**
+   * Set by `clearStrafeField`, consumed by the frame loop.
+   *
+   * Same shape and same reason as the accumulator's clear: zeroing a texture is
+   * a render pass, a render pass needs an encoder, and a command handler runs
+   * outside one.
+   */
+  private clearFieldPending = false;
 
   /** Editor state, distinct from anything saved with a project. */
   private prefs: Preferences;
@@ -146,20 +188,50 @@ export class Orchestrator implements CommandBus {
   private mouseMode: MouseMode = 'select';
 
   /**
-   * Whether the simulation is frozen. Pausing stops the physics AND (from
-   * Step 9) the Shove tool, so a paused frame is genuinely untouchable; the
-   * camera, the overlays and the whole UI stay live, so a frozen state can
-   * still be navigated and inspected.
+   * Whether the simulation is frozen. Pausing stops the physics AND the Shove
+   * tool, so a paused frame is genuinely untouchable; the camera, the overlays
+   * and the whole UI stay live, so a frozen state can still be navigated and
+   * inspected.
+   *
+   * PAINTING IS NOT STOPPED, and the asymmetry with Shove is deliberate: the
+   * field is not simulation state, so a frozen simulation is no reason to stop
+   * being able to paint into it -- or to clear it.
    */
   private paused = false;
 
   /** Transient UI message, surfaced through `status().saveError`. */
   private saveError = '';
+  /** In-flight storage work, surfaced through `status().configBusy`. */
+  private configBusy = '';
 
-  /** The shipped presets, grouped into load-menu categories. */
-  private readonly catalog: PresetCatalog;
+  /** Shipped presets plus the user's saves. See `config/configStore.ts`. */
+  private readonly store: ConfigStore;
+  /** Rebuilt after every write or delete; `store.catalog()` is the source. */
+  private catalog: PresetCatalog;
   private presetIndex = 0;
   private presetName: string;
+
+  /**
+   * Where the current project came from, for `revertConfig`.
+   *
+   * Set by a committed load or a successful save; `null` when the project has no
+   * storage origin, which is what `canRevert` reports. Cleared by nothing except
+   * a `reset` -- notably NOT by preset cycling, because after Step 9 a preset IS
+   * a config entry and cycling to one IS loading it. Mirrors the desktop's
+   * `set_config_path` (`project_commands.py:129`).
+   */
+  private configOrigin: { readonly category: string; readonly name: string } | null = null;
+
+  /**
+   * Bumped on every storage request. A continuation whose generation no longer
+   * matches was superseded and must not publish its result.
+   *
+   * THE SAME LAST-REQUEST-WINS PROBLEM `SelectionController` SOLVES, and
+   * deliberately the same idiom: storage is async, so a load that resolves after
+   * the user has already loaded something else would clobber the newer project
+   * with the older one. One pattern for this in the codebase, not two.
+   */
+  private configGeneration = 0;
 
   private readonly selection: SelectionController<Project, PickResult>;
 
@@ -185,10 +257,13 @@ export class Orchestrator implements CommandBus {
     camera: Camera;
     assembler: Assembler;
     system: ParticleSystem;
+    strafeField: StrafeField;
     prefs: Preferences;
     project: Project;
+    store: ConfigStore;
     catalog: PresetCatalog;
     presetName: string;
+    configOrigin: { readonly category: string; readonly name: string } | null;
   }) {
     this.device = opts.device;
     this.surface = opts.surface;
@@ -196,10 +271,13 @@ export class Orchestrator implements CommandBus {
     this.camera = opts.camera;
     this.assembler = opts.assembler;
     this.system = opts.system;
+    this.strafeField = opts.strafeField;
     this.prefs = opts.prefs;
     this.project = opts.project;
+    this.store = opts.store;
     this.catalog = opts.catalog;
     this.presetName = opts.presetName;
+    this.configOrigin = opts.configOrigin;
     this.presetIndex = Math.max(0, this.catalog.order.indexOf(opts.presetName));
 
     this.history.seed(this.project);
@@ -210,58 +288,98 @@ export class Orchestrator implements CommandBus {
    * Build the whole app. Async because every pipeline compile is.
    *
    * The desktop's `__init__` is synchronous and does this same wiring; the only
-   * structural difference is that WGSL compilation returns promises, which is
-   * why this is a static factory rather than a constructor.
+   * structural differences are that WGSL compilation returns promises and that
+   * the config catalog is FETCHED rather than globbed -- which is why the store
+   * is opened here rather than in `main.ts`. Keeping it inside means `main.ts`
+   * never learns about storage and `?preset=` resolution stays where it is.
+   *
+   * The extra awaits cost nothing user-visible: device acquisition and pipeline
+   * compilation already dominate startup, which is why the first frame's `dt` is
+   * already forced to zero.
    */
   static async create(opts: OrchestratorOptions): Promise<Orchestrator> {
     const prefs = opts.preferences ?? loadPreferences();
 
-    const catalog = buildCatalog(presetNames());
-    let presetName = opts.presetName ?? defaultPreset().name;
-    let loaded;
-    try {
-      loaded = presetByName(presetName);
-    } catch {
+    // THROWS IF THE MANIFEST IS MISSING, deliberately -- `main.ts` renders it
+    // through the same banner a missing GPU adapter uses. An app with no presets
+    // is not usable, and the likeliest cause is a build that did not copy
+    // `public/`, which would otherwise present as a mysteriously empty menu.
+    const store = await ConfigStore.open();
+    const catalog = store.catalog();
+
+    let presetName = opts.presetName ?? DEFAULT_PRESET_NAME;
+    let entry = store.entryByName(presetName);
+    if (entry === null) {
       console.warn(
-        `No preset "${presetName}". Available: ${presetNames().join(', ')}. ` +
-          `Falling back to ${defaultPreset().name}.`,
+        `No preset "${presetName}". Available: ${catalog.order.join(', ')}. ` +
+          `Falling back to ${DEFAULT_PRESET_NAME}.`,
       );
-      loaded = defaultPreset();
-      presetName = loaded.name;
+      presetName = DEFAULT_PRESET_NAME;
+      entry = store.entryByName(presetName);
     }
+    // Last resort: the manifest exists but does not contain the default. Rather
+    // than start on nothing, take whatever is first in the catalog -- and say
+    // so, because it means the shipped set changed without this constant.
+    if (entry === null && catalog.order.length > 0) {
+      presetName = catalog.order[0]!;
+      console.warn(`Default preset missing; opening "${presetName}" instead.`);
+      entry = store.entryByName(presetName);
+    }
+    if (entry === null) {
+      throw new Error('The config manifest contains no presets.');
+    }
+    const loaded = await store.read(entry);
+    const configOrigin = { category: entry.category, name: entry.name };
 
     const [entityCount, dim] = sizingFor(prefs.worldSize);
     const system = await ParticleSystem.create({
       device: opts.device,
-      config: loaded.config,
+      config: loaded.configs[0]!,
       world: loaded.world,
       canvasSize: canvasDimensions(prefs.canvasAspect, dim),
       entityCount,
       physicsSteps: prefs.physicsSteps,
     });
 
+    // The field is sized from the canvas, and bound into the system BEFORE it
+    // goes live -- `setStrafeField` rebuilds the compute texture groups, which
+    // is only safe while nothing has been recorded against them.
+    const strafeField = await StrafeField.create(opts.device, system.canvasSize);
+    strafeField.setWrap(loaded.world.boundaryConditions === BC.WRAP);
+    system.setStrafeField(strafeField.view(), strafeField.size);
+
     const targets = new RenderTargets(opts.device);
     const camera = await Camera.create(opts.device, new CameraState(), targets);
     const assembler = await Assembler.create(opts.device, targets, opts.surface.format);
+    assembler.setStrafeField(strafeField.view());
 
     const project = makeProject({
-      configs: [loaded.config],
+      // Every config in the file, not just slot 0: a save can hold several.
+      configs: loaded.configs,
       world: loaded.world,
       name: presetName,
     });
 
-    return new Orchestrator({
+    const orchestrator = new Orchestrator({
       device: opts.device,
       surface: opts.surface,
       targets,
       camera,
       assembler,
       system,
+      strafeField,
       prefs,
       project,
+      store,
       catalog,
       presetName,
+      configOrigin,
     });
+    // The startup preset's camera, if it recorded one. Applied here rather than
+    // in the constructor because it is a load like any other -- see
+    // `applySavedCamera` for why an absent block must leave the camera alone.
+    orchestrator.applySavedCamera(loaded.camera);
+    return orchestrator;
   }
 
   // =========================================================================
@@ -351,13 +469,56 @@ export class Orchestrator implements CommandBus {
     const encoder = this.device.createCommandEncoder({ label: 'frame' });
     this.camera.clearAccumulator(encoder);
 
+    // 3. THE FIELD, ONCE PER RENDERED FRAME, ABOVE THE PHYSICS LOOP.
+    //
+    // Both of these sit above the paused branch on purpose. Clearing must work
+    // while paused -- it is the only reset the field has, and a user who paused
+    // to look at a mess should be able to remove it. And painting must too: the
+    // field is not simulation state, so freezing the simulation is not a reason
+    // to stop being able to paint into it.
+    //
+    // Painting HERE rather than inside `runFrame` is the whole cadence argument:
+    // one stroke segment per rendered frame, so brush weight never tracks the
+    // physics rate (`drawing_commands.py:14-19`).
+    if (this.clearFieldPending) {
+      this.strafeField.clear(encoder);
+      this.clearFieldPending = false;
+      // A cleared field ends the stroke in progress: the next press should start
+      // fresh rather than draw a segment from wherever the cursor was.
+      this.strokePrevUv = null;
+    }
+    if (this.pendingStroke !== null) {
+      const { uv, prevUv, erasing } = this.pendingStroke;
+      if (erasing) {
+        this.strafeField.erase(encoder, uv, prevUv, this.prefs.drawSize);
+      } else {
+        this.strafeField.draw(encoder, uv, prevUv, this.prefs.drawSize, this.prefs.drawPower);
+      }
+      this.pendingStroke = null;
+    }
+
+    // Hoisted out of the sub-step loop: a shove is fixed for the whole frame,
+    // and `shoveState` is the one place that decides whether there is one
+    // (`orchestrator.py:294`).
+    const shove = shoveState(input, {
+      mouseMode: this.mouseMode,
+      paused: this.paused,
+      windowSize,
+      canvasSize: this.system.canvasSize,
+      pan: this.camera.state.pan,
+      zoom: this.camera.state.zoom,
+      physicsSteps: this.system.physicsSteps,
+      drawPower: this.prefs.drawPower,
+      drawSize: this.prefs.drawSize,
+    });
+
     if (this.paused) {
       // STILL ONE RENDER when paused: the camera has to draw the frozen state,
       // or the screen would go black. `runFrame` is what is skipped, not the
       // render (`orchestrator.py:318-322`).
       this.camera.render(encoder, frameState);
     } else {
-      this.system.runFrame(encoder, null, (enc, step) => {
+      this.system.runFrame(encoder, shove, (enc, step) => {
         if (step % schedule.stride !== at) return;
         this.camera.render(enc, {
           ...frameState,
@@ -420,12 +581,24 @@ export class Orchestrator implements CommandBus {
       if (state.leftPressed) this.selection.select(state.mousePos);
       // Right-click undoes, mirroring the desktop's binding.
       if (state.rightPressed) this.dispatch({ kind: 'undo' });
+    } else if (this.mouseMode === 'draw') {
+      // RECORDS INTENT, DOES NOT PAINT. Painting needs an encoder, and this runs
+      // above the one `frame()` opens -- deliberately, because that is what
+      // makes a stroke land once per rendered frame instead of once per physics
+      // sub-step. `frame()` consumes what this records.
+      const step = strokeFor(state, this.strokePrevUv, (p) => this.mouseFieldUv(p));
+      this.pendingStroke = step.stroke;
+      this.strokePrevUv = step.prevUv;
     }
-    // SHOVE and DRAW claim the left button and do nothing with it until Step 9
-    // builds the strafe field. The branch is absent rather than empty because
-    // there is no fall-through here to guard against -- unlike the desktop,
-    // where the `pass` exists so the branch below cannot pan the view out from
-    // under a shove. Zoom below is navigation and runs in every tool anyway.
+    // SHOVE HAS NO BRANCH HERE, and that asymmetry with DRAW is correct rather
+    // than an omission. A shove is not an event to record: `shoveState` reads
+    // the same `InputState` directly in the frame loop, because its answer is a
+    // uniform the physics loop needs, not a pass to encode. The desktop splits
+    // them the same way (`_apply_draw_input` vs `shove_state`).
+    //
+    // There is also no fall-through to guard against here, unlike the desktop,
+    // where a bare `pass` exists so the branch below cannot pan the view out
+    // from under a shove. Zoom below is navigation and runs in every tool.
 
     // Zoom works in every tool: it is navigation, not a tool.
     if (state.scroll !== 0) {
@@ -515,11 +688,14 @@ export class Orchestrator implements CommandBus {
    * (invariant 9). `screenToWorld` is the same call picking uses, so a brush
    * lands exactly where a click would select.
    *
-   * Uses the CANVAS size for both halves, where the desktop uses the canvas for
-   * screen->world and the FIELD's own size for world->uv. They agree today only
-   * because the field preserves the canvas aspect and uv is normalized -- and
-   * there is no field yet. **Step 9 must pass the field's own size here** when
-   * it builds one, exactly as `drawing_commands.py:53` does.
+   * THE TWO HALVES USE DIFFERENT SIZES, deliberately. screen->world is the
+   * CANVAS's transform -- that is the space the camera shows and the particles
+   * live in. world->uv is the FIELD's, because the field may be lower resolution
+   * than the canvas (see `MAX_FIELD_DIM`). The two agree today only because
+   * `fieldDimensions` preserves the canvas aspect and uv is normalized; reading
+   * the field's own size here says so out loud rather than relying on it, and is
+   * what keeps strokes landing under the cursor once the cap bites
+   * (`drawing_commands.py:43-47`).
    */
   private mouseFieldUv(pixel: readonly [number, number]): readonly [number, number] {
     const cam = this.camera.state;
@@ -530,7 +706,7 @@ export class Orchestrator implements CommandBus {
       cam.pan,
       cam.zoom,
     );
-    return worldToUv(world, this.system.canvasSize);
+    return worldToUv(world, this.strafeField.size);
   }
 
   // =========================================================================
@@ -602,17 +778,19 @@ export class Orchestrator implements CommandBus {
   private setProject(project: Project): void {
     this.project = project;
     this.system.applyProject(project.configs, project.world);
-    // STEP 9 ADDS ONE LINE HERE:
+    // The field samples the world the same way the canvas does, so its wrap mode
+    // follows the boundary condition -- and it belongs in THIS method because
+    // this being the single place project state changes is exactly what stops a
+    // load or an undo leaving the two disagreeing (`orchestrator.py:381-385`
+    // makes the same call for the same reason). Invariant 9: four things must
+    // agree on the boundary mode, and the field is one of them.
     //
-    //     this.strafeField.setWrap(project.world.boundaryConditions === BC.WRAP);
-    //
-    // The field samples the world the same way the canvas does, so its wrap
-    // mode follows the boundary condition -- and it belongs in THIS method
-    // because this being the single place project state changes is exactly what
-    // stops a load or an undo leaving the two disagreeing
-    // (`orchestrator.py:381-385`, which makes the same call for the same
-    // reason). Invariant 9: four things must agree on the boundary mode, and
-    // the field is one of them.
+    // See `StrafeField.setWrap` for why this currently issues no GPU work: the
+    // field's readers already take their address mode from the canvas's
+    // sampler, so the two cannot disagree. The call stays because the ACCOUNTING
+    // belongs here, and because the day the field grows its own sampler this is
+    // where it would have had to go anyway.
+    this.strafeField.setWrap(project.world.boundaryConditions === BC.WRAP);
   }
 
   /**
@@ -721,13 +899,29 @@ export class Orchestrator implements CommandBus {
         return;
       }
 
+      case 'loadConfig':
+        this.loadConfig(command.category, command.name);
+        return;
+
+      case 'previewConfig':
+        this.previewConfig(command.category, command.name);
+        return;
+
+      case 'deleteConfig':
+        this.deleteConfig(command.category, command.name);
+        return;
+
+      case 'revertConfig':
+        // Reload from wherever the project came from, discarding unsaved edits.
+        // Silently ignored with no origin, which is what `canRevert` reports --
+        // there is nothing to revert TO before the first load or save.
+        if (this.configOrigin !== null) {
+          this.loadConfig(this.configOrigin.category, this.configOrigin.name);
+        }
+        return;
+
       case 'saveConfig':
-        // STEP 9 OWNS STORAGE. Reported through `saveError` rather than thrown
-        // or silently dropped: the panel already renders that field every
-        // frame, so the user gets a real answer and Step 9 has a wired path to
-        // fill in rather than a missing one to discover.
-        this.saveError =
-          'Saving arrives in Step 9 (manifest + IndexedDB). Nothing was written.';
+        this.saveConfig(command.name);
         return;
 
       case 'clearSaveError':
@@ -836,8 +1030,17 @@ export class Orchestrator implements CommandBus {
         return;
 
       case 'clearStrafeField':
-        // Step 9. The only reset for the field -- it is not in the undo
-        // timeline, being live-only state that never survives a restart either.
+        // THE ONLY RESET the field has, and deliberately NOT in the undo
+        // timeline: it is live-only state that never survives a restart either,
+        // and History is a timeline of Projects rather than of mixed state it
+        // was never designed to hold. The desktop labels the button "(not
+        // undoable)" for the same reason.
+        //
+        // Flagged rather than done, because zeroing a texture is a render pass
+        // and a render pass needs an encoder, which a command handler has not
+        // got. The frame loop consumes this above its paused branch, so clearing
+        // works while paused.
+        this.clearFieldPending = true;
         return;
 
       default: {
@@ -849,15 +1052,221 @@ export class Orchestrator implements CommandBus {
     }
   }
 
-  /** Load a preset by name and record one undoable entry. */
-  private adoptPreset(name: string): void {
+  // =========================================================================
+  // Storage
+  //
+  // Every handler here is FIRE-AND-FORGET: it starts async work, returns
+  // immediately, and reports through `Status`, which the panel reads every
+  // frame. `dispatch` stays `void` -- making it async would turn every button
+  // click into a promise the caller has to handle, for no gain.
+  //
+  // Three properties every one of them keeps:
+  //
+  //  1. `configBusy` is cleared in BOTH arms. A rejected promise that left the
+  //     panel saying "Saving..." forever is the failure mode, and it is the
+  //     async analogue of `thinPanel.ts`'s `try`/`finally` around `refreshing`.
+  //  2. A GENERATION GUARD on anything that adopts a project. A load resolving
+  //     after the user already loaded something else would otherwise clobber the
+  //     newer project with the older one.
+  //  3. Errors land in `saveError`, never thrown. A preset deleted in another
+  //     tab, a denied database, a corrupt file -- none of them should take the
+  //     app down.
+  // =========================================================================
+
+  /** Look an entry up, reporting through `saveError` rather than throwing. */
+  private resolveEntry(category: string, name: string): ConfigEntry | null {
+    const entry = this.store.entry(category, name);
+    if (entry === null) {
+      this.saveError = `No config "${name}" in ${category}.`;
+    }
+    return entry;
+  }
+
+  /** Adopt a loaded config, recording one undoable entry. Shared by load paths. */
+  private adoptSaved(
+    entry: ConfigEntry,
+    saved: Awaited<ReturnType<ConfigStore['read']>>,
+  ): void {
     const before = this.prePreviewProject(this.project);
-    const next = loadPresetInto(this.project, name);
-    if (next === null) return;
-    this.setProject(next);
-    this.recordHistory(before, `load ${name}`);
+    this.setProject(loadSavedInto(this.project, entry.name, saved));
+    this.recordHistory(before, `load ${entry.name}`);
     this.previewOrigin = null;
-    this.presetName = name;
+    this.presetName = entry.name;
+    this.presetIndex = Math.max(0, this.catalog.order.indexOf(entry.name));
+    this.configOrigin = { category: entry.category, name: entry.name };
+    // ONLY ON A COMMITTED LOAD. Not on a preview, not on the LEFT/RIGHT cycle.
+    this.applySavedCamera(saved.camera);
+  }
+
+  /** Commit a load: settings, world, name, camera, and one history entry. */
+  private loadConfig(category: string, name: string): void {
+    const entry = this.resolveEntry(category, name);
+    if (entry === null) return;
+
+    const generation = ++this.configGeneration;
+    this.configBusy = `Loading ${name}…`;
+    void this.store
+      .read(entry)
+      .then((saved) => {
+        if (generation !== this.configGeneration) return; // superseded
+        this.configBusy = '';
+        this.saveError = '';
+        this.adoptSaved(entry, saved);
+      })
+      .catch((e: unknown) => {
+        if (generation !== this.configGeneration) return;
+        this.configBusy = '';
+        this.saveError = `Could not load ${name}: ${String(e)}`;
+      });
+  }
+
+  /**
+   * Apply a config for hover-preview: settings only.
+   *
+   * NO CAMERA AND NO HISTORY, deliberately (`project_commands.py:161-165`):
+   * browsing forty configs would otherwise leave forty undo entries and jump the
+   * view forty times.
+   *
+   * Takes a snapshot if none is open, so hovering without a prior
+   * `snapshotConfigs` still restores -- the desktop's menu always pairs them,
+   * but nothing here enforces that ordering.
+   */
+  private previewConfig(category: string, name: string): void {
+    const entry = this.resolveEntry(category, name);
+    if (entry === null) return;
+    this.previewOrigin ??= this.project;
+
+    const generation = ++this.configGeneration;
+    void this.store
+      .read(entry)
+      .then((saved) => {
+        if (generation !== this.configGeneration) return;
+        this.setProject(loadSavedInto(this.project, entry.name, saved));
+      })
+      .catch((e: unknown) => {
+        // Only warned: a preview that fails should not put an error banner up
+        // while the user is merely moving the mouse across a menu.
+        console.warn(`Failed to preview ${name}: ${String(e)}`);
+      });
+  }
+
+  /** Delete a saved config. Shipped presets are refused by the store. */
+  private deleteConfig(category: string, name: string): void {
+    const entry = this.resolveEntry(category, name);
+    if (entry === null) return;
+
+    this.configBusy = `Deleting ${name}…`;
+    void this.store
+      .remove(entry)
+      .then(() => {
+        this.configBusy = '';
+        this.saveError = '';
+        this.refreshCatalog();
+        // The project keeps its contents and its name; only its ORIGIN is gone,
+        // so Revert has nothing to go back to. Matching the desktop, which
+        // leaves the live project alone when its file is deleted.
+        if (
+          this.configOrigin?.category === category &&
+          this.configOrigin.name === name
+        ) {
+          this.configOrigin = null;
+        }
+      })
+      .catch((e: unknown) => {
+        this.configBusy = '';
+        this.saveError = `Could not delete ${name}: ${String(e)}`;
+      });
+  }
+
+  /**
+   * Write the project to storage under "Custom".
+   *
+   * ALWAYS SAVES THE WHOLE CONFIG BUFFER and ALWAYS RECORDS A CAMERA, matching
+   * `_cmd_save_config` (`project_commands.py:105-133`): saving only the selected
+   * slot was removed there because it silently dropped the others, and a save
+   * with no camera is a save that loses the view.
+   *
+   * Overwrites silently, also matching the desktop. Any "are you sure" belongs
+   * in the UI, where the user can see what they are replacing.
+   */
+  private saveConfig(name: string): void {
+    this.saveError = '';
+    const safe = sanitizeName(name);
+    if (safe === '') {
+      // The empty-after-sanitize case `sanitizeName` warns about: a name with no
+      // usable characters would be written under an empty key and be unreachable.
+      this.saveError = 'That name has no usable characters.';
+      return;
+    }
+    if (!this.store.writable) {
+      this.saveError = 'Saving is unavailable: this browser denied local storage.';
+      return;
+    }
+
+    const document = toDocument(this.project.configs, this.project.world, this.cameraDocument());
+    this.configBusy = `Saving ${safe}…`;
+    void this.store
+      .write(CUSTOM_CATEGORY, safe, document)
+      .then(() => {
+        this.configBusy = '';
+        this.saveError = '';
+        this.project = renamed(this.project, safe);
+        this.presetName = safe;
+        this.configOrigin = { category: CUSTOM_CATEGORY, name: safe };
+        this.refreshCatalog();
+      })
+      .catch((e: unknown) => {
+        this.configBusy = '';
+        this.saveError = `Could not save ${safe}: ${String(e)}`;
+      });
+  }
+
+  /** Re-read the catalog after a write or a delete, keeping the cycle in step. */
+  private refreshCatalog(): void {
+    this.catalog = this.store.catalog();
+    this.presetIndex = Math.max(0, this.catalog.order.indexOf(this.presetName));
+  }
+
+  /** The camera, in the shape the save format records. */
+  private cameraDocument(): SavedCamera {
+    const cam = this.camera.state;
+    return { pan: [cam.pan[0], cam.pan[1]], zoom: cam.zoom, mode: cam.mode };
+  }
+
+  /**
+   * Restore a saved camera. The port of `_apply_saved_camera`
+   * (`project_commands.py:241-253`).
+   *
+   * `null` MEANS LEAVE THE CAMERA ALONE, not "reset to default" -- a file that
+   * recorded no camera is not expressing a preference for the origin, and
+   * snapping there would be worse than staying put (`persistence.py:58-70`).
+   * Each member is independently optional for the same reason.
+   *
+   * `setZoom`, NEVER `state.zoom =`. The setter clamps and rejects a non-finite
+   * value, and a hand-edited or corrupt file is exactly where a NaN comes from.
+   * A direct assignment would break the camera permanently and silently.
+   */
+  private applySavedCamera(camera: SavedCamera | null): void {
+    if (camera === null) return;
+    const state = this.camera.state;
+    if (camera.pan !== undefined) state.pan = [camera.pan[0], camera.pan[1]];
+    if (camera.zoom !== undefined) state.setZoom(camera.zoom);
+    if (camera.mode !== undefined) {
+      const mode = cameraModeFromValue(camera.mode);
+      // An unrecognized mode leaves the current one, matching the desktop's
+      // for-loop that simply finds no match.
+      if (mode !== null) state.mode = mode;
+    }
+  }
+
+  /** Load a config by name from anywhere in the catalog, for the LEFT/RIGHT cycle. */
+  private adoptPreset(name: string): void {
+    const entry = this.store.entryByName(name);
+    if (entry === null) {
+      this.saveError = `No config "${name}".`;
+      return;
+    }
+    this.loadConfig(entry.category, entry.name);
   }
 
   /** Commit a checkpoint restore, recording against where browsing started. */
@@ -898,18 +1307,14 @@ export class Orchestrator implements CommandBus {
    * desktop's `_rebuild_system` can assign directly because its
    * `ParticleSystem(...)` either returns or raises.
    *
-   * **KNOWN LEAK, and deliberate for now.** `ParticleSystem` exposes no
-   * `destroy()`, so the outgoing system's entity buffer, config buffer, canvas
-   * pair and uniform buffers are left to GC -- which does NOT free GPU memory
-   * on its own. At 600k entities that is ~19 MB of entity buffer per rebuild.
-   * It is bounded in practice: only World Size and Canvas Aspect reach here,
-   * both are typed inputs committed on Enter (never dragged), and a session
-   * changes them a handful of times.
+   * THE SYSTEM AND THE FIELD ARE REPLACED TOGETHER, because the field is sized
+   * from the canvas: a new canvas needs a new field, or its uv mapping would
+   * silently skew against the new shape. That pairing is also what lets
+   * `setStrafeField` be a build-time call rather than a live-swap -- the field a
+   * system was built with is the only one it ever sees.
    *
-   * Fixing it means adding `ParticleSystem.destroy()` alongside the one
-   * `Camera` already has, which is a change to that class rather than to this
-   * one -- so it belongs with Step 9's rebuild work, where the strafe field
-   * gets the same treatment and `release()` already exists on the desktop side.
+   * Nothing is reassigned or destroyed until BOTH replacements exist, so a
+   * failed compile anywhere above leaves the app running on what it had.
    */
   private async rebuildSystem(): Promise<void> {
     const [entityCount, dim] = sizingFor(this.prefs.worldSize);
@@ -922,11 +1327,31 @@ export class Orchestrator implements CommandBus {
       entityCount,
       physicsSteps: this.prefs.physicsSteps,
     });
+    const replacementField = await StrafeField.create(
+      this.device,
+      replacement.canvasSize,
+    );
+    replacementField.setWrap(this.project.world.boundaryConditions === BC.WRAP);
+    replacement.setStrafeField(replacementField.view(), replacementField.size);
     replacement.applyProject(this.project.configs, this.project.world);
+
+    const outgoingSystem = this.system;
+    const outgoingField = this.strafeField;
     this.system = replacement;
-    // Step 9: the strafe field is sized to the canvas, so a new canvas needs a
-    // new field -- otherwise its uv mapping would silently skew against the new
-    // shape.
+    this.strafeField = replacementField;
+    this.assembler.setStrafeField(replacementField.view());
+
+    // End the stroke in progress: `strokePrevUv` holds a uv in the OLD field's
+    // space, and the first segment after a rebuild would streak from a stale
+    // coordinate (`project_commands.py:69` calls `_end_stroke()` for this).
+    this.strokePrevUv = null;
+    this.pendingStroke = null;
+
+    // DROPPING THE REFERENCES IS NOT ENOUGH -- GPU memory is not GC'd. ~19 MB of
+    // entity buffer per rebuild at 600k entities, plus the field's texture.
+    // Destroyed last, so nothing above can throw between the swap and the free.
+    outgoingSystem.destroy();
+    outgoingField.destroy();
   }
 
   // =========================================================================
@@ -981,8 +1406,11 @@ export class Orchestrator implements CommandBus {
       selectedConfig: this.project.selected,
       configCount: configCount(this.project),
       checkpoints: this.checkpoints.views(),
+      canRevert: this.configOrigin !== null,
+      canSave: this.store.writable,
 
       saveError: this.saveError,
+      configBusy: this.configBusy,
 
       ...this.settingsSources(),
     };
@@ -1053,6 +1481,7 @@ export class Orchestrator implements CommandBus {
   pipelineStatus(): Readonly<Record<string, boolean>> {
     return {
       ...this.system.pipelineStatus(),
+      ...this.strafeField.pipelineStatus(),
       ...this.camera.pipelineStatus(),
       ...this.assembler.pipelineStatus(),
     };
