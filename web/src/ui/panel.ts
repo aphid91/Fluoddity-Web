@@ -53,6 +53,7 @@ import {
   sectionsFor,
 } from './panelModel.ts';
 import { type SectionContext, type SectionHandle } from './sections/section.ts';
+import { Tooltip } from './tooltip.ts';
 import { buildDebugSection } from './sections/debugSection.ts';
 import { buildDrawingSection } from './sections/drawingSection.ts';
 import { buildPreferencesSection } from './sections/preferencesSection.ts';
@@ -79,6 +80,15 @@ export class Panel {
 
   /** Set by `X`, through `setHidden`. */
   private hiddenFlag = false;
+
+  /**
+   * The shared help tooltip.
+   *
+   * Owned by the panel rather than by a section, because there is exactly one on
+   * screen at a time and it must outlive a tier rebuild -- it is attached to
+   * `document.body`, not to the pane, so a `pane.dispose()` cannot orphan it.
+   */
+  private readonly tooltip = new Tooltip();
 
   constructor(opts: PanelOptions) {
     this.bus = opts.bus;
@@ -130,6 +140,7 @@ export class Panel {
       // A function, not a snapshot: the flag flips during the panel's lifetime
       // and a captured boolean would read `false` forever.
       isRefreshing: () => this.refreshing,
+      tooltip: this.tooltip,
       advanced: this.advanced,
       requestRebuild: () => {
         this.advanced = !this.advanced;
@@ -228,6 +239,7 @@ export class Panel {
 
   dispose(): void {
     this.pane.dispose();
+    this.tooltip.dispose();
     this.container.remove();
   }
 }

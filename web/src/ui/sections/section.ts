@@ -21,14 +21,17 @@
  */
 
 import type { FolderApi } from 'tweakpane';
-import type { Command, Status } from '../../orchestrator/commands.ts';
-import type { ControlBinding } from '../controls.ts';
+import type { Status } from '../../orchestrator/commands.ts';
+import type { ControlBinding, ControlContext } from '../controls.ts';
 
-/** What a section needs from its host. */
-export interface SectionContext {
-  readonly send: (command: Command) => void;
-  /** See `ControlContext.isRefreshing`. */
-  readonly isRefreshing: () => boolean;
+/**
+ * What a section needs from its host.
+ *
+ * Extends `ControlContext` rather than restating it, so a section can hand
+ * itself straight to `addControl` -- and so a new control-level dependency
+ * reaches every section without threading a parameter through each one.
+ */
+export interface SectionContext extends ControlContext {
   /** Whether ADVANCED-tier settings are shown. */
   readonly advanced: boolean;
   /** Ask the panel to rebuild itself. Used by the tier toggle. */

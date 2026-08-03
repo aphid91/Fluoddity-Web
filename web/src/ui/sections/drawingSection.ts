@@ -86,7 +86,10 @@ export function buildDrawingSection(
       ...control.params,
     });
     (blade.element as HTMLElement).dataset['setting'] = `prefs.${control.field}`;
-    (blade.element as HTMLElement).title = control.help;
+    ctx.tooltip.attach(blade.element as HTMLElement, {
+      title: control.label,
+      body: control.help,
+    });
 
     blade.on('change', (ev) => {
       if (ctx.isRefreshing()) return;
