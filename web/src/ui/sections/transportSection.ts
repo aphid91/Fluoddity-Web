@@ -7,11 +7,12 @@
  * a Pause button two clicks deep in a menu would be worse than the desktop's
  * floating toolbar rather than better.
  *
- * **10e moves the menu-only items to the real menu bar** -- what stays here is
- * what the desktop's toolbar and the always-visible hotkeys cover. The Presets
- * and Save folders here are DELIBERATELY TEMPORARY: they exist so the storage
- * path stays drivable between 10a and 10e, and 10e replaces them with the
- * browse-by-hover Load menu and the real save dialog.
+ * **10e moved the menu-only items to the real menu bar**, and what stays here is
+ * what the desktop's toolbar covers: the transport, the tool, and the camera.
+ * Undo, checkpoints, presets, save and delete all live in the menu bar now --
+ * the Presets and Save folders that stood in for them between 10a and 10e are
+ * gone, along with the staleness note they carried (they were built once at
+ * construction; the Load menu reads `status.configCategories` every frame).
  *
  * ## The tool selector mirrors MOUSE_MODES by order
  *
@@ -70,65 +71,6 @@ export function buildTransportSection(
   });
   folder.addButton({ title: 'Reset Camera' }).on('click', () => {
     ctx.send({ kind: 'resetCamera' });
-  });
-
-  // --- Edit -----------------------------------------------------------------
-  // No `refreshing` guard on any button: a click is always the user's. The guard
-  // exists for BINDINGS, whose `change` fires on a programmatic refresh too.
-  const edit = folder.addFolder({ title: 'Edit', expanded: false });
-  edit.addButton({ title: 'Undo' }).on('click', () => {
-    ctx.send({ kind: 'undo' });
-  });
-  edit.addButton({ title: 'Redo' }).on('click', () => {
-    ctx.send({ kind: 'redo' });
-  });
-  edit.addButton({ title: 'Randomize Behavior' }).on('click', () => {
-    ctx.send({ kind: 'randomizeBehavior' });
-  });
-  edit.addButton({ title: 'Randomize Seed' }).on('click', () => {
-    ctx.send({ kind: 'randomizeSeed' });
-  });
-  edit.addButton({ title: 'Checkpoint' }).on('click', () => {
-    ctx.send({ kind: 'setCheckpoint' });
-  });
-  edit.addButton({ title: 'Restore Latest Checkpoint' }).on('click', () => {
-    ctx.send({ kind: 'loadLatestCheckpoint' });
-  });
-
-  // --- Presets and Save: TEMPORARY. See the file header. --------------------
-  // Built once at construction, so a config saved this session does not appear
-  // until a reload. 10e's Load menu reads `status.configCategories` every frame
-  // and does not have this problem.
-  const presets = folder.addFolder({ title: 'Presets', expanded: false });
-  presets.addButton({ title: '< Prev' }).on('click', () => {
-    ctx.send({ kind: 'prevPreset' });
-  });
-  presets.addButton({ title: 'Next >' }).on('click', () => {
-    ctx.send({ kind: 'nextPreset' });
-  });
-  for (const [category, names] of Object.entries(status.configCategories)) {
-    for (const name of names) {
-      presets.addButton({ title: name, label: category }).on('click', () => {
-        // (category, name), not just the name: two categories may hold the same
-        // name, and the identity is the pair.
-        ctx.send({ kind: 'loadConfig', category, name });
-      });
-    }
-  }
-
-  const saveAs = { name: '' };
-  const save = folder.addFolder({ title: 'Save', expanded: false });
-  // NOT refreshed from status, unlike everything else here -- it is the user's
-  // own text, and overwriting it each frame would make it impossible to type in.
-  save.addBinding(saveAs, 'name', { label: 'Name' });
-  save.addButton({ title: 'Save to Custom' }).on('click', () => {
-    ctx.send({ kind: 'saveConfig', name: saveAs.name });
-  });
-  save.addButton({ title: 'Revert to Saved' }).on('click', () => {
-    ctx.send({ kind: 'revertConfig' });
-  });
-  save.addButton({ title: 'Delete (Custom)' }).on('click', () => {
-    ctx.send({ kind: 'deleteConfig', category: 'Custom', name: saveAs.name });
   });
 
   /** The live paused flag, re-read at click time. See the handler above. */

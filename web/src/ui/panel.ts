@@ -44,8 +44,10 @@ import { Pane } from 'tweakpane';
 import type { BladeApi, FolderApi } from 'tweakpane';
 import type { Command, CommandBus, Status } from '../orchestrator/commands.ts';
 import { type ControlBinding, currentValues } from './controls.ts';
+import { Dialogs } from './dialogs.ts';
 import { GateState } from './gateState.ts';
 import { showsSlider } from './gatedControl.ts';
+import { MenuBar } from './menuBar.ts';
 import { isGated } from './gating.ts';
 import { gateOpen, isRevealed } from './reveal.ts';
 import type { Source } from './settingsSpec.ts';
@@ -106,10 +108,41 @@ export class Panel {
    */
   private readonly gates = new GateState();
 
+  /**
+   * The menu bar and the dialogs.
+   *
+   * Both live OUTSIDE the panel's container: the bar because it must stay
+   * reachable while the panel is hidden (it holds the only visible way to bring
+   * it back), and the dialogs because a modal that has taken input must not
+   * vanish with a `setHidden` (`ui.py:274-289`).
+   */
+  private readonly dialogs: Dialogs;
+  private readonly menuBar: MenuBar;
+
   constructor(opts: PanelOptions) {
     this.bus = opts.bus;
     this.advanced = opts.advanced ?? false;
     this.container = opts.container ?? defaultContainer();
+
+    const send = (command: Command): void => {
+      this.bus.dispatch(command);
+    };
+    this.dialogs = new Dialogs({ send });
+    this.menuBar = new MenuBar({
+      send,
+      status: () => this.bus.status(),
+      onSave: () => {
+        this.dialogs.openSave(this.bus.status().projectName);
+      },
+      onDeleteConfig: (category, name) => {
+        this.dialogs.openDelete(category, name);
+      },
+      onToggleUi: () => {
+        this.setHidden(!this.hiddenFlag);
+      },
+      isUiHidden: () => this.hiddenFlag,
+    });
+
     this.pane = this.build();
   }
 
@@ -196,10 +229,18 @@ export class Panel {
    * bindings are proxies rather than direct.
    */
   refresh(status: Status): void {
-    // A hidden panel refreshes nothing: `pane.refresh()` walks every binding and
-    // re-reads every proxy, which is real per-frame work to update widgets
-    // nobody can see. The next `setHidden(false)` is followed by the frame
-    // loop's own `refresh()`, so what reappears is current rather than stale.
+    // BEFORE the hidden check: the menu bar stays on screen when the panel is
+    // hidden -- it holds the only visible way to bring it back -- and an open
+    // dialog outlives a hide entirely. Starving either of status would freeze a
+    // menu's checkmarks and strand a save dialog waiting for an outcome it
+    // could no longer see.
+    this.menuBar.refresh(status);
+    this.dialogs.refresh(status);
+
+    // A hidden panel refreshes nothing else: `pane.refresh()` walks every
+    // binding and re-reads every proxy, which is real per-frame work to update
+    // widgets nobody can see. The next `setHidden(false)` is followed by the
+    // frame loop's own `refresh()`, so what reappears is current, not stale.
     if (this.hiddenFlag) return;
 
     // `finally` because a throw inside a binding's handler would otherwise wedge
@@ -306,6 +347,8 @@ export class Panel {
   dispose(): void {
     this.pane.dispose();
     this.tooltip.dispose();
+    this.menuBar.dispose();
+    this.dialogs.dispose();
     this.container.remove();
   }
 }
