@@ -43,7 +43,10 @@
 import { Pane } from 'tweakpane';
 import type { FolderApi } from 'tweakpane';
 import type { Command, CommandBus, Status } from '../orchestrator/commands.ts';
-import type { ControlBinding } from './controls.ts';
+import { type ControlBinding, currentValues } from './controls.ts';
+import { GateState } from './gateState.ts';
+import { gateOpen, isRevealed } from './reveal.ts';
+import type { Source } from './settingsSpec.ts';
 import {
   DEBUG,
   DRAWING,
@@ -89,6 +92,17 @@ export class Panel {
    * `document.body`, not to the pane, so a `pane.dispose()` cannot orphan it.
    */
   private readonly tooltip = new Tooltip();
+
+  /**
+   * Gate and session state, for the derived checkboxes and (10d) the
+   * self-hiding sliders.
+   *
+   * **Survives a tier rebuild**, unlike the panes and bindings: a forced-open
+   * Gravity box should still be open after switching to Advanced, since nothing
+   * about the values changed. `sync` is what retires it, and only a real project
+   * or config change does that.
+   */
+  private readonly gates = new GateState();
 
   constructor(opts: PanelOptions) {
     this.bus = opts.bus;
@@ -141,6 +155,10 @@ export class Panel {
       // and a captured boolean would read `false` forever.
       isRefreshing: () => this.refreshing,
       tooltip: this.tooltip,
+      gates: this.gates,
+      // A live read, never a captured snapshot: a click handler that closed over
+      // the build frame's status would be answering with arbitrarily old values.
+      status: () => this.bus.status(),
       advanced: this.advanced,
       requestRebuild: () => {
         this.advanced = !this.advanced;
@@ -200,7 +218,40 @@ export class Panel {
    * `this.pane` exists -- see the note at its call site.
    */
   private applyStatus(status: Status): void {
+    // Retire gate state that no longer applies, BEFORE anything reads it. A
+    // project or config change means the values came from a load rather than
+    // from the user, so whatever was loaded should speak for itself
+    // (`gated_controls.py:123-140`).
+    this.gates.sync(
+      { projectName: status.projectName, selectedConfig: status.selectedConfig },
+      (gate) => gateOpen(gate, (source) => currentValues(status, source)),
+    );
+
     for (const section of this.sections) section.refresh(status);
+    this.applyVisibility(status);
+  }
+
+  /**
+   * Show or hide each control according to its `revealsOn`.
+   *
+   * **`blade.hidden`, not a rebuild.** A rebuild would drop folder expansion
+   * state, replace every DOM node, and cost a full pane teardown for what is a
+   * CSS class change -- and it would do that on any frame a checkbox moved.
+   * Rebuilding stays reserved for the tier change.
+   *
+   * The write is guarded on an actual transition because the setter touches
+   * class lists: doing that for ~40 blades every frame is real per-frame DOM
+   * work to change nothing. This is the same instinct as the hidden-panel early
+   * return in `refresh()`.
+   */
+  private applyVisibility(status: Status): void {
+    const values = (source: Source) => currentValues(status, source);
+    for (const binding of this.bindings) {
+      const visible = isRevealed(binding.setting, values, this.gates);
+      for (const blade of binding.blades) {
+        if (blade.hidden === visible) blade.hidden = !visible;
+      }
+    }
   }
 
   /** Every registry-driven control, across all sections. For 10c. */

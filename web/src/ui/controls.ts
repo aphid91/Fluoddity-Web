@@ -56,6 +56,8 @@ import {
 } from './settingsSpec.ts';
 import { position, shown, stored, valueAt } from './gating.ts';
 import { formatSeed, formatValue, parseInput } from './formatValue.ts';
+import type { GateState } from './gateState.ts';
+import { fieldsToClear, gateChecked } from './reveal.ts';
 import type { Tooltip } from './tooltip.ts';
 
 /**
@@ -91,6 +93,17 @@ export interface ControlContext {
   readonly isRefreshing: () => boolean;
   /** The shared delayed help tooltip. One per panel. */
   readonly tooltip: Tooltip;
+  /** Session state for the gates and (10d) the self-hiding sliders. */
+  readonly gates: GateState;
+  /**
+   * This frame's status, for handlers that need it at CLICK time.
+   *
+   * A handler cannot close over the `status` passed to its builder: that is the
+   * value from the frame the panel was constructed on, and by the time anyone
+   * clicks it is arbitrarily stale. Everything that reads state during an event
+   * goes through here.
+   */
+  readonly status: () => Status;
 }
 
 /**
@@ -109,23 +122,21 @@ export interface ControlBinding {
 }
 
 /**
- * Build the control for one registry entry, or `null` if it has none.
+ * Build the control for one registry entry.
  *
- * `null` rather than a no-op blade for the one case that genuinely has no widget
- * of its own: the `field: ''` gate entry, which is a checkbox derived from other
- * fields (10c). Returning null keeps "has a value to refresh" and "is on screen"
- * the same question.
+ * Every entry now produces something: a GATES entry becomes the derived
+ * checkbox, and everything else becomes a widget for its own value.
  */
 export function addControl(
   folder: FolderApi,
   setting: Setting,
   status: Status,
   ctx: ControlContext,
-): ControlBinding | null {
-  // The Gravity entry is a pure gate: it "is not itself a saved setting" and
-  // stores nothing (`settings_spec.py:263`). It has no field to bind, so it
-  // cannot be built here -- 10c builds it from the fields it gates.
-  if (setting.field === '') return null;
+): ControlBinding {
+  // A GATES entry "is not itself a saved setting" and stores nothing
+  // (`settings_spec.py:263`), so it is built from the fields it gates rather
+  // than from a value of its own.
+  if (setting.gates.length > 0) return addGate(folder, setting, status, ctx);
 
   if (setting.kind === SEED) return addSeed(folder, setting, status, ctx);
   if (setting.kind === INPUT) return addInput(folder, setting, status, ctx);
@@ -133,6 +144,77 @@ export function addControl(
     return addMapped(folder, setting, status, ctx);
   }
   return addDirect(folder, setting, status, ctx);
+}
+
+/**
+ * The GATES checkbox: a control in front of other sliders, storing nothing.
+ *
+ * The port of `draw_gate` (`gated_controls.py:164-180`). **Ticking writes no
+ * flag** -- it just reveals the sliders, which are already at zero, and
+ * `GateState.forced` holds the box open until they are given a value.
+ * **Unticking zeroes them**, because a hidden slider still pulling every
+ * particle down is the worst outcome a checkbox could have.
+ *
+ * The checked state is derived every frame from those same values, which is what
+ * makes save, load, undo and A/B preview all work with no knowledge that any of
+ * this exists -- nothing about a gate is stored.
+ *
+ * ## The clear is ONE undoable step, not two
+ *
+ * Unticking Gravity can zero both sliders, and the desktop dispatches an
+ * `edit_setting` per field -- which on this side would record two history
+ * entries for one click, so undo would take two presses to put back what one
+ * press removed. The edits share a coalesce key instead, which `History` already
+ * merges (`editSetting`'s `record` flag exists for exactly this).
+ */
+function addGate(
+  folder: FolderApi,
+  setting: Setting,
+  status: Status,
+  ctx: ControlContext,
+): ControlBinding {
+  const values = (source: Source) => currentValues(ctx.status(), source);
+  const box = {
+    value: gateChecked(setting, (source) => currentValues(status, source), ctx.gates),
+  };
+
+  const blade = folder.addBinding(box, 'value', { label: setting.label });
+  // A gate has no field, so its DOM hook is its label -- the same identity
+  // `revealsOn` names it by.
+  (blade.element as HTMLElement).dataset['setting'] = `${setting.source}.gate.${setting.label}`;
+  ctx.tooltip.attach(blade.element as HTMLElement, {
+    title: setting.label,
+    body: setting.help,
+  });
+
+  blade.on('change', (ev) => {
+    if (ctx.isRefreshing()) return;
+    if (ev.value) {
+      ctx.gates.forced.add(setting.label);
+      return;
+    }
+    ctx.gates.forced.delete(setting.label);
+    const toClear = fieldsToClear(setting, values);
+    toClear.forEach((member, index) => {
+      ctx.send({
+        kind: 'editSetting',
+        setting: member,
+        value: 0,
+        // One act, one undo step: every field in the clear shares the first
+        // one's coalesce identity. `record` stays true so the step exists at
+        // all; it is the coalescing that merges them.
+        record: index === 0 ? true : false,
+      });
+    });
+  });
+
+  return {
+    setting,
+    blades: [blade],
+    refresh: (s) => {
+      box.value = gateChecked(setting, (source) => currentValues(s, source), ctx.gates);
+    },
+  };
 }
 
 /**
@@ -383,7 +465,12 @@ function addSeed(
 
   return {
     setting,
-    blades: [blade],
+    // **The button is in here too.** `blades` means everything this control
+    // owns, and visibility is applied across the whole list -- so leaving the
+    // button out would hide a revealed seed's readout while its Randomize button
+    // stayed on screen, orphaned. The seed has no `revealsOn` today, which is
+    // exactly why this is worth getting right now rather than discovering later.
+    blades: [blade, button],
     refresh: (s) => {
       const authoritative = currentValues(s, setting.source)[setting.field];
       if (authoritative !== undefined) readout.value = formatSeed(asNumber(authoritative));
@@ -395,13 +482,22 @@ function addSeed(
   };
 }
 
-/** The `data-setting` hook, the tooltip, and the not-implemented state. */
+/** Indent for a revealed control, in px. The desktop's `_REVEAL_INDENT`. */
+const REVEAL_INDENT_PX = 12;
+
+/** The `data-setting` hook, the tooltip, the indent, and the disabled state. */
 function decorate(blade: BladeApi, setting: Setting, ctx: ControlContext): void {
   tagBlade(blade, setting);
   ctx.tooltip.attach(blade.element as HTMLElement, {
     title: setting.label,
     body: setting.help + (setting.implemented ? '' : '\n\n(not implemented yet)'),
   });
+  // Indented so the group reads as belonging to its checkbox
+  // (`settings_window.py:248-256`). Applied ONCE at build rather than per frame:
+  // whether a control is revealed changes, but what it hangs off does not.
+  if (setting.revealsOn !== '') {
+    (blade.element as HTMLElement).style.paddingLeft = `${REVEAL_INDENT_PX}px`;
+  }
   // Registered but not yet wired: show the control disabled so the layout is
   // visible without implying the knob does something
   // (`settings_window.py:236-246`). Zero entries use this today; it is the

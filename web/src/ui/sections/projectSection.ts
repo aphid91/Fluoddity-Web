@@ -45,8 +45,7 @@ export function buildProjectSection(
     const sub = folder.addFolder({ title: group || 'Settings', expanded: true });
     (sub.element as HTMLElement).dataset['group'] = group;
     for (const setting of settings) {
-      const binding = addControl(sub, setting, status, ctx);
-      if (binding !== null) bindings.push(binding);
+      bindings.push(addControl(sub, setting, status, ctx));
     }
   }
 
