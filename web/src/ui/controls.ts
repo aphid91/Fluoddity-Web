@@ -54,9 +54,16 @@ import {
   SLIDER,
   WORLD,
 } from './settingsSpec.ts';
-import { position, shown, stored, valueAt } from './gating.ts';
+import { isGated, position, shown, stored, valueAt } from './gating.ts';
 import { formatSeed, formatValue, parseInput } from './formatValue.ts';
 import type { GateState } from './gateState.ts';
+// A DELIBERATE CYCLE, and a safe one: `gatedControl.ts` imports this file's
+// helpers (`currentValues`, `paramsFor`, `tagBlade`) and this file imports its
+// builder. Both are function declarations, hoisted and only called after both
+// modules have evaluated, so neither reads a half-initialised binding. The
+// alternative -- a third module holding the shared helpers -- would split
+// `controls.ts` for no reason other than to avoid an edge in the graph.
+import { addGatedControl } from './gatedControl.ts';
 import { fieldsToClear, gateChecked } from './reveal.ts';
 import type { Tooltip } from './tooltip.ts';
 
@@ -140,6 +147,10 @@ export function addControl(
 
   if (setting.kind === SEED) return addSeed(folder, setting, status, ctx);
   if (setting.kind === INPUT) return addInput(folder, setting, status, ctx);
+  // Before the curve/inverted test: a gated control can be either of those too
+  // (Hazard Rate is curved, Trail Stiffness is inverted), and it composes them
+  // itself rather than being a special case of `addMapped`.
+  if (isGated(setting)) return addGatedControl(folder, setting, status, ctx);
   if (setting.curve !== 1 || setting.inverted) {
     return addMapped(folder, setting, status, ctx);
   }

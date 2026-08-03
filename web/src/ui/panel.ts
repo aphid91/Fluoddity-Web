@@ -41,10 +41,12 @@
  */
 
 import { Pane } from 'tweakpane';
-import type { FolderApi } from 'tweakpane';
+import type { BladeApi, FolderApi } from 'tweakpane';
 import type { Command, CommandBus, Status } from '../orchestrator/commands.ts';
 import { type ControlBinding, currentValues } from './controls.ts';
 import { GateState } from './gateState.ts';
+import { showsSlider } from './gatedControl.ts';
+import { isGated } from './gating.ts';
 import { gateOpen, isRevealed } from './reveal.ts';
 import type { Source } from './settingsSpec.ts';
 import {
@@ -247,10 +249,23 @@ export class Panel {
   private applyVisibility(status: Status): void {
     const values = (source: Source) => currentValues(status, source);
     for (const binding of this.bindings) {
-      const visible = isRevealed(binding.setting, values, this.gates);
-      for (const blade of binding.blades) {
-        if (blade.hidden === visible) blade.hidden = !visible;
+      const setting = binding.setting;
+      const revealed = isRevealed(setting, values, this.gates);
+
+      // A GATED control owns two blades -- a checkbox and a slider -- and shows
+      // exactly one. Which one is the latch's answer; whether EITHER shows at
+      // all is still the reveal's. The two compose rather than competing: a
+      // gated control whose `revealsOn` is off shows neither.
+      if (isGated(setting)) {
+        const value = numericValue(values(setting.source)[setting.field]);
+        const slider = showsSlider(setting, value, this.gates.sessions);
+        // `blades` is `[checkbox, slider]`, built in that order.
+        setHidden(binding.blades[0], !revealed || slider);
+        setHidden(binding.blades[1], !revealed || !slider);
+        continue;
       }
+
+      for (const blade of binding.blades) setHidden(blade, !revealed);
     }
   }
 
@@ -318,6 +333,24 @@ function buildSection(
       throw new Error(`No builder for section ${String(unreachable)}`);
     }
   }
+}
+
+/**
+ * Hide or show one blade, writing only on an actual transition.
+ *
+ * The setter touches class lists, and doing that for ~45 blades every frame is
+ * real per-frame DOM work to change nothing.
+ */
+function setHidden(blade: BladeApi | undefined, hidden: boolean): void {
+  if (blade === undefined) return;
+  if (blade.hidden !== hidden) blade.hidden = hidden;
+}
+
+/** Status payloads are `number | boolean`; the gate arithmetic wants a number. */
+function numericValue(value: number | boolean | undefined): number {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  return 0;
 }
 
 /** A fixed-position container on the right, scrollable when the list is long. */

@@ -164,9 +164,20 @@ need synthetic input and a page reload respectively:
 ```
 node tools/fieldCheck.mjs --keep-shots ../field   # the Strafe Field, and the Y flip
 node tools/configCheck.mjs                        # storage, across a reload
+node tools/uiCheck.mjs                            # the gated latch, and the reveal toggle
 ```
 
-**The two tools cover different halves and neither substitutes for the other.**
+`uiCheck.mjs` is Step 10's, and it exists for the same reason the other two do:
+its assertions need a real pointer gesture against real Tweakpane DOM, which
+`node --test` has no way to produce. It presses a gated slider, drags it to its
+base value, and asserts the control is **still visible while the button is
+down** — the failure a value-only latch produces is folding the control away
+mid-drag, and no unit test can see it. It also asserts that revealing a control
+leaves **the same DOM node** in place, which is how "this used `blade.hidden`
+rather than rebuilding the pane" is verified; a rebuild looks identical in a
+screenshot.
+
+**The tools cover different halves and none substitutes for another.**
 WGSL forbids implicit-derivative sampling (`textureSample`, `fwidth`) outside
 uniform control flow, and Step 5 hit that twice — `camera.wgsl`'s letterbox
 early-out and `frameAssembly.wgsl`'s field sample. Those are hard compile
