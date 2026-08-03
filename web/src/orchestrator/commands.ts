@@ -84,6 +84,56 @@ export function mouseModeFromValue(value: string): MouseMode | null {
 }
 
 /**
+ * The five drawing preferences, as a closed set.
+ *
+ * `editDrawPref` carried a bare `string` field through Steps 7-9, which made it
+ * **the one command in this file whose payload the compiler could not check** --
+ * exactly the failure the header says this boundary exists to eliminate. A typo
+ * routed to `withValue`, which returns its receiver unchanged for an unknown
+ * field, so the slider moved and nothing happened, silently.
+ *
+ * Narrowed in Step 10 rather than earlier because Step 10 is the first caller
+ * that builds these controls from a table (`ui/sections/drawingSection.ts`) and
+ * so the first that could get a name wrong without a human reading the line.
+ *
+ * These are deliberately NOT registry entries: five widgets in a dedicated
+ * section are not the registry's shape, and routing them through it would mean
+ * fabricating `Setting` objects to satisfy a signature
+ * (`ui/drawing_window.py:4-8`).
+ */
+export const DRAW_PREF_FIELDS = [
+  'drawSize',
+  'drawPower',
+  'fieldOpacity',
+  'fieldAlwaysShow',
+  'showReticle',
+] as const;
+export type DrawPrefField = (typeof DRAW_PREF_FIELDS)[number];
+
+/**
+ * Which hover-browsing surface a preview command belongs to.
+ *
+ * **Two surfaces browse config collections by hovering** -- the Load menu and
+ * the checkpoint menu -- and both take a snapshot on open so unhovering can put
+ * things back. With ONE shared snapshot slot, hovering a checkpoint while the
+ * Load menu is also open overwrites the menu's snapshot, and unhovering restores
+ * the wrong state. `ui/hover_preview.py:13-19` records that as a bug that
+ * actually happened, and the fix there was to give each surface its own session.
+ *
+ * The desktop's Orchestrator nevertheless still keeps a single `_preview_origin`
+ * (`orchestrator.py:198-201`), safe today "only because both surfaces are
+ * submenus of the same menu bar". This token is what makes that safety
+ * structural rather than incidental: the origin is a `Map` keyed by surface, so
+ * two open browsers cannot see each other's snapshot at all.
+ *
+ * A token rather than two separate commands because `prePreviewProject` has to
+ * know WHICH surface a committed load should record against -- with two
+ * independent fields it would have to guess.
+ */
+export const PREVIEW_SURFACES = ['load', 'checkpoint'] as const;
+export type PreviewSurface = (typeof PREVIEW_SURFACES)[number];
+
+/**
  * An in-session snapshot of the whole project.
  *
  * Holds a `Project` rather than a bare config list, so restoring one restores
@@ -149,7 +199,13 @@ export type Command =
    * Browsing forty configs must not leave forty undo entries
    * (`project_commands.py:161-165`), and it must not move the view either.
    */
-  | { readonly kind: 'previewConfig'; readonly category: string; readonly name: string }
+  | {
+      readonly kind: 'previewConfig';
+      readonly category: string;
+      readonly name: string;
+      /** Which browser is hovering. See `PreviewSurface`. */
+      readonly surface: PreviewSurface;
+    }
   /**
    * Reload the project from wherever it was loaded or last saved.
    *
@@ -166,8 +222,8 @@ export type Command =
   | { readonly kind: 'loadCheckpoint'; readonly key: number }
   | { readonly kind: 'loadLatestCheckpoint' }
   | { readonly kind: 'clipboardApply'; readonly key: number }
-  | { readonly kind: 'snapshotConfigs' }
-  | { readonly kind: 'restoreConfigs' }
+  | { readonly kind: 'snapshotConfigs'; readonly surface: PreviewSurface }
+  | { readonly kind: 'restoreConfigs'; readonly surface: PreviewSurface }
   // --- settings ---
   | {
       readonly kind: 'editSetting';
@@ -182,7 +238,12 @@ export type Command =
   | { readonly kind: 'randomizeSeed' }
   | { readonly kind: 'randomizeBehavior' }
   // --- drawing (the field arrives in Step 9; the prefs are live now) ---
-  | { readonly kind: 'editDrawPref'; readonly field: string; readonly value: number | boolean }
+  | {
+      readonly kind: 'editDrawPref';
+      /** Closed set, so a typo is a compile error. See `DrawPrefField`. */
+      readonly field: DrawPrefField;
+      readonly value: number | boolean;
+    }
   | { readonly kind: 'clearStrafeField' };
 
 /** Every `Command`'s `kind`, for exhaustiveness assertions in tests. */
@@ -297,8 +358,25 @@ export interface Status {
  *
  * A UI holds one of these and nothing else -- no `ParticleSystem`, no `Camera`,
  * no `Project`. That is invariant 10 expressed as a type rather than as a
- * convention, and it is what makes Step 10's real interface a swap of the
- * implementation behind `ui/thinPanel.ts` with no change here.
+ * convention, and it is what made Step 10's real interface very nearly a swap of
+ * the implementation behind `ui/thinPanel.ts`.
+ *
+ * ## What Step 10 DID change here, and why
+ *
+ * This interface did not change. Two `Command` payloads did, and both were
+ * type-narrowing rather than new capability -- no handler gained work, and
+ * nothing crossed the boundary that was not already crossing it:
+ *
+ *   - **`editDrawPref.field`: `string` -> `DrawPrefField`.** It was the one
+ *     payload the compiler could not check, which is the failure this file's
+ *     header says the boundary exists to eliminate.
+ *   - **The three preview commands gained a `surface` token.** One shared
+ *     snapshot slot cannot serve two simultaneous hover-browsers; see
+ *     `PreviewSurface` for the bug that makes concrete.
+ *
+ * The alternative to the second was the UI holding two `Project` snapshots
+ * itself, which would put simulation state in `ui/` -- a far worse breach of
+ * invariant 10 than a token that is a pair of string literals.
  */
 export interface CommandBus {
   /** Issue a command. Synchronous, like the desktop's dict dispatch. */

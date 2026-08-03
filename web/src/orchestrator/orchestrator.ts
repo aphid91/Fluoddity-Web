@@ -97,6 +97,7 @@ import {
   type Command,
   type CommandBus,
   type MouseMode,
+  type PreviewSurface,
   type Status,
 } from './commands.ts';
 import { type Checkpoint, CheckpointStore } from './clipboardCommands.ts';
@@ -173,9 +174,18 @@ export class Orchestrator implements CommandBus {
   /**
    * Project state from before a hover-preview began, so a committed load
    * records against it rather than against the preview showing at click time.
-   * `null` when no browse session is open.
+   * Absent for a surface with no browse session open.
+   *
+   * **KEYED BY SURFACE, unlike the desktop's single `_preview_origin`**
+   * (`orchestrator.py:198-201`). Two surfaces browse by hovering -- the Load
+   * menu and the checkpoint menu -- and the desktop's one slot is safe "only
+   * because both are submenus of the same menu bar", so at most one can be open.
+   * The web's are independent DOM, so both can be open at once, and a shared
+   * slot would let one browser's unhover restore the other's snapshot.
+   * `ui/hover_preview.py:13-19` records that exact bug from when the sessions
+   * themselves shared a slot.
    */
-  private previewOrigin: Project | null = null;
+  private readonly previewOrigins = new Map<PreviewSurface, Project>();
 
   /** The last clicked entity. `null` until the user selects something. */
   private selected: PickResult | null = null;
@@ -819,9 +829,18 @@ export class Orchestrator implements CommandBus {
    * was showing when the user clicked. Recording `before = live` would see no
    * change and skip the entry, so commits record against what was live before
    * browsing started (`selection_commands.py:201-209`).
+   *
+   * **A commit does not name a surface, deliberately.** Clicking a row commits
+   * whatever browse is in flight, and the click itself does not know -- nor
+   * should it -- whether a second browser happens to be open elsewhere. With at
+   * most one origin this is the desktop's behaviour exactly; with two, the
+   * OLDEST is the right answer, because it is the state the user was in before
+   * any of this browsing started and therefore what undo should return them to.
+   * `Map` preserves insertion order, so the first entry is that state.
    */
   private prePreviewProject(fallback: Project): Project {
-    return this.previewOrigin ?? fallback;
+    for (const origin of this.previewOrigins.values()) return origin;
+    return fallback;
   }
 
   // =========================================================================
@@ -904,7 +923,7 @@ export class Orchestrator implements CommandBus {
         return;
 
       case 'previewConfig':
-        this.previewConfig(command.category, command.name);
+        this.previewConfig(command.category, command.name, command.surface);
         return;
 
       case 'deleteConfig':
@@ -963,19 +982,29 @@ export class Orchestrator implements CommandBus {
       }
 
       case 'snapshotConfigs':
-        // Remember where browsing started, so a committed load records against
-        // it rather than against whatever preview happened to be showing.
+        // Remember where THIS SURFACE's browsing started, so a committed load
+        // records against it rather than against whatever preview happened to
+        // be showing.
         //
         // A Project IS the snapshot: immutable, so holding a reference is
         // enough (`project_commands.py:175-191`).
-        this.previewOrigin = this.project;
+        //
+        // Idempotent within a session, matching `PreviewSession.begin()`: a
+        // re-open with no intervening close must not overwrite the origin with
+        // a previewed state.
+        if (!this.previewOrigins.has(command.surface)) {
+          this.previewOrigins.set(command.surface, this.project);
+        }
         return;
 
-      case 'restoreConfigs':
-        // The other half of hover-preview; likewise never recorded.
-        if (this.previewOrigin !== null) this.setProject(this.previewOrigin);
-        this.previewOrigin = null;
+      case 'restoreConfigs': {
+        // The other half of hover-preview; likewise never recorded. Restores
+        // only THIS surface's origin -- another open browser keeps its own.
+        const origin = this.previewOrigins.get(command.surface);
+        if (origin !== undefined) this.setProject(origin);
+        this.previewOrigins.delete(command.surface);
         return;
+      }
 
       case 'editSetting': {
         const before = this.project;
@@ -1090,7 +1119,11 @@ export class Orchestrator implements CommandBus {
     const before = this.prePreviewProject(this.project);
     this.setProject(loadSavedInto(this.project, entry.name, saved));
     this.recordHistory(before, `load ${entry.name}`);
-    this.previewOrigin = null;
+    // A commit ends EVERY browse, not just the one that produced it: the loaded
+    // project is now the state, so no surface has anything left to restore to.
+    // Leaving another surface's origin behind would let its close event undo the
+    // load the user just committed.
+    this.previewOrigins.clear();
     this.presetName = entry.name;
     this.presetIndex = Math.max(0, this.catalog.order.indexOf(entry.name));
     this.configOrigin = { category: entry.category, name: entry.name };
@@ -1131,10 +1164,16 @@ export class Orchestrator implements CommandBus {
    * `snapshotConfigs` still restores -- the desktop's menu always pairs them,
    * but nothing here enforces that ordering.
    */
-  private previewConfig(category: string, name: string): void {
+  private previewConfig(
+    category: string,
+    name: string,
+    surface: PreviewSurface,
+  ): void {
     const entry = this.resolveEntry(category, name);
     if (entry === null) return;
-    this.previewOrigin ??= this.project;
+    if (!this.previewOrigins.has(surface)) {
+      this.previewOrigins.set(surface, this.project);
+    }
 
     const generation = ++this.configGeneration;
     void this.store
@@ -1274,7 +1313,8 @@ export class Orchestrator implements CommandBus {
     const before = this.prePreviewProject(this.project);
     this.setProject(checkpoint.project);
     this.recordHistory(before, `restore ${checkpoint.name}`);
-    this.previewOrigin = null;
+    // Ends every browse, for the reason `adoptSaved` gives.
+    this.previewOrigins.clear();
   }
 
   /**
