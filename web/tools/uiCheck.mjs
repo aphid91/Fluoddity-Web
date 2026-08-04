@@ -200,12 +200,24 @@ const mouse = (type, x, y, buttons = 1) =>
     sid,
   );
 
-/** Whether a `data-setting` element is on screen. */
+/**
+ * Whether a `data-setting` element is on screen.
+ *
+ * Checks the whole ANCESTOR CHAIN, not just the element's own `display`. Tab
+ * pages, collapsed folders and hidden panels all hide their contents from
+ * above, and an element inside one is still `display:block` itself -- so the
+ * naive check reported "shown" for controls the user could not see. That is the
+ * worst possible answer from a visibility assertion.
+ *
+ * `offsetParent === null` catches every ancestor-hidden case in one test, and is
+ * exactly how the tab check spells the same question.
+ */
 const visible = (key) =>
   evaluate(`(() => {
     const e = document.querySelector('[data-setting="${key}"]');
     if (!e) return 'absent';
-    return getComputedStyle(e).display === 'none' ? 'hidden' : 'shown';
+    if (getComputedStyle(e).display === 'none') return 'hidden';
+    return e.offsetParent === null ? 'hidden' : 'shown';
   })()`);
 
 /**
@@ -280,11 +292,49 @@ const goAdvanced = async (field = 'advancedProject') => {
   await sleep(900);
 };
 
+/**
+ * Put the persisted view state back to first-run defaults.
+ *
+ * **The tiers PERSIST now**, so a run inherits whatever the last one left in
+ * `localStorage`. That made this file order-dependent in a way that only showed
+ * up on the second run: `goAdvanced` found the box already ticked, skipped the
+ * click, and skipped the rebuild -- so the panel kept a scroll position and a
+ * folder layout the assertions below did not expect, and PASS 1 failed claiming
+ * the checkbox had not revealed its slider.
+ *
+ * A check that passes only on a fresh profile is not a check. This runs before
+ * anything asserts, so every run starts from the same place.
+ */
+const resetViewState = async () => {
+  const changed = await evaluate(`(() => {
+    const s = window.__fluoddity.status();
+    const fields = ['advancedProject', 'advancedPreferences', 'advancedDrawing'];
+    const on = fields.filter((f) => s[f]);
+    for (const f of on) {
+      window.__fluoddity.dispatch({ kind: 'editViewPref', field: f, value: false });
+    }
+    return on.length > 0;
+  })()`);
+  // RELOAD rather than trusting the dispatch to redraw. `editViewPref` changes
+  // the stored tier but does not itself rebuild the panes -- that is the
+  // checkbox handler's second half (`advancedToggle.ts`) -- so a reset done
+  // through the bus leaves the panel showing the old tier. Reloading rebuilds
+  // from the freshly-written preferences, which is exactly the state a first
+  // run sees.
+  if (changed) {
+    await send('Page.reload', { ignoreCache: false }, sid);
+    await sleep(5000);
+  }
+};
+
 // ===========================================================================
 // PASS 1 -- the gated latch
 // ===========================================================================
 console.log('\nPASS 1: the gated latch (press, drag to base, hold, release)\n');
 
+// Before anything asserts: the tiers persist, so start from first-run defaults
+// rather than from whatever the previous run left behind. See `resetViewState`.
+await resetViewState();
 await goAdvanced();
 
 // Cohort Fences: GATED, base 0.0, plain (no curve, no inversion), and CONFIG so
@@ -292,10 +342,17 @@ await goAdvanced();
 const FENCES = 'config.cohortFences';
 
 // Open it first, so there is a slider to drag at all.
+//
+// The settle is generous because the reveal is not synchronous with the click:
+// the checkbox dispatches, the Orchestrator applies it, the NEXT frame's
+// `refresh` publishes the new value, and only then does `applyVisibility` swap
+// which of the two blades is hidden. Reading at 700ms caught the frame before
+// that swap and reported "the checkbox did not reveal the slider" -- a timing
+// artifact that reads exactly like a product bug.
 await evaluate(
   `document.querySelector('[data-setting="${FENCES}.gate"] input[type=checkbox]')?.click()`,
 );
-await sleep(700);
+await sleep(1200);
 
 if ((await visible(FENCES)) !== 'shown') {
   fail('ticking the checkbox did not reveal the slider');
@@ -631,6 +688,79 @@ if (seedBefore !== seedAfter) {
   pass(`Reroll Mutations moved the seed (${seedBefore} -> ${seedAfter})`);
 } else {
   fail(`Reroll Mutations left the seed at ${seedBefore}`);
+}
+
+// ===========================================================================
+// PASS 5 -- dragging a bipolar gated slider ACROSS zero
+// ===========================================================================
+//
+// THE GESTURE THAT BROKE. Gravity (Strafe) runs -1..1 and passes through
+// exactly zero between real values. `gateOpen` tests `!== 0` deliberately (a
+// tolerance would collapse the control around a deliberate hair's-breadth
+// setting), so at that instant the derivation says "every gated field is zero"
+// -- and `forced` has already been retired by `sync`, because the value went
+// non-zero earlier in the same drag. Nothing was holding the gate: the checkbox
+// unticked itself mid-drag and took the slider with it.
+//
+// This drags right, then back across the centre, and asserts the slider is
+// still on screen at every step WITHOUT releasing the button.
+console.log('\nPASS 5: dragging a gravity slider across zero\n');
+
+await setTool('select');
+
+// Re-tick the gate: PASS 2 left it unticked and its fields zeroed.
+if ((await visible(GATE)) !== 'shown') die('The Gravity gate is not on screen.');
+await evaluate(
+  `document.querySelector('[data-setting="${GATE}"] input[type=checkbox]')?.click()`,
+);
+await sleep(600);
+
+const zeroTrack = await trackOf(STRAFE);
+if (zeroTrack === null) die('Could not find the Gravity (Strafe) track for PASS 5.');
+const zy = zeroTrack.y + zeroTrack.h * 0.5;
+const at = (f) => zeroTrack.x + zeroTrack.w * f;
+
+// A bipolar slider's zero is its MIDPOINT, so 0.5 of the track is the hazard.
+await mouse('mousePressed', at(0.5), zy);
+await sleep(80);
+
+const steps = [0.8, 0.65, 0.5, 0.35, 0.2, 0.5];
+let vanishedAt = null;
+for (const f of steps) {
+  await mouse('mouseMoved', at(f), zy);
+  await sleep(120);
+  if ((await visible(STRAFE)) !== 'shown') {
+    vanishedAt = f;
+    break;
+  }
+}
+await mouse('mouseReleased', at(vanishedAt ?? 0.5), zy, 0);
+await sleep(400);
+
+if (vanishedAt === null) {
+  pass('the slider stayed on screen across zero, in both directions');
+} else {
+  fail(
+    `the slider vanished mid-drag at track fraction ${vanishedAt}. The gate ` +
+      'must stay HELD for the whole gesture -- see GateState.held.',
+  );
+}
+
+// The hold must not leak: releasing at the centre means the value really is
+// zero, and the gate should now close on its own.
+const restingValue = await statusOf('editConfig.gravityStrafe');
+const gateAfter = await evaluate(
+  `document.querySelector('[data-setting="${GATE}"] input[type=checkbox]')?.checked`,
+);
+if (Math.abs(restingValue) < 0.02 && gateAfter === false) {
+  pass(`releasing at zero closed the gate again (value ${restingValue})`);
+} else if (Math.abs(restingValue) >= 0.02 && gateAfter === true) {
+  pass(`releasing off-zero left the gate open (value ${restingValue.toFixed(3)})`);
+} else {
+  fail(
+    `after release: value=${restingValue} gate=${gateAfter}. A released hold ` +
+      'must hand the answer back to the derivation, not pin the gate open.',
+  );
 }
 
 // ===========================================================================

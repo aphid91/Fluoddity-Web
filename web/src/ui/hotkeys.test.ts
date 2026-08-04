@@ -14,7 +14,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { DEFAULT_HOTKEYS, isEditableTarget, matchHotkey, type Hotkey } from './hotkeys.ts';
+import {
+  DEFAULT_HOTKEYS,
+  hotkeyLabel,
+  isEditableTarget,
+  matchHotkey,
+  type Hotkey,
+} from './hotkeys.ts';
 import { MOUSE_MODES } from '../orchestrator/commands.ts';
 
 // --- 1. the table is unambiguous ------------------------------------------
@@ -122,6 +128,43 @@ test('X is handled locally rather than dispatched', () => {
   const hit = matchHotkey(DEFAULT_HOTKEYS, 'KeyX', false);
   assert.equal(hit?.local, 'toggleUi');
   assert.equal(hit?.command, undefined, 'hiding the panel is not simulation state');
+});
+
+// --- 3b. hotkeyLabel: the shortcut hints in the overlay --------------------
+//
+// The mutation overlay advertises its shortcuts -- "Reroll Mutations (F)",
+// "Shove tool (2)". These assert the labels come from THIS table, so a rebind
+// moves them. A hand-written "(F)" would be a second copy of the binding that
+// goes stale silently, which is the exact failure the table exists to prevent.
+
+test('hotkeyLabel reads the real binding, stripped for display', () => {
+  assert.equal(hotkeyLabel({ kind: 'randomizeSeed' }), 'F');
+  assert.equal(hotkeyLabel({ kind: 'randomizeBehavior' }), 'B');
+  // Not a Key*/Digit* code: shown verbatim, because "Space" and "Home" already
+  // read correctly and "Sp"/"Ho" would not.
+  assert.equal(hotkeyLabel({ kind: 'togglePause' }), 'Space');
+  assert.equal(hotkeyLabel({ kind: 'resetCamera' }), 'Home');
+});
+
+test('hotkeyLabel discriminates same-kind rows by their payload', () => {
+  // Three rows share `setMouseMode`; matching on `kind` alone would give every
+  // tool the first one's key, and all three would read "(1)".
+  MOUSE_MODES.forEach((mode, index) => {
+    assert.equal(hotkeyLabel({ kind: 'setMouseMode', mode }), String(index + 1));
+  });
+});
+
+test('hotkeyLabel returns empty for an unbound command', () => {
+  // Appended harmlessly by callers, so an unbound action loses its hint rather
+  // than rendering "( )".
+  assert.equal(hotkeyLabel({ kind: 'clearStrafeField' }), '');
+});
+
+test('hotkeyLabel follows a rebound table rather than the default', () => {
+  const rebound: readonly Hotkey[] = [
+    { code: 'KeyQ', command: { kind: 'randomizeSeed' } },
+  ];
+  assert.equal(hotkeyLabel({ kind: 'randomizeSeed' }, rebound), 'Q');
 });
 
 // --- 4. matchHotkey itself ------------------------------------------------

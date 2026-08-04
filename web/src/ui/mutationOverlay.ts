@@ -31,7 +31,14 @@
  * edit; this guards against a refresh CLOBBERING one.
  */
 
-import type { Command, MouseMode, Status } from '../orchestrator/commands.ts';
+import {
+  type Command,
+  type MouseMode,
+  type Status,
+  MOUSE_MODES,
+  mouseModeFromValue,
+} from '../orchestrator/commands.ts';
+import { hotkeyLabel } from './hotkeys.ts';
 import { CONFIG, settingFor } from './settingsSpec.ts';
 
 export interface MutationOverlayOptions {
@@ -40,19 +47,25 @@ export interface MutationOverlayOptions {
   readonly container?: HTMLElement;
 }
 
-/** Human-readable tool names, for the indicator. */
+/** Human-readable tool names. Keyed so a new MOUSE_MODES member fails to compile. */
 const TOOL_LABELS: Record<MouseMode, string> = {
   select: 'Select',
   shove: 'Shove',
   draw: 'Draw',
 };
 
+/** `Select tool (1)`, with the key read from the hotkey table. */
+function toolOptionLabel(mode: MouseMode): string {
+  const key = hotkeyLabel({ kind: 'setMouseMode', mode });
+  return `${TOOL_LABELS[mode]} tool${key === '' ? '' : ` (${key})`}`;
+}
+
 export class MutationOverlay {
   private readonly root: HTMLElement;
   private readonly slider: HTMLInputElement;
   private readonly readout: HTMLElement;
   private readonly reroll: HTMLButtonElement;
-  private readonly toolLabel: HTMLElement;
+  private readonly tool: HTMLSelectElement;
 
   /** True between pointerdown and pointerup on the slider. See the header. */
   private dragging = false;
@@ -91,18 +104,31 @@ export class MutationOverlay {
 
     this.reroll = document.createElement('button');
     this.reroll.type = 'button';
-    this.reroll.textContent = 'Reroll Mutations';
+    // The shortcut comes from the hotkey table, not from a literal here -- see
+    // `hotkeyLabel`. A rebind moves this label with it.
+    const rerollKey = hotkeyLabel({ kind: 'randomizeSeed' });
+    this.reroll.textContent =
+      rerollKey === '' ? 'Reroll Mutations' : `Reroll Mutations (${rerollKey})`;
     this.reroll.style.cssText = BUTTON_CSS;
     this.reroll.dataset['setting'] = 'config.mutationSeed.randomize';
 
-    this.toolLabel = document.createElement('div');
-    this.toolLabel.style.cssText = TOOL_CSS;
-    this.toolLabel.dataset['tool'] = '';
+    // A real <select>, not a readout: the tool was previously only reachable
+    // from the Tools menu and the number keys, and a modal state you can see but
+    // not change from where you see it is a worse affordance than either.
+    this.tool = document.createElement('select');
+    this.tool.style.cssText = TOOL_CSS;
+    this.tool.dataset['setting'] = 'transport.tool';
+    for (const mode of MOUSE_MODES) {
+      const option = document.createElement('option');
+      option.value = mode;
+      option.textContent = toolOptionLabel(mode);
+      this.tool.append(option);
+    }
 
-    // The tool indicator goes INSIDE the bar, not below it. Floating on its own
-    // it read as a stray tooltip over the canvas rather than as a readout, and
-    // a status line that looks like an error message is worse than none.
-    bar.append(label, this.slider, this.readout, this.reroll, this.toolLabel);
+    // The tool control goes INSIDE the bar, not below it. Floating on its own
+    // it read as a stray tooltip over the canvas rather than as part of the UI,
+    // and a status line that looks like an error message is worse than none.
+    bar.append(label, this.slider, this.readout, this.reroll, this.tool);
     this.root.append(bar);
     (opts.container ?? document.body).append(this.root);
 
@@ -139,6 +165,19 @@ export class MutationOverlay {
     this.reroll.addEventListener('click', () => {
       opts.send({ kind: 'randomizeSeed' });
     });
+
+    this.tool.addEventListener('change', () => {
+      const mode = mouseModeFromValue(this.tool.value);
+      if (mode !== null) opts.send({ kind: 'setMouseMode', mode });
+    });
+
+    // A <select> keeps keyboard focus after a click, and the number keys would
+    // then be swallowed by its own type-ahead instead of reaching the hotkey
+    // table -- so picking "Shove tool (2)" would leave `2` dead until you
+    // clicked elsewhere. Blurring hands the keys straight back.
+    this.tool.addEventListener('change', () => {
+      this.tool.blur();
+    });
   }
 
   /**
@@ -164,18 +203,31 @@ export class MutationOverlay {
       this.reroll.style.cursor = scale > 0 ? 'pointer' : 'default';
     }
 
-    // The tool indicator. It lives here because the Transport section that used
-    // to show the active tool is parked (`panelModel.ts`), and a modal tool with
-    // no visible state is a trap -- pressing `2` has to show up somewhere.
-    const tool = TOOL_LABELS[status.mouseMode];
-    if (this.toolLabel.dataset['tool'] !== status.mouseMode) {
-      this.toolLabel.dataset['tool'] = status.mouseMode;
-      this.toolLabel.textContent = `${tool} tool`;
+    // The tool selector. It lives here because the Transport section that used
+    // to carry it is parked (`panelModel.ts`), and a modal tool with no visible
+    // state is a trap -- pressing `2` has to show up somewhere.
+    //
+    // Written only on an actual change, and never while the select has focus:
+    // assigning `value` to an open dropdown closes it, so a per-frame write
+    // would make the menu impossible to use with the mouse.
+    if (this.tool.value !== status.mouseMode && document.activeElement !== this.tool) {
+      this.tool.value = status.mouseMode;
     }
   }
 
-  setHidden(hidden: boolean): void {
-    this.root.style.display = hidden ? 'none' : '';
+  /**
+   * The overlay is deliberately NOT part of what `X` hides.
+   *
+   * `X` hides the PANELS so you can see the picture; this bar is the picture's
+   * own controls -- the one slider worth reaching for while watching, plus the
+   * tool you are watching it with. Hiding it would mean pressing `X` to get a
+   * clean view and then having to press `X` again to change anything about it.
+   *
+   * Kept as a no-op method rather than deleted so `Panel.setHidden` reads as a
+   * complete list of what it governs, with this one saying why it opts out.
+   */
+  setHidden(_hidden: boolean): void {
+    // Intentionally empty. See above.
   }
 
   dispose(): void {
@@ -195,10 +247,26 @@ function format(value: number): string {
 // trap across the whole top of the canvas -- so the ROOT ignores the pointer
 // and only the bar takes it back. Without this, a drag started near the top of
 // the canvas would hit nothing.
+//
+// ## The geometry, and the two bugs it fixes
+//
+// **`top` clears the menu bar.** The bar is fixed at `top:0` and runs about
+// 26px tall (`menuBar.ts`); at `top:8px` this overlay ran straight through it.
+// MENU_BAR_CLEARANCE is the one number both this and `panel.ts`'s side
+// containers are derived from, so they cannot drift apart.
+//
+// **`transform`, not flex, does the centring.** With `left:0;right:0` and
+// `align-items:center` the bar was centred in whatever width the root happened
+// to have -- and `position:fixed` resolves that against the viewport, which
+// changes when a scrollbar appears or disappears as the panels are toggled with
+// `X`. The bar visibly jumped. Anchoring the LEFT EDGE at 50% and pulling back
+// by half the bar's own width centres it against a fixed reference instead, so
+// nothing about the panels can move it.
+const MENU_BAR_CLEARANCE = 34;
 
 const ROOT_CSS =
-  'position:fixed;top:8px;left:0;right:0;z-index:30;' +
-  'display:flex;flex-direction:column;align-items:center;gap:4px;' +
+  `position:fixed;top:${MENU_BAR_CLEARANCE}px;left:50%;transform:translateX(-50%);` +
+  'z-index:30;display:flex;flex-direction:column;align-items:center;gap:4px;' +
   'pointer-events:none;';
 
 const BAR_CSS =
@@ -225,9 +293,14 @@ const BUTTON_CSS =
   'border-radius:4px;color:#e8e8ea;font:11px system-ui,sans-serif;' +
   'padding:5px 10px;cursor:pointer;white-space:nowrap;';
 
-// Separated from the Reroll button by a rule rather than by distance, so it
-// reads as a readout belonging to the bar and not as a second button.
+// The tool dropdown. Styled to match the Reroll button rather than left as a
+// default <select>, whose native chrome is a different colour on every OS and
+// would read as a foreign element dropped into the bar.
+//
+// `color-scheme:dark` is what makes the OPTION LIST dark too -- that popup is
+// drawn by the OS and ignores this element's own colours, so without it a dark
+// bar opens a white menu.
 const TOOL_CSS =
-  'font:11px system-ui,sans-serif;color:rgba(232,232,234,0.7);' +
-  'border-left:1px solid rgba(255,255,255,0.14);padding-left:10px;' +
-  'white-space:nowrap;pointer-events:none;user-select:none;';
+  'background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);' +
+  'border-radius:4px;color:#e8e8ea;font:11px system-ui,sans-serif;' +
+  'padding:5px 8px;cursor:pointer;color-scheme:dark;';

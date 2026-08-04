@@ -56,7 +56,7 @@ import {
 } from './settingsSpec.ts';
 import { isGated, position, shown, stored, valueAt } from './gating.ts';
 import { formatSeed, formatValue, parseInput } from './formatValue.ts';
-import type { GateState } from './gateState.ts';
+import { type GateState, gateByLabel } from './gateState.ts';
 // A DELIBERATE CYCLE, and a safe one: `gatedControl.ts` imports this file's
 // helpers (`currentValues`, `paramsFor`, `tagBlade`) and this file imports its
 // builder. Both are function declarations, hoisted and only called after both
@@ -248,12 +248,48 @@ function addDirect(
   });
   decorate(blade, setting, ctx);
 
+  const holdsGate = holdsGateOpen(setting);
+
   blade.on('change', (ev) => {
     // Not a user edit: `refresh()` is pushing the authoritative value in. See
     // `panel.ts`'s `refreshing` for what happens without this.
     if (ctx.isRefreshing()) return;
+
+    // Hold the governing gate open for the duration of the drag, and release it
+    // at the end. See `holdsGateOpen` -- a bipolar slider passes through EXACTLY
+    // zero on its way between real values, and that is the moment the gate would
+    // otherwise derive as "off" and hide the slider being dragged.
+    //
+    // **`ev.last` is the release signal, not `pointerup`.** Tweakpane emits
+    // `last: false` from `onPointerMove_` and `last: true` from `onPointerUp_`
+    // -- the same discriminator `gatedControl.ts` relies on, and the reason the
+    // `isRefreshing()` guard above it must come first. Listening for a DOM
+    // `pointerup` on the blade instead looked equivalent and was not: the event
+    // fires on the element that captured the pointer, so a release that landed
+    // outside the blade never reached the handler and the hold leaked, pinning
+    // the gate open with every value at zero.
+    //
+    // Releasing hands the answer back to the derivation, which is right in both
+    // directions: a drag that ended non-zero keeps the gate open on its own, and
+    // one that ended at zero means the gate genuinely IS off.
+    if (holdsGate) {
+      if (ev.last) ctx.gates.held.delete(setting.revealsOn);
+      else ctx.gates.held.add(setting.revealsOn);
+    }
     ctx.send({ kind: 'editSetting', setting, value: ev.value as number | boolean });
   });
+
+  // The gesture `change` cannot see the end of: one the OS interrupted, and one
+  // that finished on the value it started from (`setRawValue` returns early when
+  // nothing moved, so no final `last: true` arrives). Either would leak the hold.
+  if (holdsGate) {
+    const element = blade.element as HTMLElement;
+    const release = (): void => {
+      ctx.gates.held.delete(setting.revealsOn);
+    };
+    element.addEventListener('pointerup', release);
+    element.addEventListener('lostpointercapture', release);
+  }
 
   return {
     setting,
@@ -263,6 +299,33 @@ function addDirect(
       if (authoritative !== undefined) proxy.value = authoritative;
     },
   };
+}
+
+/**
+ * Whether dragging this control must hold its governing gate open.
+ *
+ * **The bipolar-slider problem, one level up.** `gatedControl.ts` solves it for
+ * a slider that hides ITSELF at base; this is the same hazard for a slider
+ * hidden by a GATES CHECKBOX in front of it. Gravity (Strafe) and Gravity
+ * (Force) run -1..1 and pass through exactly zero between real values, and
+ * `gateOpen`'s deliberate `!== 0` test means that instant reads as "every gated
+ * field is zero, so the gate is off". Without this the box unticked itself
+ * mid-drag and took the slider with it -- which looks like the drag was
+ * cancelled, and leaves the value wherever the pointer happened to be.
+ *
+ * A gate-revealed BOOL (Radial Gravity) does not need it: a checkbox has no
+ * intermediate states to pass through.
+ *
+ * Note this reuses `forced` rather than adding a third set. `forced` already
+ * means exactly "hold this gate open even though its values say otherwise",
+ * which is the same claim a drag through zero is making.
+ */
+function holdsGateOpen(setting: Setting): boolean {
+  return (
+    setting.revealsOn !== '' &&
+    setting.kind !== BOOL &&
+    gateByLabel(setting.revealsOn) !== null
+  );
 }
 
 /**

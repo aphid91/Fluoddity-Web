@@ -177,11 +177,56 @@ test('sync drops everything when the project changes', () => {
   const state = new GateState();
   state.sync({ projectName: 'a', selectedConfig: 0 }, () => false);
   state.forced.add('Gravity');
+  state.held.add('Gravity');
   state.sessions.add('config.hazardRate');
 
   state.sync({ projectName: 'b', selectedConfig: 0 }, () => false);
   assert.equal(state.forced.size, 0);
+  assert.equal(state.held.size, 0);
   assert.equal(state.sessions.size, 0);
+});
+
+// --- held: the drag across zero --------------------------------------------
+//
+// THE BUG THIS PREVENTS, concretely: tick Gravity, drag the Strafe slider out to
+// 0.5, then drag it back across zero to -0.5. At the instant it reads exactly 0
+// the derivation says "off" -- and `forced` was already retired by `sync` the
+// moment the value went non-zero, so nothing was holding the gate. The box
+// unticked itself mid-drag and took the slider with it.
+
+test('held holds a gate open across an exact zero, where forced cannot', () => {
+  const state = new GateState();
+  const atZero = sources({ gravityStrafe: 0, gravityForce: 0 });
+
+  state.held.add('Gravity');
+  assert.ok(gateChecked(gravity, atZero, state), 'a held gate reads as ticked at zero');
+
+  state.held.delete('Gravity');
+  assert.ok(!gateChecked(gravity, atZero, state), 'and closes again once released');
+});
+
+test('sync NEVER retires a held gate, however the values read', () => {
+  // This is the whole difference between `held` and `forced`, and it is the
+  // reason a third set exists rather than a reuse of the second.
+  const state = new GateState();
+  const identity = { projectName: 'p', selectedConfig: 0 };
+  state.sync(identity, () => false);
+
+  state.forced.add('Gravity');
+  state.held.add('Gravity');
+
+  // The value goes non-zero mid-drag. `forced` has done its job and retires;
+  // `held` must not, because the drag is still live and is about to cross back
+  // through zero.
+  state.sync(identity, () => true);
+  assert.ok(!state.forced.has('Gravity'), 'forced retires, as it always did');
+  assert.ok(state.held.has('Gravity'), 'held survives -- the gesture is not over');
+
+  // ...and back through exactly zero, which is the frame that used to break.
+  assert.ok(
+    gateChecked(gravity, sources({ gravityStrafe: 0, gravityForce: 0 }), state),
+    'the gate stays ticked as the slider passes through zero',
+  );
 });
 
 test('sync drops everything when the selected config changes', () => {

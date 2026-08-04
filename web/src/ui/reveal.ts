@@ -75,18 +75,26 @@ export function revealOf(setting: Setting): Reveal {
 export type SourceValues = (source: Source) => Readonly<Record<string, number | boolean>>;
 
 /**
- * Whether a GATES checkbox reads as ticked: derived, or forced open.
+ * Whether a GATES checkbox reads as ticked: derived, forced, or held.
  *
  * The forced half is not optional. Ticking the box is exactly the case where
  * every field it gates is still zero, so the raw derivation would say "off" on
  * the next frame and the box would spring back under the cursor.
+ *
+ * The held half covers the mirror image: a gesture in flight on one of the
+ * gated sliders. Those are BIPOLAR, so they pass through exactly zero on the way
+ * between real values -- and `gateOpen`'s deliberate `!== 0` reads that instant
+ * as "off", unticking the box and hiding the slider being dragged. See
+ * `GateState.held` for why it cannot simply reuse `forced`.
  */
 export function gateChecked(
   gate: Setting,
   values: SourceValues,
   state: GateState,
 ): boolean {
-  return gateOpen(gate, values) || state.forced.has(gate.label);
+  return (
+    gateOpen(gate, values) || state.forced.has(gate.label) || state.held.has(gate.label)
+  );
 }
 
 /**

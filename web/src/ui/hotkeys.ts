@@ -135,6 +135,45 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
 ];
 
 /**
+ * The key that triggers `command`, as a short display string, or `''`.
+ *
+ * **So a label can say "(F)" without anyone typing "F" twice.** The overlay's
+ * Reroll button and its tool dropdown both advertise their shortcuts, and a
+ * hand-written hint is a second copy of the binding that goes stale silently the
+ * first time the table is edited -- exactly the failure the table exists to
+ * prevent. This reads the table, so a rebind moves the label with it.
+ *
+ * Matched on the command's `kind` plus whatever discriminates its variants,
+ * because two rows can share a kind (`setMouseMode` has one per tool). Returns
+ * `''` for an unbound command, which callers append harmlessly.
+ *
+ * `KeyboardEvent.code` is a physical-key name (`KeyF`, `Digit1`), so the prefix
+ * comes off for display. Anything that is neither is shown verbatim: `Space`,
+ * `Home` and the arrows already read correctly.
+ */
+export function hotkeyLabel(
+  command: Command,
+  table: readonly Hotkey[] = DEFAULT_HOTKEYS,
+): string {
+  const row = table.find((entry) => entry.command !== undefined && sameCommand(entry.command, command));
+  if (row === undefined) return '';
+  return row.code.replace(/^(Key|Digit)/, '');
+}
+
+/**
+ * Whether two commands name the same action, for label lookup only.
+ *
+ * NOT a general command equality: it compares `kind` and the one extra field
+ * that distinguishes same-kind rows in the table. A structural deep-compare
+ * would be wrong here anyway, since `editSetting` carries a whole `Setting`.
+ */
+function sameCommand(a: Command, b: Command): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === 'setMouseMode' && b.kind === 'setMouseMode') return a.mode === b.mode;
+  return true;
+}
+
+/**
  * Find the binding for a keystroke, or `null`.
  *
  * Pure, so the table can be unit-tested without a DOM. A `shift` of `undefined`

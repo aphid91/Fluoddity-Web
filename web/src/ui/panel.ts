@@ -396,6 +396,11 @@ export class Panel {
     // could no longer see.
     this.menuBar.refresh(status);
     this.dialogs.refresh(status);
+    // ALSO before the hidden check, and for the same reason as the menu bar:
+    // `X` does not hide the overlay, so it is still on screen and still has to
+    // track the tool and the mutation value. Below the early return it froze
+    // whenever the panels were hidden, and showed stale values afterwards.
+    this.overlay.refresh(status);
 
     // A hidden panel refreshes nothing else: `pane.refresh()` walks every
     // binding and re-reads every proxy, which is real per-frame work to update
@@ -403,7 +408,6 @@ export class Panel {
     // frame loop's own `refresh()`, so what reappears is current, not stale.
     if (this.hiddenFlag) return;
 
-    this.overlay.refresh(status);
     this.followTool(status.mouseMode);
 
     // `finally` because a throw inside a binding's handler would otherwise wedge
@@ -553,8 +557,10 @@ export class Panel {
     const display = hidden ? 'none' : '';
     this.left.container.style.display = display;
     this.right.container.style.display = display;
-    // The overlay goes too: `X` means "show me the picture", and a slider
-    // floating over an otherwise clean canvas would defeat the whole point.
+    // The overlay does NOT go: `X` hides the panels so you can see the picture,
+    // and the overlay is the picture's own controls. `setHidden` is a no-op
+    // there and says why -- called anyway, so this stays a complete list of
+    // what the key governs rather than a list with a silent omission.
     this.overlay.setHidden(hidden);
   }
 
@@ -636,9 +642,23 @@ function sideContainer(which: Side): HTMLElement {
   const el = document.createElement('div');
   const left = which === LEFT;
   el.id = left ? 'fluoddity-panel-left' : 'fluoddity-panel-right';
+  // Below the menu bar AND the mutation overlay, which is centred at the top and
+  // is the taller of the two. The panels are 320px and the overlay is capped so
+  // that on any window wide enough for both there is no horizontal overlap --
+  // this clears it vertically as well, for windows that are not.
+  const top = PANEL_TOP_PX;
   el.style.cssText =
-    `position:fixed;${left ? 'top:74px;left:8px' : 'top:74px;right:8px'};` +
-    'width:320px;max-height:calc(100vh - 82px);overflow-y:auto;z-index:20;';
+    `position:fixed;top:${top}px;${left ? 'left:8px' : 'right:8px'};` +
+    `width:320px;max-height:calc(100vh - ${top + 8}px);overflow-y:auto;z-index:20;`;
   document.body.append(el);
   return el;
 }
+
+/**
+ * Where both side panels start, in px from the top.
+ *
+ * Clears the menu bar (fixed at `top:0`, ~26px) and the mutation overlay
+ * beneath it. A single constant because the two panels must agree -- one of
+ * them starting lower than the other reads as a rendering bug.
+ */
+const PANEL_TOP_PX = 78;
