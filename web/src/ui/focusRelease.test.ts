@@ -56,6 +56,37 @@ test('a pointerup leaves a select alone', () => {
   assert.equal(shouldReleaseFocus({ tagName: 'SELECT' }, 'pointerup'), false);
 });
 
+test('a change releases a select, and only a select', () => {
+  // The dropdown's real commit moment. Without it, picking an option left the
+  // select focused and the next `R` drove its type-ahead ("Random") instead of
+  // resetting the simulation.
+  assert.equal(shouldReleaseFocus({ tagName: 'SELECT' }, 'change'), true);
+  // A text field fires `change` on blur and on Enter too. Releasing there would
+  // be redundant at best and, mid-edit, an abandonment nobody asked for.
+  assert.equal(shouldReleaseFocus({ tagName: 'INPUT' }, 'change'), false);
+  assert.equal(shouldReleaseFocus({ tagName: 'TEXTAREA' }, 'change'), false);
+  assert.equal(shouldReleaseFocus({ tagName: 'DIV' }, 'change'), false);
+});
+
+test('a pointerup releases a checkbox and every other textless input', () => {
+  // `readOnly` exists on these and the browser ignores it, so the "writable
+  // means the user is typing" rule read them exactly backwards: a ticked
+  // checkbox ate every hotkey except Space, its own native toggle.
+  for (const type of ['checkbox', 'radio', 'range', 'button', 'color', 'file']) {
+    assert.equal(
+      shouldReleaseFocus({ tagName: 'INPUT', type, readOnly: false }, 'pointerup'),
+      true,
+      `a focused ${type} input holds no text and must not keep the keyboard`,
+    );
+  }
+});
+
+test('an input with no type is treated as text', () => {
+  // `<input>` defaults to `type=text`, and the writable-field guard must still
+  // apply to one whose type was never set.
+  assert.equal(shouldReleaseFocus({ tagName: 'INPUT', readOnly: false }, 'pointerup'), false);
+});
+
 test('a pointerup leaves a contenteditable alone', () => {
   assert.equal(
     shouldReleaseFocus({ tagName: 'DIV', isContentEditable: true }, 'pointerup'),

@@ -38,6 +38,7 @@ import {
   MOUSE_MODES,
   mouseModeFromValue,
 } from '../orchestrator/commands.ts';
+import { bindFocusRelease } from './focusRelease.ts';
 import { hotkeyLabel } from './hotkeys.ts';
 import { CONFIG, settingFor } from './settingsSpec.ts';
 
@@ -69,6 +70,18 @@ export class MutationOverlay {
 
   /** True between pointerdown and pointerup on the slider. See the header. */
   private dragging = false;
+
+  /**
+   * Teardown for the focus-release listeners.
+   *
+   * The overlay needs its OWN binding because it deliberately lives outside
+   * both panel containers (see the header), so the panel's two bindings cannot
+   * reach it -- and a `<input type=range>` keeps focus after a drag exactly as
+   * a Tweakpane track does, swallowing every hotkey until something else took
+   * it. The tool `<select>` below still blurs itself on `change`; that predates
+   * this and is left alone, since it is the same answer arrived at locally.
+   */
+  private readonly releaseFocus: () => void;
 
   constructor(opts: MutationOverlayOptions) {
     // Bounds from the registry, never restated. A renamed field degrades to the
@@ -135,6 +148,7 @@ export class MutationOverlay {
     bar.append(label, this.slider, this.readout, this.reroll, this.tool);
     this.root.append(bar);
     (opts.container ?? document.body).append(this.root);
+    this.releaseFocus = bindFocusRelease(this.root);
 
     // --- events ------------------------------------------------------------
 
@@ -235,6 +249,7 @@ export class MutationOverlay {
   }
 
   dispose(): void {
+    this.releaseFocus();
     this.root.remove();
   }
 }

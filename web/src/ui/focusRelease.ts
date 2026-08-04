@@ -64,10 +64,41 @@ export interface FocusedShape {
   readonly tagName?: string;
   readonly isContentEditable?: boolean;
   readonly readOnly?: boolean;
+  /** An `<input>`'s `type`. Decides whether `readOnly` means anything at all. */
+  readonly type?: string;
 }
 
-/** What ended the gesture. Enter and Escape differ for the CALLER, not here. */
-export type ReleaseReason = 'pointerup' | 'enter' | 'escape';
+/**
+ * What ended the gesture.
+ *
+ * `change` is the `<select>`'s own, and it exists because a dropdown cannot be
+ * released on `pointerup`: that pointerup is part of OPENING the menu, so
+ * blurring there would shut it before a choice could be made. The commit moment
+ * for a select is its `change` instead -- which is the same conclusion
+ * `mutationOverlay.ts:178-184` reached independently for the tool selector.
+ */
+export type ReleaseReason = 'pointerup' | 'change' | 'enter' | 'escape';
+
+/**
+ * Input types that hold no text, and therefore have nothing to protect.
+ *
+ * A checkbox or radio is an `<input>` whose `readOnly` is meaningless (the
+ * property exists but the browser ignores it for these types), so the
+ * "writable means the user is typing" rule below reads them exactly backwards:
+ * it left them focused, and a focused checkbox then swallowed every hotkey --
+ * with Space, the browser's native "toggle the box", the only key that appeared
+ * to work at all. Ranges and buttons are here for the same reason.
+ */
+const TEXTLESS_INPUT_TYPES: ReadonlySet<string> = new Set([
+  'checkbox',
+  'radio',
+  'range',
+  'button',
+  'submit',
+  'reset',
+  'color',
+  'file',
+]);
 
 /** The attribute marking a container whose focus this module manages. */
 export const PANEL_ATTRIBUTE = 'data-fluoddity-panel';
@@ -103,14 +134,27 @@ export function shouldReleaseFocus(
 
   if (reason === 'enter' || reason === 'escape') return true;
 
+  // --- change --------------------------------------------------------------
+  // A `<select>`'s commit moment. Only a select gets released this way: a text
+  // field also fires `change` (on blur, or on Enter), and releasing there would
+  // be either redundant or -- mid-edit -- an abandonment nobody asked for.
+  if (reason === 'change') return tag === 'SELECT';
+
   // --- pointerup -----------------------------------------------------------
-  // A `<select>` is excluded: a pointerup on one is part of OPENING it, so
-  // blurring here would make the dropdown unusable with the mouse. The tool
-  // selector solves the same problem on `change` instead, and says why
-  // (`mutationOverlay.ts:178-184`).
+  // A `<select>` is excluded HERE: the pointerup that picks an option is part
+  // of the same gesture that opened the menu, so blurring on it would shut the
+  // dropdown before a choice could be made. `change` above is its release
+  // instead -- the conclusion `mutationOverlay.ts:178-184` reached first.
   if (tag === 'SELECT') return false;
   if (focused.isContentEditable === true) return false;
   if (tag === 'INPUT' || tag === 'TEXTAREA') {
+    // **`readOnly` only means anything for an input that holds TEXT.** For a
+    // checkbox the property exists and the browser ignores it, so the writable
+    // test below would answer "the user is typing here" about a control that
+    // cannot be typed into -- which is exactly how a ticked checkbox came to
+    // eat every hotkey but Space (its own native toggle).
+    const type = (focused.type ?? 'text').toLowerCase();
+    if (TEXTLESS_INPUT_TYPES.has(type)) return true;
     // Read-only is the readout case: there is nothing to type, so holding
     // focus is pure loss. Writable means the user just clicked in to type.
     return focused.readOnly === true;
@@ -185,14 +229,28 @@ export function bindFocusRelease(container: HTMLElement): () => void {
     releaseIfInPanel('pointerup');
   };
 
+  /**
+   * The dropdown's release, which `pointerup` cannot be. `change` fires once
+   * the choice is made and the menu has closed, so blurring here takes nothing
+   * away -- and without it, picking "Random" left the select focused and the
+   * next `R` re-opened its type-ahead instead of resetting the simulation.
+   *
+   * `change` bubbles, so the delegated listener sees it.
+   */
+  const onChange = (): void => {
+    releaseIfInPanel('change');
+  };
+
   container.addEventListener('keydown', onKeyDown);
   container.addEventListener('pointerup', onPointerUp);
   container.addEventListener('lostpointercapture', onPointerUp);
+  container.addEventListener('change', onChange);
 
   return (): void => {
     container.removeEventListener('keydown', onKeyDown);
     container.removeEventListener('pointerup', onPointerUp);
     container.removeEventListener('lostpointercapture', onPointerUp);
+    container.removeEventListener('change', onChange);
     container.removeAttribute(PANEL_ATTRIBUTE);
   };
 }
