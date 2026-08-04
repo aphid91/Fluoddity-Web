@@ -198,6 +198,32 @@ test('only world size and canvas aspect require a rebuild', () => {
   assert.equal(requiresRestart(prefs, withValue(prefs, 'physicsSteps', 60)), false);
 });
 
+test('the per-panel tiers persist, default to Basic, and are independent', () => {
+  // They are view state, but they are SAVED view state -- unlike the single
+  // global tier they replaced, which deliberately reset each session. A
+  // per-panel choice is a lasting statement about how you work, and re-ticking
+  // three boxes every reload is worse than starting where you left off.
+  const prefs = DEFAULT_PREFERENCES;
+  assert.equal(prefs.advancedProject, false, 'first run is Basic');
+  assert.equal(prefs.advancedPreferences, false, 'first run is Basic');
+  assert.equal(prefs.advancedDrawing, false, 'first run is Basic');
+
+  // Independence is the whole point of there being three: setting one must not
+  // disturb the others. That is what the old global tier could not do.
+  const next = withValue(prefs, 'advancedDrawing', true);
+  assert.equal(next.advancedDrawing, true);
+  assert.equal(next.advancedProject, false);
+  assert.equal(next.advancedPreferences, false);
+
+  // A tier never reallocates the simulation.
+  assert.equal(requiresRestart(prefs, next), false);
+
+  // Round-trips through storage like any other preference.
+  const storage = fakeStorage();
+  savePreferences(next, storage);
+  assert.equal(loadPreferences(storage).advancedDrawing, true);
+});
+
 test('the kind map covers exactly the preference keys', () => {
   // Guards the `satisfies` from the other direction: a kind declared for a
   // field that no longer exists would leave a control bound to nothing.

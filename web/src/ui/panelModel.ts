@@ -1,34 +1,40 @@
 /**
- * Which sections the panel shows, and in what order.
+ * Which sections each panel shows, and in what order.
  *
- * ## Why this is a module and not four lines inside `panel.ts`
+ * ## Two panels, split by what the state IS
  *
- * `ARCHITECTURE.md`'s "Toolbar and the planned side-panel" names an endpoint the
- * desktop has not reached: **the active tool selects which controls are
- * visible** -- physics sliders while selecting, drawing controls while drawing
- * -- all hosted in one docked side-panel rather than in separate floating
- * windows. It also says what the migration should look like: "keep each
- * `_*_window()` body as a panel-*section* function, and have the panel call the
- * sections the current tool asks for."
+ * `ARCHITECTURE.md`'s "Toolbar and the planned side-panel" named an endpoint the
+ * desktop never reached: the active tool selecting which controls are visible,
+ * hosted in a docked panel rather than in floating windows. This is that
+ * endpoint, arrived at by a different route than "one panel" -- because the
+ * controls turn out to divide on something more fundamental than the tool.
  *
- * The desktop cannot do that cheaply because five independent window mixins each
- * own their own `imgui.begin`/`end`. The port is writing those bodies for the
- * first time, so it can be shaped for the endpoint from the start at no cost --
- * and that is exactly what this file is. `sectionsFor` is the decision, as data,
- * with no Tweakpane and no DOM anywhere near it.
+ * **Project is a different KIND of state from the rest.** It is the config: the
+ * thing you save, load and share. Preferences and Drawing Controls are how your
+ * editor is set up, and loading someone else's config must not touch them
+ * (`preferences_window.py:12-16`). That split already existed in the registry as
+ * `source`; it is now also the split down the middle of the screen. Project on
+ * the left, editor state on the right.
  *
- * **Today it ignores `mode` and returns everything**, which is the desktop's
- * current behaviour and therefore the correct starting point: the tool-selection
- * endpoint is a UI-design decision that has not been taken, and inventing one
- * here would be inventing product. When it is taken, this one function changes
- * and `panel.ts` does not -- which is the whole reason the `mode` parameter is
- * already in the signature rather than being added later.
+ * The tool selection endpoint survives inside that: the right panel's two
+ * sections became TABS rather than stacked folders, and the active tab follows
+ * the tool. See `sections/settingsSection.ts`. It is a tab decision rather than
+ * a section decision, which is why it is not made in this file -- there is no
+ * `mode` parameter here any more, and nothing needs one.
  *
- * `panelModel.test.ts` pins the current behaviour, so making that change is a
- * deliberate edit to a test rather than a silent drift.
+ * ## Transport and Debug are PARKED
+ *
+ * Not deleted: `transportSection.ts` and `debugSection.ts` are untouched, their
+ * ids are still exported, `buildSection` still dispatches to them, and their
+ * tests still run. They are simply not in either list today. Restoring one is a
+ * single line here and nothing else.
+ *
+ * Everything Transport carried is reachable elsewhere -- Pause and the camera
+ * from the Simulation and View menus, the tool from the Tools menu and the
+ * `1`/`2`/`3` keys, and the active tool is displayed by the mutation overlay so
+ * a modal tool is never invisible. Debug is a developer readout that the
+ * `?debug` overlay also covers.
  */
-
-import { type MouseMode } from '../orchestrator/commands.ts';
 
 /**
  * A panel section's stable identity.
@@ -42,13 +48,16 @@ export const PROJECT = 'project';
 export const PREFERENCES = 'preferences';
 export const DRAWING = 'drawing';
 export const DEBUG = 'debug';
+/** The right panel's tabbed host. Owns PREFERENCES and DRAWING as its pages. */
+export const SETTINGS = 'settings';
 
 export type SectionId =
   | typeof TRANSPORT
   | typeof PROJECT
   | typeof PREFERENCES
   | typeof DRAWING
-  | typeof DEBUG;
+  | typeof DEBUG
+  | typeof SETTINGS;
 
 export interface PanelSection {
   readonly id: SectionId;
@@ -59,33 +68,31 @@ export interface PanelSection {
 }
 
 /**
- * Every section, in display order.
+ * The left panel: the project.
  *
- * The order mirrors `ui.py:_build_ui`'s window order -- toolbar/transport first,
- * then the Project window, then Preferences, then Drawing Controls, then Debug.
- * Debug is collapsed because it is a developer tool; Drawing is collapsed
- * because it only matters while the Draw or Shove tool is active, which is the
- * seed of the tool-selection endpoint above.
+ * PARKED, and deliberately still written out:
+ *   { id: TRANSPORT, title: 'Transport', expanded: true },
  */
-const ALL_SECTIONS: readonly PanelSection[] = [
-  { id: TRANSPORT, title: 'Transport', expanded: true },
+const LEFT_SECTIONS: readonly PanelSection[] = [
   { id: PROJECT, title: 'Project', expanded: true },
-  { id: PREFERENCES, title: 'Preferences', expanded: false },
-  { id: DRAWING, title: 'Drawing', expanded: false },
-  { id: DEBUG, title: 'Debug', expanded: false },
 ];
 
 /**
- * The sections to build for the current tool and tier.
+ * The right panel: editor state, behind two tabs.
  *
- * `mode` is accepted and deliberately unused -- see the file header. `tier` is
- * likewise not a filter here: a section whose every control is Advanced empties
- * itself through `grouped()`, which already omits empty groups, so the tier
- * decision belongs to the registry rather than to this list.
+ * PARKED, and deliberately still written out:
+ *   { id: DEBUG, title: 'Debug', expanded: false },
  */
-export function sectionsFor(
-  _mode: MouseMode,
-  _tierAdvanced: boolean,
-): readonly PanelSection[] {
-  return ALL_SECTIONS;
+const RIGHT_SECTIONS: readonly PanelSection[] = [
+  { id: SETTINGS, title: 'Settings', expanded: true },
+];
+
+/** The left panel's sections, in display order. */
+export function leftSections(): readonly PanelSection[] {
+  return LEFT_SECTIONS;
+}
+
+/** The right panel's sections, in display order. */
+export function rightSections(): readonly PanelSection[] {
+  return RIGHT_SECTIONS;
 }

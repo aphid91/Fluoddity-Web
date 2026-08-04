@@ -131,6 +131,20 @@ export interface Setting {
   readonly gateEpsilon: number;
   /** Fields this control's checkbox reveals, storing nothing itself. */
   readonly gates: readonly string[];
+  /**
+   * Whether this entry renders as a control in a panel section.
+   *
+   * False means the field is real -- packed, saved, undoable -- but its widget
+   * lives somewhere the registry does not build: today that is Mutation Scale,
+   * which is a wide slider in `ui/mutationOverlay.ts` rather than a row in a
+   * folder. `visible()` filters these out, so `grouped()` never sees them and no
+   * section has to know they exist.
+   *
+   * **Not the same as `implemented: false`**, which renders the control DISABLED
+   * to stage a layout ahead of its feature. This one renders nothing at all,
+   * because something else already renders it better.
+   */
+  readonly panel: boolean;
 }
 
 /** Defaults for everything a declaration does not state. */
@@ -149,6 +163,7 @@ const SETTING_DEFAULTS = {
   gateBase: 0.0,
   gateEpsilon: 1e-4,
   gates: [] as readonly string[],
+  panel: true,
 } as const;
 
 /** The four fields every entry must state, plus whatever it overrides. */
@@ -182,7 +197,18 @@ export const DROPDOWN_MODES = {
 // group named by `group`. Groups appear in the order their first member appears.
 export const SETTINGS: readonly Setting[] = [
   // ================= PROJECT: Mutation =================
-  // First group: the single most consequential pair of controls in the app.
+  //
+  // **NOT IN THE PANEL, deliberately.** Mutation Scale is the single most
+  // consequential control in the app, and it used to be the first entry here for
+  // exactly that reason -- which still buried it in a folder in a 320px column.
+  // It now lives in `ui/mutationOverlay.ts`, as a wide slider centred above the
+  // canvas with the Reroll Mutations button beside it.
+  //
+  // The ENTRY stays, because the overlay reads its bounds, label and help text
+  // from here rather than restating them -- `mutationSetting()` is the lookup.
+  // `panel: false` is what keeps it out of `grouped()`, and therefore out of the
+  // Project section, without making the registry lie about the field existing.
+  //
   setting({
     field: 'mutationScale',
     label: 'Mutation Scale',
@@ -196,7 +222,17 @@ export const SETTINGS: readonly Setting[] = [
       'most consequential control here: 0 makes every particle obey the same ' +
       'rule, higher values fan the population out into distinct behaviours.',
     group: 'Mutation',
+    panel: false,
   }),
+  // The SEED entry STAYS, and it is not vestigial: `randomizeSeed`
+  // (`settingsCommands.ts:118-127`) finds the field to randomize by looking up
+  // `kind === SEED` here, precisely so the field name lives in one place. Delete
+  // this and Reroll Mutations silently stops doing anything.
+  //
+  // What went away is only its WIDGET -- a read-only readout beside a Randomize
+  // button. The readout was never worth a row (an opaque selector is only ever
+  // worth reading, never typing), and the button now lives in the overlay
+  // sending that same command.
   setting({
     field: 'mutationSeed',
     label: 'Mutation Seed',
@@ -207,9 +243,10 @@ export const SETTINGS: readonly Setting[] = [
     hi: 1.0,
     help:
       'Which random variation the mutation uses. Only has an effect when ' +
-      'Mutation Scale is above zero. Randomize to explore alternatives at the ' +
+      'Mutation Scale is above zero. Reroll to explore alternatives at the ' +
       'same mutation strength.',
     group: 'Mutation',
+    panel: false,
   }),
 
   // ================= PROJECT: Population =================
@@ -310,23 +347,6 @@ export const SETTINGS: readonly Setting[] = [
       'values swap left and right.',
     group: 'Sensors',
   }),
-  // NOTE: the 5.0 upper bound is mirrored in common.wgsl as
-  // SENSOR_DISTANCE_SPAN, which is what a Sensor Distance Jitter of 1.0 spans.
-  // The shader cannot read these bounds, so widening this one means widening
-  // that constant too.
-  setting({
-    field: 'sensorDistance',
-    label: 'Sensor Distance',
-    tier: BASIC,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: 0.0,
-    hi: 5.0,
-    help:
-      'How far ahead a particle samples the trail field. Short distances produce ' +
-      'tight, detailed structure; long distances produce broad, smooth flows.',
-    group: 'Sensors',
-  }),
   setting({
     field: 'sensorAngleJitter',
     label: 'Sensor Angle Jitter',
@@ -342,6 +362,23 @@ export const SETTINGS: readonly Setting[] = [
       'more organic.\n\nScaled so 1.0 spans the whole Sensor Angle slider, ' +
       'meaning the angle is then effectively random and the base value stops ' +
       'mattering.',
+    group: 'Sensors',
+  }),
+  // NOTE: the 5.0 upper bound is mirrored in common.wgsl as
+  // SENSOR_DISTANCE_SPAN, which is what a Sensor Distance Jitter of 1.0 spans.
+  // The shader cannot read these bounds, so widening this one means widening
+  // that constant too.
+  setting({
+    field: 'sensorDistance',
+    label: 'Sensor Distance',
+    tier: BASIC,
+    source: CONFIG,
+    kind: SLIDER,
+    lo: 0.0,
+    hi: 5.0,
+    help:
+      'How far ahead a particle samples the trail field. Short distances produce ' +
+      'tight, detailed structure; long distances produce broad, smooth flows.',
     group: 'Sensors',
   }),
   setting({
@@ -740,9 +777,15 @@ export const SETTINGS: readonly Setting[] = [
   }),
 ];
 
-/** Settings for the current tier, in declaration order. */
+/**
+ * Panel settings for the current tier, in declaration order.
+ *
+ * `panel: false` entries are excluded at this one point rather than at each
+ * caller, so nothing downstream -- `grouped()`, the sections, the reveal pass --
+ * has to know that a field can have its widget somewhere else.
+ */
 export function visible(tierAdvanced: boolean): readonly Setting[] {
-  return SETTINGS.filter((s) => tierAdvanced || s.tier === BASIC);
+  return SETTINGS.filter((s) => s.panel && (tierAdvanced || s.tier === BASIC));
 }
 
 export function bySource(
@@ -789,4 +832,17 @@ export function grouped(
  */
 export function seedSetting(): Setting | null {
   return SETTINGS.find((s) => s.kind === SEED) ?? null;
+}
+
+/**
+ * One entry by source and field, for a widget the registry does not build.
+ *
+ * `mutationOverlay.ts` is the caller: it renders its own slider but takes the
+ * label, bounds and help text from here, so the overlay and a registry-driven
+ * control can never disagree about what Mutation Scale's range is. Returns
+ * `null` rather than throwing, so a renamed field degrades to a missing widget
+ * instead of a blank page.
+ */
+export function settingFor(source: Source, field: string): Setting | null {
+  return SETTINGS.find((s) => s.source === source && s.field === field) ?? null;
 }

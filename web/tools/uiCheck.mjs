@@ -252,11 +252,31 @@ const trackOf = async (key) => {
 
 const statusOf = (expr) => evaluate(`window.__fluoddity.status().${expr}`);
 
-/** Switch the panel to the Advanced tier, so every gated control exists. */
-const goAdvanced = async () => {
-  await evaluate(
-    `document.querySelector('[data-setting="editor.advanced"] input[type=checkbox]')?.click()`,
-  );
+/**
+ * Switch a panel to the Advanced tier, so every gated control exists.
+ *
+ * There are THREE tiers now, one per panel, and the gated controls this file
+ * drives are all Project settings -- so this asks for `advancedProject` by name
+ * rather than flipping a single global switch. The old one was
+ * `editor.advanced`, a lone checkbox in an "Editor" folder inside Preferences
+ * that governed everything at once; it no longer exists.
+ *
+ * **The click is asserted, not optional.** It used to be `?.click()`, which
+ * silently did nothing when the selector missed -- so the run continued in
+ * Basic and reported "ticking the gate left members [shown, absent, absent]",
+ * which reads as a product bug rather than as a stale selector. A missing
+ * checkbox is now a hard failure that says which one.
+ */
+const goAdvanced = async (field = 'advancedProject') => {
+  const clicked = await evaluate(`(() => {
+    const box = document.querySelector(
+      '[data-setting="view.${field}"] input[type=checkbox]');
+    if (!box) return false;
+    if (!box.checked) box.click();
+    return true;
+  })()`);
+  if (!clicked) die(`No Advanced checkbox for "${field}" -- the selector is stale.`);
+  // A tier change rebuilds both panes, deferred through a microtask.
   await sleep(900);
 };
 
@@ -441,6 +461,176 @@ if (clearedStrafe === 0 && clearedForce === 0) {
       'A hidden slider still pulling every particle is the worst outcome a ' +
       'checkbox could have.',
   );
+}
+
+// ===========================================================================
+// PASS 4 -- the two panels: per-panel tiers, the tool-driven tabs, the overlay
+// ===========================================================================
+console.log('\nPASS 4: the two panels, the tabs, and the overlay\n');
+
+/**
+ * Which tab the strip says is active, by its accent underline.
+ *
+ * **Asserts the buttons are actually ON SCREEN first.** An earlier version only
+ * looked for the accent, which it found on a strip that had been inserted
+ * inside a `display:none` header -- so every tab assertion passed while the tabs
+ * were invisible to a user. `offsetParent` is null for anything in a hidden
+ * subtree, which catches that no matter how many levels up the hiding is.
+ */
+const activeTab = () =>
+  evaluate(`(() => {
+    const all = [...document.querySelectorAll('[data-tab]')];
+    if (all.length !== 2) return \`expected 2 tabs, found \${all.length}\`;
+    const shown = all.filter((b) => b.offsetParent !== null);
+    if (shown.length !== 2) return \`only \${shown.length} of 2 tabs are visible\`;
+    const on = shown.filter((b) => b.style.boxShadow && b.style.boxShadow !== 'none');
+    return on.length === 1 ? on[0].dataset.tab : \`ambiguous:\${on.length}\`;
+  })()`);
+
+const setTool = async (mode) => {
+  await evaluate(
+    `window.__fluoddity.dispatch({ kind: 'setMouseMode', mode: '${mode}' })`,
+  );
+  // The tab follows the tool from `Panel.refresh`, so it needs a frame.
+  await sleep(300);
+};
+
+// --- both panels exist, on the sides they claim ---------------------------
+const sides = await evaluate(`(() => {
+  const l = document.getElementById('fluoddity-panel-left');
+  const r = document.getElementById('fluoddity-panel-right');
+  if (!l || !r) return 'missing';
+  const lr = l.getBoundingClientRect(), rr = r.getBoundingClientRect();
+  return lr.x < rr.x ? 'ok' : 'swapped';
+})()`);
+if (sides === 'ok') {
+  pass('two panels, Project left and Settings right');
+} else {
+  fail(`the two panels are "${sides}"`);
+}
+
+// --- the parked sections are parked ---------------------------------------
+const parked = await evaluate(`(() => {
+  const ids = [...document.querySelectorAll('[data-section]')]
+    .map((e) => e.dataset.section);
+  return ids.filter((i) => i === 'transport' || i === 'debug').join(',');
+})()`);
+if (parked === '') {
+  pass('Transport and Debug are parked, not rendered');
+} else {
+  fail(`a parked section is on screen: ${parked}`);
+}
+
+// --- THE TIER REBUILD, which is the bug this pass exists for ---------------
+//
+// A tier is the one thing a per-frame refresh cannot express: refresh writes
+// VALUES into blades that already exist, and a tier decides which blades exist
+// at all. So the checkbox has to dispatch AND request a rebuild, and an early
+// version did only the first -- the preference flipped and persisted, and the
+// panel went on showing Basic. Everything reported success except the screen.
+// Asserting the stored flag alone would have passed that; this asserts a
+// control that ONLY EXISTS in Advanced.
+const ADV_ONLY = 'prefs.tonemapSoftness';
+await goAdvanced('advancedPreferences');
+if ((await visible(ADV_ONLY)) === 'shown') {
+  pass('ticking Advanced REBUILT the panel, not just the preference');
+} else {
+  fail(
+    `Advanced is stored but ${ADV_ONLY} is "${await visible(ADV_ONLY)}". The ` +
+      'checkbox must call requestRebuild() as well as dispatching -- a tier ' +
+      'changes which controls EXIST, which no refresh can do.',
+  );
+}
+
+// --- the tiers are independent --------------------------------------------
+const tiers = await Promise.all([
+  statusOf('advancedProject'),
+  statusOf('advancedPreferences'),
+  statusOf('advancedDrawing'),
+]);
+if (tiers[0] === true && tiers[1] === true && tiers[2] === false) {
+  pass('the three tiers are independent (drawing untouched by the other two)');
+} else {
+  fail(`tiers are ${JSON.stringify(tiers)}; expected [true, true, false]`);
+}
+
+// --- the tabs follow the tool, as a TRANSITION ----------------------------
+await setTool('select');
+const t0 = await activeTab();
+await setTool('shove');
+const t1 = await activeTab();
+if (t0 === 'preferences' && t1 === 'drawing') {
+  pass('entering a brush tool brought Drawing Controls forward');
+} else {
+  fail(`select -> shove gave tabs "${t0}" -> "${t1}"`);
+}
+
+// Between two brush tools: the tab must NOT move. Clicked back to Preferences
+// first, so "did not move" is distinguishable from "was already there".
+await evaluate(`document.querySelector('[data-tab="preferences"]').click()`);
+await sleep(200);
+await setTool('draw');
+const t2 = await activeTab();
+if (t2 === 'preferences') {
+  pass('shove -> draw left the manually chosen tab alone');
+} else {
+  fail(`shove -> draw moved the tab to "${t2}"; a within-group move must not`);
+}
+
+await setTool('select');
+const t3 = await activeTab();
+if (t3 === 'preferences') {
+  pass('leaving for a non-brush tool shows Preferences');
+} else {
+  fail(`draw -> select gave tab "${t3}"`);
+}
+
+// --- the mutation overlay --------------------------------------------------
+const overlay = await evaluate(`(() => {
+  const root = document.getElementById('fluoddity-mutation');
+  if (!root) return 'absent';
+  const slider = root.querySelector('[data-setting="config.mutationScale"]');
+  const button = root.querySelector('[data-setting="config.mutationSeed.randomize"]');
+  if (!slider || !button) return 'incomplete';
+  // The root must not eat canvas drags: it spans the full width to centre its
+  // contents, so only the bar inside it may take the pointer.
+  if (getComputedStyle(root).pointerEvents !== 'none') return 'pointer-trap';
+  return 'ok';
+})()`);
+if (overlay === 'ok') {
+  pass('the mutation overlay has its slider and Reroll button, and passes drags through');
+} else {
+  fail(`the mutation overlay is "${overlay}"`);
+}
+
+// Mutation Scale must NOT also be in the Project panel -- one control, one place.
+const inPanel = await evaluate(`(() => {
+  const left = document.getElementById('fluoddity-panel-left');
+  return left?.querySelector('[data-setting="config.mutationScale"]') !== null;
+})()`);
+if (!inPanel) {
+  pass('Mutation Scale is only in the overlay, not also in the Project panel');
+} else {
+  fail('Mutation Scale is in BOTH the overlay and the Project panel');
+}
+
+// The Reroll button drives the same command the old Randomize did.
+await evaluate(
+  `window.__fluoddity.dispatch({ kind: 'editSetting',
+     setting: { field: 'mutationScale', source: 'config', label: 'Mutation Scale' },
+     value: 0.5 })`,
+);
+await sleep(200);
+const seedBefore = await statusOf('editConfig.mutationSeed');
+await evaluate(
+  `document.querySelector('[data-setting="config.mutationSeed.randomize"]').click()`,
+);
+await sleep(300);
+const seedAfter = await statusOf('editConfig.mutationSeed');
+if (seedBefore !== seedAfter) {
+  pass(`Reroll Mutations moved the seed (${seedBefore} -> ${seedAfter})`);
+} else {
+  fail(`Reroll Mutations left the seed at ${seedBefore}`);
 }
 
 // ===========================================================================

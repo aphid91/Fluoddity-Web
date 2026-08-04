@@ -1,19 +1,27 @@
 /**
- * The panel: one docked side-panel built from sections.
+ * The panel: two docked side-panels built from sections, plus the overlay.
  *
  * The port of `ui.py`'s `_build_ui` (`:274-297`) and the five window mixins it
  * calls. **Replaces `ui/thinPanel.ts`**, which was Step 7's flat registry dump.
  *
- * ## One panel, not five windows
+ * ## Two panels, split by what the state IS
  *
  * The desktop has five independent floating windows because they grew that way,
  * and `ARCHITECTURE.md`'s "Toolbar and the planned side-panel" names the
- * endpoint it wants instead: one docked side-panel whose visible controls follow
- * the active tool, with "each `_*_window()` body as a panel-*section*
- * function". Writing five floating panels here and merging them later would be
- * strictly more work than writing sections now, so this is sections from the
- * start. `panelModel.sectionsFor` is where the tool-selection decision will
- * land; nothing in this file has to move when it does.
+ * endpoint it wants instead: a docked panel whose visible controls follow the
+ * active tool, with "each `_*_window()` body as a panel-*section* function".
+ *
+ * That endpoint arrived as TWO panels rather than one, because the controls
+ * divide on something more fundamental than the tool: Project is the config you
+ * save and share, and everything else is how your editor is set up. See
+ * `panelModel.ts` for the split, and `sections/settingsSection.ts` for where
+ * the tool-selection part of the endpoint actually landed -- as a tab that
+ * follows the tool, driven from `refresh` below.
+ *
+ * **One `Panel` still owns both.** The tooltip, the gate state, the dialogs,
+ * the menu bar and -- critically -- the `refreshing` flag are all panel-wide.
+ * Two `Panel` instances would give two of each, and two `refreshing` flags is
+ * two chances to get the guard below wrong.
  *
  * ## THE RETAINED-MODE FEEDBACK LOOP, and the flag that closes it
  *
@@ -42,12 +50,19 @@
 
 import { Pane } from 'tweakpane';
 import type { BladeApi, FolderApi } from 'tweakpane';
-import type { Command, CommandBus, Status } from '../orchestrator/commands.ts';
+import type {
+  Command,
+  CommandBus,
+  MouseMode,
+  Status,
+  ViewPrefField,
+} from '../orchestrator/commands.ts';
 import { type ControlBinding, currentValues } from './controls.ts';
 import { Dialogs } from './dialogs.ts';
 import { GateState } from './gateState.ts';
 import { showsSlider } from './gatedControl.ts';
 import { MenuBar } from './menuBar.ts';
+import { MutationOverlay } from './mutationOverlay.ts';
 import { isGated } from './gating.ts';
 import { type InputState, EMPTY_INPUT } from './inputState.ts';
 import { gateOpen, isRevealed } from './reveal.ts';
@@ -57,10 +72,20 @@ import {
   DRAWING,
   PREFERENCES,
   PROJECT,
+  SETTINGS,
   TRANSPORT,
-  sectionsFor,
+  type PanelSection,
+  leftSections,
+  rightSections,
 } from './panelModel.ts';
 import { type SectionContext, type SectionHandle } from './sections/section.ts';
+import {
+  type SettingsSectionHandle,
+  type SettingsTab,
+  DRAWING_TAB,
+  PREFS_TAB,
+  buildSettingsSection,
+} from './sections/settingsSection.ts';
 import { Tooltip } from './tooltip.ts';
 import { buildDebugSection } from './sections/debugSection.ts';
 import { buildDrawingSection } from './sections/drawingSection.ts';
@@ -70,18 +95,60 @@ import { buildTransportSection } from './sections/transportSection.ts';
 
 export interface PanelOptions {
   readonly bus: CommandBus;
-  /** Where to mount. Defaults to a fixed-position container on the right. */
-  readonly container?: HTMLElement;
-  /** Start with ADVANCED settings shown. Defaults to false, like the desktop. */
-  readonly advanced?: boolean;
+  /** Where to mount the left (Project) panel. Defaults to a fixed container. */
+  readonly leftContainer?: HTMLElement;
+  /** Where to mount the right (Settings) panel. Defaults to a fixed container. */
+  readonly rightContainer?: HTMLElement;
 }
+
+/** Which side of the screen, and therefore which tier flag governs it. */
+const LEFT = 'left';
+const RIGHT = 'right';
+type Side = typeof LEFT | typeof RIGHT;
+
+/** One built panel. Two of these, and everything else on `Panel` is shared. */
+interface PanelSide {
+  readonly container: HTMLElement;
+  pane: Pane;
+  sections: SectionHandle[];
+}
+
+/**
+ * The tools that want the Drawing Controls tab.
+ *
+ * A set rather than a list, because what matters at every use site is
+ * membership: the tab rule is about crossing INTO or OUT OF this group, and
+ * moves within it change nothing.
+ */
+const BRUSH_TOOLS: ReadonlySet<MouseMode> = new Set<MouseMode>(['shove', 'draw']);
 
 export class Panel {
   private readonly bus: CommandBus;
-  private readonly container: HTMLElement;
-  private pane: Pane;
-  private sections: SectionHandle[] = [];
-  private advanced: boolean;
+  private readonly left: PanelSide;
+  private readonly right: PanelSide;
+
+  /** The right panel's tab host, for the tool-driven switch in `refresh`. */
+  private settings: SettingsSectionHandle | null = null;
+
+  /**
+   * Which tab is showing, held HERE rather than only in the section.
+   *
+   * A rebuild replaces the section object, and a tier toggle must not also
+   * throw you back to the Preferences tab -- the two decisions are unrelated.
+   */
+  private activeTab: SettingsTab = PREFS_TAB;
+
+  /**
+   * The tool as of the last frame, for the tab rule.
+   *
+   * **A TRANSITION, NOT A LEVEL.** The rule is "entering a brush tool from a
+   * non-brush one shows Drawing Controls", and answering it needs the previous
+   * value. A level rule -- "a brush tool is active, so show Drawing" --
+   * re-asserted every frame would silently undo a manual tab click on the very
+   * next frame, leaving the tab buttons apparently dead for as long as a brush
+   * tool was selected.
+   */
+  private lastMouseMode: MouseMode;
 
   /** See the file header. Read through `isRefreshing`, never captured. */
   private refreshing = false;
@@ -120,15 +187,24 @@ export class Panel {
   private readonly dialogs: Dialogs;
   private readonly menuBar: MenuBar;
 
+  /**
+   * Mutation Scale, above the canvas.
+   *
+   * Outside both containers for the same reason the menu bar is, and owned here
+   * so it is hidden by `X` along with everything else. See `mutationOverlay.ts`
+   * for why it is not a control in a pane.
+   */
+  private readonly overlay: MutationOverlay;
+
   constructor(opts: PanelOptions) {
     this.bus = opts.bus;
-    this.advanced = opts.advanced ?? false;
-    this.container = opts.container ?? defaultContainer();
+    this.lastMouseMode = this.bus.status().mouseMode;
 
     const send = (command: Command): void => {
       this.bus.dispatch(command);
     };
     this.dialogs = new Dialogs({ send });
+    this.overlay = new MutationOverlay({ send });
     this.menuBar = new MenuBar({
       send,
       status: () => this.bus.status(),
@@ -144,45 +220,108 @@ export class Panel {
       isUiHidden: () => this.hiddenFlag,
     });
 
-    this.pane = this.build();
+    this.left = {
+      container: opts.leftContainer ?? sideContainer(LEFT),
+      pane: new Pane({ container: document.createElement('div') }),
+      sections: [],
+    };
+    this.right = {
+      container: opts.rightContainer ?? sideContainer(RIGHT),
+      pane: new Pane({ container: document.createElement('div') }),
+      sections: [],
+    };
+    // The throwaway panes above exist only to satisfy definite assignment; both
+    // are replaced here, before anything can observe them.
+    this.left.pane.dispose();
+    this.right.pane.dispose();
+
+    this.buildBoth();
   }
 
-  private build(): Pane {
-    const pane = new Pane({ container: this.container, title: 'Fluoddity' });
+  /**
+   * Build both panes and seed their proxies, in one `refreshing` window.
+   *
+   * ONE window rather than one per side, because the flag is panel-wide: two
+   * nested guards would have the inner `finally` clear it while the outer was
+   * still seeding, and every remaining proxy write would then read as a user
+   * edit. That is the exact failure the file header describes.
+   */
+  private buildBoth(): void {
     const status = this.bus.status();
-    const ctx = this.context();
-
-    this.sections = [];
-    for (const section of sectionsFor(status.mouseMode, this.advanced)) {
-      const folder = pane.addFolder({
-        title: section.title,
-        expanded: section.expanded,
-      });
-      (folder.element as HTMLElement).dataset['section'] = section.id;
-      this.sections.push(buildSection(section.id, folder, status, ctx));
-    }
+    this.left.pane = this.buildSide(this.left, LEFT, leftSections(), status);
+    this.right.pane = this.buildSide(this.right, RIGHT, rightSections(), status);
 
     // Seed every proxy from the real value rather than the zero it was
     // constructed with -- otherwise the first frame shows a panel full of
     // defaults that do not match the loaded preset.
     //
-    // Writes through the LOCAL `pane`, not `this.pane`: during construction
-    // `this.pane` is not assigned yet (the constructor assigns what this
-    // returns), so calling the public `refresh()` here reads `undefined`. That
-    // is a real crash rather than a stale value, and it only reproduces in a
-    // browser, so `browserCheck.mjs` is what caught it.
+    // Writes through the LOCAL panes rather than the public `refresh()`: during
+    // construction the fields are not assigned yet, so `refresh()` would read
+    // `undefined`. That is a real crash rather than a stale value, and it only
+    // reproduces in a browser, so `browserCheck.mjs` is what caught it.
     this.refreshing = true;
     try {
       this.applyStatus(status, EMPTY_INPUT);
-      pane.refresh();
+      this.left.pane.refresh();
+      this.right.pane.refresh();
     } finally {
       this.refreshing = false;
+    }
+  }
+
+  /** One side's pane, from its section list. */
+  private buildSide(
+    side: PanelSide,
+    which: Side,
+    sections: readonly PanelSection[],
+    status: Status,
+  ): Pane {
+    // NO pane title. Each panel holds exactly one top-level section whose own
+    // folder header already names it, and a pane title above that said the same
+    // word twice ("Project" over "Project") while costing a row. If a panel ever
+    // holds two sections again, the section headers are what distinguish them --
+    // which is what they are for.
+    const pane = new Pane({ container: side.container });
+    const ctx = this.context(which);
+
+    side.sections = [];
+    for (const section of sections) {
+      const folder = pane.addFolder({
+        title: section.title,
+        expanded: section.expanded,
+      });
+      (folder.element as HTMLElement).dataset['section'] = section.id;
+
+      // The tabbed host is the one section the panel keeps a typed handle on,
+      // because `refresh` has to drive its tab from the active tool.
+      if (section.id === SETTINGS) {
+        const handle = buildSettingsSection(folder, status, ctx, this.activeTab);
+        this.settings = handle;
+        side.sections.push(handle);
+        continue;
+      }
+      side.sections.push(buildSection(section.id, folder, status, ctx));
     }
     return pane;
   }
 
-  /** What every section and control is handed. Rebuilt per `build()`. */
-  private context(): SectionContext {
+  /**
+   * What every section and control on one side is handed.
+   *
+   * **The tier is baked in per side**, which is what makes the three Advanced
+   * checkboxes independent: a section reads `ctx.advanced` exactly as it always
+   * did and cannot see -- or accidentally answer for -- another panel's tier.
+   * The alternative, a function taking a panel name, would have every
+   * `grouped(ctx.advanced, ...)` call site grow an argument for no gain.
+   *
+   * The right panel's two tabs are a wrinkle: they are one section list but two
+   * tiers. The settings section resolves that itself by asking for the flag it
+   * wants, so what this bakes in for RIGHT is the Preferences tab's -- and
+   * `drawingSection` reads `advancedDrawing` through its own toggle instead.
+   */
+  private context(which: Side): SectionContext {
+    const field: ViewPrefField =
+      which === LEFT ? 'advancedProject' : 'advancedPreferences';
     return {
       send: (command: Command) => {
         this.bus.dispatch(command);
@@ -195,11 +334,11 @@ export class Panel {
       // A live read, never a captured snapshot: a click handler that closed over
       // the build frame's status would be answering with arbitrarily old values.
       status: () => this.bus.status(),
-      advanced: this.advanced,
+      advanced: this.tierOf(field),
+      advancedFor: (f: ViewPrefField) => this.tierOf(f),
       requestRebuild: () => {
-        this.advanced = !this.advanced;
-        // Deferred: disposing the pane from inside its own event handler
-        // reenters Tweakpane's own teardown. A microtask is enough.
+        // Deferred: disposing a pane from inside its own event handler reenters
+        // Tweakpane's own teardown. A microtask is enough.
         queueMicrotask(() => {
           this.rebuild();
         });
@@ -208,17 +347,37 @@ export class Panel {
   }
 
   /**
-   * Tear down and rebuild.
+   * One tier flag's current value.
    *
-   * **Reserved for the tier change**, which is a rare, deliberate act that
-   * changes which controls exist at all. Per-frame refresh never rebuilds
-   * anything, and 10c's reveal/gate visibility uses `blade.hidden` rather than
-   * coming through here -- a rebuild would drop folder expansion state and
-   * replace every DOM node, which is both visible and expensive.
+   * From the named `Status` fields rather than from `status.editPrefs`, because
+   * that payload is EMPTY while no panel is open (`settingsSources`'s
+   * optimization) -- and the very first `buildBoth()` runs before `panelOpen`
+   * has been set. Reading it there would build both panels in Basic regardless
+   * of what was saved, and only a later rebuild would correct it.
+   */
+  private tierOf(field: ViewPrefField): boolean {
+    return this.bus.status()[field];
+  }
+
+  /**
+   * Tear down and rebuild BOTH panes.
+   *
+   * **Reserved for a tier change**, which is a rare, deliberate act that changes
+   * which controls exist at all. Per-frame refresh never rebuilds anything, and
+   * 10c's reveal/gate visibility uses `blade.hidden` rather than coming through
+   * here -- a rebuild would drop folder expansion state and replace every DOM
+   * node, which is both visible and expensive.
+   *
+   * Both sides, even though a tier change only affects one: the saving is two
+   * pane teardowns on a rare action, and the cost of getting it wrong is a
+   * panel showing the wrong tier until something else happens to rebuild it.
+   * `activeTab` is held on the panel precisely so this cannot lose it.
    */
   private rebuild(): void {
-    this.pane.dispose();
-    this.pane = this.build();
+    this.left.pane.dispose();
+    this.right.pane.dispose();
+    this.settings = null;
+    this.buildBoth();
   }
 
   /**
@@ -244,15 +403,46 @@ export class Panel {
     // frame loop's own `refresh()`, so what reappears is current, not stale.
     if (this.hiddenFlag) return;
 
+    this.overlay.refresh(status);
+    this.followTool(status.mouseMode);
+
     // `finally` because a throw inside a binding's handler would otherwise wedge
     // the panel permanently read-only, which is worse than the bug it guards.
     this.refreshing = true;
     try {
       this.applyStatus(status, input);
-      this.pane.refresh();
+      this.left.pane.refresh();
+      this.right.pane.refresh();
     } finally {
       this.refreshing = false;
     }
+  }
+
+  /**
+   * Bring the tab the new tool wants to the front.
+   *
+   * **Only on a crossing.** Entering a brush tool from a non-brush one shows
+   * Drawing Controls; leaving for a non-brush one shows Preferences; moving
+   * between the two brush tools changes nothing, because both want the same tab
+   * and re-asserting it would undo a manual click for no reason.
+   *
+   * The early return on an unchanged mode is what makes the tab buttons work at
+   * all: on every frame where the tool did not move, this does nothing, so
+   * whatever the user last clicked stands.
+   */
+  private followTool(mode: MouseMode): void {
+    if (mode === this.lastMouseMode) return;
+    const was = BRUSH_TOOLS.has(this.lastMouseMode);
+    const now = BRUSH_TOOLS.has(mode);
+    this.lastMouseMode = mode;
+    if (was === now) return; // A move within a group. Leave the tab alone.
+    this.setActiveTab(now ? DRAWING_TAB : PREFS_TAB);
+  }
+
+  /** Show one tab, remembering it across rebuilds. */
+  private setActiveTab(tab: SettingsTab): void {
+    this.activeTab = tab;
+    this.settings?.setActiveTab(tab);
   }
 
   /**
@@ -271,7 +461,15 @@ export class Panel {
       (gate) => gateOpen(gate, (source) => currentValues(status, source)),
     );
 
-    for (const section of this.sections) section.refresh(status, input);
+    for (const section of this.left.sections) section.refresh(status, input);
+    for (const section of this.right.sections) section.refresh(status, input);
+
+    // Adopt a tab the USER changed by clicking. The section owns the live
+    // answer; this mirror exists only so a rebuild can restore it, and without
+    // this line a manual click would survive until the next tier toggle and
+    // then silently revert.
+    if (this.settings !== null) this.activeTab = this.settings.activeTab();
+
     this.applyVisibility(status);
   }
 
@@ -311,9 +509,19 @@ export class Panel {
     }
   }
 
-  /** Every registry-driven control, across all sections. For 10c. */
+  /**
+   * Every registry-driven control, across BOTH panels. For 10c.
+   *
+   * Both sides in one list on purpose: reveals resolve across the whole
+   * registry rather than per panel, and `bloomEnabled` revealing its three
+   * children happens to stay within one folder only by coincidence. A
+   * per-panel visibility pass would make that coincidence load-bearing.
+   */
   get bindings(): readonly ControlBinding[] {
-    return this.sections.flatMap((s) => s.bindings);
+    return [
+      ...this.left.sections.flatMap((s) => s.bindings),
+      ...this.right.sections.flatMap((s) => s.bindings),
+    ];
   }
 
   /**
@@ -342,21 +550,37 @@ export class Panel {
    */
   setHidden(hidden: boolean): void {
     this.hiddenFlag = hidden;
-    this.container.style.display = hidden ? 'none' : '';
+    const display = hidden ? 'none' : '';
+    this.left.container.style.display = display;
+    this.right.container.style.display = display;
+    // The overlay goes too: `X` means "show me the picture", and a slider
+    // floating over an otherwise clean canvas would defeat the whole point.
+    this.overlay.setHidden(hidden);
   }
 
   dispose(): void {
-    this.pane.dispose();
+    this.left.pane.dispose();
+    this.right.pane.dispose();
     this.tooltip.dispose();
     this.menuBar.dispose();
     this.dialogs.dispose();
-    this.container.remove();
+    this.overlay.dispose();
+    this.left.container.remove();
+    this.right.container.remove();
   }
 }
 
-/** Dispatch on section id. A `never` arm, so adding one without a builder fails. */
+/**
+ * Dispatch on section id. A `never` arm, so adding one without a builder fails.
+ *
+ * SETTINGS is absent because `buildSide` handles it before reaching here -- it
+ * needs the initial tab and returns a wider handle than `SectionHandle`.
+ * TRANSPORT and DEBUG are absent from the section LISTS but present here on
+ * purpose: their builders are parked, not deleted, and keeping the arms means
+ * un-parking one is a single line in `panelModel.ts` (`panelModel.ts:26-37`).
+ */
 function buildSection(
-  id: ReturnType<typeof sectionsFor>[number]['id'],
+  id: Exclude<PanelSection['id'], typeof SETTINGS>,
   folder: FolderApi,
   status: Status,
   ctx: SectionContext,
@@ -397,13 +621,24 @@ function numericValue(value: number | boolean | undefined): number {
   return 0;
 }
 
-/** A fixed-position container on the right, scrollable when the list is long. */
-function defaultContainer(): HTMLElement {
+/**
+ * A fixed-position container on one side, scrollable when the list is long.
+ *
+ * The LEFT one starts lower, because the menu bar is pinned to the top-left
+ * corner (`menuBar.ts:533-543`) and a panel at `top:8px` would sit underneath
+ * it. The right side has no such neighbour, so it keeps the original geometry.
+ *
+ * Both leave room at the top for the mutation overlay to clear them: the
+ * overlay is centred and capped at 420px, so on any window wide enough for two
+ * 320px panels there is no overlap.
+ */
+function sideContainer(which: Side): HTMLElement {
   const el = document.createElement('div');
-  el.id = 'fluoddity-panel';
+  const left = which === LEFT;
+  el.id = left ? 'fluoddity-panel-left' : 'fluoddity-panel-right';
   el.style.cssText =
-    'position:fixed;top:8px;right:8px;width:320px;max-height:calc(100vh - 16px);' +
-    'overflow-y:auto;z-index:20;';
+    `position:fixed;${left ? 'top:74px;left:8px' : 'top:74px;right:8px'};` +
+    'width:320px;max-height:calc(100vh - 82px);overflow-y:auto;z-index:20;';
   document.body.append(el);
   return el;
 }

@@ -111,6 +111,25 @@ export const DRAW_PREF_FIELDS = [
 export type DrawPrefField = (typeof DRAW_PREF_FIELDS)[number];
 
 /**
+ * The three per-panel Advanced flags, as a closed set.
+ *
+ * A SEPARATE set from `DRAW_PREF_FIELDS` rather than a widening of it, for the
+ * same reason that one was narrowed in the first place: each is a closed list
+ * whose members share a meaning, and merging them would produce one list whose
+ * members do not. A brush setting and a view mode are not interchangeable, and
+ * a command that accepted either could carry `drawSize` where a tier belongs.
+ *
+ * Both land in the same `Preferences` record through the same `withValue` path;
+ * the split is about what the compiler will let a caller say, not about storage.
+ */
+export const VIEW_PREF_FIELDS = [
+  'advancedProject',
+  'advancedPreferences',
+  'advancedDrawing',
+] as const;
+export type ViewPrefField = (typeof VIEW_PREF_FIELDS)[number];
+
+/**
  * Which hover-browsing surface a preview command belongs to.
  *
  * **Two surfaces browse config collections by hovering** -- the Load menu and
@@ -244,7 +263,17 @@ export type Command =
       readonly field: DrawPrefField;
       readonly value: number | boolean;
     }
-  | { readonly kind: 'clearStrafeField' };
+  | { readonly kind: 'clearStrafeField' }
+  // --- view mode ------------------------------------------------------------
+  // Its own command rather than a case of `editDrawPref`: see `ViewPrefField`.
+  // Never recorded in history -- a tier is how you are LOOKING at the project,
+  // not a change to it, and an undo that flipped a checkbox back would be
+  // answering a question nobody asked.
+  | {
+      readonly kind: 'editViewPref';
+      readonly field: ViewPrefField;
+      readonly value: boolean;
+    };
 
 /** Every `Command`'s `kind`, for exhaustiveness assertions in tests. */
 export type CommandKind = Command['kind'];
@@ -351,6 +380,25 @@ export interface Status {
   readonly editConfig: Readonly<Record<string, number | boolean>>;
   readonly editWorld: Readonly<Record<string, number | boolean>>;
   readonly editPrefs: Readonly<Record<string, number | boolean>>;
+
+  /**
+   * The three per-panel Advanced tiers.
+   *
+   * **Carried separately from `editPrefs`, even though they are preferences.**
+   * That payload is EMPTY whenever no panel is open, which is a deliberate
+   * optimization (`settingsSources`) and correct for the values a control
+   * binds to -- nothing reads them while the panel is shut. These are
+   * different: they decide which controls the panel BUILDS, and the panel
+   * builds itself before `panelOpen` has been set. Reading them from the
+   * payload would construct both panels in Basic on first run regardless of
+   * what was saved, and nothing would correct it until the next rebuild.
+   *
+   * Three named booleans rather than a record, so a typo is a compile error --
+   * the same reasoning as `ViewPrefField`.
+   */
+  readonly advancedProject: boolean;
+  readonly advancedPreferences: boolean;
+  readonly advancedDrawing: boolean;
 }
 
 /**

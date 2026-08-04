@@ -322,24 +322,43 @@ fn reset(index: u32, config: ConfigData) {
 
 // Gravity-like force expansion: maps a linear -1..1 slider (gravity_force /
 // gravity_strafe) to a logarithmic physical force, so a small knob covers a
-// wide range. Odd-symmetric, with a linear dead-zone near centre so it reaches
-// exactly 0.
+// wide range. Odd-symmetric, with a dead zone near centre that means exactly
+// no gravity.
 //
 //   physical = sign(c) * MAXV * 10^(DECADES*(|c|-1))   for |c| > KNEE
-//   physical = sign(c) * V_KNEE * (|c|/KNEE)           for |c| <= KNEE
+//   physical = 0                                       for |c| <= KNEE
 //
-// The two pieces meet at |c| == KNEE, so the curve is continuous there.
+// ## THE CLAMP IS LOAD-BEARING
+//
+// A config may legitimately hold a value outside the slider's bounds
+// (`gating.ts:46-50` -- `position()` clamps the POSITION, never the value), and
+// a hand-edited save file or a typed field can put one there. Unclamped,
+// pow(10, DECADES*(a-1)) with a >> 1 overflows to Inf, and Inf * a zeroed
+// gravity_dir is NaN -- which poisons that particle's position permanently and
+// takes a restart to clear. Clamping the input costs one instruction and closes
+// the whole class.
+//
+// ## THE DEAD ZONE IS A HARD ZERO, not a ramp
+//
+// It used to ramp linearly from 0 at c == 0 up to the knee value, which reaches
+// exactly 0 only at exactly 0.0. Every slider position NEAR zero therefore
+// still applied a small pull, which is not what a control sitting visually at
+// centre should do. A dead zone that means "no gravity" has to actually be one.
+//
+// That makes the curve discontinuous at |c| == KNEE, stepping to
+// MAXV*10^(DECADES*(KNEE-1)) -- with the constants below, ~6e-5, which is far
+// below what is visible in a frame. Widen GRAVITY_DECADES before restoring the
+// ramp if that step ever becomes noticeable.
 const GRAVITY_MAXV: f32    = 0.5;   // physical value at |control| = 1
 const GRAVITY_DECADES: f32 = 4.0;   // log span: MAXV .. MAXV/10^DECADES
-const GRAVITY_KNEE: f32    = 0.05;  // |control| below this ramps linearly to 0
+const GRAVITY_KNEE: f32    = 0.05;  // |control| at or below this is exactly 0
 fn gravity_expand(c: f32) -> f32 {
-    let a = abs(c);
-    let s = sign(c);
-    let v_knee = GRAVITY_MAXV * pow(10.0, GRAVITY_DECADES * (GRAVITY_KNEE - 1.0));
+    let cc = clamp(c, -1.0, 1.0);
+    let a = abs(cc);
     if (a <= GRAVITY_KNEE) {
-        return s * v_knee * (a / GRAVITY_KNEE);
+        return 0.0;
     }
-    return s * GRAVITY_MAXV * pow(10.0, GRAVITY_DECADES * (a - 1.0));
+    return sign(cc) * GRAVITY_MAXV * pow(10.0, GRAVITY_DECADES * (a - 1.0));
 }
 
 // Used to enforce left-right symmetry in the local coordinates vec2(forward, left).

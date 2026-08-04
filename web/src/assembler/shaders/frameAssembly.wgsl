@@ -81,8 +81,20 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
     // -- bloom, added in linear space where adding light is meaningful --
     // The intensity carries the on/off switch (assembler.py:102-109): at zero
     // the fetch is skipped, so the 1x1 dummy bound in that case is never read.
+    //
+    // **THE BLOOM READ IS Y-FLIPPED, and nothing else here is.** The mip chain
+    // is both written and read by `fullscreen_vs` consumers, so it is internally
+    // consistent whatever convention it picked -- but that convention is the
+    // opposite of `source`'s, and the two only ever meet HERE. So the flip
+    // belongs at this one boundary, on the bloom fetch alone.
+    //
+    // DO NOT "fix" this in `fullscreenQuad.wgsl` instead: that quad is shared
+    // with the camera present and accumulate passes, its header commits to "NO
+    // Y FLIP, for every consumer", and two shader tests assert the absence of a
+    // flip there. Flipping it would mirror the camera to un-mirror the bloom.
     if (u.tone.x > 0.0) {
-        color += textureSampleLevel(bloom_tex, tex_sampler, in.uv, 0.0).rgb * u.tone.x;
+        let bloom_uv = vec2f(in.uv.x, 1.0 - in.uv.y);
+        color += textureSampleLevel(bloom_tex, tex_sampler, bloom_uv, 0.0).rgb * u.tone.x;
     }
 
     // -- exposure, then tone --

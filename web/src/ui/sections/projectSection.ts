@@ -29,6 +29,7 @@ import type { FolderApi } from 'tweakpane';
 import type { Status } from '../../orchestrator/commands.ts';
 import { type ControlBinding, addControl } from '../controls.ts';
 import { CONFIG, WORLD, grouped } from '../settingsSpec.ts';
+import { addAdvancedToggle } from '../advancedToggle.ts';
 import { type SectionContext, type SectionHandle, bindingsOnly } from './section.ts';
 
 export function buildProjectSection(
@@ -37,6 +38,11 @@ export function buildProjectSection(
   ctx: SectionContext,
 ): SectionHandle {
   const bindings: ControlBinding[] = [];
+
+  // FIRST, above the groups it governs. Tweakpane appends, so build order is
+  // display order. This panel's tier only -- the other two answer for
+  // themselves (`advancedToggle.ts`).
+  addAdvancedToggle(folder, 'advancedProject', ctx);
 
   for (const [group, settings] of grouped(ctx.advanced, [CONFIG, WORLD])) {
     // `group` is never empty for these entries -- every CONFIG/WORLD setting

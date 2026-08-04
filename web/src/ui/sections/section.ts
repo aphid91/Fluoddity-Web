@@ -21,7 +21,7 @@
  */
 
 import type { FolderApi } from 'tweakpane';
-import type { Status } from '../../orchestrator/commands.ts';
+import type { Status, ViewPrefField } from '../../orchestrator/commands.ts';
 import type { ControlBinding, ControlContext } from '../controls.ts';
 import type { InputState } from '../inputState.ts';
 
@@ -33,9 +33,25 @@ import type { InputState } from '../inputState.ts';
  * reaches every section without threading a parameter through each one.
  */
 export interface SectionContext extends ControlContext {
-  /** Whether ADVANCED-tier settings are shown. */
+  /**
+   * Whether ADVANCED-tier settings are shown IN THIS PANEL.
+   *
+   * Baked in per panel by `Panel.context`, which is what makes the three
+   * Advanced checkboxes independent: a section reads this exactly as it did
+   * when there was one global tier, and cannot see another panel's answer.
+   */
   readonly advanced: boolean;
-  /** Ask the panel to rebuild itself. Used by the tier toggle. */
+  /**
+   * Another panel's tier, by name.
+   *
+   * The escape hatch for the one case `advanced` cannot serve: the right panel
+   * is a single section list holding TWO tabs with two tiers, so its Drawing
+   * tab asks for `advancedDrawing` by name rather than taking the baked-in
+   * Preferences value. Nothing else should need this -- if a second caller
+   * appears, the per-panel baking is the thing that is wrong.
+   */
+  readonly advancedFor: (field: ViewPrefField) => boolean;
+  /** Ask the panel to rebuild itself. Used by the tier toggles. */
   readonly requestRebuild: () => void;
 }
 

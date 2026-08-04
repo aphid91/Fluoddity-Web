@@ -1058,6 +1058,14 @@ export class Orchestrator implements CommandBus {
         this.adoptPreferences(withValue(this.prefs, command.field, command.value), false);
         return;
 
+      case 'editViewPref':
+        // A view mode: which controls a panel shows, not what any of them hold.
+        // Persisted like every other preference -- and like `editDrawPref`,
+        // never recorded in history and never rebuilding, because no tier is
+        // disruptive and undo has no project state to restore.
+        this.adoptPreferences(withValue(this.prefs, command.field, command.value), false);
+        return;
+
       case 'clearStrafeField':
         // THE ONLY RESET the field has, and deliberately NOT in the undo
         // timeline: it is live-only state that never survives a restart either,
@@ -1451,6 +1459,12 @@ export class Orchestrator implements CommandBus {
 
       saveError: this.saveError,
       configBusy: this.configBusy,
+
+      // Read from `prefs` directly, NOT from `settingsSources()` -- which is
+      // empty while the panel is closed. See the `Status` field comments.
+      advancedProject: this.prefs.advancedProject,
+      advancedPreferences: this.prefs.advancedPreferences,
+      advancedDrawing: this.prefs.advancedDrawing,
 
       ...this.settingsSources(),
     };

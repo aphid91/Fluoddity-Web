@@ -23,14 +23,24 @@
 
 import type { FolderApi } from 'tweakpane';
 import type { DrawPrefField, Status } from '../../orchestrator/commands.ts';
+import { addAdvancedToggle } from '../advancedToggle.ts';
 import { type SectionContext, type SectionHandle } from './section.ts';
 
-/** One brush control: label, field, and its bounds. */
+/**
+ * One brush control: label, field, bounds, and whether it is Advanced.
+ *
+ * `advanced` is a plain flag rather than a `Setting.tier`, for the same reason
+ * the rest of this table is not a registry entry: five widgets in a dedicated
+ * section are not the registry's shape. The Basic pair is what you reach for
+ * mid-stroke -- how big the brush is and how hard it pushes; the rest is how
+ * the field is DISPLAYED, which is a setup decision rather than a drawing one.
+ */
 interface DrawControl {
   readonly field: DrawPrefField;
   readonly label: string;
   readonly params: Record<string, unknown>;
   readonly help: string;
+  readonly advanced?: boolean;
 }
 
 const CONTROLS: readonly DrawControl[] = [
@@ -54,18 +64,21 @@ const CONTROLS: readonly DrawControl[] = [
       'How visible the painted field is. The field is otherwise invisible -- ' +
       'you can only infer it from how particles move -- so this is the one way ' +
       'to see what you have painted.',
+    advanced: true,
   },
   {
     field: 'fieldAlwaysShow',
     label: 'Always Show Field',
     params: {},
     help: 'Show the field outside the Draw tool as well.',
+    advanced: true,
   },
   {
     field: 'showReticle',
     label: 'Brush Reticle',
     params: {},
     help: 'Draw the brush ring around the cursor.',
+    advanced: true,
   },
 ];
 
@@ -76,7 +89,20 @@ export function buildDrawingSection(
 ): SectionHandle {
   const proxies = new Map<DrawPrefField, { value: number | boolean }>();
 
+  // FIRST, above the controls it governs. See `projectSection.ts`.
+  addAdvancedToggle(folder, 'advancedDrawing', ctx);
+
+  // `advancedFor`, NOT `ctx.advanced`. This section shares a panel -- and
+  // therefore a context -- with Preferences, whose tier is what got baked in.
+  // Reading that here would make one checkbox drive both tabs, which is the
+  // global tier this change exists to get rid of. See `section.ts`.
+  const advanced = ctx.advancedFor('advancedDrawing');
+
   for (const control of CONTROLS) {
+    // Not built at all, rather than built and hidden -- the same thing
+    // `grouped()` does for a registry group whose members are all Advanced.
+    if (control.advanced === true && !advanced) continue;
+
     const initial = status.editPrefs[control.field] ?? 0;
     const proxy = { value: initial };
     proxies.set(control.field, proxy);

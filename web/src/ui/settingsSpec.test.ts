@@ -46,6 +46,7 @@ import {
   bySource,
   grouped,
   seedSetting,
+  settingFor,
   visible,
 } from './settingsSpec.ts';
 import {
@@ -247,10 +248,34 @@ test('there is exactly one SEED control and it is the mutation seed', () => {
 test('basic is a strict subset of advanced', () => {
   const basic = visible(false);
   const all = visible(true);
-  assert.equal(all.length, SETTINGS.length);
+  // NOT `SETTINGS.length`: `visible()` also drops `panel: false` entries, whose
+  // widget is built somewhere the registry does not reach. See the next test.
+  assert.equal(all.length, SETTINGS.filter((s) => s.panel).length);
   assert.ok(basic.length < all.length);
   assert.ok(basic.every((s) => s.tier === BASIC));
   assert.ok(all.some((s) => s.tier === ADVANCED));
+});
+
+test('panel:false entries are real settings that no panel renders', () => {
+  // Mutation Scale and its seed are the only two, and they are not vestigial:
+  // the field is still packed, saved and undoable, and `randomizeSeed` still
+  // finds the seed through `seedSetting()`. What moved is the WIDGET, to
+  // `ui/mutationOverlay.ts`. Pinned because "the registry knows about it but
+  // does not render it" is a distinction that rots quietly.
+  const offPanel = SETTINGS.filter((s) => !s.panel).map((s) => s.field);
+  assert.deepEqual(offPanel, ['mutationScale', 'mutationSeed']);
+
+  // Absent from every tier of every source, which is the whole point.
+  for (const tier of [false, true]) {
+    const fields = visible(tier).map((s) => s.field);
+    for (const field of offPanel) {
+      assert.ok(!fields.includes(field), `${field} rendered at tier ${String(tier)}`);
+    }
+  }
+
+  // ...and still reachable by the lookups that need them.
+  assert.equal(seedSetting()?.field, 'mutationSeed');
+  assert.equal(settingFor(CONFIG, 'mutationScale')?.label, 'Mutation Scale');
 });
 
 test('grouped preserves declaration order and omits empty groups', () => {
@@ -258,9 +283,12 @@ test('grouped preserves declaration order and omits empty groups', () => {
   // members are all Advanced disappears in Basic mode rather than rendering
   // empty (`settings_spec.py:429-446`).
   const advanced = grouped(true, [CONFIG, WORLD, PREFS]);
+  // 'Mutation' is absent, and that is the point: both its members are
+  // `panel: false`, so the group empties itself through `visible()` and is
+  // omitted for exactly the same reason an all-Advanced group is in Basic.
   assert.deepEqual(
     advanced.map(([name]) => name),
-    ['Mutation', 'Population', 'Sensors', 'Forces', 'Trails', 'Appearance',
+    ['Population', 'Sensors', 'Forces', 'Trails', 'Appearance',
      'Advanced', 'Simulation', 'Display'],
   );
   // 'Trails' holds one ADVANCED entry, so Basic must not render it.

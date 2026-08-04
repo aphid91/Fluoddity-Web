@@ -109,6 +109,33 @@ export interface Preferences {
   readonly worldSize: number;
   /** Canvas width:height. Reshapes world space (see `coords.ts`). */
   readonly canvasAspect: number;
+
+  // --- view mode: which controls each panel shows ---------------------------
+  /**
+   * Per-panel Basic/Advanced tier.
+   *
+   * **THREE FLAGS, NOT ONE.** There used to be a single global tier governing
+   * every section at once, which meant wanting the advanced brush controls also
+   * unfolded every advanced physics slider. Each panel now bifurcates on its
+   * own, so the Advanced checkbox at the top of a panel is about that panel and
+   * nothing else.
+   *
+   * These configure the INTERFACE, not the simulation, so they never reach a
+   * config, a preset or history -- the same reason the drawing prefs do not.
+   * They live here rather than on `Panel` only because they PERSIST: the old
+   * global tier reset each session deliberately, but a per-panel choice is a
+   * lasting statement about how you work rather than a temporary peek, and
+   * re-ticking three boxes every reload is worse than starting where you left
+   * off. They still default to Basic for a first-run user.
+   *
+   * Deliberately NOT `settingsSpec` entries: a registry entry would render them
+   * as ordinary rows inside a group, and these have to be the first blade in
+   * their panel, above the group they govern. `ui/advancedToggle.ts` builds
+   * them.
+   */
+  readonly advancedProject: boolean;
+  readonly advancedPreferences: boolean;
+  readonly advancedDrawing: boolean;
 }
 
 /** `preferences.py:35-92`'s dataclass defaults, verbatim. */
@@ -128,6 +155,10 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   showReticle: true,
   worldSize: 1.0,
   canvasAspect: 1.0,
+  // Basic for a first-run user. Persisted thereafter -- see the interface.
+  advancedProject: false,
+  advancedPreferences: false,
+  advancedDrawing: false,
 });
 
 /**
@@ -164,6 +195,9 @@ export const PREFERENCE_KINDS = {
   showReticle: 'bool',
   worldSize: 'float',
   canvasAspect: 'float',
+  advancedProject: 'bool',
+  advancedPreferences: 'bool',
+  advancedDrawing: 'bool',
 } as const satisfies Record<keyof Preferences, 'float' | 'int' | 'bool'>;
 
 export type PreferenceKey = keyof Preferences;
