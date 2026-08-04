@@ -154,7 +154,30 @@ export class MenuBar {
       // Ships with NO KEY BOUND: Step 8's table is Ctrl-free so the browser
       // keeps Ctrl+R, and a bare key for revert would lose the mnemonic that
       // made Ctrl+R worth having (it sits beside bare R for Reset).
-      this.addItem(body, 'Revert to Saved', () => this.opts.send({ kind: 'revertConfig' }));
+      //
+      // NAMES THE FILE. "Revert to Saved" never said WHAT it would revert to,
+      // which is a poor thing not to know about a destructive action. The name
+      // comes from `status.preset`; that tracks `configOrigin` -- what
+      // `revertConfig` actually reloads -- at every site that writes either one.
+      // The single exception is DELETING the loaded config, which clears the
+      // origin and leaves the name behind, and that is exactly the case
+      // `canRevert` greys out. So the gating is what keeps the label honest.
+      this.addItem(
+        body,
+        'Revert to Saved',
+        () => this.opts.send({ kind: 'revertConfig' }),
+        '',
+        undefined,
+        {
+          label: () => {
+            const status = this.opts.status();
+            return status.canRevert
+              ? `Revert to preset: ${status.preset}`
+              : 'Revert to Saved';
+          },
+          enabled: () => this.opts.status().canRevert,
+        },
+      );
     });
 
     this.addMenu('Tools', (body) => {
@@ -223,9 +246,18 @@ export class MenuBar {
     onClick: () => void,
     shortcut = '',
     checked?: () => boolean,
+    live?: {
+      /** Re-read each frame. The row's TEXT only -- `data-item` stays fixed. */
+      readonly label: () => string;
+      /** False greys the row and makes the click a no-op. */
+      readonly enabled: () => boolean;
+    },
   ): void {
     const row = document.createElement('div');
     row.style.cssText = MENU_ITEM_CSS;
+    // THE STATIC LABEL, always -- this is what `uiCheck.mjs` and the tests select
+    // on. A dynamic label must not move it, or the selector would depend on which
+    // preset happens to be loaded.
     row.dataset['item'] = label;
 
     const text = document.createElement('span');
@@ -235,10 +267,14 @@ export class MenuBar {
     row.append(text, hint);
 
     row.addEventListener('click', () => {
+      // A greyed row is inert. Without this the click would still fire and be
+      // silently swallowed downstream, which is the state this replaces.
+      if (live !== undefined && !live.enabled()) return;
       onClick();
       this.closeMenus();
     });
     row.addEventListener('mouseenter', () => {
+      if (live !== undefined && !live.enabled()) return;
       row.style.background = MENU_HOVER_BG;
     });
     row.addEventListener('mouseleave', () => {
@@ -254,6 +290,17 @@ export class MenuBar {
       });
     } else {
       hint.textContent = shortcut;
+    }
+
+    // Same per-frame pump as the checkmark above. `disabledRow`'s values, so a
+    // greyed item looks the same whether it was built dead or went dead.
+    if (live !== undefined) {
+      this.checks.push(() => {
+        const on = live.enabled();
+        text.textContent = live.label();
+        row.style.opacity = on ? '1' : '0.45';
+        row.style.cursor = on ? 'pointer' : 'default';
+      });
     }
 
     body.append(row);

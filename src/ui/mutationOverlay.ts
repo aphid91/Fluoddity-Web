@@ -55,10 +55,10 @@ const TOOL_LABELS: Record<MouseMode, string> = {
   draw: 'Draw',
 };
 
-/** `Select tool (1)`, with the key read from the hotkey table. */
+/** `Tool: Select (1)`, with the key read from the hotkey table. */
 function toolOptionLabel(mode: MouseMode): string {
   const key = hotkeyLabel({ kind: 'setMouseMode', mode });
-  return `${TOOL_LABELS[mode]} tool${key === '' ? '' : ` (${key})`}`;
+  return `Tool: ${TOOL_LABELS[mode]}${key === '' ? '' : ` (${key})`}`;
 }
 
 export class MutationOverlay {
@@ -191,7 +191,7 @@ export class MutationOverlay {
 
     // A <select> keeps keyboard focus after a click, and the number keys would
     // then be swallowed by its own type-ahead instead of reaching the hotkey
-    // table -- so picking "Shove tool (2)" would leave `2` dead until you
+    // table -- so picking "Tool: Shove (2)" would leave `2` dead until you
     // clicked elsewhere. Blurring hands the keys straight back.
     this.tool.addEventListener('change', () => {
       this.tool.blur();
@@ -213,12 +213,13 @@ export class MutationOverlay {
         this.slider.valueAsNumber = scale;
         this.readout.textContent = format(scale);
       }
-      // Disabled at zero, re-evaluated every frame because it is a live
-      // condition: with no mutation there is no variation for a seed to select,
-      // so an active button would imply an effect it cannot have.
-      this.reroll.disabled = !(scale > 0);
-      this.reroll.style.opacity = scale > 0 ? '1' : '0.4';
-      this.reroll.style.cursor = scale > 0 ? 'pointer' : 'default';
+      // DELIBERATELY NOT DISABLED AT ZERO. This used to grey out below a scale
+      // of 0, on the reasoning that with no mutation there is no variation for a
+      // seed to select. True of the picture at that instant, but not of the
+      // state: the seed the button sets is what the picture uses the moment the
+      // slider comes off zero, so rerolling first and then raising the scale is
+      // a real gesture -- and the old gate made it unreachable in exactly the
+      // order a user would try it.
     }
 
     // The tool selector. It lives here because the Transport section that used
@@ -271,8 +272,12 @@ function format(value: number): string {
 //
 // **`top` clears the menu bar.** The bar is fixed at `top:0` and runs about
 // 26px tall (`menuBar.ts`); at `top:8px` this overlay ran straight through it.
-// MENU_BAR_CLEARANCE is the one number both this and `panel.ts`'s side
-// containers are derived from, so they cannot drift apart.
+//
+// MENU_BAR_CLEARANCE POSITIONS THIS OVERLAY ONLY. `panel.ts` does not import it
+// -- its `PANEL_TOP_PX` is a hand-computed literal that has to clear the menu
+// bar AND this bar's full height, and the two are related by intent rather than
+// by code. So they CAN drift, and changing either alone is how they overlap.
+// (A previous version of this comment claimed the opposite; it was never true.)
 //
 // **`transform`, not flex, does the centring.** With `left:0;right:0` and
 // `align-items:center` the bar was centred in whatever width the root happened

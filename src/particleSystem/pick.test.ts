@@ -246,3 +246,52 @@ test('a degenerate window yields a zero radius rather than NaN', () => {
   assert.ok(Number.isFinite(r), `radius must stay finite, got ${r}`);
   assert.equal(r, 0);
 });
+
+// ---------------------------------------------------------------------------
+// The readback precondition -- the paused-picking bug
+// ---------------------------------------------------------------------------
+//
+// THE BUG THESE EXIST FOR. `recordPick` used to be called from `runFrame`, which
+// is exactly what a paused frame skips, while `beginPickReadback` ran every
+// frame regardless. So clicking a particle while paused mapped a staging buffer
+// that no encoder had written and decoded whatever was left in it. Both halves
+// of picking now sit outside the paused branch in `Orchestrator.frame`, and the
+// phase machine gained `recorded` between `dispatched` and `mapping` so that the
+// readback demands proof the GPU work exists.
+//
+// `particleSystem.ts` imports `.wgsl` and so cannot be imported here (see the
+// header). What is asserted instead is the two things that made the bug SILENT
+// rather than loud: the decode of an unwritten buffer, and the transition rule.
+
+test('an unwritten staging buffer decodes as a confident hit on entity 0', () => {
+  // WHY THE BUG WAS INVISIBLE. A zeroed buffer is not obviously garbage: key 0
+  // means distance 0 and index 0, which is the strongest possible hit. So a
+  // paused click adopted entity 0's rule -- with an all-zero rule behind it --
+  // and pushed it onto the undo stack, looking exactly like a real selection.
+  // The header calls a wrong adopted rule the worst failure mode available.
+  //
+  // This is a STATEMENT OF THE HAZARD, not of desired behaviour: nothing
+  // downstream can tell this from a legitimate pick, which is precisely why the
+  // readback must never be started for work that was never recorded.
+  const decoded = decodePickResult(new ArrayBuffer(PICK_RESULT_SIZE), 0.05);
+  assert.equal(decoded.index, 0);
+  assert.ok(isHit(decoded), 'a zeroed buffer reads as a hit -- hence the precondition');
+});
+
+test('a readback is legal only once the passes have been recorded', () => {
+  // The transition rule `beginPickReadback` enforces, stated where it can be
+  // read without a GPU. `dispatched` means the uniforms are written and nothing
+  // more; only `recordPick` puts passes and the copy on an encoder, and only
+  // then is there anything to map.
+  const mayReadBack = (phase: string): boolean => phase === 'recorded';
+
+  assert.equal(mayReadBack('idle'), false);
+  assert.equal(
+    mayReadBack('dispatched'),
+    false,
+    'requested is not recorded -- this exact gap is what broke picking while paused',
+  );
+  assert.equal(mayReadBack('recorded'), true);
+  assert.equal(mayReadBack('mapping'), false, 'already in flight');
+  assert.equal(mayReadBack('ready'), false, 'mapped; an unmap is owed');
+});

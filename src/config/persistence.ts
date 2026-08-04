@@ -57,25 +57,22 @@ export class ConfigFormatError extends Error {
 }
 
 /**
- * The camera block, if the file recorded one.
+ * A parsed save file.
  *
- * EVERY MEMBER IS INDEPENDENTLY OPTIONAL, matching
- * `_apply_saved_camera` (`project_commands.py:241-253`): a file may record a pan
- * and no zoom. `null` for the whole block means the file recorded no camera at
- * all, and the caller must then LEAVE THE CAMERA ALONE rather than snapping to a
- * default -- `persistence.py:58-70` is explicit about that.
+ * NO CAMERA. The format used to carry a `{pan, zoom, mode}` block, and loading a
+ * config snapped the view to wherever the person who saved it happened to be
+ * looking. That is not a property of the simulation -- it is where you were
+ * standing when you wrote the file -- and having it ride along meant you could
+ * not compare two presets without being thrown across the world between them.
+ *
+ * The key is READ-TOLERANT in both directions, so the version stays at 8: files
+ * that still carry `camera` (every shipped preset does, and every save written
+ * before this) load fine, because the reader only ever asks for keys it knows.
+ * The block is simply ignored, and dropped the next time that file is written.
  */
-export interface SavedCamera {
-  readonly pan?: readonly [number, number];
-  readonly zoom?: number;
-  readonly mode?: string;
-}
-
-/** A parsed save file. */
 export interface SavedConfig {
   readonly configs: readonly SimulationConfig[];
   readonly world: WorldSettings;
-  readonly camera: SavedCamera | null;
   readonly notes: string;
 }
 
@@ -220,28 +217,6 @@ function configFromDocument(raw: Record<string, unknown>, where: string): Simula
   );
 }
 
-/** The camera block, if there is one. Each member independently optional. */
-function cameraFromDocument(value: unknown): SavedCamera | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  const raw = value as Record<string, unknown>;
-  const camera: { pan?: readonly [number, number]; zoom?: number; mode?: string } = {};
-
-  const pan = raw['pan'];
-  if (
-    Array.isArray(pan) &&
-    pan.length === 2 &&
-    pan.every((n) => typeof n === 'number' && Number.isFinite(n))
-  ) {
-    camera.pan = [pan[0] as number, pan[1] as number];
-  }
-  if (typeof raw['zoom'] === 'number' && Number.isFinite(raw['zoom'])) {
-    camera.zoom = raw['zoom'];
-  }
-  if (typeof raw['mode'] === 'string') camera.mode = raw['mode'];
-
-  return camera;
-}
-
 /**
  * Parse a v8 document. The port of `from_dict` + `_from_v8`
  * (`persistence.py:184-210`).
@@ -290,10 +265,12 @@ export function fromDocument(data: unknown, where = 'config'): SavedConfig {
     ),
   });
 
+  // `camera` IS NOT READ. Older files and every shipped preset still carry one;
+  // it is ignored here rather than rejected, which is what lets those files keep
+  // loading without a version bump. See `SavedConfig`.
   return {
     configs,
     world,
-    camera: cameraFromDocument(raw['camera']),
     notes: typeof raw['notes'] === 'string' ? raw['notes'] : '',
   };
 }
@@ -349,14 +326,18 @@ function configToDocument(config: SimulationConfig): unknown {
  * config 0 was removed on the desktop because it silently dropped the others
  * (`project_commands.py:108-110`).
  *
- * `camera` and `notes` are OMITTED when absent rather than written as null,
- * matching the Python -- and the reader's "no camera means leave the camera
- * alone" contract depends on absence being distinguishable.
+ * NO CAMERA IS WRITTEN -- see `SavedConfig`. This took a `camera` argument
+ * between `world` and `notes`; any caller still passing one positionally would
+ * now be handing it to `notes`, so the parameter was removed rather than left
+ * as an ignored placeholder, which makes that a type error instead of a silent
+ * one.
+ *
+ * `notes` is OMITTED when empty rather than written as null, matching the
+ * Python.
  */
 export function toDocument(
   configs: readonly SimulationConfig[],
   world: WorldSettings,
-  camera: SavedCamera | null = null,
   notes = '',
 ): unknown {
   const doc: Record<string, unknown> = {
@@ -368,7 +349,6 @@ export function toDocument(
     },
     configs: configs.map(configToDocument),
   };
-  if (camera !== null) doc['camera'] = camera;
   if (notes) doc['notes'] = notes;
   return doc;
 }

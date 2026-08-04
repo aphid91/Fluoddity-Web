@@ -133,7 +133,7 @@ test('X is handled locally rather than dispatched', () => {
 // --- 3b. hotkeyLabel: the shortcut hints in the overlay --------------------
 //
 // The mutation overlay advertises its shortcuts -- "Reroll Mutations (F)",
-// "Shove tool (2)". These assert the labels come from THIS table, so a rebind
+// "Tool: Shove (2)". These assert the labels come from THIS table, so a rebind
 // moves them. A hand-written "(F)" would be a second copy of the binding that
 // goes stale silently, which is the exact failure the table exists to prevent.
 

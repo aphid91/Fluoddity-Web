@@ -54,7 +54,6 @@ import {
   CameraState,
   PAN_PER_SECOND,
   ZOOM_PER_SECOND,
-  cameraModeFromValue,
 } from '../camera/cameraState.ts';
 import { blurSchedule, sampleAt } from '../camera/blurSchedule.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
@@ -74,7 +73,7 @@ import {
   CUSTOM_CATEGORY,
   DEFAULT_PRESET_NAME,
 } from '../config/configStore.ts';
-import { type SavedCamera, sanitizeName, toDocument } from '../config/persistence.ts';
+import { sanitizeName, toDocument } from '../config/persistence.ts';
 import {
   type Preferences,
   loadPreferences,
@@ -385,10 +384,8 @@ export class Orchestrator implements CommandBus {
       presetName,
       configOrigin,
     });
-    // The startup preset's camera, if it recorded one. Applied here rather than
-    // in the constructor because it is a load like any other -- see
-    // `applySavedCamera` for why an absent block must leave the camera alone.
-    orchestrator.applySavedCamera(loaded.camera);
+    // No camera is applied from the startup preset -- the view starts where the
+    // camera's own defaults put it. See the note above `adoptPreset`.
     return orchestrator;
   }
 
@@ -399,17 +396,22 @@ export class Orchestrator implements CommandBus {
   /**
    * One frame. The port of `orchestrator.py:256-365`.
    *
-   * THE ORDER IS THE CONTRACT. Four things about it are load-bearing and every
+   * THE ORDER IS THE CONTRACT. Five things about it are load-bearing and every
    * one of them has a comment at its site rather than only here:
    *
    *  1. The pending selection resolves FIRST, before input can dispatch a new
    *     pick -- there is one result slot, so a new dispatch clobbers the answer
    *     being read.
-   *  2. That resolve is OUTSIDE the paused branch. `runFrame` is what a paused
-   *     frame skips, and clicking to select must keep working when it is.
+   *  2. BOTH HALVES OF PICKING SIT OUTSIDE THE PAUSED BRANCH: the resolve at the
+   *     top, and `recordPick` below it. `runFrame` is what a paused frame skips,
+   *     and clicking to select must keep working when it is. Only the resolve
+   *     was hoisted originally, which left paused picking recording nothing and
+   *     reading stale bytes -- the two have to move together.
    *  3. Input is applied ABOVE the render, because painting (Step 9) binds its
    *     own target and would otherwise paint over the screen.
-   *  4. The assembler presents AFTER the sub-step loop, because the camera
+   *  4. `recordPick` runs AFTER the branch, so the pick sees the positions the
+   *     frame ended on rather than the ones it started from.
+   *  5. The assembler presents AFTER the sub-step loop, because the camera
    *     binds its own targets for every sample inside it.
    */
   frame(input: InputState): void {
@@ -430,7 +432,8 @@ export class Orchestrator implements CommandBus {
     // entity, which measured in the tens of milliseconds per frame at large
     // world sizes -- far too much for something whose answer is only wanted
     // when the user acts. It is on-demand: a SELECT-mode click requests one
-    // above, and the resolve at the top of the next frame reads it.
+    // above, `recordPick` below puts its passes on this frame's encoder, and the
+    // resolve at the top of the next frame reads the result back.
 
     const windowSize = this.surface.size();
 
@@ -539,6 +542,21 @@ export class Orchestrator implements CommandBus {
         });
       });
     }
+
+    // 4. THE PICK PASSES, IN BOTH BRANCHES.
+    //
+    // Outside the paused branch for the same reason `selection.resolve()` is at
+    // the top of this method: `runFrame` is what a paused frame skips, and
+    // clicking to select must keep working when it is -- which is precisely when
+    // a user wants to inspect a particle. This call lived at the end of
+    // `runFrame`, so while paused nothing was ever recorded, yet the readback
+    // below still ran and decoded whatever stale bytes the staging buffer held.
+    //
+    // AFTER the branch, so it keeps the ordering `runFrame` gave it: the pick
+    // sees the positions the frame ended on, which are the entities the user is
+    // looking at when they click. While paused those are the frozen ones, which
+    // is the same guarantee.
+    this.system.recordPick(encoder);
 
     // AFTER the loop, not before: the camera binds its own targets for every
     // sample above, so binding the swap chain any earlier would be undone.
@@ -1135,8 +1153,8 @@ export class Orchestrator implements CommandBus {
     this.presetName = entry.name;
     this.presetIndex = Math.max(0, this.catalog.order.indexOf(entry.name));
     this.configOrigin = { category: entry.category, name: entry.name };
-    // ONLY ON A COMMITTED LOAD. Not on a preview, not on the LEFT/RIGHT cycle.
-    this.applySavedCamera(saved.camera);
+    // NO CAMERA. Loading a config leaves the view exactly where it was, on every
+    // path -- committed load, preview, and the LEFT/RIGHT cycle alike.
   }
 
   /** Commit a load: settings, world, name, camera, and one history entry. */
@@ -1228,10 +1246,12 @@ export class Orchestrator implements CommandBus {
   /**
    * Write the project to storage under "Custom".
    *
-   * ALWAYS SAVES THE WHOLE CONFIG BUFFER and ALWAYS RECORDS A CAMERA, matching
-   * `_cmd_save_config` (`project_commands.py:105-133`): saving only the selected
-   * slot was removed there because it silently dropped the others, and a save
-   * with no camera is a save that loses the view.
+   * ALWAYS SAVES THE WHOLE CONFIG BUFFER, matching `_cmd_save_config`
+   * (`project_commands.py:105-133`): saving only the selected slot was removed
+   * there because it silently dropped the others.
+   *
+   * RECORDS NO CAMERA, unlike the desktop. See `SavedConfig` in
+   * `persistence.ts` -- the view is not part of a project.
    *
    * Overwrites silently, also matching the desktop. Any "are you sure" belongs
    * in the UI, where the user can see what they are replacing.
@@ -1250,7 +1270,7 @@ export class Orchestrator implements CommandBus {
       return;
     }
 
-    const document = toDocument(this.project.configs, this.project.world, this.cameraDocument());
+    const document = toDocument(this.project.configs, this.project.world);
     this.configBusy = `Saving ${safe}…`;
     void this.store
       .write(CUSTOM_CATEGORY, safe, document)
@@ -1274,37 +1294,16 @@ export class Orchestrator implements CommandBus {
     this.presetIndex = Math.max(0, this.catalog.order.indexOf(this.presetName));
   }
 
-  /** The camera, in the shape the save format records. */
-  private cameraDocument(): SavedCamera {
-    const cam = this.camera.state;
-    return { pan: [cam.pan[0], cam.pan[1]], zoom: cam.zoom, mode: cam.mode };
-  }
-
-  /**
-   * Restore a saved camera. The port of `_apply_saved_camera`
-   * (`project_commands.py:241-253`).
-   *
-   * `null` MEANS LEAVE THE CAMERA ALONE, not "reset to default" -- a file that
-   * recorded no camera is not expressing a preference for the origin, and
-   * snapping there would be worse than staying put (`persistence.py:58-70`).
-   * Each member is independently optional for the same reason.
-   *
-   * `setZoom`, NEVER `state.zoom =`. The setter clamps and rejects a non-finite
-   * value, and a hand-edited or corrupt file is exactly where a NaN comes from.
-   * A direct assignment would break the camera permanently and silently.
-   */
-  private applySavedCamera(camera: SavedCamera | null): void {
-    if (camera === null) return;
-    const state = this.camera.state;
-    if (camera.pan !== undefined) state.pan = [camera.pan[0], camera.pan[1]];
-    if (camera.zoom !== undefined) state.setZoom(camera.zoom);
-    if (camera.mode !== undefined) {
-      const mode = cameraModeFromValue(camera.mode);
-      // An unrecognized mode leaves the current one, matching the desktop's
-      // for-loop that simply finds no match.
-      if (mode !== null) state.mode = mode;
-    }
-  }
+  // THE CAMERA IS NOT PART OF A PROJECT. `cameraDocument` and `applySavedCamera`
+  // used to live here, writing the view into every save and snapping to it on
+  // every load. Where you were looking is not a property of the simulation, and
+  // carrying it meant you could not compare two presets without being thrown
+  // across the world between them. See `SavedConfig` in `persistence.ts`.
+  //
+  // This also ends the LEFT/RIGHT view-jump: the cycle reaches loads through
+  // `adoptPreset` -> `loadConfig` -> `adoptSaved`, so it moved the camera too,
+  // despite two comments here claiming the camera moved only on a committed
+  // load. It never did what they said.
 
   /** Load a config by name from anywhere in the catalog, for the LEFT/RIGHT cycle. */
   private adoptPreset(name: string): void {

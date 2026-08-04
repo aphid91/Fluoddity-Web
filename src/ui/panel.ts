@@ -682,5 +682,10 @@ function sideContainer(which: Side): HTMLElement {
  * Clears the menu bar (fixed at `top:0`, ~26px) and the mutation overlay
  * beneath it. A single constant because the two panels must agree -- one of
  * them starting lower than the other reads as a rendering bug.
+ *
+ * HAND-COMPUTED, not derived from `mutationOverlay.ts`'s MENU_BAR_CLEARANCE --
+ * these two numbers are related by intent only, so moving one without the other
+ * is what makes them overlap. Raised from 78 because at some window sizes the
+ * panels still clipped the mutation slider's bottom edge.
  */
-const PANEL_TOP_PX = 78;
+const PANEL_TOP_PX = 83;

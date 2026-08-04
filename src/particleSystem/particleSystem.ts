@@ -217,7 +217,7 @@ export class ParticleSystem {
   /** Host-visible copy. A buffer cannot be both STORAGE and MAP_READ. */
   private readonly pickStaging: GPUBuffer;
   private readonly pickUniforms: GPUBuffer;
-  private pickPhase: 'idle' | 'dispatched' | 'mapping' | 'ready' = 'idle';
+  private pickPhase: 'idle' | 'dispatched' | 'recorded' | 'mapping' | 'ready' = 'idle';
   /**
    * The radius of the in-flight dispatch, needed to decode its quantized
    * distance. `picker.py:90-92` keeps `_pending_radius` for the same reason:
@@ -866,12 +866,25 @@ export class ParticleSystem {
   // to be distinguished:
   //
   //   idle       nothing in flight; the staging buffer is free
-  //   dispatched passes and the copy are recorded; mapAsync not yet called
+  //   dispatched REQUESTED: uniforms written, nothing recorded yet
+  //   recorded   passes and the copy are in an encoder; mapAsync not yet called
   //   mapping    mapAsync in flight; staging cannot be copied into
   //   ready      mapped; getMappedRange() is valid and an unmap() is owed
   //
-  // `dispatched` is separate from `mapping` because mapAsync must be called
-  // AFTER submit(), never while the encoder is open.
+  // `recorded` is separate from `mapping` because mapAsync must be called AFTER
+  // submit(), never while the encoder is open.
+  //
+  // `dispatched` IS SEPARATE FROM `recorded` BECAUSE THE GAP BETWEEN THEM IS A
+  // REAL BUG THAT SHIPPED. These were one state, on the reading that a request
+  // is always recorded in the same frame -- but `recordPick` was called from
+  // `runFrame`, which a PAUSED frame skips, while `beginPickReadback` ran
+  // regardless. So a paused click mapped a staging buffer nothing had written
+  // and decoded whatever was left in it: the previous pick's bytes, or zeroes,
+  // which decode as a confident hit on entity 0 with an all-zero rule. That
+  // result was then adopted into the project and pushed onto the undo stack --
+  // `pick.ts` calls silently adopting the wrong rule the worst failure mode
+  // available, and this was it. Splitting the states makes the readback demand
+  // proof that the GPU work exists, so the same mistake drops the pick instead.
 
   /**
    * Phase 1: dispatch a pick. The result arrives via `retrievePick()` on a
@@ -890,7 +903,9 @@ export class ParticleSystem {
 
     // Abandon whatever was in flight. A buffer that is mapping or mapped cannot
     // be copied into, so those two states have to be resolved before the new
-    // dispatch can record its copy.
+    // dispatch can record its copy. `dispatched` and `recorded` both fall
+    // through to the overwrite below: neither has mapped the buffer, so it is
+    // still a legal copy target and the newer click simply replaces the older.
     this.pickGeneration++;
     if (this.pickPhase === 'ready') {
       // Mapped and never read. Release it; the result is stale now anyway.
@@ -922,9 +937,17 @@ export class ParticleSystem {
   /**
    * Record the two pick passes and the readback copy, if a pick is pending.
    *
-   * Called from `runFrame`, so a pick rides the frame's existing encoder.
+   * CALLED FROM THE FRAME LOOP, NOT FROM `runFrame` -- the same reason
+   * `retrievePick` is. `runFrame` is exactly what a paused frame skips, and
+   * clicking to select has to keep working while paused; that is precisely when
+   * a user wants to inspect a particle. This lived in `runFrame` and picking was
+   * silently broken while paused as a result (see the phase machine above).
+   *
+   * The caller must record this AFTER the sub-steps, so the pick sees the
+   * positions the frame ended on -- the same entities the user is looking at
+   * when they click. It rides the frame's existing encoder either way.
    */
-  private recordPick(encoder: GPUCommandEncoder): void {
+  recordPick(encoder: GPUCommandEncoder): void {
     if (this.pickPhase !== 'dispatched') return;
     if (this.pickReducePipeline === null || this.pickDerivePipeline === null) return;
     if (this.pickGroup === null) return;
@@ -951,6 +974,10 @@ export class ParticleSystem {
     // Recorded in the SAME encoder, so it is ordered after `derive` by
     // construction rather than by timing.
     encoder.copyBufferToBuffer(this.pickResult, 0, this.pickStaging, 0, PICK_RESULT_SIZE);
+
+    // The staging buffer now HAS something coming. Only from here is a readback
+    // meaningful -- see the phase machine.
+    this.pickPhase = 'recorded';
   }
 
   /**
@@ -959,9 +986,13 @@ export class ParticleSystem {
    * Separate from `recordPick` because `mapAsync` may not be called while the
    * encoder is open, and separate from `retrievePick` because the map takes
    * time -- that wait is the whole reason picking is two-phase.
+   *
+   * REQUIRES `recorded`, NOT `dispatched`. Mapping a staging buffer that no
+   * encoder wrote hands back stale bytes that decode as a real hit; demanding
+   * proof of the GPU work turns that into a dropped pick instead.
    */
   beginPickReadback(): void {
-    if (this.pickPhase !== 'dispatched') return;
+    if (this.pickPhase !== 'recorded') return;
 
     const generation = this.pickGeneration;
     this.pickPhase = 'mapping';
@@ -1092,12 +1123,11 @@ export class ParticleSystem {
     }
     this._frameCount += steps;
 
-    // After the sub-steps, so the pick sees the positions the frame ended on --
-    // the same entities the user is looking at when they click. Inside the
-    // encoder because the passes need it; the RESOLVE, by contrast, lives in
-    // the frame loop outside runFrame, because picking must work while paused
-    // and runFrame is what a paused frame skips.
-    this.recordPick(encoder);
+    // NO `recordPick` HERE. It used to be, and that is the whole of the paused-
+    // picking bug: this method is what a paused frame skips, so the pick passes
+    // were never recorded while paused even though the readback still ran. The
+    // caller records it after this returns, on the same encoder, which keeps the
+    // "after the sub-steps" ordering and works in both branches.
   }
 
   private makeUniformBuffer(label: string, stride: number): GPUBuffer {
@@ -1255,7 +1285,7 @@ export class ParticleSystem {
     // inside a click's readback window is exactly when that happens. Bumping the
     // generation makes any in-flight continuation abandon (`beginPickReadback`
     // already checks it), and `unmap()` is legal on an unmapped buffer, so the
-    // pair covers all four phases without needing to know which one we are in.
+    // pair covers every phase without needing to know which one we are in.
     this.pickGeneration++;
     this.pickPhase = 'idle';
     this.pickStaging.unmap();

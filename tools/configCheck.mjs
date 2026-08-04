@@ -12,8 +12,8 @@
  *   PASS 2  a save survives A FULL PAGE RELOAD. This is the whole assertion --
  *           an in-memory Map passes every step up to it, so nothing before the
  *           reload distinguishes real persistence from a convincing fake.
- *   PASS 3  loading a saved config restores its settings AND its camera, and a
- *           shipped preset refuses to be deleted.
+ *   PASS 3  loading a saved config restores its settings and LEAVES THE CAMERA
+ *           ALONE, and a shipped preset refuses to be deleted.
  *
  * Usage (from the repo root, with `npm run dev` running):
  *   node tools/configCheck.mjs
@@ -280,8 +280,8 @@ if (savedNow?.length === 1 && record.name === 'check meplease') {
   fail(`expected one record named "check meplease", got ${JSON.stringify(savedNow)}`);
 }
 
-if (record?.version === 8 && record?.hasCamera && record?.configs >= 1) {
-  pass('the stored document is v8, carries a camera, and holds every config slot');
+if (record?.version === 8 && !record?.hasCamera && record?.configs >= 1) {
+  pass('the stored document is v8, carries NO camera, and holds every config slot');
 } else {
   fail(`stored document is malformed: ${JSON.stringify(record)}`);
 }

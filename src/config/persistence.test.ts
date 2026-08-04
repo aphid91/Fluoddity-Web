@@ -133,41 +133,42 @@ test('the whole config buffer round-trips, not just the selected slot', () => {
   assert.equal(again.configs.length, 3);
 });
 
-test('camera and notes are omitted when absent, and survive when present', () => {
+test('notes are omitted when absent and survive when present', () => {
   const doc = fromDocument(validDocument());
 
-  // ABSENCE MUST BE DISTINGUISHABLE from a default: the reader's contract is
-  // that a file with no camera leaves the camera alone (`persistence.py:58-70`).
   const bare = toDocument(doc.configs, doc.world) as Record<string, unknown>;
-  assert.equal('camera' in bare, false);
   assert.equal('notes' in bare, false);
-  assert.equal(fromDocument(bare).camera, null);
 
-  const withCamera = toDocument(
-    doc.configs,
-    doc.world,
-    { pan: [0.5, -0.25], zoom: 2.03, mode: 'particles' },
-    'a note',
-  );
-  const back = fromDocument(withCamera);
-  assert.deepEqual(back.camera, { pan: [0.5, -0.25], zoom: 2.03, mode: 'particles' });
-  assert.equal(back.notes, 'a note');
+  const withNotes = toDocument(doc.configs, doc.world, 'a note');
+  assert.equal(fromDocument(withNotes).notes, 'a note');
 });
 
-test('each camera member is independently optional', () => {
-  // `_apply_saved_camera` (`project_commands.py:241-253`) reads all three with
-  // `.get()`. A file with a pan and no zoom must not lose the pan.
+test('the writer never emits a camera', () => {
+  // THE VIEW IS NOT PART OF A PROJECT (see `SavedConfig`). This used to write a
+  // `{pan, zoom, mode}` block on every save, and loading snapped the view to it.
+  const doc = fromDocument(validDocument());
+  const written = toDocument(doc.configs, doc.world, 'a note') as Record<string, unknown>;
+  assert.equal('camera' in written, false);
+
+  // `notes` MOVED UP a position when the camera argument was removed. If it were
+  // still landing in the old third slot this would read back empty.
+  assert.equal(fromDocument(written).notes, 'a note');
+});
+
+test('a file that still carries a camera loads, ignoring it', () => {
+  // WHY THE VERSION STAYS AT 8. Every shipped preset and every save written
+  // before this change carries a camera block. The reader only asks for keys it
+  // knows, so those files keep loading -- the block is ignored, not rejected,
+  // and is dropped the next time the file is written.
   const doc = validDocument();
-  doc['camera'] = { pan: [1, 2] };
-  assert.deepEqual(fromDocument(doc).camera, { pan: [1, 2] });
+  doc['camera'] = { pan: [0.5, -0.25], zoom: 2.03, mode: 'particles' };
+  const parsed = fromDocument(doc);
+  assert.equal(parsed.configs.length, 1);
+  assert.equal('camera' in parsed, false);
 
-  doc['camera'] = { zoom: 3 };
-  assert.deepEqual(fromDocument(doc).camera, { zoom: 3 });
-
-  // A malformed pan is dropped rather than throwing: the rest of the block is
-  // still usable, and a camera is not worth failing a load over.
-  doc['camera'] = { pan: [1], zoom: 3 };
-  assert.deepEqual(fromDocument(doc).camera, { zoom: 3 });
+  // Including a malformed one, which must not fail a load either.
+  doc['camera'] = { pan: 'sideways', zoom: null };
+  assert.equal(fromDocument(doc).configs.length, 1);
 });
 
 // ---------------------------------------------------------------------------
