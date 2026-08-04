@@ -76,6 +76,7 @@ import {
 import { sanitizeName, toDocument } from '../config/persistence.ts';
 import {
   type Preferences,
+  DEFAULT_PREFERENCES,
   loadPreferences,
   requiresRestart,
   savePreferences,
@@ -1101,6 +1102,20 @@ export class Orchestrator implements CommandBus {
         // never recorded in history and never rebuilding, because no tier is
         // disruptive and undo has no project state to restore.
         this.adoptPreferences(withValue(this.prefs, command.field, command.value), false);
+        return;
+
+      case 'resetPreferences':
+        // **`allowRebuild` STAYS TRUE**, unlike the two cases above. This is the
+        // one preference command that can move World Size or Canvas Aspect, and
+        // those reallocate the entity buffer and the canvas -- so `false` here
+        // would leave a live simulation running at the OLD size with the panel
+        // reporting the new one, which is the exact divergence `requiresRestart`
+        // exists to prevent. `adoptPreferences` decides whether a rebuild is
+        // actually needed, so a reset that changed neither is still free.
+        //
+        // The project is untouched: `rebuildSystem` carries it over, so a reset
+        // that does rebuild keeps your unsaved edits.
+        this.adoptPreferences(DEFAULT_PREFERENCES);
         return;
 
       case 'clearStrafeField':

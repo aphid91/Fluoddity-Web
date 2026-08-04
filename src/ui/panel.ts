@@ -224,6 +224,9 @@ export class Panel {
       onDeleteConfig: (category, name) => {
         this.dialogs.openDelete(category, name);
       },
+      onResetPreferences: () => {
+        this.dialogs.openResetPreferences();
+      },
       onToggleUi: () => {
         this.setHidden(!this.hiddenFlag);
       },

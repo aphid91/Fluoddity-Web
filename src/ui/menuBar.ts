@@ -1,5 +1,11 @@
 /**
- * The menu bar: File, Edit, Tools, View, Simulation.
+ * The menu bar: File, History, Tools, Editor, Simulation.
+ *
+ * **The menu TITLES are load-bearing strings**, not just labels: `setOpenMenu`
+ * gates each hover-preview session on the open menu's title, so renaming one
+ * without renaming its comparison silently stops the snapshot from being taken
+ * and unhovering restores nothing. That is why the two are within a screen of
+ * each other rather than the titles living in a constant far away.
  *
  * The port of `ui/config_menu.py:_menu_bar` (`:82-160`) and the two
  * browse-by-hover submenus under it.
@@ -46,6 +52,15 @@ export interface MenuBarOptions {
   readonly onSave: () => void;
   /** Ask to delete a stored config. Opens the confirm dialog. */
   readonly onDeleteConfig: (category: string, name: string) => void;
+  /**
+   * Ask to reset every editor preference. Opens the confirm dialog.
+   *
+   * A callback rather than a `send` of `resetPreferences` directly, for the same
+   * reason `onDeleteConfig` is one: the dialogs outlive the menu and are owned by
+   * the panel, so the menu asks for the question to be put rather than issuing
+   * the command itself. The command goes out only if the user says yes.
+   */
+  readonly onResetPreferences: () => void;
   /** Toggle the settings panel. The `X` key's action, as a menu item. */
   readonly onToggleUi: () => void;
   /** Whether the panel is currently hidden, for the checkmark. */
@@ -138,7 +153,10 @@ export class MenuBar {
       this.loadBody = this.addSubmenu(body, 'Load');
     });
 
-    this.addMenu('Edit', (body) => {
+    // "History" rather than "Edit". Every item under it moves along the undo
+    // timeline -- undo, redo, checkpoints, revert -- and "Edit" sat one letter
+    // away from "Editor" next door while describing something else entirely.
+    this.addMenu('History', (body) => {
       this.addItem(body, 'Undo', () => this.opts.send({ kind: 'undo' }), 'Z');
       this.addItem(body, 'Redo', () => this.opts.send({ kind: 'redo' }), 'Shift+Z');
       this.addSeparator(body);
@@ -193,9 +211,21 @@ export class MenuBar {
       }
     });
 
-    this.addMenu('View', (body) => {
+    // "Editor" rather than "View": the menu already held Hide Panel, which is
+    // not a view at all, and it now holds the preferences reset -- so the thing
+    // these items have in common is the editor, not the camera.
+    this.addMenu('Editor', (body) => {
       this.addItem(body, 'Toggle Camera Mode', () => this.opts.send({ kind: 'toggleCameraMode' }), 'M');
       this.addItem(body, 'Reset View', () => this.opts.send({ kind: 'resetCamera' }), 'Home');
+      // Under Reset View because both discard editor state you did not save --
+      // and SEPARATED from it, because Reset View is a keystroke you can take
+      // back by moving the camera and this one is not undoable at all. The
+      // dialog is the real guard (`dialogs.ts`); the rule is what stops the
+      // click landing on the wrong row.
+      this.addSeparator(body);
+      this.addItem(body, 'Reset Editor Preferences...', () =>
+        this.opts.onResetPreferences(),
+      );
       this.addSeparator(body);
       this.addItem(body, 'Hide Panel', () => this.opts.onToggleUi(), 'X', () =>
         this.opts.isUiHidden(),
@@ -530,12 +560,12 @@ export class MenuBar {
       this.hoveredConfig = null;
       this.loadPreview.end();
     }
-    if (title !== 'Edit') {
+    if (title !== 'History') {
       this.hoveredCheckpoint = null;
       this.checkpointPreview.end();
     }
     if (title === 'File') this.loadPreview.begin();
-    if (title === 'Edit') this.checkpointPreview.begin();
+    if (title === 'History') this.checkpointPreview.begin();
   }
 
   private closeMenus(): void {

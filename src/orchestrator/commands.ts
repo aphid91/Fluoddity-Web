@@ -283,7 +283,26 @@ export type Command =
       readonly kind: 'editViewPref';
       readonly field: ViewPrefField;
       readonly value: boolean;
-    };
+    }
+  /**
+   * Put every editor preference back to its shipped default.
+   *
+   * **PREFERENCES ONLY.** Saved configs live in IndexedDB and the live project
+   * lives in memory; this touches neither, which is what makes it safe to offer
+   * as a single menu item beside Reset View. It is the in-app form of clearing
+   * `localStorage`'s `fluoddity.preferences`.
+   *
+   * IT IS ALSO THE ONLY WAY BACK TO THE DEFAULTS once a blob has been stored:
+   * `loadPreferences` seeds from `DEFAULT_PREFERENCES`, but a stored record
+   * already holds every key, so changing a default never reaches a user who has
+   * touched any preference.
+   *
+   * NOT RECORDED IN HISTORY, for the reason `editViewPref` is not: preferences
+   * are how your editor is set up, not a change to the project, and an undo that
+   * put your brightness back would be answering a question nobody asked. That
+   * absence of an undo is exactly why the UI confirms it -- see `dialogs.ts`.
+   */
+  | { readonly kind: 'resetPreferences' };
 
 /** Every `Command`'s `kind`, for exhaustiveness assertions in tests. */
 export type CommandKind = Command['kind'];

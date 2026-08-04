@@ -1,5 +1,5 @@
 /**
- * The save dialog and the delete confirmation.
+ * The save dialog and the two confirmations: delete a config, reset preferences.
  *
  * Native `<dialog showModal()>`, which gives Escape-to-cancel, focus trapping
  * and an inert backdrop for free -- all three of which the desktop's imgui modal
@@ -48,6 +48,8 @@ export class Dialogs {
   private readonly deleteEl: HTMLDialogElement;
   private readonly deleteText: HTMLElement;
   private pendingDelete: { category: string; name: string } | null = null;
+
+  private readonly resetPrefsEl: HTMLDialogElement;
 
   constructor(opts: DialogOptions) {
     this.send = opts.send;
@@ -112,6 +114,47 @@ export class Dialogs {
       ]),
     );
     this.deleteEl = del;
+
+    // --- reset preferences ---------------------------------------------------
+    //
+    // CONFIRMED BECAUSE IT CANNOT BE UNDONE. Preferences are deliberately
+    // outside history (see `resetPreferences` in `commands.ts`), so unlike every
+    // other menu item that changes state, there is no Undo to reach for. It also
+    // sits directly under Reset View, whose click is harmless -- one row apart
+    // from an action that discards every editor setting you have.
+    //
+    // SAYS WHAT IT DOES NOT TOUCH, not just what it does. The whole reason this
+    // is offerable is that saved configs live in IndexedDB and preferences in
+    // `localStorage`, and a user cannot be expected to know that -- without the
+    // second line, "reset" reads as though it might take the saved work with it.
+    const resetPrefs = dialog('fluoddity-reset-prefs');
+    resetPrefs.append(heading('Reset Editor Preferences?'));
+    const resetText = document.createElement('div');
+    resetText.style.cssText = 'font-size:11px;opacity:0.75;line-height:1.5;';
+    resetText.textContent =
+      'Brightness, world size, physics rate, bloom, brush and panel settings ' +
+      'all go back to their defaults. This cannot be undone.\n\n' +
+      'Your saved configs are not affected, and neither is the project you ' +
+      'currently have open.';
+    // Preserves the blank line between the two paragraphs above.
+    resetText.style.whiteSpace = 'pre-wrap';
+    resetPrefs.append(resetText);
+    resetPrefs.append(
+      buttonRow([
+        // **CANCEL IS THE PRIMARY**, inverting the save and delete dialogs. Those
+        // confirm something the user came here to do; this one guards a row they
+        // may have hit reaching for Reset View, so the default answer -- and the
+        // one Enter picks -- should be the harmless one.
+        button('Cancel', () => {
+          this.resetPrefsEl.close();
+        }, true),
+        button('Reset Preferences', () => {
+          this.send({ kind: 'resetPreferences' });
+          this.resetPrefsEl.close();
+        }),
+      ]),
+    );
+    this.resetPrefsEl = resetPrefs;
   }
 
   // -- save -----------------------------------------------------------------
@@ -152,6 +195,18 @@ export class Dialogs {
     this.deleteEl.showModal();
   }
 
+  // -- reset preferences ------------------------------------------------------
+
+  /**
+   * Ask before discarding every editor preference.
+   *
+   * No pending state to hold, unlike `openDelete`: there is nothing to name, so
+   * the dialog's text is fixed at construction and the command carries nothing.
+   */
+  openResetPreferences(): void {
+    this.resetPrefsEl.showModal();
+  }
+
   // -- per frame ------------------------------------------------------------
 
   /**
@@ -175,6 +230,7 @@ export class Dialogs {
   dispose(): void {
     this.saveEl.remove();
     this.deleteEl.remove();
+    this.resetPrefsEl.remove();
   }
 }
 
