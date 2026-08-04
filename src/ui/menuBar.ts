@@ -1,5 +1,5 @@
 /**
- * The menu bar: File, History, Tools, Editor, Simulation.
+ * The menu bar: File, History, Tools, Editor, Simulation, Help.
  *
  * **The menu TITLES are load-bearing strings**, not just labels: `setOpenMenu`
  * gates each hover-preview session on the open menu's title, so renaming one
@@ -65,6 +65,8 @@ export interface MenuBarOptions {
   readonly onToggleUi: () => void;
   /** Whether the panel is currently hidden, for the checkmark. */
   readonly isUiHidden: () => boolean;
+  /** Re-show the welcome splash. Owned by the panel, like the dialogs. */
+  readonly onShowWelcome: () => void;
 }
 
 /** One entry in the Load menu, flattened out of `configCategories`. */
@@ -255,6 +257,13 @@ export class MenuBar {
       this.addSeparator(body);
       this.addItem(body, 'Previous Preset', () => this.opts.send({ kind: 'prevPreset' }), '←');
       this.addItem(body, 'Next Preset', () => this.opts.send({ kind: 'nextPreset' }), '→');
+    });
+
+    // Last, where a Help menu goes. The title is NOT compared anywhere in
+    // `setOpenMenu` -- only File and History gate hover-preview sessions -- so
+    // this one is an ordinary menu with nothing to keep in sync.
+    this.addMenu('Help', (body) => {
+      this.addItem(body, 'Welcome / Controls...', () => this.opts.onShowWelcome());
     });
   }
 

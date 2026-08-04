@@ -63,6 +63,7 @@ import { GateState } from './gateState.ts';
 import { showsSlider } from './gatedControl.ts';
 import { MenuBar } from './menuBar.ts';
 import { MutationOverlay } from './mutationOverlay.ts';
+import { Splash } from './splash.ts';
 import { isGated } from './gating.ts';
 import { type InputState, EMPTY_INPUT } from './inputState.ts';
 import { gateOpen, isRevealed } from './reveal.ts';
@@ -100,6 +101,14 @@ export interface PanelOptions {
   readonly leftContainer?: HTMLElement;
   /** Where to mount the right (Settings) panel. Defaults to a fixed container. */
   readonly rightContainer?: HTMLElement;
+  /**
+   * Whether to show the welcome splash on construction. Defaults to true.
+   *
+   * False still BUILDS it, so Help > Welcome / Controls works either way -- it
+   * only suppresses the automatic first showing. That is what `?nosplash`
+   * wants, and what a screenshot comparison wants.
+   */
+  readonly showSplash?: boolean;
 }
 
 /** Which side of the screen, and therefore which tier flag governs it. */
@@ -198,6 +207,16 @@ export class Panel {
   private readonly overlay: MutationOverlay;
 
   /**
+   * The welcome splash, shown once at startup and again from Help.
+   *
+   * Owned here for the same reason the dialogs are: it is reachable from the
+   * menu bar, and the bar outlives any one showing. It is NOT hidden by `X` --
+   * unlike the overlay, it is not part of the picture's controls, and a user who
+   * hid the panel and then asked for Help means it.
+   */
+  private readonly splash: Splash;
+
+  /**
    * Teardown for the focus-release listeners, one per side.
    *
    * Bound to the CONTAINERS rather than to the panes, so these survive a tier
@@ -215,6 +234,8 @@ export class Panel {
     };
     this.dialogs = new Dialogs({ send });
     this.overlay = new MutationOverlay({ send });
+    // Built before the menu bar, since the bar's Help item closes over it.
+    this.splash = new Splash({ showNow: opts.showSplash !== false });
     this.menuBar = new MenuBar({
       send,
       status: () => this.bus.status(),
@@ -231,6 +252,9 @@ export class Panel {
         this.setHidden(!this.hiddenFlag);
       },
       isUiHidden: () => this.hiddenFlag,
+      onShowWelcome: () => {
+        this.splash.show();
+      },
     });
 
     this.left = {
@@ -596,6 +620,7 @@ export class Panel {
     this.menuBar.dispose();
     this.dialogs.dispose();
     this.overlay.dispose();
+    this.splash.dispose();
     this.left.container.remove();
     this.right.container.remove();
   }

@@ -145,7 +145,14 @@ async function start(): Promise<void> {
   // visual A/B, and a 320px panel over the right-hand third of the frame would
   // change what those compare -- so the automated path can turn it off without
   // the panel having to know a verification tool exists.
-  const panel = params.has('nopanel') ? null : new Panel({ bus: orchestrator });
+  //
+  // The welcome splash comes up with it. `?nosplash` suppresses the automatic
+  // first showing for the same reason `?nopanel` exists: `browserCheck.mjs`
+  // compares screenshots, and a full-frame overlay would change what those
+  // compare. Help > Welcome / Controls still opens it either way.
+  const panel = params.has('nopanel')
+    ? null
+    : new Panel({ bus: orchestrator, showSplash: !params.has('nosplash') });
   orchestrator.panelOpen = panel !== null;
 
   // --- input (Step 8) --------------------------------------------------------
