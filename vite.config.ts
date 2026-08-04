@@ -18,6 +18,19 @@ export default defineConfig({
     // with no change here.
     wgslPlugin({ sharedDir: path.join(here, 'src', 'shaders') }),
   ],
+  // RELATIVE asset URLs, not absolute ones.
+  //
+  // The default (`/`) emits `/assets/index-HASH.js`, which only resolves when
+  // the app is served from a domain root. GitHub Pages serves this project at
+  // `<user>.github.io/Fluoddity2/`, so every one of those would 404 -- and the
+  // failure is a blank page with no console error worth reading.
+  //
+  // `'./'` is preferred over the conventional `'/Fluoddity2/'` because it does
+  // not hardcode the repo name: the same build works at a subpath, at a custom
+  // domain, and from `npm run preview`. That also matches how the app already
+  // fetches its presets -- `MANIFEST_URL` in `src/config/manifest.ts` is
+  // relative for the same reason, so the whole app is location-independent.
+  base: './',
   server: { port: 5173 },
   build: { target: 'esnext' },
 });

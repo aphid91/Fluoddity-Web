@@ -1,0 +1,70 @@
+# Build the app and publish it to GitHub Pages.
+#
+# The repo contains SOURCE ONLY -- `dist/` is gitignored, and `index.html` loads
+# `/src/main.ts` plus `.wgsl` files that only exist once the Vite plugin has
+# resolved their `#include`s. So there is no directory Pages could serve
+# directly; something has to run the build first, and this is it.
+#
+# Pages must be configured to match: Settings -> Pages -> Source: GitHub Actions
+# (NOT "Deploy from a branch").
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [All-Web]
+  # So the site can be republished without an empty commit.
+  workflow_dispatch:
+
+# Least privilege: read the repo, and mint the OIDC token deploy-pages needs.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race. `cancel-in-progress: false` because a half-finished
+# Pages deploy is worse than a slightly stale one -- let the running deploy land.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 24 is not incidental. `npm test` and `tools/syncConfigs.ts` execute
+      # TypeScript directly through Node's native type stripping, which needs
+      # 22.6+. An older runner fails on the .ts entry point, not on the code.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Not strictly required to produce dist/, but a deploy is the wrong place
+      # to find out the suite is red. Runs before the build so a failure costs
+      # seconds rather than a published broken page.
+      - run: npm test
+
+      # Also runs `sync:configs:check` and `tsc --noEmit` -- see package.json.
+      # A stale public/configs/ fails here instead of shipping quietly.
+      - run: npm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
