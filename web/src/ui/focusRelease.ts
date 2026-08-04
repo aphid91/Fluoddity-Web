@@ -76,6 +76,17 @@ export interface FocusedShape {
  * blurring there would shut it before a choice could be made. The commit moment
  * for a select is its `change` instead -- which is the same conclusion
  * `mutationOverlay.ts:178-184` reached independently for the tool selector.
+ *
+ * **`pointerup` covers the `click` that follows it**, and that is not a
+ * redundancy -- it is what makes checkboxes work. A Tweakpane checkbox is an
+ * `<input>` of ZERO SIZE with `opacity: 0`, overlaid by a visible `.tp-ckbv_w`
+ * box and an `<svg>` tick, all inside a `<label>` (`tweakpane.js`'s
+ * `.tp-ckbv_i` rule). The pointer never touches the input: it hits the svg, and
+ * the browser moves focus to the input by LABEL ACTIVATION -- which happens on
+ * `click`, strictly after `pointerup`. So at pointerup time the focused element
+ * is still `<body>` and there is nothing to release; by the time the checkbox
+ * holds focus, the pointerup is long gone. Listening to both is what closes
+ * that gap, and the rules for the two are identical, so they share a reason.
  */
 export type ReleaseReason = 'pointerup' | 'change' | 'enter' | 'escape';
 
@@ -230,6 +241,18 @@ export function bindFocusRelease(container: HTMLElement): () => void {
   };
 
   /**
+   * The checkbox's release. See `ReleaseReason`: a `<label>`-activated control
+   * only receives focus on `click`, after `pointerup` has already been and
+   * gone, so pointerup alone left every checkbox holding the keyboard.
+   *
+   * Safe to run for every click, because the decision is unchanged: a click on
+   * a writable text field still declines, exactly as its pointerup does.
+   */
+  const onClick = (): void => {
+    releaseIfInPanel('pointerup');
+  };
+
+  /**
    * The dropdown's release, which `pointerup` cannot be. `change` fires once
    * the choice is made and the menu has closed, so blurring here takes nothing
    * away -- and without it, picking "Random" left the select focused and the
@@ -244,12 +267,14 @@ export function bindFocusRelease(container: HTMLElement): () => void {
   container.addEventListener('keydown', onKeyDown);
   container.addEventListener('pointerup', onPointerUp);
   container.addEventListener('lostpointercapture', onPointerUp);
+  container.addEventListener('click', onClick);
   container.addEventListener('change', onChange);
 
   return (): void => {
     container.removeEventListener('keydown', onKeyDown);
     container.removeEventListener('pointerup', onPointerUp);
     container.removeEventListener('lostpointercapture', onPointerUp);
+    container.removeEventListener('click', onClick);
     container.removeEventListener('change', onChange);
     container.removeAttribute(PANEL_ATTRIBUTE);
   };

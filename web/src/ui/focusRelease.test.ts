@@ -81,6 +81,22 @@ test('a pointerup releases a checkbox and every other textless input', () => {
   }
 });
 
+test('a click releases exactly what a pointerup does', () => {
+  // `click` is bound to the SAME reason as `pointerup`, because a Tweakpane
+  // checkbox is a 0x0 invisible input inside a `<label>`: the pointer hits the
+  // svg tick, and focus arrives by label activation on `click` -- strictly
+  // AFTER pointerup, when nothing was focused yet to release. The two must
+  // therefore stay in lockstep, including the guard for writable fields.
+  const cases = [
+    [{ tagName: 'INPUT', type: 'checkbox' }, true],
+    [{ tagName: 'DIV' }, true],
+    [{ tagName: 'INPUT', type: 'text', readOnly: false }, false],
+  ] as const;
+  for (const [shape, want] of cases) {
+    assert.equal(shouldReleaseFocus(shape, 'pointerup'), want);
+  }
+});
+
 test('an input with no type is treated as text', () => {
   // `<input>` defaults to `type=text`, and the writable-field guard must still
   // apply to one whose type was never set.
