@@ -217,3 +217,34 @@ test('a missing target is not editable', () => {
   assert.equal(isEditableTarget(undefined), false);
   assert.equal(isEditableTarget({}), false, 'a target with no tagName must not throw');
 });
+
+test('a read-only field is not editable', () => {
+  // The curved and gated sliders put their number in the blade's own input and
+  // set `readOnly` (`controls.ts:394-397`, `gatedControl.ts:140-144`). Such a
+  // field is still focusable and still reports INPUT, so gating on it used to
+  // deaden every hotkey until the canvas was clicked -- while offering nothing
+  // to type in exchange.
+  assert.equal(isEditableTarget({ tagName: 'INPUT', readOnly: true }), false);
+  assert.equal(isEditableTarget({ tagName: 'TEXTAREA', readOnly: true }), false);
+});
+
+test('a writable field is still editable', () => {
+  // THE REGRESSION GUARD for the narrowing above. The save dialog's field is a
+  // plain `<input>` with no `readOnly` property set: if an absent `readOnly`
+  // ever read as read-only, typing a preset name containing `r` would reset the
+  // simulation -- the exact failure this gate exists to prevent.
+  assert.equal(isEditableTarget({ tagName: 'INPUT' }), true, 'absent readOnly means writable');
+  assert.equal(isEditableTarget({ tagName: 'INPUT', readOnly: false }), true);
+});
+
+test('contenteditable wins over readOnly', () => {
+  // `readOnly` is meaningless on a div, but a structural stub can carry both.
+  assert.equal(isEditableTarget({ tagName: 'DIV', isContentEditable: true, readOnly: true }), true);
+});
+
+test('a focused slider track was never gated', () => {
+  // Tweakpane focuses the `tp-sldv_t` DIV on a drag (`tweakpane.js:3293`), not
+  // an input -- which is why the gate was never what broke `R` after a drag,
+  // and why the fix for that lives in `focusRelease.ts` instead.
+  assert.equal(isEditableTarget({ tagName: 'DIV' }), false);
+});

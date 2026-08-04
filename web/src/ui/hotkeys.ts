@@ -204,14 +204,31 @@ export function matchHotkey(
  * disagree during focus transitions, and the target is what actually received
  * the keystroke -- which is the question being asked.
  *
+ * **A READ-ONLY field is not editable, and gating on one is pure loss.** The
+ * curved and gated sliders write their number into the blade's own input and
+ * set `readOnly` on it (`controls.ts:394-397`, `gatedControl.ts:140-144`) -- it
+ * is a readout, and the handle is the control. But a read-only input is still
+ * focusable and still reports `tagName === 'INPUT'`, so clicking that number
+ * used to deaden EVERY hotkey until the canvas was clicked, while offering
+ * nothing to type in exchange. A field that cannot receive text protects no
+ * keystroke, so there is nothing for the gate to defend.
+ *
  * Typed structurally rather than as `HTMLElement` so `node --test` can call it
  * with a plain object; there is no DOM in the test environment.
  */
 export function isEditableTarget(
-  target: { tagName?: string; isContentEditable?: boolean } | null | undefined,
+  target:
+    | { tagName?: string; isContentEditable?: boolean; readOnly?: boolean }
+    | null
+    | undefined,
 ): boolean {
   if (target === null || target === undefined) return false;
+  // `contentEditable` wins first: it is meaningless on the elements that carry
+  // `readOnly`, and a stub in a test could carry both.
   if (target.isContentEditable === true) return true;
   const tag = (target.tagName ?? '').toUpperCase();
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+  // NOT `SELECT`: it has no `readOnly` property at all, so the check below
+  // would be answering a question the element never asks.
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return target.readOnly !== true;
+  return tag === 'SELECT';
 }

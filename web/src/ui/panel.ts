@@ -87,6 +87,7 @@ import {
   buildSettingsSection,
 } from './sections/settingsSection.ts';
 import { Tooltip } from './tooltip.ts';
+import { bindFocusRelease } from './focusRelease.ts';
 import { buildDebugSection } from './sections/debugSection.ts';
 import { buildDrawingSection } from './sections/drawingSection.ts';
 import { buildPreferencesSection } from './sections/preferencesSection.ts';
@@ -196,6 +197,15 @@ export class Panel {
    */
   private readonly overlay: MutationOverlay;
 
+  /**
+   * Teardown for the focus-release listeners, one per side.
+   *
+   * Bound to the CONTAINERS rather than to the panes, so these survive a tier
+   * rebuild: `buildBoth` disposes and replaces both `Pane`s, but the containers
+   * outlive that and the listeners are delegated onto them.
+   */
+  private readonly focusReleasers: readonly (() => void)[];
+
   constructor(opts: PanelOptions) {
     this.bus = opts.bus;
     this.lastMouseMode = this.bus.status().mouseMode;
@@ -234,6 +244,17 @@ export class Panel {
     // are replaced here, before anything can observe them.
     this.left.pane.dispose();
     this.right.pane.dispose();
+
+    // AFTER the containers are resolved, so this covers the option-supplied
+    // ones as well as the defaults -- `bindFocusRelease` stamps the marker
+    // attribute on whatever container it is handed, which is why the lookup in
+    // `focusRelease.ts` is by attribute and not by the `sideContainer` ids.
+    // Those ids only exist on the defaults (`panel.ts:641-655`), so an id-based
+    // selector would leave a caller-supplied container silently unmanaged.
+    this.focusReleasers = [
+      bindFocusRelease(this.left.container),
+      bindFocusRelease(this.right.container),
+    ];
 
     this.buildBoth();
   }
@@ -565,6 +586,7 @@ export class Panel {
   }
 
   dispose(): void {
+    for (const release of this.focusReleasers) release();
     this.left.pane.dispose();
     this.right.pane.dispose();
     this.tooltip.dispose();

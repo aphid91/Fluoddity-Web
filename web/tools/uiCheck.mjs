@@ -35,6 +35,13 @@
  *           but not exactly onto base must store EXACTLY base, so that "is it
  *           off?" stays unambiguous rather than "within epsilon".
  *
+ *   PASS 6  FOCUS RELEASE. Drag a slider, then press a hotkey and assert the app
+ *           actually received it. Tweakpane focuses the slider TRACK on
+ *           mousedown and keeps it after the drag, so the panel silently held
+ *           the keyboard. Includes the guard that matters most: clicking into a
+ *           writable number field must LEAVE focus there, or the fix for the
+ *           above makes every number field untypable.
+ *
  * ## Why `?bus`
  *
  * Two of these assert what was STORED, not what is drawn -- the fold-back's snap
@@ -761,6 +768,202 @@ if (Math.abs(restingValue) < 0.02 && gateAfter === false) {
     `after release: value=${restingValue} gate=${gateAfter}. A released hold ` +
       'must hand the answer back to the derivation, not pin the gate open.',
   );
+}
+
+// ===========================================================================
+// PASS 6 -- focus release: the keyboard comes back after using the panel
+// ===========================================================================
+/**
+ * WHY THIS PASS EXISTS. Tweakpane focuses the slider TRACK on mousedown
+ * (`tweakpane.js:3293`) and the track keeps focus after the drag ends, so the
+ * panel silently held the keyboard: hotkeys either died outright (a focused
+ * read-only readout tripped the editable-target gate) or fired ALONGSIDE
+ * Tweakpane's own arrow stepping. `focusRelease.ts` fixes it, and only a real
+ * browser can check it -- the decision is unit-tested in `focusRelease.test.ts`,
+ * but the WIRING (delegated listener order against `addInput`'s own Enter
+ * handler, the `closest` traversal, and what `document.activeElement` actually
+ * ends up being) has no meaning without DOM.
+ *
+ * `togglePause` rather than `reset` as the end-to-end probe: both travel the
+ * identical `window` keydown path in `inputBinding.ts`, but pause is readable
+ * from status afterwards while a reset leaves no observable trace. The question
+ * being asked is "did the keystroke reach the app", not "what did it do".
+ */
+console.log('\nPASS 6: focus release (drag a slider, then use the keyboard)\n');
+
+/** Where focus is, as a short label -- the panel marker is what actually matters. */
+const focusReport = () =>
+  evaluate(`(() => {
+    const a = document.activeElement;
+    if (!a) return 'none';
+    const inPanel = a.closest('[data-fluoddity-panel]') !== null;
+    return (inPanel ? 'PANEL:' : 'free:') + a.tagName.toLowerCase() +
+      (a.className ? '.' + String(a.className).split(' ')[0] : '');
+  })()`);
+
+/** A raw key to the PAGE, not to an element -- it must reach the window listener. */
+const pageKey = async (code, keyChar, vk) => {
+  for (const type of ['rawKeyDown', 'keyUp']) {
+    await send('Input.dispatchKeyEvent', { type, code, key: keyChar, windowsVirtualKeyCode: vk }, sid);
+  }
+  await sleep(250);
+};
+
+/** Press Space and report whether the app saw it. */
+const spaceTogglesPause = async () => {
+  const before = await statusOf('paused');
+  await pageKey('Space', ' ', 32);
+  const after = await statusOf('paused');
+  if (before !== after) {
+    await pageKey('Space', ' ', 32); // Put it back, so passes stay independent.
+    return true;
+  }
+  return false;
+};
+
+// An UNGATED slider, so this pass does not depend on the gate machinery or on
+// the Advanced tier. `config.mutationScale` looks like the obvious choice and is
+// the wrong one: it is the canvas overlay's plain `<input type=range>`
+// (`mutationOverlay.ts`), not a Tweakpane blade, so it has no `tp-sldv_t` track
+// and none of the focus behaviour under test here.
+const MUTATION = 'prefs.brightness';
+const mutTrack = await trackOf(MUTATION);
+if (mutTrack === null) die(`Could not find the ${MUTATION} track for PASS 6.`);
+
+// --- 6a: a slider drag must not keep the keyboard -------------------------
+const mutBefore = await statusOf('editPrefs.brightness');
+const my = mutTrack.y + mutTrack.h / 2;
+await mouse('mousePressed', mutTrack.x + mutTrack.w * 0.25, my);
+await mouse('mouseMoved', mutTrack.x + mutTrack.w * 0.65, my);
+await mouse('mouseReleased', mutTrack.x + mutTrack.w * 0.65, my, 0);
+await sleep(300);
+
+// Assert the drag REALLY HAPPENED first. Without this, every focus assertion
+// below would pass trivially on a drag that missed the track and moved nothing.
+const mutAfter = await statusOf('editPrefs.brightness');
+if (mutAfter === mutBefore) {
+  fail(`the PASS 6 drag did not move ${MUTATION} (${mutBefore}). The track selector is stale.`);
+} else {
+  pass(`the drag moved ${MUTATION} ${mutBefore} -> ${mutAfter}`);
+}
+
+const afterDrag = await focusReport();
+if (afterDrag.startsWith('PANEL:')) {
+  fail(
+    `after a slider drag focus was still in the panel (${afterDrag}). The ` +
+      'pointerup release in focusRelease.ts did not fire.',
+  );
+} else {
+  pass(`a slider drag left focus outside the panel (${afterDrag})`);
+}
+
+if (await spaceTogglesPause()) {
+  pass('Space reached the app immediately after a slider drag');
+} else {
+  fail('Space did NOT reach the app after a slider drag -- the panel still holds the keyboard.');
+}
+
+// --- 6b: the over-blur guard ----------------------------------------------
+/**
+ * THE ASSERTION THAT PROTECTS THE FIX FROM ITSELF. A blanket "release on any
+ * pointerup" would blur a text field between the click that focused it and the
+ * first keystroke, making every number field in the panel impossible to type
+ * into. Nothing else in this file would notice, because no other check asserts
+ * that focus STAYED somewhere.
+ */
+const WORLD = 'prefs.worldSize';
+const fieldBox = await evaluate(`(() => {
+  const e = document.querySelector('[data-setting="${WORLD}"]');
+  if (!e) return null;
+  e.scrollIntoView({ block: 'center' });
+  const i = e.querySelector('input');
+  if (!i) return null;
+  const r = i.getBoundingClientRect();
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+})()`);
+if (fieldBox === null) die(`No text input for ${WORLD} -- the selector is stale.`);
+await sleep(200);
+
+await mouse('mousePressed', fieldBox.x, fieldBox.y);
+await mouse('mouseReleased', fieldBox.x, fieldBox.y, 0);
+await sleep(250);
+const afterClick = await focusReport();
+if (afterClick === 'PANEL:input') {
+  pass('clicking into a writable number field KEPT focus (it stays typable)');
+} else {
+  fail(
+    `clicking a number field left focus at ${afterClick}; it must stay on the ` +
+      'input, or the field cannot be typed into at all.',
+  );
+}
+
+// --- 6c: Enter commits AND hands the keyboard back ------------------------
+const worldBefore = await statusOf('editPrefs.worldSize');
+const typed = Number((worldBefore * 1.5).toFixed(3));
+await evaluate(`(() => {
+  const i = document.querySelector('[data-setting="${WORLD}"] input');
+  i.focus();
+  i.value = '${typed}';
+})()`);
+await pageKey('Enter', 'Enter', 13);
+await sleep(400);
+
+const worldAfter = await statusOf('editPrefs.worldSize');
+if (Math.abs(worldAfter - typed) < 1e-6) {
+  pass(`Enter committed World Size ${worldBefore} -> ${worldAfter}`);
+} else {
+  fail(
+    `Enter did not commit: wanted ${typed}, got ${worldAfter}. The delegated ` +
+      'keydown must be on the BUBBLE phase so the field commits first.',
+  );
+}
+
+// The field must not have snapped back to the pre-commit number. That is the
+// stale-`live` flicker (`controls.ts`), which reads as a silent rejection.
+const shown = await evaluate(
+  `document.querySelector('[data-setting="${WORLD}"] input').value`,
+);
+if (Math.abs(Number(shown) - typed) < 1e-6) {
+  pass(`the field still shows the committed value (${shown})`);
+} else {
+  fail(`the field reverted to "${shown}" after committing ${typed} -- \`live\` is stale.`);
+}
+
+const afterEnter = await focusReport();
+if (afterEnter.startsWith('PANEL:')) {
+  fail(`Enter left focus in the panel (${afterEnter}).`);
+} else {
+  pass(`Enter released focus (${afterEnter})`);
+}
+
+if (await spaceTogglesPause()) {
+  pass('Space reached the app immediately after an Enter commit');
+} else {
+  fail('Space did NOT reach the app after Enter -- the field still holds the keyboard.');
+}
+
+// --- 6d: Escape abandons AND hands the keyboard back ----------------------
+const keepValue = await statusOf('editPrefs.worldSize');
+await evaluate(`(() => {
+  const i = document.querySelector('[data-setting="${WORLD}"] input');
+  i.focus();
+  i.value = '${Number((keepValue * 2).toFixed(3))}';
+})()`);
+await pageKey('Escape', 'Escape', 27);
+await sleep(300);
+
+const afterEscape = await statusOf('editPrefs.worldSize');
+if (Math.abs(afterEscape - keepValue) < 1e-6) {
+  pass(`Escape abandoned the edit (World Size still ${afterEscape})`);
+} else {
+  fail(`Escape committed ${afterEscape}; it must abandon, leaving ${keepValue}.`);
+}
+
+const escFocus = await focusReport();
+if (escFocus.startsWith('PANEL:')) {
+  fail(`Escape left focus in the panel (${escFocus}).`);
+} else {
+  pass(`Escape released focus (${escFocus})`);
 }
 
 // ===========================================================================

@@ -473,6 +473,15 @@ function addInput(
       }
       text.value = formatCompact(parsed);
       field.value = text.value;
+      // **`live` moves with the commit**, before the dispatch. It is otherwise
+      // only assigned in `refresh` from authoritative status, so between here
+      // and the next frame it still holds the OLD number -- and the blur
+      // handler below would restore that stale value the instant focus left.
+      // `focusRelease.ts` blurs on Enter precisely to hand the keyboard back,
+      // which puts it inside that window: the field would visibly snap back to
+      // the old number and then forward again, indistinguishable from the
+      // silent rejection above.
+      live = parsed;
       ctx.send({ kind: 'editSetting', setting, value: parsed });
     });
 
