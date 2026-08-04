@@ -1,8 +1,9 @@
 # Fluoddity Web Port — 10-Step Plan
 
-**Status:** approved 2026-07-29. **Steps 1-9 are DONE; Step 10 (the full UI)
-remains.** The engine is feature-complete against the desktop and runs in the
-browser. This is the execution plan for the WebGPU/Tweakpane port; it is a
+**Status:** approved 2026-07-29. **ALL TEN STEPS ARE DONE.** The engine is
+feature-complete against the desktop, runs in the browser, and is driven by the
+full UI. One optional piece is deliberately deferred — the sensor diagram; see
+Step 10. This is the execution plan for the WebGPU/Tweakpane port; it is a
 companion to two existing docs, not a replacement: `ARCHITECTURE.md` is the
 design contract and remains the spec; `PORT_AUDIT.md` is the
 construct-by-construct portability survey this plan is built on.
@@ -749,7 +750,112 @@ physics step. Details that matter:
 
 ## Step 10 — Full UI/UX in Tweakpane
 
-Now rebuild the interface properly on the proven engine. Tweakpane has folders,
+**DONE, except the sensor diagram (10g), which is deferred by decision.** The
+interface is `web/src/ui/panel.ts`: one docked side-panel built from sections,
+with collapsible groups, curved and inverted sliders, self-hiding gated
+controls, reveal gating, a menu bar with browse-by-hover load and checkpoint
+lists, and native `<dialog>` save and delete modals. `thinPanel.ts` is deleted.
+See `web/README.md`'s "The panel" section. Corrections to what this section
+said, recorded because a later agent would otherwise re-derive them:
+
+- **THE PLAN'S PROPOSED LATCH DETECTOR DOES NOT WORK, AND THE REASON GENERALISES
+  TO EVERY BINDING.** `:806-809` proposes `on('change', ev => ev.last)` for the
+  drag edge. Traced in the bundle: `pane.refresh()` reaches the plain `rawValue`
+  setter, which emits `{forceEmit: false, last: true}` — **byte-identical to a
+  released drag**, and a checkbox click emits the same. So `ev.last` cannot
+  distinguish a user gesture from a programmatic refresh; only the `refreshing`
+  flag can, and **it must be tested FIRST**. Reversed, every `pane.refresh()`
+  arrives as a closing edge and folds an open slider away mid-drag — silently,
+  intermittently, and looking like a Tweakpane bug. What `ev.last` *does*
+  distinguish correctly is mid-drag from end-of-drag: only `onPointerMove_`
+  emits `last: false`, so that is what OPENS a session.
+- **The latch works and the fallback was not needed.** The disclosure-triangle
+  fallback at `:813-819` stays unused: three consecutive `uiCheck.mjs` runs held
+  a gated slider visible at base while the button was down. The plan's reasoning
+  for why this would be easier than imgui (`:802-805`) was right — hiding a DOM
+  element changes `display` and nothing else, so the drag survives.
+- **`ev.last` alone cannot CLOSE a session either**, for a reason the plan half
+  anticipates: a click that changes no value emits no `change` at all
+  (`setRawValue` returns early on `!changed && !forceEmit`), and an interrupted
+  gesture never reaches `onPointerUp_`. `pointerup` **and**
+  `lostpointercapture` on the blade element close it too.
+- **`revealsOn` names two different things and both are live.** Three entries
+  name a real BOOL field (`bloomEnabled`); three name a GATES entry's LABEL
+  (`Gravity`), because that entry has `field: ''` and owns nothing to name.
+  Resolved eagerly at module load so a typo is a test failure rather than a
+  control that is hidden forever.
+- **Visibility is `blade.hidden`, never a rebuild.** `BladeApi.hidden` is a real
+  settable property, so the reveal toggle costs a class-list write rather than a
+  pane teardown. A rebuild would drop folder expansion state and replace every
+  DOM node — and would look identical in a screenshot, which is why
+  `uiCheck.mjs` asserts the blade element survives the toggle.
+- **THE INVERTED READOUT, which is the bug this step's isolation caught.** A
+  mapped control drives POSITION space and needs `shown()` applied to the handle
+  **and to the number beside it**. Applying it to only one put a readout of
+  `1.0000` under a handle sitting at `0.0` for Trail Stiffness. The unit tests
+  passed throughout: each inverse pair is self-consistent in isolation, so only
+  a test of the composition at the call site sees it. That test now exists.
+- **Hover-preview's hovered row is STICKY, not a per-frame pulse.** `mouseenter`
+  fires once and nothing fires again while the cursor sits there, so a flag
+  cleared each frame reads as "hovering nothing" on the next one — the preview
+  applies and restores immediately, and hovering appears to do nothing. Cleared
+  by `mouseleave`, guarded on identity (a row-to-row move fires the new row's
+  enter before the old row's leave), and cleared on menu close (a menu closed
+  under the cursor never receives that leave).
+- **`commands.ts` DID change, twice, both narrowing.** `editDrawPref.field`
+  became a five-key union — it was the one payload the compiler could not check.
+  And the three preview commands gained a `PreviewSurface` token, because one
+  shared snapshot slot cannot serve two simultaneous hover-browsers; the
+  Orchestrator's `previewOrigin` is a `Map` now. The alternative was the UI
+  holding two `Project` snapshots, which breaks invariant 10 far worse.
+- **The tooling needed two fixes before it could assert anything.** A geometry
+  guess ("the widest inner div") picked the 308px row container instead of the
+  92px track, and a blade below the panel's fold has a perfectly valid
+  `getBoundingClientRect` whose `y` is off-screen — `Input.dispatchMouseEvent`
+  takes viewport coordinates, so both produced drags that moved nothing and
+  reported it as a product bug. `trackOf` now targets `.tp-sldv_t` and scrolls
+  into view first.
+- **`fieldCheck.mjs`'s absolute luma values are the signal, not its pass/fail.**
+  A run failed the eraser check with `painted upper-left = 4.06` against a
+  baseline of `119.55` — nothing had been painted, so there was nothing to
+  erase. Cause was three Chrome instances and two dev servers running at once.
+  Run the browser tools one at a time.
+
+### 10g — the sensor diagram, DEFERRED
+
+Not built, and nothing depends on it. It is the pinned animated diagram shown
+while hovering Sensor Angle or Sensor Distance (`ui/sensor_diagram.py`,
+`tooltip_graphic/`); those two sliders currently get the same rich text tooltip
+every other setting gets, so the feature's absence costs an explanation, not a
+capability.
+
+**If it is picked up later, the decisions are already taken:**
+
+- **Build it in Canvas2D, not WGSL.** `tooltip_graphic.frag`'s `ANGLE_MODE`,
+  `DISTANCE_MODE`, `time` and `sd_arrow` are all dead — `main()` reads only
+  `SENSOR_ANGLE` and `SENSOR_DISTANCE`, and there is no animation. What survives
+  is a gradient wedge, two mirrored blobs with stalks, a white dot and a colour
+  swap: ~60 lines of `arc`/`lineTo`/`createLinearGradient`. A WGSL port would
+  need a new top-level module outside `ui/` (invariant 10 forbids the UI owning
+  GPU resources), a pipeline, a 160² target, a texture→canvas path and a new
+  `Status` member — a lot of architecture for a decoration.
+- **The sign fold is the only real logic** (`tooltip_graphic.frag:98-102`): a
+  negative Sensor Angle swaps left for right, and the diagram must show the
+  COLOUR SWAP rather than mirroring into an identical picture. Put that in a
+  pure `sensorDiagram.ts` so it can be tested without a canvas.
+- **`pointer-events: none`, absolutely positioned, anchored to the panel's left
+  edge.** None of `sensor_diagram.py`'s `is_open` raise-order machinery ports:
+  it exists entirely to stop imgui dropping a drag when a window appears over
+  it, and the DOM does not steal pointer capture.
+- **It needs a `sensorTooltipDiagram` preference**, which is absent from
+  `web/src/prefs/preferences.ts`. One entry in `DEFAULT_PREFERENCES` and one in
+  `PREFERENCE_KINDS` (`bool`), rendered in the non-registry Editor group beside
+  the tier toggle — not a `settings_spec` entry, for the same reason the tier is
+  not one.
+
+The section as originally written follows.
+
+Tweakpane has folders,
 tabs, bindings, blades, monitors and a plugin API — and critically, **nothing in
 `ui/` uses immediate-mode drawing** (no `get_window_draw_list`, no `add_line`), so
 its lack of a canvas costs us nothing.
@@ -899,7 +1005,8 @@ Recorded so a later agent doesn't reopen them.
 | `mutation.py` float32 mirror | **Not ported — DONE in Step 6.** The picked entity's rule is read back from the GPU. The result slot is 336 bytes (not 324: alignment padding, which the position rides in for free) and the extra one-thread dispatch measured free |
 | Config storage | **DONE in Step 9.** Build-time manifest + IndexedDB, same `(category, name)` key identity — which is what made it a swap: `Status.configCategories` was written as `category -> names` in Step 7 and did not change at all. `path` became a manifest detail nothing outside `configStore.ts` reads |
 | Milestone 1 scope | **Engine-first, thin UI** — flat Tweakpane dump of the registry, no tabs/gates/tooltips/menus. **DONE in Step 7**, exactly as scoped: Tweakpane 4, `group` as a plain folder, `tier` as one checkbox, and `revealsOn`/`gates`/`curve`/`inverted` carried in the registry but not rendered |
-| Gated controls | Real latch preferred; **disclosure-triangle fallback is pre-approved** rather than a blocker (Step 10) |
+| Gated controls | **DONE in Step 10, with the real latch.** The disclosure-triangle fallback was never needed: `showsSlider` is `!isOff(value) \|\| sessions.has(key)`, a session opens on `ev.last === false` (only a drag emits it) and closes on `ev.last === true` **or** `pointerup`/`lostpointercapture`. Every handler tests the `refreshing` flag FIRST — `ev.last` cannot tell a released drag from a `pane.refresh()`. Nothing about a gate is stored, which is what keeps save/load/undo/preview working |
+| The sensor diagram | **DEFERRED — see Step 10's "10g" note.** Nothing depends on it; the two sensor sliders get the same rich tooltip everything else does. If picked up: Canvas2D not WGSL, and it needs a `sensorTooltipDiagram` preference that does not exist yet |
 | Shipped presets | **Done.** All three are v8 (`Starcrossedv8`, `9leafv8`, `hatmanv8`); the port reads v8 only, no legacy path |
 | Hotkey collisions | **RESOLVED in Step 8: the table is Ctrl-free.** Every collider moved to a bare key — `C`, `V`, `M`, `Z`/`Shift+Z` for checkpoint, restore, camera mode and undo/redo. Ctrl+R and Tab are unbound. Nothing `preventDefault`s a Ctrl combination, so the browser keeps Ctrl+C/V/R/Z and copying out of a text field never breaks. Every hotkey is gated on "no editable element focused" |
 

@@ -25,6 +25,14 @@ sub-steps a frame, at parity — verified by loading the same preset in both,
 running to the same sub-step count, and comparing the canvas (see
 "Verification" below).
 
+**One deliberate omission: the pinned sensor diagram.** The desktop draws a
+small animated picture of a particle and its two sensors while you hover Sensor
+Angle or Sensor Distance (`ui/sensor_diagram.py`); here those two sliders get
+the same rich text tooltip every other setting gets. Nothing depends on it, and
+the decisions for building it later — Canvas2D rather than WGSL, and the
+`sensorTooltipDiagram` preference it would need — are recorded in
+`docs/WEB_PORT_PLAN.md` under Step 10.
+
 ## Running it
 
 Requires Node 20+ (developed against v24.18.0) and a WebGPU-capable browser —
