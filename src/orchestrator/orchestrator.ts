@@ -102,7 +102,13 @@ import {
 import { type Checkpoint, CheckpointStore } from './clipboardCommands.ts';
 import { type PendingStroke, strokeFor } from './drawingCommands.ts';
 import { shoveState } from './shoveCommands.ts';
-import { applySettingEdit, randomizeBehavior, randomizeSeed } from './settingsCommands.ts';
+import {
+  applySettingEdit,
+  randomizeBehavior,
+  randomizeSeed,
+  ruleIsSentinel,
+  setPopulationLayout,
+} from './settingsCommands.ts';
 import { type PresetCatalog, loadSavedInto, switchPreset } from './projectCommands.ts';
 
 /** Everything `Orchestrator.create` needs. All GPU-adjacent, all injected. */
@@ -1066,6 +1072,19 @@ export class Orchestrator implements CommandBus {
         return;
       }
 
+      case 'setPopulationLayout': {
+        const before = this.project;
+        this.setProject(setPopulationLayout(this.project, command.cohorts));
+        // One entry for both fields, and no coalesce key: a button press is a
+        // discrete act, so two presses give two undo steps.
+        this.recordHistory(before, 'set population layout');
+        // Part of the act, not a separate one. Initial conditions only take
+        // effect on a restart, so without this the layout the button promises
+        // would not appear until something else happened to reset.
+        this.system.reset();
+        return;
+      }
+
       case 'editDrawPref':
         // Drawing controls are PREFS: editor state, saved but never recorded in
         // history -- loading someone else's config must not resize your brush,
@@ -1439,6 +1458,11 @@ export class Orchestrator implements CommandBus {
       preset: this.presetName,
       entityCount: this.system.entityCount,
       frameCount: this.system.frameCount,
+      // NOT inside `settingsSources()`: the mutation overlay reads this and
+      // refreshes while the panel is shut, where that payload is empty. An
+      // `.every()` over 80 floats is nothing next to the deep copy the
+      // closed-panel early-out exists to avoid.
+      ruleIsGenerated: ruleIsSentinel(this.project),
 
       canUndo: this.history.canUndo,
       canRedo: this.history.canRedo,

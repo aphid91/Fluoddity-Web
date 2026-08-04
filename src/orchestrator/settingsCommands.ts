@@ -36,8 +36,8 @@ import {
   editWorld,
   selectedConfig,
 } from '../project/project.ts';
-import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
-import { type Setting, CONFIG, PREFS, WORLD, seedSetting } from '../ui/settingsSpec.ts';
+import { type SimulationConfig, type WorldSettings, IC } from '../particleSystem/config.ts';
+import { type Setting, CONFIG, PREFS, WORLD, seedSetting, settingFor } from '../ui/settingsSpec.ts';
 
 /** The two things an edit can produce. */
 export type SettingEditResult =
@@ -151,6 +151,30 @@ export function randomizeBehavior(
 ): Project {
   const zeroed = editSelected(project, 'rule', ZERO_RULE.slice());
   return editSelected(zeroed, 'mutationSeed', rng());
+}
+
+/**
+ * Set the cohort count and lay those cohorts out on a grid, as one act.
+ *
+ * The two fields move together because the gesture is one intent -- see the
+ * `setPopulationLayout` command comment. The caller resets the simulation
+ * afterwards; that is not state, so it is not this function's business.
+ *
+ * **The count is clamped HERE, against the registry**, rather than trusted from
+ * the caller. The bounds live in exactly one place (`settingsSpec.ts`), and a
+ * button that hardcodes 16 must not be able to write a config the Cohorts
+ * slider could never produce. Falls back to the raw value only if the registry
+ * has no Cohorts entry, which is the same degradation `settingFor`'s other
+ * callers take.
+ */
+export function setPopulationLayout(project: Project, cohorts: number): Project {
+  const setting = settingFor(CONFIG, 'cohorts');
+  const clamped =
+    setting === null
+      ? cohorts
+      : Math.min(Math.max(Math.round(cohorts), setting.lo), setting.hi);
+  const sized = editSelected(project, 'cohorts', clamped);
+  return editSelected(sized, 'initialConditions', IC.GRID);
 }
 
 /**

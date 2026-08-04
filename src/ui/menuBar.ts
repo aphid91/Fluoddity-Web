@@ -207,7 +207,21 @@ export class MenuBar {
       this.addItem(body, 'Reset', () => this.opts.send({ kind: 'reset' }), 'R');
       this.addSeparator(body);
       this.addItem(body, 'Randomize Behavior', () => this.opts.send({ kind: 'randomizeBehavior' }), 'B');
-      this.addItem(body, 'Randomize Seed', () => this.opts.send({ kind: 'randomizeSeed' }), 'F');
+      // Greyed while the rule is the all-zero sentinel: there is no mutation to
+      // reroll then, and the command -- though it still does something -- would
+      // be offering the user an operation on state they do not have. The
+      // mutation overlay greys its own copy of this button in the same state.
+      this.addItem(
+        body,
+        'Reroll Mutations',
+        () => this.opts.send({ kind: 'randomizeSeed' }),
+        'F',
+        undefined,
+        {
+          label: () => 'Reroll Mutations',
+          enabled: () => !this.opts.status().ruleIsGenerated,
+        },
+      );
       this.addSeparator(body);
       this.addItem(body, 'Previous Preset', () => this.opts.send({ kind: 'prevPreset' }), '←');
       this.addItem(body, 'Next Preset', () => this.opts.send({ kind: 'nextPreset' }), '→');

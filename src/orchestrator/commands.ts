@@ -255,6 +255,16 @@ export type Command =
       readonly record?: boolean;
     }
   | { readonly kind: 'randomizeSeed' }
+  /**
+   * Cohorts plus a grid layout, applied and reset as ONE act.
+   *
+   * Both fields move together for the same reason `randomizeBehavior` moves
+   * two: "show me N groups laid out" is a single intent, and sending two
+   * `editSetting`s would leave two entries in history for one click. The reset
+   * rides along because a new initial-conditions mode is invisible until the
+   * simulation restarts.
+   */
+  | { readonly kind: 'setPopulationLayout'; readonly cohorts: number }
   | { readonly kind: 'randomizeBehavior' }
   // --- drawing (the field arrives in Step 9; the prefs are live now) ---
   | {
@@ -307,6 +317,21 @@ export interface Status {
   readonly preset: string;
   readonly entityCount: number;
   readonly frameCount: number;
+  /**
+   * Whether the selected config's rule is the all-zero sentinel -- i.e. its
+   * behaviour is GENERATED from `mutationSeed` rather than mutated from an
+   * authored rule (`entityUpdate.wgsl`).
+   *
+   * **A boolean, not the rule.** `rule` is excluded from `editConfig` because
+   * copying 80 floats every frame is the cost `settingsSources` exists to
+   * avoid, and it must stay excluded -- so the UI cannot derive this itself,
+   * and asking it to would mean importing a project module (invariant 10).
+   *
+   * Lives HERE rather than in `settingsSources` because the mutation overlay
+   * reads it and the overlay refreshes even while the panel is shut
+   * (`panel.ts`), where those payloads are empty.
+   */
+  readonly ruleIsGenerated: boolean;
 
   // --- history ---
   readonly canUndo: boolean;

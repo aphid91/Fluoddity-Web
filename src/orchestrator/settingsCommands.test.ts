@@ -27,11 +27,12 @@ import {
   randomizeBehavior,
   randomizeSeed,
   ruleIsSentinel,
+  setPopulationLayout,
 } from './settingsCommands.ts';
 import { type Project, makeProject, selectedConfig } from '../project/project.ts';
 import { DEFAULT_PREFERENCES } from '../prefs/preferences.ts';
 import { SETTINGS, type Setting } from '../ui/settingsSpec.ts';
-import { makeSimulationConfig } from '../particleSystem/config.ts';
+import { makeSimulationConfig, IC } from '../particleSystem/config.ts';
 
 const project: Project = makeProject({
   configs: [
@@ -165,4 +166,37 @@ test('the zero rule is 80 floats, matching the shader sentinel', () => {
 test('ruleIsSentinel distinguishes a generated rule from an authored one', () => {
   assert.equal(ruleIsSentinel(project), false);
   assert.equal(ruleIsSentinel(randomizeBehavior(project, () => 0.5)), true);
+});
+
+// ---------------------------------------------------------------------------
+// Population layout
+// ---------------------------------------------------------------------------
+
+test('setPopulationLayout moves BOTH fields', () => {
+  // Both, or the button lies: a cohort count with the old initial conditions
+  // still in force shows nothing laid out, which is the whole promise of the
+  // icon that sends this.
+  const next = setPopulationLayout(project, 16);
+  const config = selectedConfig(next);
+  assert.equal(config.cohorts, 16);
+  assert.equal(config.initialConditions, IC.GRID);
+});
+
+test('setPopulationLayout clamps to the registry bounds', () => {
+  // The bounds live in `settingsSpec.ts` and are read, not restated -- so this
+  // asserts the CLAMP happened, against whatever the registry currently says,
+  // rather than pinning 1..64 in a second place.
+  const cohorts = settingFor('Cohorts');
+  const high = selectedConfig(setPopulationLayout(project, 9999)).cohorts;
+  const low = selectedConfig(setPopulationLayout(project, -5)).cohorts;
+  assert.equal(high, cohorts.hi);
+  assert.equal(low, cohorts.lo);
+});
+
+test('setPopulationLayout leaves the rule and the seed alone', () => {
+  // It is a layout command. Touching the rule would make picking a grid
+  // silently reroll the behaviour being looked at.
+  const next = setPopulationLayout(project, 4);
+  assert.deepEqual([...selectedConfig(next).rule], [...selectedConfig(project).rule]);
+  assert.equal(selectedConfig(next).mutationSeed, selectedConfig(project).mutationSeed);
 });

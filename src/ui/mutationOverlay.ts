@@ -63,13 +63,26 @@ function toolOptionLabel(mode: MouseMode): string {
 
 export class MutationOverlay {
   private readonly root: HTMLElement;
+  private readonly label: HTMLElement;
   private readonly slider: HTMLInputElement;
   private readonly readout: HTMLElement;
   private readonly reroll: HTMLButtonElement;
+  private readonly rerollAll: HTMLButtonElement;
   private readonly tool: HTMLSelectElement;
 
   /** True between pointerdown and pointerup on the slider. See the header. */
   private dragging = false;
+
+  /**
+   * Last `ruleIsGenerated` written to the DOM, or `null` before the first
+   * frame.
+   *
+   * `refresh` runs every frame and the swap touches six elements; writing all
+   * of them sixty times a second to say what they already say is the same waste
+   * `panel.ts`'s `setHidden` guards against. `null` rather than a boolean so
+   * the first frame always writes, whichever way it goes.
+   */
+  private generatedShown: boolean | null = null;
 
   /**
    * Teardown for the focus-release listeners.
@@ -97,10 +110,10 @@ export class MutationOverlay {
     const bar = document.createElement('div');
     bar.style.cssText = BAR_CSS;
 
-    const label = document.createElement('span');
-    label.textContent = setting?.label ?? 'Mutation Scale';
-    label.style.cssText = LABEL_CSS;
-    if (setting !== null) label.title = setting.help;
+    this.label = document.createElement('span');
+    this.label.textContent = setting?.label ?? 'Mutation Scale';
+    this.label.style.cssText = LABEL_CSS;
+    if (setting !== null) this.label.title = setting.help;
 
     this.slider = document.createElement('input');
     this.slider.type = 'range';
@@ -125,6 +138,23 @@ export class MutationOverlay {
     this.reroll.style.cssText = BUTTON_CSS;
     this.reroll.dataset['setting'] = 'config.mutationSeed.randomize';
 
+    // Takes the slider's place while the rule is the all-zero sentinel. See
+    // `refresh` for why, and `REROLL_ALL_CSS` for why it is that wide.
+    //
+    // BOTH KEYS ARE NAMED. `B` is what this button sends; `F` is named too
+    // because in the sentinel state it lands in the same place -- the shader's
+    // generator is seeded by `mutationSeed`, so rerolling the seed regenerates
+    // the behaviour just as zeroing the rule does. Telling the user only about
+    // `B` would make `F` look broken in the one state where it is most useful.
+    this.rerollAll = document.createElement('button');
+    this.rerollAll.type = 'button';
+    this.rerollAll.textContent = `Reroll All Behavior${keySuffix([
+      hotkeyLabel({ kind: 'randomizeBehavior' }),
+      hotkeyLabel({ kind: 'randomizeSeed' }),
+    ])}`;
+    this.rerollAll.style.cssText = REROLL_ALL_CSS;
+    this.rerollAll.dataset['setting'] = 'config.rule.randomize';
+
     // A real <select>, not a readout: the tool was previously only reachable
     // from the Tools menu and the number keys, and a modal state you can see but
     // not change from where you see it is a worse affordance than either.
@@ -142,10 +172,28 @@ export class MutationOverlay {
       this.tool.append(option);
     }
 
+    // The population presets, leftmost. Deliberately OUTSIDE the sentinel swap
+    // below: how many cohorts there are and how they are arranged is orthogonal
+    // to whether the rule is authored or generated, so these stay live in both
+    // states.
+    const presets = document.createElement('div');
+    presets.style.cssText = PRESETS_CSS;
+    for (const count of LAYOUT_PRESETS) {
+      presets.append(this.layoutButton(count, opts.send));
+    }
+
     // The tool control goes INSIDE the bar, not below it. Floating on its own
     // it read as a stray tooltip over the canvas rather than as part of the UI,
     // and a status line that looks like an error message is worse than none.
-    bar.append(label, this.slider, this.readout, this.reroll, this.tool);
+    bar.append(
+      presets,
+      this.label,
+      this.slider,
+      this.readout,
+      this.rerollAll,
+      this.reroll,
+      this.tool,
+    );
     this.root.append(bar);
     (opts.container ?? document.body).append(this.root);
     this.releaseFocus = bindFocusRelease(this.root);
@@ -184,6 +232,10 @@ export class MutationOverlay {
       opts.send({ kind: 'randomizeSeed' });
     });
 
+    this.rerollAll.addEventListener('click', () => {
+      opts.send({ kind: 'randomizeBehavior' });
+    });
+
     this.tool.addEventListener('change', () => {
       const mode = mouseModeFromValue(this.tool.value);
       if (mode !== null) opts.send({ kind: 'setMouseMode', mode });
@@ -220,6 +272,44 @@ export class MutationOverlay {
       // slider comes off zero, so rerolling first and then raising the scale is
       // a real gesture -- and the old gate made it unreachable in exactly the
       // order a user would try it.
+      //
+      // THE SENTINEL GATE BELOW IS NOT THAT GATE, and reinstating this one on
+      // the strength of it would be a mistake. They test different things: this
+      // one asked "is the scale zero", which is a value the user can undo with
+      // one drag; that one asks "is there a rule to scale AT ALL", which no
+      // amount of dragging this slider changes.
+    }
+
+    // --- the sentinel swap -------------------------------------------------
+    //
+    // With an all-zero rule the shader GENERATES behaviour from the seed rather
+    // than mutating an authored rule, so this bar's two mutation controls are
+    // both describing something that is not there: the slider scales a
+    // variation from nothing, and "Reroll Mutations" names a mutation that does
+    // not exist. Presenting them as live is the confusing part -- the command
+    // behind Reroll still works, but a user reading "mutations" in a state that
+    // has none has been told the wrong thing about their own document.
+    //
+    // So the slider's whole group gives up its space to the one action the
+    // state does support, and Reroll greys rather than disappearing: it is
+    // coming back the moment a rule is picked, and a control that vanishes
+    // teaches less than one that visibly does not apply.
+    if (this.generatedShown !== status.ruleIsGenerated) {
+      this.generatedShown = status.ruleIsGenerated;
+      const generated = status.ruleIsGenerated;
+
+      this.label.style.display = generated ? 'none' : '';
+      this.slider.style.display = generated ? 'none' : '';
+      this.readout.style.display = generated ? 'none' : '';
+      this.rerollAll.style.display = generated ? '' : 'none';
+
+      // `disabled` as well as the styling: without it the button still takes
+      // focus and still fires, and an inert-looking control that works is worse
+      // than either. The values match `menuBar.ts`'s greyed rows so the bar and
+      // the Simulation menu read as the same state.
+      this.reroll.disabled = generated;
+      this.reroll.style.opacity = generated ? '0.45' : '1';
+      this.reroll.style.cursor = generated ? 'default' : 'pointer';
     }
 
     // The tool selector. It lives here because the Transport section that used
@@ -232,6 +322,35 @@ export class MutationOverlay {
     if (this.tool.value !== status.mouseMode && document.activeElement !== this.tool) {
       this.tool.value = status.mouseMode;
     }
+  }
+
+  /**
+   * One population preset: N cohorts, laid out on a grid, from a cold start.
+   *
+   * The icon carries the meaning and the `title` says it in words -- there is
+   * no room for a text label at this size, and "1 / 4 / 16" alone would not say
+   * what the number counts.
+   */
+  private layoutButton(
+    count: number,
+    send: (command: Command) => void,
+  ): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.style.cssText = LAYOUT_BUTTON_CSS;
+
+    const description = `${String(count)} cohort${count === 1 ? '' : 's'}, grid layout`;
+    button.title = description;
+    // Not decorative: the icon is the only content, so without this the button
+    // is unnamed to a screen reader.
+    button.setAttribute('aria-label', description);
+    button.dataset['setting'] = `config.cohorts.preset${String(count)}`;
+
+    button.append(dotsIcon(count));
+    button.addEventListener('click', () => {
+      send({ kind: 'setPopulationLayout', cohorts: count });
+    });
+    return button;
   }
 
   /**
@@ -258,6 +377,63 @@ export class MutationOverlay {
 /** Two decimals: enough to read, few enough not to jitter under a drag. */
 function format(value: number): string {
   return value.toFixed(2);
+}
+
+/**
+ * ` (B or F)` from a list of keys, or `''` if none are bound.
+ *
+ * Every key comes from `hotkeyLabel`, which returns `''` for an unbound
+ * command -- so a rebind moves these labels and an UNBIND removes the key from
+ * the list rather than rendering "( or F)".
+ */
+function keySuffix(keys: readonly string[]): string {
+  const bound = keys.filter((key) => key !== '');
+  return bound.length === 0 ? '' : ` (${bound.join(' or ')})`;
+}
+
+/**
+ * Cohort counts the preset buttons offer. Each must be a perfect square, since
+ * `dotsIcon` lays it out as one -- 1, 4 and 16 read as die faces at this size.
+ */
+const LAYOUT_PRESETS: readonly number[] = [1, 4, 16];
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/**
+ * `count` dots on a square grid, as a die face reads.
+ *
+ * The first SVG in the project. `createElementNS` is required: `createElement`
+ * would silently build an inert HTML element with the same tag name, which
+ * renders as nothing at all rather than failing.
+ *
+ * `fill:currentColor` rather than a literal, so the dots follow the button's
+ * `color` -- which is what lets a disabled or hovered state recolour the icon
+ * without this function knowing about either.
+ */
+function dotsIcon(count: number): SVGSVGElement {
+  const side = Math.round(Math.sqrt(count));
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${String(ICON_BOX)} ${String(ICON_BOX)}`);
+  svg.setAttribute('width', String(ICON_BOX));
+  svg.setAttribute('height', String(ICON_BOX));
+  svg.style.display = 'block';
+
+  // Dots sit at cell centres, and the radius is a fraction of the CELL rather
+  // than a constant -- at 4x4 a fixed radius either merges the dots or leaves
+  // the 1x1 face a speck.
+  const cell = ICON_BOX / side;
+  const radius = Math.max(cell * 0.22, 0.9);
+  for (let row = 0; row < side; row++) {
+    for (let col = 0; col < side; col++) {
+      const dot = document.createElementNS(SVG_NS, 'circle');
+      dot.setAttribute('cx', String((col + 0.5) * cell));
+      dot.setAttribute('cy', String((row + 0.5) * cell));
+      dot.setAttribute('r', String(radius));
+      dot.setAttribute('fill', 'currentColor');
+      svg.append(dot);
+    }
+  }
+  return svg;
 }
 
 // -- styling ----------------------------------------------------------------
@@ -316,6 +492,47 @@ const BUTTON_CSS =
   'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
   'border-radius:4px;color:#e8e8ea;font:11px system-ui,sans-serif;' +
   'padding:5px 10px;cursor:pointer;white-space:nowrap;';
+
+// The sentinel-state stand-in for the slider.
+//
+// **THE WIDTH REPLACES A GROUP, NOT ONE CONTROL, and that is the whole point.**
+// The bar is centred with `transform:translateX(-50%)`, so a bar that changed
+// width would shift BOTH its edges -- every remaining control would slide out
+// from under the pointer at the instant the state flipped. Matching only
+// `SLIDER_CSS` was not enough: the label and readout vanish too, and with them
+// two of the bar's 10px gaps, which measured as a 430px jump.
+//
+// So this is the slider's width PLUS what the label, the readout and TWO OF THE
+// BAR'S 10px GAPS contribute -- three items collapsing to one takes the gaps
+// between them with it, which is a third of this number and the part that is
+// easiest to forget.
+//
+// `LABEL_EXTRA_PX` was MEASURED, not derived: the two states' bar widths, at
+// viewports 1280 and 900, adjusted until the delta reached 0. Only the fixed
+// part needs measuring -- the `min(46vw,420px)` term is common to both states
+// and cancels, which is why one constant holds at both widths. A font change or
+// a relabelled Mutation Scale is what would invalidate it.
+const LABEL_EXTRA_PX = 141;
+
+const REROLL_ALL_CSS =
+  `${BUTTON_CSS}width:calc(min(46vw,420px) + ${String(LABEL_EXTRA_PX)}px);` +
+  'text-align:center;';
+
+// The three population presets, grouped so the gap between them is tighter than
+// the bar's own 10px -- they are one control, not three neighbours.
+const PRESETS_CSS = 'display:flex;align-items:center;gap:3px;';
+
+/** The icon's viewBox and its rendered size. Square, so one constant. */
+const ICON_BOX = 16;
+
+// Square, and sized from the icon rather than from the text metrics every other
+// button here uses: `padding:0` plus an explicit box is what keeps all three the
+// same size regardless of how many dots are in them.
+const LAYOUT_BUTTON_CSS =
+  'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
+  'border-radius:4px;color:#e8e8ea;padding:0;cursor:pointer;' +
+  'display:flex;align-items:center;justify-content:center;' +
+  'width:24px;height:24px;flex:none;';
 
 // The tool dropdown.
 //
