@@ -14,13 +14,13 @@
  * is a completely different rule, which looks like a legitimate result. So each
  * fallback gets a case, and each case names what breaks without it.
  *
- * ## THE BRIDGE
+ * ## THE SHIPPED PRESETS
  *
  * `parses the real shipped presets` reads `configs/*.json` off disk through this
- * reader and checks the values against `presets.generated.json` -- the file the
- * old generator produced through the DESKTOP's reader. That comparison is the
- * only thing connecting the deleted export to the new one, and it must run while
- * both still exist. Step 9.6 replaces it with the literals it proved.
+ * reader and checks the parsed values against literals. Those literals were
+ * proved, while the Python app still existed, against what ITS reader produced
+ * from the same files -- so they are a record of the reference behaviour, not a
+ * transcription of this reader's own output.
  */
 
 import { test } from 'node:test';
@@ -39,7 +39,8 @@ import {
 } from './persistence.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.join(here, '..', '..', '..');
+// src/config -> src -> repo root, which is where `configs/` lives.
+const REPO_ROOT = path.join(here, '..', '..');
 
 /** A minimal valid v8 document, which each case below perturbs. */
 function validDocument(): Record<string, unknown> {
@@ -349,26 +350,31 @@ test('FORMAT_VERSION is 8 and is what the writer emits', () => {
 });
 
 // ---------------------------------------------------------------------------
-// THE BRIDGE -- see the file header
+// THE SHIPPED PRESETS -- see the file header
 // ---------------------------------------------------------------------------
 
-test('parses the real shipped presets to the values the desktop reader produced', () => {
+test('parses the real shipped presets to the values the reference reader produced', () => {
   // Reads `configs/*.json` off disk through THIS reader and compares against
-  // `presets.generated.json`, which the old generator produced through the
-  // DESKTOP's reader. The only assertion connecting the two, and it can only run
-  // while both exist -- 9.6 replaces it with the literals it proves.
-  const generatedPath = path.join(
-    here, '..', 'particleSystem', 'presets.generated.json',
-  );
-  if (!fs.existsSync(generatedPath)) {
-    // Already deleted by 9.6. The literals below took over.
-    return;
-  }
-  const generated = JSON.parse(fs.readFileSync(generatedPath, 'utf8')) as {
-    presets: Record<string, { config: Record<string, number | boolean>; world: Record<string, number> }>;
-  };
+  // `presets.fixture.json`, which the retired Python app produced from the same
+  // files through ITS reader. Every other test in this file builds a document
+  // in memory and reads it back, which cannot catch a fallback that is wrong in
+  // the same direction on both sides. This one can: the expected values came
+  // from somewhere else.
+  const expectedByName = (
+    JSON.parse(fs.readFileSync(path.join(here, 'presets.fixture.json'), 'utf8')) as {
+      presets: Record<
+        string,
+        { config: Record<string, number | boolean>; world: Record<string, number> }
+      >;
+    }
+  ).presets;
 
-  for (const [name, expected] of Object.entries(generated.presets)) {
+  // Guards against the fixture silently emptying and the loop below passing
+  // vacuously -- which is exactly what happened when its predecessor was
+  // deleted and this test early-returned instead of failing.
+  assert.equal(Object.keys(expectedByName).length, 7);
+
+  for (const [name, expected] of Object.entries(expectedByName)) {
     const raw = JSON.parse(
       fs.readFileSync(path.join(REPO_ROOT, 'configs', `${name}.json`), 'utf8'),
     );

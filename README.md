@@ -234,21 +234,24 @@ arithmetic stays testable without a browser.
 |---|---|---|
 | `src/particleSystem/layout.fixture.json` | Struct sizes, member offsets, float-lane indices | By hand, alongside `common.wgsl` |
 | `src/testing/parity.fixture.json` | Golden values from the retired Python reference | Frozen — see below |
+| `src/config/presets.fixture.json` | What the reference reader parsed each shipped preset into | Frozen — see below |
 | `public/configs/manifest.json` | The preset index: categories and names, in menu order | `npm run sync:configs` |
 | `public/configs/<category>/*.json` | Every shipped preset, copied verbatim from `configs/` | `npm run sync:configs` |
 
 The presets are **fetched, not imported**. `public/` is copied to the build root
 untouched, which is what makes adding one a file drop rather than a rebuild.
 
-### The two fixtures are no longer generated
+### The fixtures are no longer generated
 
-Both were originally produced by the Python app — `layout.fixture.json` by
+All three were originally produced by the Python app — `layout.fixture.json` by
 `layout.py`'s GLSL parser, `parity.fixture.json` by calling the reference
-`coords` / `sizing` / `camera_state` / `pack_configs` functions directly. That
-app is gone, so neither is regenerable, and **neither should be regenerated from
+`coords` / `sizing` / `camera_state` / `pack_configs` functions directly, and
+`presets.fixture.json` by loading `configs/*.json` through the reference reader.
+That app is gone, so none is regenerable, and **none should be regenerated from
 the TypeScript.**
 
-For `parity.fixture.json` that is the entire point. A round-trip test checks the
+For `parity.fixture.json` and `presets.fixture.json` that is the entire point. A
+round-trip test checks the
 port against *itself*: if `worldHalfExtent` returned `[1/s, s]` instead of
 `[s, 1/s]`, every round-trip would still close perfectly, because forward and
 inverse would be wrong in cancelling directions. Only independently-sourced
