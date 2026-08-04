@@ -10,7 +10,7 @@
  * It is a DEVELOPMENT tool, not part of `npm test` -- it needs a real GPU, a
  * real Chrome and a running dev server, none of which belong in CI.
  *
- * Usage (from web/, with `npm run dev` already running):
+ * Usage (from the repo root, with `npm run dev` already running):
  *   node tools/browserCheck.mjs
  *   node tools/browserCheck.mjs --url "?debug&preset=hatmanv8&camera=trail"
  *   node tools/browserCheck.mjs --shot ../shot.png

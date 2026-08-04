@@ -1,10 +1,10 @@
 /**
- * Tests for the generated struct-layout descriptor.
+ * Tests for the struct-layout descriptor.
  *
- * These check the *shipped snapshot*, not a parser -- the parser stays in
- * Python (see `layout.ts`). The failure mode being guarded against is a stale
- * or hand-edited `layout.generated.json`, which would silently reinterpret GPU
- * memory rather than erroring.
+ * These check the *checked-in descriptor*, not a parser -- there is no parser
+ * (see `layout.ts`). The failure mode being guarded against is a hand-edited
+ * `layout.fixture.json` that no longer matches `common.wgsl`, which would
+ * silently reinterpret GPU memory rather than erroring.
  */
 
 import { test } from 'node:test';
@@ -21,8 +21,7 @@ import {
   memberOf,
 } from './layout.ts';
 
-// The struct table in docs/WEB_PORT_PLAN.md step 3, made executable.
-test('struct sizes match the port plan', () => {
+test('struct sizes are the ones every hardcoded stride assumes', () => {
   assert.equal(layoutOf('FourierCenter').size, 32);
   assert.equal(layoutOf('Rule').size, 320);
   assert.equal(layoutOf('ConfigData').size, 416);
@@ -37,7 +36,7 @@ test('struct sizes match the port plan', () => {
 
 // Names and order, so a rename or reordering that preserves sizes is still
 // caught. Order matters: it is the byte order of the record.
-test('struct members match common.glsl in name and order', () => {
+test('struct members match common.wgsl in name and order', () => {
   assert.deepEqual(
     CONFIG_DATA.members.map((m) => m.name),
     ['rule', 'sensor', 'force', 'misc', 'force2', 'misc2', 'misc3'],
@@ -84,9 +83,9 @@ test('Rule is 10 FourierCenters at stride 32, contiguous', () => {
   assert.equal(centers.stride! * centers.arrayLength!, layoutOf('Rule').size);
 });
 
-// The TypeScript mirror of layout.py:125-142 (_assert_vec4_aligned). Redundant
-// with the generator, which is the point: this also catches a hand-edited
-// descriptor.
+// The vec4-only rule. layout.ts checks this at module load too; asserting it
+// again here is deliberate, so a failure names the rule rather than arriving as
+// an import-time throw from whichever test happened to load first.
 test('every struct is 16-byte regular', () => {
   for (const name of ['FourierCenter', 'Rule', 'ConfigData', 'WorldData', 'Entity']) {
     const struct = layoutOf(name);

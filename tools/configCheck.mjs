@@ -15,7 +15,7 @@
  *   PASS 3  loading a saved config restores its settings AND its camera, and a
  *           shipped preset refuses to be deleted.
  *
- * Usage (from web/, with `npm run dev` running):
+ * Usage (from the repo root, with `npm run dev` running):
  *   node tools/configCheck.mjs
  */
 

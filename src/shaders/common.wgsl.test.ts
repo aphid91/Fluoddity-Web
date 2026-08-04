@@ -1,21 +1,18 @@
 /**
- * Checks `common.wgsl`'s struct declarations against `layout.generated.json`.
+ * Checks `common.wgsl`'s struct declarations against `layout.fixture.json`.
  *
  * ## Why this test exists
  *
- * Step 3 of the port created a second hand-authored copy of the GPU struct
- * layout. `shared/shaders/common.glsl` is what the Python parser reads to emit
- * `layout.generated.json`, which is what the host packs against
- * (`pack.ts`, guarded by `assertLaneMap`). `common.wgsl` is what the GPU
- * actually reads. Nothing else compares the two.
+ * The GPU struct layout is hand-authored in two places. `layout.fixture.json`
+ * is what the host packs against (`pack.ts`, guarded by `assertLaneMap`);
+ * `common.wgsl` is what the GPU actually reads. Nothing else compares the two,
+ * and nothing generates either from the other.
  *
  * A divergence between them does not crash and does not error. The host packs
  * 416 bytes to one plan and the shader reads them to another, and the
- * simulation is just subtly wrong -- which is exactly the failure mode
- * `layout.py`'s header calls out and the whole descriptor design exists to
- * prevent. This is the shader-side counterpart of `assertLaneMap`: that one
- * guards host packing against the descriptor, this one guards the shader
- * against it, and together they close the loop.
+ * simulation is just subtly wrong. This is the shader-side counterpart of
+ * `assertLaneMap`: that one guards host packing against the descriptor, this
+ * one guards the shader against it, and together they close the loop.
  *
  * ## What the scanner is and is not
  *
@@ -136,7 +133,7 @@ test('common.wgsl declares every struct in the descriptor', () => {
   for (const name of LAYOUT_STRUCTS) {
     assert.ok(
       scanned.has(name),
-      `layout.generated.json describes struct ${name}, but common.wgsl does ` +
+      `layout.fixture.json describes struct ${name}, but common.wgsl does ` +
         `not declare it. The GPU would not agree with the host packing.`,
     );
   }
@@ -150,7 +147,7 @@ test('struct members match the descriptor in name and order', () => {
       actual,
       expected,
       `common.wgsl's ${name} members are [${actual.join(', ')}] but ` +
-        `layout.generated.json says [${expected.join(', ')}]. Member order IS ` +
+        `layout.fixture.json says [${expected.join(', ')}]. Member order IS ` +
         `the byte order of the record: a mismatch means the shader reads every ` +
         `field after the divergence from the wrong offset, silently.`,
     );

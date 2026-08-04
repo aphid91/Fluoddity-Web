@@ -1,45 +1,46 @@
 /**
- * GPU struct layouts, read from a build-time descriptor.
+ * GPU struct layouts, read from a checked-in descriptor.
  *
- * The desktop analogue is `particle_system/layout.py`, which regex-parses
- * `shared/shaders/common.glsl` at import to build numpy dtypes. **This module is
- * NOT a port of that parser.** Per `docs/WEB_PORT_PLAN.md` step 2, the parser
- * stays in Python and runs at build time; `web/tools/generate_web_data.py` ships
- * its answer as `layout.generated.json` and this module reads it.
+ * `layout.fixture.json` states the byte offset, size and float lane of every
+ * member of every struct the host packs. `src/shaders/common.wgsl` declares the
+ * same structs to the GPU. **They are two statements of one fact**, and the
+ * assertions in this module are what keep them from disagreeing.
  *
- * Why not port the parser: shader hot-reload is gone (ARCHITECTURE.md invariant
- * 5), so a *runtime* parser has no job, and a second implementation of a strict
- * parser is a second thing that can be subtly wrong. Resist porting the regexes
- * for symmetry -- there is nothing here for them to do.
+ * The descriptor was originally produced by the Python desktop app's
+ * `layout.py`, which regex-parsed the GLSL at import so the packing code could
+ * never drift from the shader. That app is gone and the parser with it. There
+ * is deliberately no replacement: shader hot-reload is gone too
+ * (ARCHITECTURE.md invariant 5), so a runtime parser has nothing to do, and a
+ * WGSL parser written to re-derive a file that changes about once a year would
+ * be more code to get subtly wrong than the thing it checks.
  *
  * ## Why this module asserts rather than merely reads
  *
- * `layout.py`'s header states the hazard plainly: a struct layout mismatch
- * "does not crash or error at runtime -- it silently reinterprets memory, and
- * the simulation just behaves subtly wrong. Failing loudly at startup is the
- * entire point."
- *
- * The desktop gets that for free because it re-parses the .glsl every run. The
- * port cannot: it reads a *snapshot*, so the failure mode moves from "the file
- * is malformed" to "the snapshot is stale." Hence the assertions below. They run
- * at module load, which is the port's equivalent of `layout.py:151-153`'s
- * "parsed once at import ... not at the first buffer upload."
+ * A struct layout mismatch does not crash. It silently reinterprets GPU memory
+ * and the simulation just behaves subtly wrong. Failing loudly at module load
+ * is the entire point of this file.
  *
  * The assertion that earns the design is `assertLaneMap`, called from
- * `config.ts`: it checks the hand-written lane constants against the generated
- * offsets, so adding a vec4 to `ConfigData` fails loudly instead of silently
+ * `config.ts`: it checks the hand-written lane constants against the descriptor's
+ * offsets, so adding a `vec4` to `ConfigData` fails loudly instead of silently
  * shifting every lane by four floats.
+ *
+ * ## Changing a struct
+ *
+ * Edit `common.wgsl` AND `layout.fixture.json` in the same commit. The checks
+ * here and in `common.wgsl.test.ts` will tell you if you missed one; nothing
+ * will regenerate the other for you.
  */
 
-import descriptor from './layout.generated.json' with { type: 'json' };
+import descriptor from './layout.fixture.json' with { type: 'json' };
 
-/** One member of a GPU struct, as the generator describes it. */
+/** One member of a GPU struct, as the descriptor describes it. */
 export interface LayoutMember {
   readonly name: string;
   /** Byte offset from the start of the struct. Always 16-byte aligned. */
   readonly offset: number;
   readonly size: number;
-  /** `'vec4'`, or the name of a struct declared earlier in `common.glsl`. */
+  /** `'vec4'`, or the name of a struct declared earlier in `common.wgsl`. */
   readonly type: string;
   /** `offset / 4` -- the index into a Float32Array view of the record. */
   readonly floatIndex: number;
@@ -62,9 +63,9 @@ export function layoutOf(name: string): LayoutStruct {
   const struct = structs[name];
   if (struct === undefined) {
     throw new Error(
-      `layout.generated.json has no struct "${name}". Either common.glsl no ` +
-        `longer declares it, or the descriptor is stale -- regenerate with ` +
-        `\`npm run gen:web-data\`.`,
+      `layout.fixture.json has no struct "${name}". Either it was renamed in ` +
+        `common.wgsl without the descriptor following, or the caller is asking ` +
+        `for something that never existed.`,
     );
   }
   return struct;
@@ -76,7 +77,7 @@ export function memberOf(structName: string, memberName: string): LayoutMember {
   if (member === undefined) {
     throw new Error(
       `struct ${structName} has no member "${memberName}" in ` +
-        `layout.generated.json. Regenerate with \`npm run gen:web-data\`.`,
+        `layout.fixture.json. Update it alongside common.wgsl.`,
     );
   }
   return member;
@@ -86,28 +87,20 @@ export const CONFIG_DATA = layoutOf('ConfigData');
 export const WORLD_DATA = layoutOf('WorldData');
 export const ENTITY = layoutOf('Entity');
 
-/**
- * Stride between consecutive `ConfigData` records in the ConfigBuffer.
- * The analogue of `layout.py:160`'s `SIZE_OF_CONFIG_DATA`.
- */
+/** Stride between consecutive `ConfigData` records in the ConfigBuffer. */
 export const CONFIG_DATA_STRIDE = CONFIG_DATA.size;
 export const WORLD_DATA_SIZE = WORLD_DATA.size;
-/**
- * The analogue of `layout.py:159`'s `SIZE_OF_ENTITY_STRUCT`. Nothing in step 2
- * packs an entity -- this is here for steps 4 and 6, which do.
- */
+/** Stride between consecutive `Entity` records in the EntityBuffer. */
 export const ENTITY_STRIDE = ENTITY.size;
 
 /** Float32 lanes per ConfigData record. 416 / 4 = 104. */
 export const CONFIG_DATA_FLOATS = CONFIG_DATA.float32Count;
 
 /**
- * Sizes the port hardcodes as strides, checked at module load.
- *
- * The generator checks these too (`EXPECTED_SIZES`), so this looks redundant --
- * but the generator only runs on a machine with the Python venv. This catches a
- * descriptor that was hand-edited, partially merged, or regenerated by a future
- * version of the generator that dropped the check.
+ * Sizes the rest of `particleSystem/` hardcodes as strides, checked at module
+ * load. The vec4-only rule guarantees 16-byte alignment, so a struct can grow
+ * LEGALLY and still invalidate every one of those hardcoded strides -- which is
+ * a silent wrong-memory bug, not a crash. This is the tripwire.
  */
 const EXPECTED_SIZES: Readonly<Record<string, number>> = {
   FourierCenter: 32,
@@ -121,17 +114,18 @@ for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
   const actual = layoutOf(name).size;
   if (actual !== expected) {
     throw new Error(
-      `struct ${name} is ${actual} bytes in layout.generated.json, expected ` +
-        `${expected}. Every hardcoded stride in web/src/particleSystem assumes ` +
+      `struct ${name} is ${actual} bytes in layout.fixture.json, expected ` +
+        `${expected}. Every hardcoded stride in src/particleSystem assumes ` +
         `the expected value.`,
     );
   }
 }
 
-// `Rule.centers` is the one array member in the whole layout, and its stride is
-// the number docs/WEB_PORT_PLAN.md step 3 calls out: std430's array-of-struct
-// stride already equals WGSL's `array<FourierCenter,10>` stride, so there is no
-// stride divergence to work around. Assert it rather than trusting the note.
+// `Rule.centers` is the one array member in the whole layout. std430's
+// array-of-struct stride here equals WGSL's `array<FourierCenter,10>` stride
+// (32 bytes either way), so there is no stride divergence to work around --
+// which is what lets pack.ts treat `rule` as a flat 80-float memcpy. Assert it
+// rather than trusting the comment.
 {
   const centers = memberOf('Rule', 'centers');
   if (centers.stride !== 32 || centers.arrayLength !== 10) {
@@ -143,10 +137,10 @@ for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
   }
 }
 
-// The vec4-only rule, re-checked on this side. `layout.py:125-142`
-// (`_assert_vec4_aligned`) runs the same check at parse time; repeating it here
-// means a hand-edited descriptor is caught too, and it keeps the rule visible in
-// the TypeScript rather than being an off-stage Python guarantee.
+// The vec4-only rule: every struct a multiple of 16 bytes, every member
+// 16-byte aligned. It is what makes std430 and WGSL agree on this layout in the
+// first place, so it is checked here rather than left as a convention someone
+// could quietly break by hand-editing the descriptor.
 for (const [name, struct] of Object.entries(structs)) {
   if (struct.size % 16 !== 0) {
     throw new Error(
@@ -164,14 +158,14 @@ for (const [name, struct] of Object.entries(structs)) {
 }
 
 /**
- * Check hand-written float-lane constants against the generated offsets.
+ * Check hand-written float-lane constants against the descriptor's offsets.
  *
  * **This is the assertion the whole descriptor design exists for.** `config.ts`
  * states which float means what (`LANE`); the descriptor states where each vec4
- * begins. If someone adds a `vec4` to `ConfigData` in `common.glsl` and
- * regenerates, every lane after the insertion point shifts by four floats -- and
- * without this check the port would keep writing `hazard_rate` where the shader
- * now reads something else. No error, no crash, just subtly wrong physics.
+ * begins. If someone adds a `vec4` to `ConfigData`, every lane after the
+ * insertion point shifts by four floats -- and without this check the host would
+ * keep writing `hazard_rate` where the shader now reads something else. No
+ * error, no crash, just subtly wrong physics.
  *
  * Called from `config.ts` at module load rather than declared there, so the
  * failure surfaces at import time on the first thing that touches a config.
@@ -188,13 +182,13 @@ export function assertLaneMap(
     if (member === undefined) {
       throw new Error(
         `${structName} has no member matching lane constant "${memberName}". ` +
-          `Either common.glsl renamed it or the LANE table is stale.`,
+          `Either common.wgsl renamed it or the LANE table is stale.`,
       );
     }
     if (member.floatIndex !== lane) {
       throw new Error(
         `${structName}.${member.name} is at float lane ${member.floatIndex} in ` +
-          `layout.generated.json, but the LANE table says ${lane}. The struct ` +
+          `layout.fixture.json, but the LANE table says ${lane}. The struct ` +
           `changed and the lane constants did not follow -- packing would write ` +
           `every field after this point into the wrong place, silently.`,
       );

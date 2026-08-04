@@ -120,7 +120,7 @@ export const PICK_RESULT_SIZE = PICK_RULE_OFFSET + layoutOf('Rule').size;
   const ruleSize = layoutOf('Rule').size;
   if (ruleSize !== RULE_FLOATS * 4) {
     throw new Error(
-      `Rule is ${ruleSize} bytes in layout.generated.json but pick.ts reads ` +
+      `Rule is ${ruleSize} bytes in layout.fixture.json but pick.ts reads ` +
         `${RULE_FLOATS} floats (${RULE_FLOATS * 4} bytes) out of the pick result.`,
     );
   }

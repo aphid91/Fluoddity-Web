@@ -1,13 +1,21 @@
-# Virtual environment
-Scratch.venv/
-*.venv/
-venv/
+# Dependencies
+node_modules/
 
-# Python cache
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
+# Build output
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Local preset working state. `tools/syncConfigs.ts` skips this directory by
+# name, so nothing in it is ever shipped -- it is scratch presets and the old
+# desktop app's user saves. The browser's equivalent is IndexedDB.
+configs/custom/
 
 # IDE
 .vscode/
@@ -19,25 +27,17 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Build/Distribution
-dist/
-build/
-*.egg-info/
-
-# Web port (web/) -- Node/Vite. dist/ and build/ are covered above.
-node_modules/
-.vite/
-*.tsbuildinfo
-.env
-.env.*
-!.env.example
-
-# Application specific
+# Logs
 *.log
-preferences.config
+
+# Leftovers from the retired Python app (see the README on reading its
+# citations). Kept so an old venv or stale working tree does not show up as
+# untracked noise; droppable once no checkout has them.
+Scratch.venv/
+*.venv/
+venv/
+__pycache__/
+*.py[cod]
 preferences.json
-# imgui rewrites this every session, so a tracked copy is pure churn. Kept
-# consistent with preferences.json above: both are per-user session state, not
-# project source. A canonical default layout, if ever wanted, ships as
-# default_imgui.ini the way Reference/ does.
+preferences.config
 imgui.ini

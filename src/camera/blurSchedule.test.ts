@@ -111,11 +111,10 @@ test('degenerate inputs never produce a zero stride', () => {
   }
 });
 
-test('matches the desktop blur_schedule() on all 64 golden cases', () => {
-  // Sourced by CALLING orchestrator.blur_schedule (see _parity_blur in
-  // generate_web_data.py), so this cannot drift from the desktop without the
-  // regeneration diff showing it. The identity test above checks the port
-  // against ITSELF; this checks it against Python.
+test('matches the reference blur_schedule() on all 64 golden cases', () => {
+  // Sourced by CALLING the retired Python app's orchestrator.blur_schedule.
+  // The identity test above checks the port against ITSELF; this checks it
+  // against an independent implementation. See src/testing/parity.ts.
   for (const c of PARITY.blur.cases) {
     const { samples, stride } = blurSchedule(c.physicsSteps, c.motionBlurSamples);
     assert.deepEqual(

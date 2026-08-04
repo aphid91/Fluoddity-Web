@@ -1,17 +1,17 @@
 {
-  "name": "fluoddity-web",
+  "name": "fluoddity",
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "WebGPU/TypeScript port of Fluoddity2. See docs/WEB_PORT_PLAN.md.",
+  "description": "A WebGPU particle simulation. See docs/ARCHITECTURE.md.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run sync:configs:check && tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"tools/**/*.test.ts\" \"src/**/*.test.ts\"",
-    "gen:web-data": "python tools/generate_web_data.py",
-    "gen:web-data:check": "python tools/generate_web_data.py --check"
+    "sync:configs": "node tools/syncConfigs.ts",
+    "sync:configs:check": "node tools/syncConfigs.ts --check"
   },
   "devDependencies": {
     "@tweakpane/core": "^2.0.5",

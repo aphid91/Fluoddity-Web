@@ -69,7 +69,7 @@
  * (+117 vs +0.06 on the overlay) because they measure a painted overlay rather
  * than an emergent simulation.
  *
- * Usage (from web/, with `npm run dev` running):
+ * Usage (from the repo root, with `npm run dev` running):
  *   node tools/fieldCheck.mjs
  *   node tools/fieldCheck.mjs --keep-shots ../field
  */

@@ -1,10 +1,18 @@
-# Fluoddity — WebGPU port
+# Fluoddity
 
-The TypeScript/WebGPU port of the Python app in the parent directory. The plan
-is `docs/WEB_PORT_PLAN.md`; the design contract it must honour is
-`docs/ARCHITECTURE.md`, whose 10 invariants are the spec.
+A GPU particle simulation in TypeScript and WebGPU: 600,000 entities driven by a
+Fourier Feature Network, painted into a trail field, with a bloom and tone-curve
+pipeline over the top.
 
-**Status: Steps 1–10 complete.** Scaffold, device acquisition, canvas sizing,
+> **History.** This began as a port of a Python/moderngl desktop app, which
+> served as its executable spec. The port is complete and the Python app has
+> been removed — this is now the whole project. Comments throughout cite Python
+> files (`persistence.py:128`, `camera.py:14-18`); see
+> [Reading the Python citations](#reading-the-python-citations) below.
+
+## What is here
+
+Scaffold, device acquisition, canvas sizing,
 the WGSL `#include` resolver, the pure-math leaves, `common.wgsl`, **the
 engine** (`entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`, driven by
 `src/particleSystem/particleSystem.ts`), **the render pipeline** (both camera
@@ -20,18 +28,18 @@ sliders, self-hiding gated controls, reveal gating, a menu bar with
 browse-by-hover load and checkpoint lists, and native `<dialog>` save and delete
 modals.
 
-**The engine is feature-complete against the desktop.** 600,000 entities, 30
-sub-steps a frame, at parity — verified by loading the same preset in both,
-running to the same sub-step count, and comparing the canvas (see
-"Verification" below).
+600,000 entities at 30 sub-steps a frame. This was verified against the
+reference implementation while it existed, by loading the same preset in both,
+running to the same sub-step count and comparing the canvas (see "Verification"
+below).
 
-**One deliberate omission: the pinned sensor diagram.** The desktop draws a
-small animated picture of a particle and its two sensors while you hover Sensor
-Angle or Sensor Distance (`ui/sensor_diagram.py`); here those two sliders get
-the same rich text tooltip every other setting gets. Nothing depends on it, and
-the decisions for building it later — Canvas2D rather than WGSL, and the
-`sensorTooltipDiagram` preference it would need — are recorded in
-`docs/WEB_PORT_PLAN.md` under Step 10.
+**One feature the reference had and this does not: the pinned sensor diagram.**
+The desktop drew a small animated picture of a particle and its two sensors
+while you hovered Sensor Angle or Sensor Distance (`ui/sensor_diagram.py`); here
+those two sliders get the same rich text tooltip every other setting gets.
+Nothing depends on it, and the decisions for building it later — Canvas2D rather
+than WGSL, and the `sensorTooltipDiagram` preference it would need — are
+recorded in `docs/history/WEB_PORT_PLAN.md` under Step 10.
 
 ## Running it
 
@@ -103,28 +111,37 @@ http://localhost:5173/?debug&preset=9leafv8
 ```
 
 An unknown name falls back to the default and logs the available ones, so a typo
-never looks like a broken engine. The default is `Starcrossedv8`, matching the
-desktop's own default at `particle_system.py:45`, so both halves of an A/B start
-on the same config without anyone having to pick it.
+never looks like a broken engine. The default is `Starcrossedv8`.
 
-**Adding a preset** is one step now that the presets are data rather than code:
-drop the `.json` into `configs/` (v8 only) and regenerate.
+**Adding a preset** is a file drop plus a sync, because presets are data rather
+than code. Drop the `.json` into `configs/` (v8 only) and run:
 
 ```
-../Scratch.venv/Scripts/python.exe tools/generate_web_data.py
+npm run sync:configs
 ```
 
-The generator runs the desktop's own `persistence.discover()` over `configs/`,
-copies every tracked file verbatim into `web/public/configs/`, and writes the
-`manifest.json` the app fetches. There is no list of filenames to maintain and
-no `.ts` module to rebuild — that is the point of the manifest. Each file is
-still parsed through `persistence.load()` at generation time, so a v7 or
-malformed file fails **there**, with the desktop's own message, rather than in a
-browser.
+`tools/syncConfigs.ts` walks `configs/`, copies every file verbatim into
+`public/configs/`, and writes the `manifest.json` the app fetches. There is no
+list of filenames to maintain and no `.ts` module to rebuild — that is the point
+of the manifest.
 
-`configs/custom/` is skipped deliberately: it is the desktop's user-save folder,
-untracked working state belonging to whoever ran the generator. The browser's
-equivalent is IndexedDB, which is per-user by construction.
+It does two things a `cp -r` would not:
+
+- **Every preset is parsed through `src/config/persistence.ts`** — the app's own
+  reader — and discarded. A malformed or wrong-version file fails **here**, with
+  the real error message, rather than in a browser as a menu entry that does
+  nothing.
+- **The output directory is a mirror, not an overlay.** Anything in
+  `public/configs/` that is no longer in `configs/` is deleted. Without this a
+  removed preset stays shipped, unreferenced by the manifest and invisible in
+  review.
+
+`npm run build` runs `sync:configs:check` first, so a stale `public/configs/`
+fails the build instead of shipping quietly.
+
+`configs/custom/` is skipped deliberately: it is local working state — where the
+retired desktop app put user saves, and where scratch presets accumulate. The
+browser's equivalent is IndexedDB, which is per-user by construction.
 
 **Saving** writes to IndexedDB under `Custom`, through the Save folder in the
 panel. Saves survive a reload; shipped presets cannot be deleted (they are part
@@ -188,7 +205,7 @@ errors, but only in a browser, so the Node suite would never have seen them.
 | Path | Role |
 |---|---|
 | `tools/wgslInclude.ts` | The `#include` resolver + its Vite plugin |
-| `tools/generate_web_data.py` | Emits the generated JSON below |
+| `tools/syncConfigs.ts` | Copies `configs/` into `public/` and writes the manifest |
 | `tools/browserCheck.mjs` | Drives a real Chrome over CDP; the only thing that compiles WGSL |
 | `src/gpu/` | Stateless GPU helpers — the `shared/` analogue (invariant 1) |
 | `src/app/` | Canvas surface and sizing; `renderTargets` (the HDR and accumulation buffers) |
@@ -211,59 +228,82 @@ because `#include` resolution is a Vite plugin. That is why each has a pure leaf
 beside it (`blurSchedule`, `bloomChain`, `dispatch`, the uniform packers): the
 arithmetic stays testable without a browser.
 
-## Generated data
+## Committed data files
 
-Produced by Python and **committed to git**:
-
-| Output | Contents |
-|---|---|
-| `src/particleSystem/layout.generated.json` | Struct sizes, member offsets, float-lane indices, parsed out of `common.glsl` |
-| `tools/parity.generated.json` | Golden values produced by *calling* the desktop Python functions |
-| `public/configs/manifest.json` | The preset index: categories and names, in `discover()`'s order |
-| `public/configs/<category>/*.json` | Every shipped preset, copied verbatim from `configs/` |
+| File | Contents | Maintained by |
+|---|---|---|
+| `src/particleSystem/layout.fixture.json` | Struct sizes, member offsets, float-lane indices | By hand, alongside `common.wgsl` |
+| `src/testing/parity.fixture.json` | Golden values from the retired Python reference | Frozen — see below |
+| `public/configs/manifest.json` | The preset index: categories and names, in menu order | `npm run sync:configs` |
+| `public/configs/<category>/*.json` | Every shipped preset, copied verbatim from `configs/` | `npm run sync:configs` |
 
 The presets are **fetched, not imported**. `public/` is copied to the build root
-untouched, so adding one is a file drop plus a regenerate rather than a rebuild
-of a `.ts` module — and the bytes the browser parses are the desktop's own,
-which is what keeps the port's v8 reader honest about what the desktop writes.
+untouched, which is what makes adding one a file drop rather than a rebuild.
 
-They are committed because a browser build cannot shell out to Python and
-`npm run build` must work from a clean checkout with no venv. A committed
-artifact also makes a struct change visible in the diff, next to the `.glsl`
-edit that caused it.
+### The two fixtures are no longer generated
 
-Regenerate after editing `shared/shaders/common.glsl`:
+Both were originally produced by the Python app — `layout.fixture.json` by
+`layout.py`'s GLSL parser, `parity.fixture.json` by calling the reference
+`coords` / `sizing` / `camera_state` / `pack_configs` functions directly. That
+app is gone, so neither is regenerable, and **neither should be regenerated from
+the TypeScript.**
+
+For `parity.fixture.json` that is the entire point. A round-trip test checks the
+port against *itself*: if `worldHalfExtent` returned `[1/s, s]` instead of
+`[s, 1/s]`, every round-trip would still close perfectly, because forward and
+inverse would be wrong in cancelling directions. Only independently-sourced
+values catch a symmetric error like that, which is why these outlived the
+implementation that produced them. Recomputing them here would turn a real check
+into a tautology. A failure means the port changed, not that the fixture is
+stale.
+
+`layout.fixture.json` is now one of **two hand-authored statements of the GPU
+struct layout**, the other being `src/shaders/common.wgsl`. Change a struct and
+you must edit both, in the same commit. Nothing generates either from the other,
+but two checks compare them on every `npm test`: `common.wgsl.test.ts` scans the
+WGSL declarations against the descriptor, and `assertLaneMap` (called from
+`config.ts`) checks the hand-written lane constants against it. Between them a
+mismatch is caught in either direction — which matters because the failure is
+otherwise silent: every lane after an inserted `vec4` shifts by four floats and
+the physics just goes subtly wrong.
+
+There is deliberately **no WGSL parser** to replace `layout.py`. Shader
+hot-reload is gone (invariant 5), so a runtime parser has no job, and a parser
+written to re-derive a file that changes about once a year would be more code to
+get subtly wrong than the thing it checks.
+
+## Reading the Python citations
+
+Comments throughout cite the reference implementation by file and line —
+`persistence.py:128-129`, `camera.py:14-18`, `project_commands.py:241-253`.
+Those files no longer exist in the working tree.
+
+**They are kept on purpose.** Each one marks a place where this code does
+something non-obvious *because the reference did*, and the citation is the
+evidence for a decision that would otherwise look arbitrary — a fallback for
+files written before a rename, an argument order that differs from every
+neighbouring function, a default someone would otherwise "clean up."
+
+To resolve one, read it out of history:
 
 ```
-../Scratch.venv/Scripts/python.exe tools/generate_web_data.py
-npm run gen:web-data:check    # exits non-zero if the committed files are stale
+git show 901c714^:particle_system/persistence.py | sed -n '120,135p'
 ```
 
-The `npm run gen:web-data` script assumes a `python` with numpy on PATH; the
-repo's only such environment is `Scratch.venv`, so the explicit interpreter path
-above is the reliable form.
-
-`particle_system/layout.py` is **not** ported to TypeScript. Shader hot-reload
-is gone (invariant 5), so a runtime parser has no job, and a second
-implementation of a strict parser is a second thing that can be subtly wrong.
-`src/particleSystem/layout.ts` is a descriptor *reader* with assertions — most
-importantly `assertLaneMap`, which fails loudly if a `vec4` is added to
-`ConfigData` without the lane table in `config.ts` following. That failure would
-otherwise be silent: every lane after the insertion point shifts by four floats
-and the physics just goes subtly wrong.
+`901c714` is the commit that removed the Python app, so `901c714^` — its parent
+— is the last tree that still contains those files. Find it again later with
+`git log --diff-filter=D -- particle_system/persistence.py`.
 
 ## `common.wgsl` and the two-copy layout hazard
 
-`src/shaders/common.wgsl` is the WGSL translation of
-`shared/shaders/common.glsl` (Step 3). It holds the GPU structs, the `cfg_*` /
-`world_*` / `e_*` accessors, and the coordinate math — and every shader from
-Step 4 onward `#include`s it.
+`src/shaders/common.wgsl` holds the GPU structs, the `cfg_*` / `world_*` /
+`e_*` accessors, and the coordinate math — and every shader `#include`s it.
 
-**Struct layout is now hand-authored in two files.** `common.glsl` is what the
-Python parser reads to emit `layout.generated.json`, which is what the host
-packs against; `common.wgsl` is what the GPU reads. A divergence between them
-does not crash and does not error — the host packs 416 bytes to one plan and
-the shader reads them to another, and the simulation is just subtly wrong.
+**Struct layout is hand-authored in two files.** `layout.fixture.json` is what
+the host packs against; `common.wgsl` is what the GPU reads. A divergence
+between them does not crash and does not error — the host packs 416 bytes to one
+plan and the shader reads them to another, and the simulation is just subtly
+wrong.
 
 `src/shaders/common.wgsl.test.ts` closes that loop. It scans the struct
 declarations out of `common.wgsl` and asserts names, order, types, the
@@ -1118,7 +1158,7 @@ Deliberate, and each is commented at the site:
   settings payloads. The desktop's `gui_hidden` skips the draw calls for the
   same reason.
 - **`snapshot_configs`'s synchronous return was never a problem here.** The plan
-  (`WEB_PORT_PLAN.md:668-671`) flags it as a hazard: `PreviewSession.begin()`
+  (`docs/history/WEB_PORT_PLAN.md:668-671`) flags it as a hazard: `PreviewSession.begin()`
   assigns the handler's return value, so an async bus would silently lose the
   restore. In the port that value never crosses the boundary — `snapshotConfigs`
   stores `previewOrigin` on the Orchestrator and `restoreConfigs` reads it back,

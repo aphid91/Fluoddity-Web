@@ -1,20 +1,18 @@
 /**
- * The shipped-preset index: what `persistence.discover()` cannot be.
+ * The shipped-preset index.
  *
- * `discover()` (`persistence.py:339-367`) globs `configs/` for the "Core"
- * category and iterates subfolders into their own. NO BROWSER CAN ENUMERATE A
- * DIRECTORY, so the enumeration happens at build time instead:
- * `web/tools/generate_web_data.py` runs the desktop's own `discover()`, copies
- * each file into `web/public/configs/`, and writes the index this module reads.
+ * NO BROWSER CAN ENUMERATE A DIRECTORY, so the enumeration happens at build
+ * time instead: `tools/syncConfigs.ts` walks `configs/`, copies each file into
+ * `public/configs/`, and writes the index this module reads.
  *
  * Two consequences worth stating, because they are the point of doing it this
- * way rather than baking the presets into the bundle as Step 4 did:
+ * way rather than baking the presets into the bundle:
  *
- *  - THE PRESETS ARE NO LONGER CODE. Adding one is a file copy and a regenerate,
- *    not a rebuild of `defaultConfig.ts`.
- *  - THE FILES ARE THE DESKTOP'S OWN BYTES, copied verbatim. So the reader in
- *    `persistence.ts` is exercised against exactly what the desktop writes,
- *    rather than against a pre-digested shape that would hide a format mismatch.
+ *  - THE PRESETS ARE NOT CODE. Adding one is a file drop in `configs/` plus
+ *    `npm run sync:configs`, not a rebuild of a `.ts` module.
+ *  - THE FILES ARE COPIED VERBATIM, so the reader in `persistence.ts` is
+ *    exercised against exactly the bytes a save produces, rather than against a
+ *    pre-digested shape that would hide a format mismatch.
  *
  * ## Why the categories are an ARRAY
  *
@@ -40,7 +38,7 @@ export interface Manifest {
   readonly categories: readonly ManifestCategory[];
 }
 
-/** Where the generator writes, and where the app fetches from. */
+/** Where `tools/syncConfigs.ts` writes, and where the app fetches from. */
 export const MANIFEST_URL = 'configs/manifest.json';
 
 /** Thrown when the manifest is missing or unreadable. */

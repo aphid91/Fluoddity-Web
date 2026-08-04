@@ -49,7 +49,7 @@
  * unticked checkbox. `?bus` exposes the command bus so the run can read status
  * back, the same lever `configCheck.mjs` uses.
  *
- * Usage (from web/, with `npm run dev` running):
+ * Usage (from the repo root, with `npm run dev` running):
  *   node tools/uiCheck.mjs
  *   node tools/uiCheck.mjs --port 5174
  */

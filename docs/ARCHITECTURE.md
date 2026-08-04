@@ -4,6 +4,34 @@ This document is the design contract for the project. It exists so a future agen
 (or human) can get up to speed on *how the pieces fit together* without reverse-
 engineering it from the code. Read this before adding a new feature or module.
 
+> **How to read this document.** It was written for the Python/moderngl desktop
+> app that this codebase began as. That app has been removed and its TypeScript
+> port is now the whole project — but the *design* it describes is the design
+> the port implements, which is why this is still the contract rather than a
+> historical note.
+>
+> Read it for the **reasoning**, not the paths. Where it names a Python file,
+> the port has a direct counterpart:
+>
+> | Here | In the code |
+> |---|---|
+> | `particle_system/` | `src/particleSystem/` |
+> | `camera/`, `assembler/`, `orchestrator/`, `project/`, `ui/` | `src/camera/`, `src/assembler/`, … |
+> | `preferences/` | `src/prefs/` |
+> | `strafe_field/` | `src/strafeField/` |
+> | `shared/` | `src/gpu/` (utilities) and `src/shaders/` (shared shaders) |
+> | `*.glsl` | `*.wgsl`, under each module's `shaders/` |
+> | `shared/shaders/common.glsl` | `src/shaders/common.wgsl` |
+>
+> Names go from `snake_case` to `camelCase`. `README.md` has the current file
+> layout and the notes on what genuinely differs (there is no `app_window/` —
+> the browser owns the window — and no `tooltip_graphic/`).
+>
+> Two sections below are **about the retired implementation specifically** and
+> no longer describe live code: the module table's `__init__.py` convention, and
+> the `imgui` notes (the port uses Tweakpane). The `layout.py` row is likewise
+> historical — see README's "Committed data files".
+
 ## The one-paragraph summary
 
 Fluoddity2 is a GPU particle simulation. It is organized as **modular components

@@ -1,32 +1,33 @@
 /**
- * Access to the Python-generated parity goldens, for tests only.
+ * The parity goldens, for tests only.
  *
- * `web/tools/parity.generated.json` is produced by CALLING the desktop Python
- * functions (see `web/tools/generate_web_data.py`), so these values cannot
- * drift from the desktop app without the regeneration diff showing it.
+ * ## These are a fossil, deliberately
  *
- * ## Why goldens here, when the port decided against them
- *
- * `docs/WEB_PORT_PLAN.md` decides that fidelity is verified by visual A/B, not
- * numeric golden vectors. That decision is about THE DYNAMICS -- chaotic
- * emergent behaviour that cannot be compared frame to frame. Step 2 is
- * deterministic arithmetic, and the same plan explicitly asks to "check
- * sizing.ts against the Python values". These are that instruction.
+ * Every value in `parity.fixture.json` was produced by calling the Python
+ * desktop app's own `coords`, `sizing`, `camera_state` and `pack_configs`
+ * functions. That app has been removed -- it was this port's executable spec,
+ * and the spec's job ended when the port did. So these numbers can no longer be
+ * regenerated, and NOTHING SHOULD TRY TO. Recomputing them from the TypeScript
+ * would convert an independent record into a tautology.
  *
  * ## What they catch that round-trips do not
  *
  * A round-trip test checks the port against ITSELF. If `worldHalfExtent`
  * returned `[1/s, s]` instead of `[s, 1/s]`, every round-trip would still close
  * perfectly -- forward and inverse would be wrong in cancelling directions.
- * Only Python-sourced values catch a symmetric error like that.
+ * Only externally-sourced values catch a symmetric error like that, which is
+ * why these outlived the implementation that produced them.
  *
- * This module lives outside `particleSystem/` so nothing shippable can import
- * it: it reaches up into `tools/`, which is build tooling, not app code.
+ * A golden that fails now means the port changed, not that the fixture is
+ * stale. Treat a diff to `parity.fixture.json` as a claim that the reference
+ * implementation was wrong -- rare, and worth arguing for in the commit message.
+ *
+ * This module lives outside `particleSystem/` so nothing shippable imports it.
  */
 
 import assert from 'node:assert/strict';
 
-import parity from '../../tools/parity.generated.json' with { type: 'json' };
+import parity from './parity.fixture.json' with { type: 'json' };
 
 export const PARITY = parity;
 
