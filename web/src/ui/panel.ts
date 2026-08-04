@@ -49,6 +49,7 @@ import { GateState } from './gateState.ts';
 import { showsSlider } from './gatedControl.ts';
 import { MenuBar } from './menuBar.ts';
 import { isGated } from './gating.ts';
+import { type InputState, EMPTY_INPUT } from './inputState.ts';
 import { gateOpen, isRevealed } from './reveal.ts';
 import type { Source } from './settingsSpec.ts';
 import {
@@ -172,7 +173,7 @@ export class Panel {
     // browser, so `browserCheck.mjs` is what caught it.
     this.refreshing = true;
     try {
-      this.applyStatus(status);
+      this.applyStatus(status, EMPTY_INPUT);
       pane.refresh();
     } finally {
       this.refreshing = false;
@@ -228,7 +229,7 @@ export class Panel {
    * not cause (undo, a preset load, randomize). That is the whole reason the
    * bindings are proxies rather than direct.
    */
-  refresh(status: Status): void {
+  refresh(status: Status, input: InputState = EMPTY_INPUT): void {
     // BEFORE the hidden check: the menu bar stays on screen when the panel is
     // hidden -- it holds the only visible way to bring it back -- and an open
     // dialog outlives a hide entirely. Starving either of status would freeze a
@@ -247,7 +248,7 @@ export class Panel {
     // the panel permanently read-only, which is worse than the bug it guards.
     this.refreshing = true;
     try {
-      this.applyStatus(status);
+      this.applyStatus(status, input);
       this.pane.refresh();
     } finally {
       this.refreshing = false;
@@ -260,7 +261,7 @@ export class Panel {
    * Split out from `refresh()` so `build()` can seed the proxies before
    * `this.pane` exists -- see the note at its call site.
    */
-  private applyStatus(status: Status): void {
+  private applyStatus(status: Status, input: InputState): void {
     // Retire gate state that no longer applies, BEFORE anything reads it. A
     // project or config change means the values came from a load rather than
     // from the user, so whatever was loaded should speak for itself
@@ -270,7 +271,7 @@ export class Panel {
       (gate) => gateOpen(gate, (source) => currentValues(status, source)),
     );
 
-    for (const section of this.sections) section.refresh(status);
+    for (const section of this.sections) section.refresh(status, input);
     this.applyVisibility(status);
   }
 

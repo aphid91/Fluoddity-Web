@@ -13,9 +13,10 @@
  *
  * ## What is still missing, and which step owns it
  *
- *   - **The real UI (Step 10), in progress.** `ui/panel.ts` is the real one;
- *     `ui/thinPanel.ts` is Step 7's flat registry dump, kept reachable behind
- *     `?ui=thin` until Step 10 finishes. See the panel construction below.
+ * Nothing is missing now: Step 10 finished, and `ui/panel.ts` is the real
+ * interface. Step 7's flat registry dump (`ui/thinPanel.ts`) was deleted with
+ * the `?ui=thin` escape hatch that kept it reachable through Step 10's
+ * sub-steps.
  */
 
 import { acquireDevice, showUnavailableOverlay, WebGPUUnavailable } from './gpu/device.ts';
@@ -24,21 +25,6 @@ import { CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
 import { bindInput } from './ui/inputBinding.ts';
 import { Panel } from './ui/panel.ts';
-import { ThinPanel } from './ui/thinPanel.ts';
-
-/**
- * What `main` needs from a panel. Both implementations satisfy it.
- *
- * Exists only for the 10a-10f transition, and goes away with `thinPanel.ts`.
- * It is deliberately the SMALLEST surface the frame loop uses, so the two
- * panels cannot drift into disagreeing about anything that matters here.
- */
-interface PanelLike {
-  refresh(status: ReturnType<Orchestrator['status']>): void;
-  setHidden(hidden: boolean): void;
-  readonly hidden: boolean;
-  readonly isOpen: boolean;
-}
 
 /**
  * The `?debug` readout.
@@ -159,17 +145,7 @@ async function start(): Promise<void> {
   // visual A/B, and a 320px panel over the right-hand third of the frame would
   // change what those compare -- so the automated path can turn it off without
   // the panel having to know a verification tool exists.
-  //
-  // `?ui=thin` selects Step 7's flat dump instead. TEMPORARY, for the duration
-  // of Step 10: it gives `configCheck.mjs` and `fieldCheck.mjs` a known-good
-  // panel to drive while the real one is built section by section, so a
-  // half-finished sub-step cannot make an unrelated tool's failure ambiguous.
-  // Deleted with `thinPanel.ts` at 10f.
-  const panel: PanelLike | null = params.has('nopanel')
-    ? null
-    : params.get('ui') === 'thin'
-      ? new ThinPanel({ bus: orchestrator })
-      : new Panel({ bus: orchestrator });
+  const panel = params.has('nopanel') ? null : new Panel({ bus: orchestrator });
   orchestrator.panelOpen = panel !== null;
 
   // --- input (Step 8) --------------------------------------------------------
@@ -219,13 +195,18 @@ async function start(): Promise<void> {
     const dt = firstFrame ? 0 : elapsed / 1000;
     firstFrame = false;
 
+    // Frozen ONCE and handed to both, so the panel's readout and the physics
+    // cannot disagree about where the mouse was -- which is the whole reason
+    // `InputState` is rebuilt per frame rather than polled.
+    const frameInput = input.tracker.freeze(dt);
+
     const tOrchestrator = performance.now();
-    orchestrator.frame(input.tracker.freeze(dt));
+    orchestrator.frame(frameInput);
     orchestratorMs += (performance.now() - tOrchestrator - orchestratorMs) * 0.1;
 
     // AFTER the frame, so the panel shows what the simulation actually holds --
     // including changes the panel did not cause (undo, a preset load).
-    panel?.refresh(orchestrator.status());
+    panel?.refresh(orchestrator.status(), frameInput);
 
     if (overlay !== null) {
       const d = orchestrator.diagnostics;

@@ -23,6 +23,7 @@
 import type { FolderApi } from 'tweakpane';
 import type { Status } from '../../orchestrator/commands.ts';
 import type { ControlBinding, ControlContext } from '../controls.ts';
+import type { InputState } from '../inputState.ts';
 
 /**
  * What a section needs from its host.
@@ -49,8 +50,15 @@ export interface SectionHandle {
    * happen to share a folder, but nothing in the registry requires that.
    */
   readonly bindings: readonly ControlBinding[];
-  /** Push this frame's status into whatever the section shows. */
-  refresh(status: Status): void;
+  /**
+   * Push this frame's state into whatever the section shows.
+   *
+   * `input` is here for the Debug section alone, and is a plain frozen value
+   * type rather than anything that leads to simulation state -- the same
+   * precedent `PickResult` sets on `Status` (`commands.ts:200-203`). Every other
+   * section ignores it.
+   */
+  refresh(status: Status, input: InputState): void;
 }
 
 /** A section builder. */

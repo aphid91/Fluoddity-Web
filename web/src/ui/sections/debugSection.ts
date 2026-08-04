@@ -14,13 +14,24 @@
  * cover different halves: the overlay is about the FRAME, this is about the
  * SIMULATION's state.
  *
- * 10f adds the live input rows (buttons held, dragging, keys, capture), which
- * are what actually prove the capture filtering works and which need
- * `InputState` passed alongside `Status`.
+ * ## The input rows, and why they are worth their space
+ *
+ * `ui.py:320-329` calls them the point of the panel: "hover it and `capture`
+ * flips to yes, while buttons/keys stop reaching the canvas." The capture rules
+ * are the part of the input layer with no compile-time protection and three
+ * deliberate asymmetries (`inputState.ts`), so a readout that shows what the
+ * canvas actually received is the cheapest way to confirm them -- move the mouse
+ * over the panel and watch `buttons` go quiet.
+ *
+ * These need `InputState`, which the panel does not otherwise hold. Passing it
+ * is safe under invariant 10 for the same reason `PickResult` is: it is a plain
+ * readonly value type with no methods and no GPU handles, so passing it is
+ * passing data (`commands.ts:200-203`).
  */
 
 import type { FolderApi } from 'tweakpane';
 import type { Status } from '../../orchestrator/commands.ts';
+import type { InputState } from '../inputState.ts';
 import { type SectionContext, type SectionHandle } from './section.ts';
 
 export function buildDebugSection(
@@ -31,8 +42,10 @@ export function buildDebugSection(
   const readout = {
     preset: '',
     project: '',
-    frame: 0,
-    entities: 0,
+    // Strings, not numbers: a numeric monitor renders through Tweakpane's float
+    // formatter, so a frame count reads "14340.00". These are counts.
+    frame: '',
+    entities: '',
     canvas: '',
     window: '',
     camera: '',
@@ -41,10 +54,15 @@ export function buildDebugSection(
     mouse: '',
     selected: '-',
     configs: '',
-    checkpoints: 0,
+    checkpoints: '',
     history: '',
     saveError: '',
     storage: '',
+    // --- input, from InputState rather than Status. See the file header. ---
+    cursor: '',
+    buttons: '',
+    dragging: '',
+    keys: '',
   };
 
   const row = (key: keyof typeof readout, label: string): void => {
@@ -71,13 +89,20 @@ export function buildDebugSection(
   // a save that has not landed yet reports itself.
   row('storage', 'Storage');
 
+  // What the CANVAS received, after capture filtering. Hover the panel and
+  // these go quiet; that is the whole demonstration.
+  row('cursor', 'Cursor px');
+  row('buttons', 'Buttons');
+  row('dragging', 'Dragging');
+  row('keys', 'Keys held');
+
   return {
     bindings: [],
-    refresh: (s) => {
+    refresh: (s: Status, input: InputState) => {
       readout.preset = s.preset;
       readout.project = s.projectName;
-      readout.frame = s.frameCount;
-      readout.entities = s.entityCount;
+      readout.frame = String(s.frameCount);
+      readout.entities = String(s.entityCount);
       readout.canvas = s.canvasSize;
       readout.window = s.windowSize;
       readout.camera = s.camMode;
@@ -86,14 +111,34 @@ export function buildDebugSection(
       readout.mouse = `${s.mouseWorld[0].toFixed(3)}, ${s.mouseWorld[1].toFixed(3)}`;
       readout.selected = describeSelected(s);
       readout.configs = `${s.configCount} (sel ${s.selectedConfig})`;
-      readout.checkpoints = s.checkpoints.length;
+      readout.checkpoints = String(s.checkpoints.length);
       readout.history =
         `${s.historyCursor + 1}/${s.historyDepth}` +
         (s.undoLabel === '' ? '' : `  (undo: ${s.undoLabel})`);
       readout.saveError = s.saveError;
       readout.storage = s.configBusy;
+
+      readout.cursor = `${input.mousePos[0].toFixed(0)}, ${input.mousePos[1].toFixed(0)}`;
+      readout.buttons = flags([
+        ['L', input.leftPressed || input.leftDragging],
+        ['R', input.rightPressed || input.rightDragging],
+      ]);
+      readout.dragging = flags([
+        ['L', input.leftDragging],
+        ['R', input.rightDragging],
+      ]);
+      // `code` values, minus the `Key`/`Digit` prefix that makes the row
+      // unreadable at four keys held.
+      readout.keys =
+        [...input.keysHeld].map((c) => c.replace(/^(Key|Digit)/, '')).sort().join(' ') || '-';
     },
   };
+}
+
+/** `"L R"` for the flags that are set, or `-`. The port of `ui.py:324-328`. */
+function flags(entries: readonly (readonly [string, boolean])[]): string {
+  const on = entries.filter(([, set]) => set).map(([name]) => name);
+  return on.length === 0 ? '-' : on.join(' ');
 }
 
 /**

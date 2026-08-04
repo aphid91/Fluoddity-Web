@@ -4,34 +4,26 @@ The TypeScript/WebGPU port of the Python app in the parent directory. The plan
 is `docs/WEB_PORT_PLAN.md`; the design contract it must honour is
 `docs/ARCHITECTURE.md`, whose 10 invariants are the spec.
 
-**Status: Steps 1–9 of 10 complete.** Scaffold, device acquisition, canvas
-sizing, the WGSL `#include` resolver, the pure-math leaves, `common.wgsl`, **the
+**Status: Steps 1–10 complete.** Scaffold, device acquisition, canvas sizing,
+the WGSL `#include` resolver, the pure-math leaves, `common.wgsl`, **the
 engine** (`entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`, driven by
 `src/particleSystem/particleSystem.ts`), **the render pipeline** (both camera
 modes, motion blur, bloom, brightness and the tone curve), **picking**
 (`entityPick.wgsl`, with the rule derived on the GPU), **the Orchestrator**
-— the frame loop, a typed command/status API, project/history/preferences, and
-a thin Tweakpane UI over the settings registry — **input**: pointer, wheel and
-keyboard, with capture resolved at the handler and a focus-aware hotkey table —
-and **the Strafe Field and config storage**: a painted vector field with its
-Shove counterpart, and shipped presets fetched from a build-time manifest with
-user saves in IndexedDB.
+— the frame loop, a typed command/status API, project/history/preferences —
+**input**: pointer, wheel and keyboard, with capture resolved at the handler and
+a focus-aware hotkey table — **the Strafe Field and config storage**: a painted
+vector field with its Shove counterpart, and shipped presets fetched from a
+build-time manifest with user saves in IndexedDB — and **the full UI**
+(`src/ui/panel.ts`): sections and collapsible groups, curved and inverted
+sliders, self-hiding gated controls, reveal gating, a menu bar with
+browse-by-hover load and checkpoint lists, and native `<dialog>` save and delete
+modals.
 
 **The engine is feature-complete against the desktop.** 600,000 entities, 30
 sub-steps a frame, at parity — verified by loading the same preset in both,
 running to the same sub-step count, and comparing the canvas (see
 "Verification" below).
-
-What is still missing:
-
-- **The real UI (Step 10).** `src/ui/thinPanel.ts` is deliberately flat — no
-  tabs, no gates, no tooltips, no menus. The four custom widgets
-  (`hover_preview`, `curved_slider`, `sensor_diagram`, `gated_controls`), the
-  menu bar, the save dialog and the delete modal are all Step 10's.
-- **Two consequences of that thinness, worth knowing before using the app.** The
-  Presets folder is built once at construction, so a config saved this session
-  does not appear in it until a reload. And the Save folder's name field doubles
-  as the delete target, because there is no per-row X button yet.
 
 ## Running it
 
@@ -202,7 +194,7 @@ errors, but only in a browser, so the Node suite would never have seen them.
 | `src/orchestrator/` | `orchestrator.ts` (the frame loop and the wiring), `commands.ts` (the typed boundary), and the three command modules the desktop's mixins became |
 | `src/project/` | `project.ts` (the immutable save-file value) and `history.ts` (undo/redo with coalescing) |
 | `src/prefs/` | `preferences.ts` — the full editor-preference set, `localStorage`-backed |
-| `src/ui/` | `settingsSpec.ts` (the 35-entry registry), `thinPanel.ts` (the flat Tweakpane dump), and the input layer: `inputState.ts` (the snapshot), `inputTracker.ts` (pure accumulator), `hotkeys.ts` (the table), `inputBinding.ts` (the DOM listeners) |
+| `src/ui/` | `settingsSpec.ts` (the 35-entry registry); the panel — `panel.ts` (the shell), `sections/` (one per panel section), `controls.ts` + `gatedControl.ts` (registry entry → widget), `menuBar.ts`, `dialogs.ts`, `tooltip.ts`; its pure leaves — `gating.ts`, `reveal.ts`, `gateState.ts`, `previewSession.ts`, `panelModel.ts`, `formatValue.ts`; and the input layer — `inputState.ts` (the snapshot), `inputTracker.ts` (pure accumulator), `hotkeys.ts` (the table), `inputBinding.ts` (the DOM listeners) |
 | `src/testing/` | Test-only access to the parity goldens |
 | `src/shaders/` | Shared shaders — `common.wgsl`, `fullscreenQuad.wgsl` |
 
@@ -558,30 +550,43 @@ anticipates it. A `refreshing` flag guards every dispatching handler, set around
 the refresh in a `try`/`finally` so a throw inside a handler cannot wedge the
 panel permanently read-only.
 
-This is a real difference between the two UI models, not a Tweakpane quirk. Any
-retained-mode binding Step 10 adds needs the same guard.
+This is a real difference between the two UI models, not a Tweakpane quirk.
+**Every retained-mode binding in the panel needs the same guard**, and the gated
+latch needs it in a specific ORDER — see below.
 
-### The thin UI, and what it deliberately ignores
+### The panel
 
-`ui/thinPanel.ts` is a flat dump of `settingsSpec.ts`: bindings driven by
-`kind`/`lo`/`hi`/`options`, `group` as a plain folder, `tier` as one checkbox.
-It ignores `revealsOn`, `gates`, `curve` and `inverted` — all Step 10's.
+`ui/panel.ts` builds one docked side-panel from sections
+(`ui/sections/`), which is the endpoint `ARCHITECTURE.md`'s "Toolbar and the
+planned side-panel" asks for. `panelModel.sectionsFor` is the seam where the
+active tool will eventually select which sections are visible; today it returns
+all of them, and `panelModel.test.ts` pins that so the change is deliberate.
 
-**GATED controls render as plain sliders, and that is the correct degradation
-rather than a compromise:** on/off is derived from the value itself, so nothing
-extra is stored. The stored value, the save format, undo and preview are
-identical either way; only the widget differs.
+Everything decidable lives in a pure leaf, because `node --test` has no DOM:
+`gating.ts` (position/value mapping, the off-zone), `reveal.ts` (the `revealsOn`
+resolver), `gateState.ts` (sessions and forced gates), `previewSession.ts`
+(hover/commit), `formatValue.ts`. The DOM wiring is thin by comparison.
 
-`curve` and `inverted` are different in kind, and the file is honest about it —
-they change *what value* a given slider position produces. Ignoring them means
-Hazard Rate's slider is linear rather than cubed and Trail Stiffness reads as
-its stored diffusion. The values are still correct and still save correctly; the
-travel just is not shaped yet. **What would be a bug is applying one of them and
-not the other on the way back out**, which is why neither is applied.
+Three things are worth knowing before editing it:
+
+- **`ev.last` does NOT distinguish a user gesture from a programmatic refresh.**
+  `pane.refresh()` reaches the plain `rawValue` setter, which emits
+  `{forceEmit: false, last: true}` — identical to a released drag. Only
+  `onPointerMove_` emits `last: false`. So every handler tests `isRefreshing()`
+  **first**; reversing that folds an open gated slider away on the next frame's
+  refresh, silently.
+- **Visibility is `blade.hidden`, never a rebuild.** A rebuild drops folder
+  expansion state and replaces every DOM node, and looks identical in a
+  screenshot. `uiCheck.mjs` asserts the blade element survives a toggle.
+- **Nothing about a gate is stored.** On/off is derived from the value itself,
+  which is what makes save, load, undo and A/B preview all work with no
+  knowledge that gating exists. Do not add a flag.
 
 The panel holds a `CommandBus` and nothing else — no `Orchestrator`, no
 `ParticleSystem`, no `Project`. That is invariant 10 expressed as a type: the
 file *cannot* reach simulation state, because it holds nothing that leads there.
+The one exception is the Debug section's input rows, which take the frozen
+`InputState` — a plain readonly value, the same precedent `PickResult` sets.
 
 ### Verifying it
 
