@@ -122,6 +122,10 @@ export class MutationOverlay {
       const option = document.createElement('option');
       option.value = mode;
       option.textContent = toolOptionLabel(mode);
+      // Set on each OPTION as well as on the select. An option does not reliably
+      // inherit its parent's colours into the OS-drawn popup, which is how the
+      // text ended up pale-on-white; stating both ends removes the guess.
+      option.style.cssText = 'background:#ffffff;color:#000000;';
       this.tool.append(option);
     }
 
@@ -293,14 +297,23 @@ const BUTTON_CSS =
   'border-radius:4px;color:#e8e8ea;font:11px system-ui,sans-serif;' +
   'padding:5px 10px;cursor:pointer;white-space:nowrap;';
 
-// The tool dropdown. Styled to match the Reroll button rather than left as a
-// default <select>, whose native chrome is a different colour on every OS and
-// would read as a foreign element dropped into the bar.
+// The tool dropdown.
 //
-// `color-scheme:dark` is what makes the OPTION LIST dark too -- that popup is
-// drawn by the OS and ignores this element's own colours, so without it a dark
-// bar opens a white menu.
+// **LIGHT, deliberately, while everything around it is dark.** The first attempt
+// styled it to match the Reroll button -- pale text on a translucent dark
+// background -- plus `color-scheme:dark` to carry that into the option list.
+// That popup is drawn by the OS, and `color-scheme` is a HINT it does not always
+// honour: where it was ignored the menu opened white and kept the pale text,
+// which is nearly unreadable.
+//
+// So this does not rely on the hint at all. An opaque light background with
+// black text is legible whether the popup follows the element's colours or the
+// platform's default, which is the only version that cannot fail. The dark
+// border keeps it visually seated in the bar.
+//
+// `color-scheme:light` is still worth stating: where it IS honoured it makes the
+// popup match this element rather than merely tolerating it.
 const TOOL_CSS =
-  'background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);' +
-  'border-radius:4px;color:#e8e8ea;font:11px system-ui,sans-serif;' +
-  'padding:5px 8px;cursor:pointer;color-scheme:dark;';
+  'background:#e8e8ea;border:1px solid rgba(255,255,255,0.24);' +
+  'border-radius:4px;color:#000;font:11px system-ui,sans-serif;' +
+  'padding:5px 8px;cursor:pointer;color-scheme:light;';
