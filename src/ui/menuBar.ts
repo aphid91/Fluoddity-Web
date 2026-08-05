@@ -91,25 +91,15 @@ interface ConfigRow {
 const configKey = (row: ConfigRow): string => `${row.category}/${row.name}`;
 
 /**
- * Approximate height of one Load row, in px. Used to decide what fits.
+ * How much of the viewport a scrolling submenu may fill.
  *
- * Measured from `browserRow`'s padding and font size rather than read back from
- * the DOM, because the decision is made while the menu is still being built and
- * nothing has been laid out yet.
+ * Leaves room for the menu bar above it and a margin below, so a long Load list
+ * scrolls inside the screen rather than running off the bottom of it.
  */
-const ROW_HEIGHT_PX = 22;
+const SUBMENU_MAX_VIEWPORT_FRACTION = 0.7;
 
-/**
- * How much of the viewport the Load menu may fill before folding begins.
- *
- * NOT A ROW COUNT. A fixed count was tried and was wrong within the week: it
- * was calibrated against a 175-preset library that is now 20, so it silently
- * stopped folding anything -- the same "constant that names a fact about the
- * config library" problem as the old `DEFAULT_PRESET_NAME`. The real question
- * is "would this category overflow the screen", which depends on the window,
- * so it is asked of the window.
- */
-const COLLAPSE_VIEWPORT_FRACTION = 0.6;
+/** Breathing room between a submenu and the window edge. See `fitSubmenu`. */
+const SUBMENU_MARGIN_PX = 8;
 
 export class MenuBar {
   private readonly root: HTMLElement;
@@ -151,13 +141,10 @@ export class MenuBar {
    * category is a "get this out of my way while I look at the other one" move
    * rather than a setting, and it costs one click to redo.
    *
-   * Starts EMPTY -- every category open -- so nothing is hidden from someone who
-   * has not asked for it. See `defaultCollapsed` for the one exception.
+   * Starts EMPTY and stays that way until the user clicks: every category is
+   * open by default, so nothing is hidden from someone who has not asked for it.
    */
   private readonly collapsedCategories = new Set<string>();
-
-  /** Whether the initial state has been decided; see `syncLoadMenu`. */
-  private collapseDefaulted = false;
 
   constructor(opts: MenuBarOptions) {
     this.opts = opts;
@@ -369,7 +356,17 @@ export class MenuBar {
 
     const body = document.createElement('div');
     body.dataset['menuBody'] = title;
-    body.style.cssText = MENU_BODY_CSS;
+    // Capped like the submenus, though these hang from the top of the screen and
+    // only overflow if a menu grows very long. Cheap, and it means no menu can
+    // become unreachable by growing.
+    //
+    // NOT `overflow-y:auto` here: these bodies HOST the submenu flyouts, which
+    // are absolutely positioned outside their right edge, and any `overflow`
+    // other than `visible` would clip them into a scrollbar instead. `Load`
+    // does its own scrolling for exactly this reason.
+    body.style.cssText = `${MENU_BODY_CSS}max-height:${Math.round(
+      SUBMENU_MAX_VIEWPORT_FRACTION * 100,
+    )}vh;`;
     fill(body);
 
     wrap.append(button, body);
@@ -467,13 +464,36 @@ export class MenuBar {
 
     const inner = document.createElement('div');
     inner.dataset['submenuBody'] = label;
-    inner.style.cssText = `${MENU_BODY_CSS}left:100%;top:0;`;
+    // SCROLLS RATHER THAN RUNNING OFF THE SCREEN. The Load list is as long as
+    // the preset library, which is not a number this code gets to choose --
+    // `max-height` against the viewport is what keeps it reachable at any size.
+    //
+    // `overscroll-behavior:contain` stops a wheel that reaches the end of this
+    // list from continuing into the page behind it, which would scroll the app
+    // out from under an open menu.
+    inner.style.cssText =
+      `${MENU_BODY_CSS}left:100%;top:0;` +
+      `max-height:${Math.round(SUBMENU_MAX_VIEWPORT_FRACTION * 100)}vh;` +
+      'overflow-y:auto;overscroll-behavior:contain;';
 
     row.addEventListener('mouseenter', () => {
       row.style.background = MENU_HOVER_BG;
       inner.style.display = 'block';
+      // Opened fresh each time. A submenu left half-scrolled from a previous
+      // visit reopens showing the middle of the list, which reads as the menu
+      // having lost the top of itself.
+      inner.scrollTop = 0;
+      this.fitSubmenu(row, inner);
     });
-    row.addEventListener('mouseleave', () => {
+    row.addEventListener('mouseleave', (ev) => {
+      // NOT WHILE THE CURSOR IS ON THE SCROLLBAR. The bar sits inside `inner`'s
+      // padding box but outside its content, and dragging it puts the pointer
+      // over the scrollbar itself -- which fires `mouseleave` on the row and
+      // would close the menu underneath the drag. `relatedTarget` is the element
+      // being entered; when that is still inside this submenu, the cursor has
+      // not actually left.
+      const to = ev.relatedTarget as Node | null;
+      if (to !== null && (inner.contains(to) || inner === to)) return;
       row.style.background = 'transparent';
       inner.style.display = 'none';
     });
@@ -481,6 +501,32 @@ export class MenuBar {
     row.append(inner);
     body.append(row);
     return inner;
+  }
+
+  /**
+   * Nudge an opened submenu up so it ends on screen.
+   *
+   * `top:0` aligns a flyout with the row that opened it, which is right until
+   * that row is near the bottom of the window -- then a tall list hangs off the
+   * screen and its last entries are unreachable, `max-height` or not. Scrolling
+   * alone does not fix that: the SCROLL CONTAINER itself has to be on screen.
+   *
+   * Measured at open time rather than set once, because the answer depends on
+   * where the row is and how tall the list is, and both change -- the window
+   * resizes and the catalog grows.
+   *
+   * Runs AFTER `display:block`, since a hidden element measures as zero.
+   */
+  private fitSubmenu(row: HTMLElement, inner: HTMLElement): void {
+    inner.style.top = '0px';
+    const rowTop = row.getBoundingClientRect().top;
+    const height = inner.getBoundingClientRect().height;
+    // How far past the bottom edge it would run, leaving a small margin.
+    const overflow = rowTop + height - window.innerHeight + SUBMENU_MARGIN_PX;
+    if (overflow <= 0) return;
+    // Never past the top of the window: a list taller than the viewport should
+    // start at the top and scroll, not be pushed up out of reach.
+    inner.style.top = `${-Math.min(overflow, rowTop - SUBMENU_MARGIN_PX)}px`;
   }
 
   // -- the two browsable collections ----------------------------------------
@@ -504,36 +550,11 @@ export class MenuBar {
       return;
     }
 
-    // ONCE, on the first real catalog. A category long enough to fill the
-    // screen starts folded, because an unscrollable wall of 175 rows is not a
-    // menu -- while a short "Custom" stays open, since hiding three saves
-    // behind a click helps nobody.
-    //
-    // Deliberately NOT re-run on later rebuilds: after the first time, the open
-    // and shut set is the user's, and a save that pushed Custom past the
-    // threshold must not fold it under them.
-    if (!this.collapseDefaulted) {
-      this.collapseDefaulted = true;
-      // Whether the WHOLE menu overflows, not whether one category is long: two
-      // categories of fifteen fill the screen exactly as thoroughly as one of
-      // thirty, and folding neither would leave the menu unusable in the case
-      // this exists to fix.
-      const budget = (window.innerHeight * COLLAPSE_VIEWPORT_FRACTION) / ROW_HEIGHT_PX;
-      const total = categories.reduce((n, [, names]) => n + names.length, 0);
-      if (total > budget) {
-        // Fold the LONG ones and leave the short ones open, largest first, until
-        // what remains fits. A handful of saves under "Custom" stays visible --
-        // hiding three rows behind a click helps nobody, and the wall of
-        // presets is what was actually in the way.
-        const bySize = [...categories].sort((x, y) => y[1].length - x[1].length);
-        let shown = total;
-        for (const [category, names] of bySize) {
-          if (shown <= budget) break;
-          this.collapsedCategories.add(category);
-          shown -= names.length;
-        }
-      }
-    }
+    // NOTHING IS COLLAPSED BY DEFAULT. An earlier version folded any category
+    // that would overflow the screen, which solved the wrong problem: the menu
+    // now SCROLLS (see `addSubmenu`), so a long list is browsable as it stands
+    // and there is nothing to rescue the user from. Folding is a convenience
+    // they reach for, not a state they should have to undo to see their presets.
 
     for (const [category, names] of categories) {
       // COLLAPSIBLE, because "Core" is now 175 rows. The header was already a
