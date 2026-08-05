@@ -6,6 +6,26 @@
       "name": "Core",
       "entries": [
         {
+          "name": "9leafv8",
+          "path": "Core/9leafv8.json"
+        },
+        {
+          "name": "AALattice",
+          "path": "Core/AALattice.json"
+        },
+        {
+          "name": "AASegments",
+          "path": "Core/AASegments.json"
+        },
+        {
+          "name": "AATangle",
+          "path": "Core/AATangle.json"
+        },
+        {
+          "name": "AATopMembrane4",
+          "path": "Core/AATopMembrane4.json"
+        },
+        {
           "name": "Angles2",
           "path": "Core/Angles2.json"
         },
@@ -320,6 +340,10 @@
         {
           "name": "hatman",
           "path": "Core/hatman.json"
+        },
+        {
+          "name": "hatmanv8",
+          "path": "Core/hatmanv8.json"
         },
         {
           "name": "Hotdogs",
