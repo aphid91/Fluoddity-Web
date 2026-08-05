@@ -446,7 +446,7 @@ export interface Status {
 }
 
 /**
- * What a UI needs from the Orchestrator. The whole boundary, in two methods.
+ * What a UI needs from the Orchestrator. The whole boundary, in three methods.
  *
  * A UI holds one of these and nothing else -- no `ParticleSystem`, no `Camera`,
  * no `Project`. That is invariant 10 expressed as a type rather than as a
@@ -475,4 +475,28 @@ export interface CommandBus {
   dispatch(command: Command): void;
   /** This frame's status. Rebuilt each frame; never held across frames. */
   status(): Status;
+  /**
+   * The live project as a v8 document, on demand. For the share link.
+   *
+   * A THIRD KIND OF THING, and the two it is not are both instructive:
+   *
+   *   - **Not a `Status` field.** `Status` is rebuilt EVERY FRAME, and turning
+   *     the project into a document means copying an 80-float rule per config
+   *     into fresh JSON. `settingsSources()` already goes to some trouble to
+   *     skip exactly this class of work when no panel is reading it; adding an
+   *     unconditional serialization beside it -- for a value read once per
+   *     keystroke -- would undo that for nothing.
+   *   - **Not a `Command`.** A command that copied to the clipboard would put
+   *     `navigator.clipboard` inside the Orchestrator, which today contains no
+   *     DOM or Web API call of any kind. `toggleUi` is a `LocalAction` rather
+   *     than a command for the same reason; rule 10 cuts both ways.
+   *
+   * So it is a PULL, like `status()`, of a value too expensive to push. The UI
+   * turns it into a URL and writes the clipboard. The Orchestrator hands over a
+   * document and never learns that a clipboard exists.
+   *
+   * `unknown` rather than a document type, because `persistence.ts` owns what
+   * these bytes mean and this is only the thing that carries them.
+   */
+  projectDocument(): unknown;
 }

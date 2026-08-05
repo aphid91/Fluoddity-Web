@@ -73,7 +73,7 @@ import {
   CUSTOM_CATEGORY,
   DEFAULT_PRESET_NAME,
 } from '../config/configStore.ts';
-import { sanitizeName, toDocument } from '../config/persistence.ts';
+import { type SavedConfig, sanitizeName, toDocument } from '../config/persistence.ts';
 import {
   type Preferences,
   DEFAULT_PREFERENCES,
@@ -120,6 +120,28 @@ export interface OrchestratorOptions {
   readonly presetName?: string;
   /** Overridden by tests and by `?prefs=default`; normally `localStorage`. */
   readonly preferences?: Preferences;
+  /**
+   * Open with this project instead of one from the catalog. For the share link.
+   *
+   * INJECTED HERE RATHER THAN LOADED AFTERWARDS, and the alternative is worse in
+   * three ways that a user would actually notice. Loading a shared project after
+   * `create` would have to go through `adoptSaved`, which:
+   *
+   *   1. RECORDS AN UNDO ENTRY the user never performed. Someone opening a link
+   *      would arrive with a populated history, and one press of `Z` would drop
+   *      them into a default preset they have never seen.
+   *   2. SETS `configOrigin`, lighting up "Revert to preset: X" in the History
+   *      menu, pointing at a catalog entry that has nothing to do with the link.
+   *   3. Builds and uploads the default project first, only to discard it.
+   *
+   * The catalog is still opened and `presetIndex` still resolved, because the
+   * LEFT/RIGHT cycle needs somewhere to start from.
+   */
+  readonly openWith?: {
+    readonly saved: SavedConfig;
+    /** The project's name. A link has no catalog identity; see `create`. */
+    readonly name: string;
+  };
 }
 
 export class Orchestrator implements CommandBus {
@@ -344,8 +366,19 @@ export class Orchestrator implements CommandBus {
     if (entry === null) {
       throw new Error('The config manifest contains no presets.');
     }
-    const loaded = await store.read(entry);
-    const configOrigin = { category: entry.category, name: entry.name };
+    // A share link supersedes the preset, but only AFTER the catalog has been
+    // resolved above: `presetIndex` seeds the LEFT/RIGHT cycle, and a link is
+    // not in the catalog, so the cycle starts from wherever the default sits.
+    //
+    // The preset read is SKIPPED entirely when a link supplies the project --
+    // there is no point fetching a JSON file to throw it away.
+    const loaded = opts.openWith?.saved ?? (await store.read(entry));
+    // NO ORIGIN FOR A LINK. `configOrigin` is what "Revert to Saved" reverts
+    // TO, and a shared project has no file behind it -- `canRevert` reads this,
+    // so leaving it null is what correctly greys that row out rather than
+    // offering to revert to a preset the user never opened.
+    const configOrigin =
+      opts.openWith === undefined ? { category: entry.category, name: entry.name } : null;
 
     const [entityCount, dim] = sizingFor(prefs.worldSize);
     const system = await ParticleSystem.create({
@@ -373,7 +406,7 @@ export class Orchestrator implements CommandBus {
       // Every config in the file, not just slot 0: a save can hold several.
       configs: loaded.configs,
       world: loaded.world,
-      name: presetName,
+      name: opts.openWith?.name ?? presetName,
     });
 
     const orchestrator = new Orchestrator({
@@ -1506,6 +1539,26 @@ export class Orchestrator implements CommandBus {
 
       ...this.settingsSources(),
     };
+  }
+
+  /**
+   * The live project as a v8 document. See `CommandBus.projectDocument`.
+   *
+   * THE LIVE PROJECT, not `configOrigin` and not the last file read. This is
+   * the same call `saveConfig` makes, and deliberately the same: a share link
+   * and a save must produce identical bytes, or a link would restore something
+   * its sender never had on screen. `this.project` is replaced wholesale on
+   * every edit, so there is no window in which this is stale.
+   *
+   * NO NOTES, because a live `Project` has none -- `notes` exists on
+   * `SavedConfig` with no field to hold it here, so `saveConfig` omits it too.
+   * Symmetry, not an oversight.
+   *
+   * NO CAMERA, for the reason `SavedConfig` gives: where you were standing is
+   * not a property of what you built.
+   */
+  projectDocument(): unknown {
+    return toDocument(this.project.configs, this.project.world);
   }
 
   /**

@@ -61,7 +61,7 @@ import { MOUSE_MODES, type Command } from '../orchestrator/commands.ts';
  * simulation's vocabulary. `ui.py:471-473` says the same -- "rule 10 cuts both
  * ways".
  */
-export type LocalAction = 'toggleUi';
+export type LocalAction = 'toggleUi' | 'copyShareLink';
 
 /** One binding. Exactly one of `command`/`local` is set. */
 export interface Hotkey {
@@ -107,7 +107,13 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   // desktop comment at `ui.py:436-439` is emphatic that Ctrl+C/V were chosen
   // as "the familiar keys for the familiar idea", which is precisely the reason
   // they cannot keep them here: on the web there IS another clipboard.
-  { code: 'KeyC', command: { kind: 'setCheckpoint' } },
+  //
+  // `shift: false` IS LOAD-BEARING, exactly as it is on the `Z` pair above. An
+  // omitted `shift` means "don't care" (`matchHotkey`), so without it this row
+  // would claim Shift+C as well and the share link below would never fire --
+  // and the failure would be INVISIBLE, because setting a checkpoint shows
+  // nothing on screen. It would look like the clipboard silently failed.
+  { code: 'KeyC', shift: false, command: { kind: 'setCheckpoint' } },
   { code: 'KeyV', command: { kind: 'loadLatestCheckpoint' } },
 
   // --- presets, unchanged --------------------------------------------------
@@ -132,6 +138,15 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
 
   // --- the UI's own ---------------------------------------------------------
   { code: 'KeyX', local: 'toggleUi' },
+  // `local`, not a `Command`, for the reason `toggleUi` is: the clipboard is
+  // the browser's and the Orchestrator has no DOM in it at all. It hands over a
+  // document when asked (`CommandBus.projectDocument`) and never learns that a
+  // clipboard exists. Rule 10 cuts both ways.
+  //
+  // Shift+C rather than a bare key because plain C is the checkpoint, and the
+  // two are close enough in spirit -- "keep this" -- that pairing them under
+  // one physical key is a mnemonic rather than a collision.
+  { code: 'KeyC', shift: true, local: 'copyShareLink' },
 ];
 
 /**
@@ -157,7 +172,43 @@ export function hotkeyLabel(
 ): string {
   const row = table.find((entry) => entry.command !== undefined && sameCommand(entry.command, command));
   if (row === undefined) return '';
-  return row.code.replace(/^(Key|Digit)/, '');
+  return keyLabel(row);
+}
+
+/**
+ * The same, for an action the UI handles itself.
+ *
+ * A `LocalAction` has no `Command`, so `hotkeyLabel` cannot reach it -- which
+ * left `X` and the share link as the only bindings whose labels had to be typed
+ * by hand, the exact staleness the function above exists to prevent. Splitting
+ * on the two kinds of binding is cheaper than making `hotkeyLabel` take a union
+ * and narrow it at every call site.
+ */
+export function localHotkeyLabel(
+  action: LocalAction,
+  table: readonly Hotkey[] = DEFAULT_HOTKEYS,
+): string {
+  const row = table.find((entry) => entry.local === action);
+  if (row === undefined) return '';
+  return keyLabel(row);
+}
+
+/**
+ * One row as a display string.
+ *
+ * `KeyboardEvent.code` is a physical-key name (`KeyF`, `Digit1`), so the prefix
+ * comes off. Anything else is shown verbatim: `Space`, `Home` and the arrows
+ * already read correctly.
+ *
+ * THE SHIFT PREFIX IS NOT COSMETIC. Without it this returned `Z` for both undo
+ * and redo, and would now return `C` for both the checkpoint and the share link
+ * -- a label that names a DIFFERENT binding than the one it sits on, which is
+ * worse than no label at all. Nothing asked for redo's label before, so the bug
+ * was real but unreachable; the share link reaches it.
+ */
+function keyLabel(row: Hotkey): string {
+  const key = row.code.replace(/^(Key|Digit)/, '');
+  return row.shift === true ? `Shift+${key}` : key;
 }
 
 /**

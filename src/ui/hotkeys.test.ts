@@ -18,6 +18,7 @@ import {
   DEFAULT_HOTKEYS,
   hotkeyLabel,
   isEditableTarget,
+  localHotkeyLabel,
   matchHotkey,
   type Hotkey,
 } from './hotkeys.ts';
@@ -88,6 +89,27 @@ test('the moved colliders land on their chosen keys', () => {
   assert.deepEqual(matchHotkey(DEFAULT_HOTKEYS, 'KeyM', false)?.command, {
     kind: 'toggleCameraMode',
   });
+});
+
+test('the checkpoint and the share link are discriminated by shift', () => {
+  // THE REGRESSION: the `KeyC` row carried no `shift` until the share link was
+  // added, and an omitted `shift` means "don't care" -- so Shift+C set a
+  // checkpoint. Adding the share link without also pinning the checkpoint row
+  // to `shift: false` would leave both rows claiming Shift+C.
+  //
+  // The ambiguity test in section 1 already fails on that, but it reports a
+  // count rather than an intent. This says which key does WHICH thing, and it
+  // is worth saying twice because the failure is silent in the app: setting a
+  // checkpoint draws nothing, so a Shift+C that quietly checkpointed would look
+  // exactly like a clipboard that quietly failed.
+  const checkpoint = matchHotkey(DEFAULT_HOTKEYS, 'KeyC', false);
+  const share = matchHotkey(DEFAULT_HOTKEYS, 'KeyC', true);
+
+  assert.deepEqual(checkpoint?.command, { kind: 'setCheckpoint' });
+  assert.equal(checkpoint?.local, undefined);
+
+  assert.equal(share?.local, 'copyShareLink');
+  assert.equal(share?.command, undefined, 'the clipboard is not simulation state');
 });
 
 // --- 3. what did NOT move keeps its desktop key ---------------------------
@@ -165,6 +187,23 @@ test('hotkeyLabel follows a rebound table rather than the default', () => {
     { code: 'KeyQ', command: { kind: 'randomizeSeed' } },
   ];
   assert.equal(hotkeyLabel({ kind: 'randomizeSeed' }, rebound), 'Q');
+});
+
+test('hotkeyLabel names the modifier when the row requires one', () => {
+  // WAS A REAL BUG, merely unreachable: `shift` was ignored entirely, so redo
+  // labelled itself `Z` -- undo's key. Nothing asked for redo's label, so it
+  // never showed; the share link asks, and a share button reading "(C)" would
+  // point at the checkpoint.
+  assert.equal(hotkeyLabel({ kind: 'undo' }), 'Z');
+  assert.equal(hotkeyLabel({ kind: 'redo' }), 'Shift+Z');
+});
+
+test('localHotkeyLabel reaches the bindings that have no command', () => {
+  // A `LocalAction` has no `Command`, so `hotkeyLabel` cannot see it at all --
+  // which is why the share button's "(Shift-C)" would otherwise have to be
+  // typed by hand, the staleness this whole group exists to prevent.
+  assert.equal(localHotkeyLabel('toggleUi'), 'X');
+  assert.equal(localHotkeyLabel('copyShareLink'), 'Shift+C');
 });
 
 // --- 4. matchHotkey itself ------------------------------------------------

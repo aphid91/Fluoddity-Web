@@ -29,17 +29,42 @@
  */
 
 import type { Command, Status } from '../orchestrator/commands.ts';
+import { localHotkeyLabel } from './hotkeys.ts';
 
 export interface DialogOptions {
   readonly send: (command: Command) => void;
+  /**
+   * Copy the live project as a share URL.
+   *
+   * A CALLBACK, not a `Command`, because the clipboard is the UI's and not the
+   * Orchestrator's -- see `CommandBus.projectDocument`. It also keeps `window`
+   * out of this file, which is what lets these dialogs stay readable as pure DOM
+   * construction with one bus at the edge.
+   */
+  readonly onCopyShareLink: () => void;
 }
 
 export class Dialogs {
   private readonly send: (command: Command) => void;
+  private readonly onCopyShareLink: () => void;
 
   private readonly saveEl: HTMLDialogElement;
   private readonly saveInput: HTMLInputElement;
   private readonly saveError: HTMLElement;
+  /**
+   * The share-link outcome. SEPARATE from `saveError`, for two reasons.
+   *
+   * It is red, and a copied link is not an error -- but that alone would only
+   * be a styling complaint. The real one: `refresh()` rewrites
+   * `saveError.textContent` from status EVERY FRAME, so a message written there
+   * would survive exactly one frame and then vanish. This element is written
+   * only here and cleared only by `openSave`.
+   *
+   * It exists at all because the toast cannot help while this dialog is up: a
+   * native `<dialog showModal()>` renders in the browser's top layer, above
+   * every `z-index`, so a `document.body` toast sits behind the backdrop.
+   */
+  private readonly shareNote: HTMLElement;
   /** PRE-DISPATCH validation only. See the file header. */
   private validation = '';
   /** True between clicking Save and the status reporting an outcome. */
@@ -53,6 +78,7 @@ export class Dialogs {
 
   constructor(opts: DialogOptions) {
     this.send = opts.send;
+    this.onCopyShareLink = opts.onCopyShareLink;
 
     // --- save --------------------------------------------------------------
     const save = dialog('fluoddity-save');
@@ -82,8 +108,27 @@ export class Dialogs {
       'color:#ff6b6b;font-size:11px;margin-top:8px;min-height:14px;';
     save.append(this.saveError);
 
+    this.shareNote = document.createElement('div');
+    this.shareNote.style.cssText =
+      'font-size:11px;margin-top:6px;min-height:14px;';
+    save.append(this.shareNote);
+
+    // LEFTMOST AND SECONDARY. `buttonRow` packs to the right, so the leftmost
+    // slot is the one furthest from the two buttons that dismiss the dialog --
+    // and this one dismisses nothing, which is worth signalling by position.
+    //
+    // Secondary because `primary` is what Enter visually promises, and Enter is
+    // already bound to Save in the filename field. Two blue buttons would make
+    // that promise ambiguous; the reset-preferences dialog above treats "which
+    // one is primary" as a real decision for the same reason.
+    //
+    // The key comes from the hotkey table rather than being typed here, so a
+    // rebind moves the label with it -- see `localHotkeyLabel`.
     save.append(
       buttonRow([
+        button(`Copy as URL (${localHotkeyLabel('copyShareLink')})`, () => {
+          this.onCopyShareLink();
+        }),
         button('Save', () => this.attemptSave(), true),
         button('Cancel', () => {
           this.closeSave();
@@ -159,9 +204,29 @@ export class Dialogs {
 
   // -- save -----------------------------------------------------------------
 
+  /** Whether the save dialog is up, so a caller can pick a visible surface. */
+  get saveDialogOpen(): boolean {
+    return this.saveEl.open;
+  }
+
+  /**
+   * Report a share-link copy inside the dialog.
+   *
+   * Green rather than red on success: this element carries both outcomes, and
+   * the colour is the only thing distinguishing them at a glance.
+   */
+  showShareNote(text: string, ok: boolean): void {
+    this.shareNote.textContent = text;
+    this.shareNote.style.color = ok ? '#8fd48f' : '#ff6b6b';
+  }
+
   openSave(defaultName: string): void {
     this.validation = '';
     this.savePending = false;
+    // A copy from a previous opening would otherwise still be sitting there,
+    // claiming a link was just copied when it was not -- the same staleness the
+    // `clearSaveError` dispatch below exists to prevent.
+    this.shareNote.textContent = '';
     // The Orchestrator's error outlives the dialog that produced it -- only a
     // save attempt rewrites it -- so a previous failure would otherwise greet
     // the user on a fresh dialog (`config_menu.py:416-423`).

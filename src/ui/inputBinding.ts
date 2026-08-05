@@ -41,8 +41,15 @@ export interface InputBindingOptions {
   readonly surface: Surface;
   /** Where app commands go. */
   readonly dispatch: (command: Command) => void;
-  /** Handle a `LocalAction`. Today that is only `toggleUi`. */
+  /** Handle the `toggleUi` local action -- the `X` key. */
   readonly toggleUi: () => void;
+  /**
+   * Handle the `copyShareLink` local action -- `Shift+C`.
+   *
+   * Local rather than dispatched for the reason `toggleUi` is: the clipboard
+   * belongs to the browser, not to the simulation.
+   */
+  readonly copyShareLink: () => void;
   /** Defaults to `DEFAULT_HOTKEYS`; a parameter so a test or Step 10 can swap it. */
   readonly hotkeys?: readonly Hotkey[];
 }
@@ -62,7 +69,7 @@ export function bindInput(opts: InputBindingOptions): {
   readonly tracker: InputTracker;
   dispose(): void;
 } {
-  const { surface, dispatch, toggleUi } = opts;
+  const { surface, dispatch, toggleUi, copyShareLink } = opts;
   const canvas = surface.canvas;
   const tracker = new InputTracker();
   const table = opts.hotkeys ?? DEFAULT_HOTKEYS;
@@ -197,8 +204,24 @@ export function bindInput(opts: InputBindingOptions): {
     // binding has actually matched, so unbound keys keep their browser meaning.
     event.preventDefault();
 
-    if (hit.local === 'toggleUi') {
-      toggleUi();
+    // A SWITCH WITH A `never` ARM, so adding a `LocalAction` without handling it
+    // is a compile error rather than a key that silently does nothing -- which
+    // is the failure mode a chain of `else if`s would have given, and an
+    // especially bad one here: a bound key that no-ops looks like a broken
+    // keyboard, not like missing code.
+    if (hit.local !== undefined) {
+      switch (hit.local) {
+        case 'toggleUi':
+          toggleUi();
+          break;
+        case 'copyShareLink':
+          copyShareLink();
+          break;
+        default: {
+          const unreachable: never = hit.local;
+          throw new Error(`Unhandled local action: ${String(unreachable)}`);
+        }
+      }
     } else if (hit.command !== undefined) {
       dispatch(hit.command);
     }

@@ -24,6 +24,7 @@
     "esbuild@0.25.12": true
   },
   "dependencies": {
+    "lz-string": "^1.5.0",
     "tweakpane": "^4.0.5"
   }
 }

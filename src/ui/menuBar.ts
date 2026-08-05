@@ -43,6 +43,7 @@
 
 import type { Command, Status } from '../orchestrator/commands.ts';
 import { MOUSE_MODES } from '../orchestrator/commands.ts';
+import { localHotkeyLabel } from './hotkeys.ts';
 import { PreviewSession } from './previewSession.ts';
 
 export interface MenuBarOptions {
@@ -50,6 +51,13 @@ export interface MenuBarOptions {
   readonly status: () => Status;
   /** Open the save dialog. Owned by the panel, since it outlives the menu. */
   readonly onSave: () => void;
+  /**
+   * Copy a link to the live project. Owned by the panel, like `onSave`.
+   *
+   * Not a `send`, because the clipboard is not the Orchestrator's -- see
+   * `CommandBus.projectDocument`.
+   */
+  readonly onCopyShareLink: () => void;
   /** Ask to delete a stored config. Opens the confirm dialog. */
   readonly onDeleteConfig: (category: string, name: string) => void;
   /**
@@ -152,6 +160,23 @@ export class MenuBar {
         this.closeMenus();
         this.opts.onSave();
       });
+      // Beside Save because it is the other way to KEEP this project -- one to
+      // your own browser, one to anyone you send it to. Unlike Save it opens no
+      // dialog: there is nothing to name and nothing to confirm.
+      //
+      // It is here at all because the button that does this lives inside the
+      // SAVE dialog, which a user only opens when they mean to save. Without a
+      // menu row, sharing without saving would be reachable only by a hotkey --
+      // and every other binding in the table has a row here.
+      this.addItem(
+        body,
+        'Copy Link to This Project',
+        () => {
+          this.closeMenus();
+          this.opts.onCopyShareLink();
+        },
+        localHotkeyLabel('copyShareLink'),
+      );
       this.loadBody = this.addSubmenu(body, 'Load');
     });
 

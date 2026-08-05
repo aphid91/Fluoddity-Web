@@ -88,6 +88,9 @@ import {
   buildSettingsSection,
 } from './sections/settingsSection.ts';
 import { Tooltip } from './tooltip.ts';
+import { Toast, type ToastTone } from './toast.ts';
+import { copyText } from './clipboard.ts';
+import { SHARE_LINK_WARN_LENGTH, buildShareUrl } from '../config/shareLink.ts';
 import { bindFocusRelease } from './focusRelease.ts';
 import { buildDebugSection } from './sections/debugSection.ts';
 import { buildDrawingSection } from './sections/drawingSection.ts';
@@ -176,6 +179,16 @@ export class Panel {
   private readonly tooltip = new Tooltip();
 
   /**
+   * Transient messages, for actions that change nothing on screen.
+   *
+   * Owned here for the tooltip's reasons: one on screen at a time, attached to
+   * `document.body` so a pane rebuild cannot orphan it. NOT hidden by `X` -- it
+   * is attached outside both containers, and someone who has hidden the UI can
+   * still press Shift+C and deserves to be told whether it worked.
+   */
+  private readonly toast = new Toast();
+
+  /**
    * Gate and session state, for the derived checkboxes and (10d) the
    * self-hiding sliders.
    *
@@ -241,7 +254,12 @@ export class Panel {
     const send = (command: Command): void => {
       this.bus.dispatch(command);
     };
-    this.dialogs = new Dialogs({ send });
+    this.dialogs = new Dialogs({
+      send,
+      onCopyShareLink: () => {
+        this.copyShareLink();
+      },
+    });
     this.overlay = new MutationOverlay({ send });
     // Built before the menu bar, since the bar's Help item closes over it.
     //
@@ -276,6 +294,9 @@ export class Panel {
       status: () => this.bus.status(),
       onSave: () => {
         this.dialogs.openSave(this.bus.status().projectName);
+      },
+      onCopyShareLink: () => {
+        this.copyShareLink();
       },
       onDeleteConfig: (category, name) => {
         this.dialogs.openDelete(category, name);
@@ -647,11 +668,78 @@ export class Panel {
     this.overlay.setHidden(hidden);
   }
 
+  /**
+   * Copy a link that restores the project as it stands right now.
+   *
+   * THE LIVE PROJECT, WHICH IS THE WHOLE POINT. `projectDocument()` serializes
+   * what is on screen this instant, not the file that was loaded -- someone who
+   * opens a preset, edits ten sliders and presses Shift+C must get a link to
+   * what they are looking at, not to what they started from.
+   *
+   * Public because two callers want exactly this: the `Shift+C` hotkey, which
+   * arrives from `main.ts` with no dialog open, and the save dialog's button,
+   * which arrives with one up. Only where the RESULT lands differs, and that is
+   * `showShareResult`'s problem rather than this one's.
+   *
+   * Built from `window.location` so the link points wherever the app is
+   * actually served from -- `vite.config.ts` sets `base: './'` precisely so this
+   * app does not care, and a hardcoded origin here would quietly undo that.
+   */
+  copyShareLink(): void {
+    const url = buildShareUrl(window.location, this.bus.projectDocument());
+    void copyText(url).then((ok) => {
+      this.showShareResult(ok, url);
+    });
+  }
+
+  /**
+   * Say something transient, when there is no better place to say it.
+   *
+   * For `main.ts` to report a share link that would not load. Fronts the toast
+   * rather than exposing it, so the panel keeps ownership of its own surfaces.
+   */
+  notify(text: string, tone: ToastTone = 'ok'): void {
+    this.toast.show(text, tone);
+  }
+
+  /**
+   * Report a copy, choosing a surface that is actually visible.
+   *
+   * THE DIALOG WINS WHEN IT IS UP, and this is not a preference. A native
+   * `<dialog showModal()>` renders in the browser's top layer, above every
+   * `z-index` there is, so a `document.body` toast is behind its backdrop and
+   * invisible for as long as the dialog is open -- the one moment the user is
+   * most certainly watching for a response.
+   */
+  private showShareResult(ok: boolean, url: string): void {
+    const message = ok
+      ? url.length > SHARE_LINK_WARN_LENGTH
+        ? `Link copied — ${url.length} characters. Links this long can be cut ` +
+          'short by some chat and mail clients; check it pasted whole.'
+        : `Link copied — ${url.length} characters.`
+      : 'Could not reach the clipboard. Copy the link from the box instead.';
+
+    if (this.dialogs.saveDialogOpen) {
+      this.dialogs.showShareNote(message, ok);
+    } else {
+      this.toast.show(message, ok ? 'ok' : 'error');
+    }
+
+    // THE FALLBACK, and it is deliberately the crude one. `execCommand('copy')`
+    // is the traditional answer and cannot work here (see `clipboard.ts`), so
+    // what is left is to put the text somewhere the user can select it. A
+    // `prompt` is ugly, and it needs no permission, no secure origin and no
+    // gesture -- which is exactly the situation this branch is in. Its ugliness
+    // is confined to a path that only runs when the modern API is gone.
+    if (!ok) window.prompt('Copy this link:', url);
+  }
+
   dispose(): void {
     for (const release of this.focusReleasers) release();
     this.left.pane.dispose();
     this.right.pane.dispose();
     this.tooltip.dispose();
+    this.toast.dispose();
     this.menuBar.dispose();
     this.dialogs.dispose();
     this.overlay.dispose();

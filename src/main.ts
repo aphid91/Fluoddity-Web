@@ -22,9 +22,23 @@
 import { acquireDevice, showUnavailableOverlay, WebGPUUnavailable } from './gpu/device.ts';
 import { createSurface, type Surface } from './app/surface.ts';
 import { CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
+import { type SavedConfig, fromDocument } from './config/persistence.ts';
+import { decodeShareLink } from './config/shareLink.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
 import { bindInput } from './ui/inputBinding.ts';
 import { Panel } from './ui/panel.ts';
+
+/**
+ * What a project opened from a link is called.
+ *
+ * NOT `Untitled`, which means "nothing has been loaded"; something has. And not
+ * the sender's name for it, which the v8 format does not carry -- there is no
+ * name field in a document, only a filename on the thing that held it.
+ *
+ * It reads correctly as the save dialog's default filename too: a recipient who
+ * hits Save gets a sensible-if-generic name pre-filled and types over it.
+ */
+const SHARED_LINK_NAME = 'Shared Link';
 
 /**
  * The `?debug` readout.
@@ -78,6 +92,48 @@ async function start(): Promise<void> {
 
   const params = new URLSearchParams(window.location.search);
 
+  // --- the share link --------------------------------------------------------
+  //
+  // Read BEFORE `create`, so a shared project is what the app OPENS rather than
+  // something it switches to a moment later. See `OrchestratorOptions.openWith`
+  // for the three things loading-afterwards gets wrong.
+  //
+  // A BAD LINK MUST NOT TAKE THE APP DOWN. `start()`'s catch renders the
+  // unavailable banner, which is the right response to a missing GPU and
+  // entirely the wrong one to a link that got truncated in a chat client -- the
+  // app is fine, only the link is not. So this fails soft: warn, remember why,
+  // and open the default preset. The user is told once the panel exists to tell
+  // them with.
+  //
+  // THE HASH IS LEFT IN THE ADDRESS BAR. Stripping it with `replaceState` would
+  // tidy things up and would break refresh: F5 or a restored tab would lose the
+  // shared project with no way back, and for a link someone was sent that is
+  // real data loss -- they may have no other copy. The cost of keeping it is
+  // that the URL describes the state the tab ARRIVED in rather than its live
+  // state, which is what a fragment normally means anyway, and `Shift+C`
+  // regenerates a correct one on demand.
+  //
+  // NO `hashchange` LISTENER either. Reacting to one would replace the live
+  // project and discard unsaved edits in response to a gesture the user does not
+  // think of as "open a file". Nothing in the app writes the hash and there are
+  // no in-page anchors, so the only way to fire one is to paste a second link
+  // into a tab that already has one -- where the right answer is a reload, which
+  // the user already has.
+  let openWith: { saved: SavedConfig; name: string } | undefined;
+  let shareLinkError = '';
+  try {
+    const shared = decodeShareLink(window.location.hash);
+    if (shared !== null) {
+      openWith = { saved: fromDocument(shared, 'shared link'), name: SHARED_LINK_NAME };
+    }
+  } catch (err: unknown) {
+    // Covers both halves: `decodeShareLink` on a payload that will not
+    // decompress or parse, and `fromDocument` on one that parses into something
+    // that is not a v8 document -- most likely a link from a future version.
+    shareLinkError = String(err);
+    console.warn(`Ignoring the share link in the URL: ${shareLinkError}`);
+  }
+
   const orchestrator = await Orchestrator.create({
     device,
     surface,
@@ -85,6 +141,7 @@ async function start(): Promise<void> {
     // drives the page by URL, so this is how an automated check reaches a
     // preset without synthesizing a click on a panel button.
     ...(params.has('preset') ? { presetName: params.get('preset') ?? undefined } : {}),
+    ...(openWith !== undefined ? { openWith } : {}),
   });
 
   // --- startup camera overrides ---------------------------------------------
@@ -155,6 +212,17 @@ async function start(): Promise<void> {
     : new Panel({ bus: orchestrator, showSplash: !params.has('nosplash') });
   orchestrator.panelOpen = panel !== null;
 
+  // Reported HERE rather than where it was caught, because until now there was
+  // nothing on screen to report it with. Actionable text only -- the raw error
+  // is already in the console and names nothing a user can act on.
+  if (shareLinkError !== '') {
+    panel?.notify(
+      'That share link could not be read — it was most likely truncated on its ' +
+        'way to you. Opened the default project instead.',
+      'error',
+    );
+  }
+
   // --- input (Step 8) --------------------------------------------------------
   // Every listener lives in `ui/inputBinding.ts`; what comes back is a tracker
   // to freeze once per frame. `toggleUi` is the `X` key: the panel's own
@@ -169,6 +237,9 @@ async function start(): Promise<void> {
       panel.setHidden(!panel.hidden);
       orchestrator.panelOpen = panel.isOpen;
     },
+    // `?nopanel` takes the toast with the panel, so there would be nowhere to
+    // report the result. Copying silently is worse than not copying.
+    copyShareLink: () => panel?.copyShareLink(),
   });
 
   const overlay = createDebugOverlay();
