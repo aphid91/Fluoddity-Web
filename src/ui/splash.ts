@@ -116,6 +116,15 @@ export interface SplashOptions {
    * Help menu needs the instance either way.
    */
   readonly showNow?: boolean;
+  /**
+   * Called on each transition, with the new visibility.
+   *
+   * Fires only on an ACTUAL change -- `show()` on a visible splash and
+   * `dismiss()` on a hidden one both early-return before reaching it, so a
+   * listener that pauses on true and resumes on false cannot be driven out of
+   * balance by a redundant call.
+   */
+  readonly onVisibilityChange?: (visible: boolean) => void;
 }
 
 export class Splash {
@@ -123,10 +132,12 @@ export class Splash {
   private readonly root: HTMLElement;
   private readonly card: HTMLElement;
   private readonly onKey: (ev: KeyboardEvent) => void;
+  private readonly onVisibilityChange: (visible: boolean) => void;
   private shown = false;
 
   constructor(opts: SplashOptions = {}) {
     this.container = opts.container ?? document.body;
+    this.onVisibilityChange = opts.onVisibilityChange ?? ((): void => {});
 
     this.root = document.createElement('div');
     this.root.id = 'fluoddity-splash';
@@ -229,6 +240,9 @@ export class Splash {
     // Bound only while visible, so a dismissed splash costs nothing per
     // keystroke and cannot swallow a key meant for the simulation.
     window.addEventListener('keydown', this.onKey);
+    // LAST, after the state is settled: a listener that calls back into
+    // `visible` must not see a half-applied transition.
+    this.onVisibilityChange(true);
   }
 
   /** Idempotent: dismissing an already-dismissed splash does nothing. */
@@ -237,6 +251,7 @@ export class Splash {
     this.shown = false;
     window.removeEventListener('keydown', this.onKey);
     this.root.remove();
+    this.onVisibilityChange(false);
   }
 
   /** Whether the splash is currently on screen. */
@@ -245,11 +260,19 @@ export class Splash {
   }
 
   /**
-   * Tear down for good. `dismiss` already removes the node and the listener,
-   * so this is that plus the promise not to `show()` again.
+   * Tear down for good: the node and the listener go, and `show()` is not
+   * coming back.
+   *
+   * **Deliberately NOT `dismiss()`.** Dispose is teardown, not a user closing
+   * the splash, so it must not fire `onVisibilityChange` -- a listener that
+   * resumes the simulation on dismissal would otherwise resume it as the panel
+   * is being destroyed, on its way out.
    */
   dispose(): void {
-    this.dismiss();
+    if (!this.shown) return;
+    this.shown = false;
+    window.removeEventListener('keydown', this.onKey);
+    this.root.remove();
   }
 }
 

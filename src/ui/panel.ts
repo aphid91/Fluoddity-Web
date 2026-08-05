@@ -217,6 +217,15 @@ export class Panel {
   private readonly splash: Splash;
 
   /**
+   * Whether the splash is what paused the simulation, and so whether dismissing
+   * it should resume.
+   *
+   * False when the sim was ALREADY paused as the splash came up: that pause was
+   * the user's, and it outlives the splash.
+   */
+  private pausedBySplash = false;
+
+  /**
    * Teardown for the focus-release listeners, one per side.
    *
    * Bound to the CONTAINERS rather than to the panes, so these survive a tier
@@ -235,7 +244,33 @@ export class Panel {
     this.dialogs = new Dialogs({ send });
     this.overlay = new MutationOverlay({ send });
     // Built before the menu bar, since the bar's Help item closes over it.
-    this.splash = new Splash({ showNow: opts.showSplash !== false });
+    //
+    // The splash pauses the simulation while it is up, and resumes it on
+    // dismissal -- but ONLY if the splash is what paused it. Someone who paused
+    // deliberately (Space, or the menu) and then opened Help would otherwise
+    // find their simulation running again on the way out, which is the kind of
+    // thing that loses work in a sim you were watching a moment in.
+    //
+    // `pausedBySplash` is what records that difference. The bus offers a
+    // `togglePause` and no absolute setter, so both directions read
+    // `status().paused` first and only toggle when the state actually needs to
+    // change -- a blind toggle would invert the wrong thing the moment these
+    // two disagreed.
+    this.splash = new Splash({
+      showNow: opts.showSplash !== false,
+      onVisibilityChange: (visible) => {
+        if (visible) {
+          this.pausedBySplash = !this.bus.status().paused;
+          if (this.pausedBySplash) send({ kind: 'togglePause' });
+        } else if (this.pausedBySplash) {
+          this.pausedBySplash = false;
+          // Re-read rather than trusting the flag alone: pausing is reachable
+          // while the splash is up (the menu bar stays live above it), so the
+          // sim may already be where we want it.
+          if (this.bus.status().paused) send({ kind: 'togglePause' });
+        }
+      },
+    });
     this.menuBar = new MenuBar({
       send,
       status: () => this.bus.status(),
