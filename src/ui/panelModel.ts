@@ -74,6 +74,11 @@ export interface PanelSection {
  *   { id: TRANSPORT, title: 'Transport', expanded: true },
  */
 const LEFT_SECTIONS: readonly PanelSection[] = [
+  // A PLACEHOLDER, replaced during the build: `projectSection.ts` retitles this
+  // folder to `Project: <name>` and keeps it current, because the name changes
+  // under the panel and a static title cannot follow it. What is here is only
+  // what shows in the instant between `addFolder` and the section building
+  // into it.
   { id: PROJECT, title: 'Project', expanded: true },
 ];
 

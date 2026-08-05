@@ -32,12 +32,27 @@ import { CONFIG, WORLD, grouped } from '../settingsSpec.ts';
 import { addAdvancedToggle } from '../advancedToggle.ts';
 import { type SectionContext, type SectionHandle, bindingsOnly } from './section.ts';
 
+/**
+ * The folder header, naming the project the controls below are editing.
+ *
+ * The panel writes a static `'Project'` from `panelModel.ts`; this section
+ * replaces it with the live name on every refresh, because the name changes
+ * under the panel -- a load, a save-as, a clipboard restore -- and a header
+ * still reading the previous project is the exact confusion `project.ts:17-20`
+ * describes.
+ */
+function projectTitle(name: string): string {
+  return `Project: ${name}`;
+}
+
 export function buildProjectSection(
   folder: FolderApi,
   status: Status,
   ctx: SectionContext,
 ): SectionHandle {
   const bindings: ControlBinding[] = [];
+
+  folder.title = projectTitle(status.projectName);
 
   // FIRST, above the groups it governs. Tweakpane appends, so build order is
   // display order. This panel's tier only -- the other two answer for
@@ -55,5 +70,23 @@ export function buildProjectSection(
     }
   }
 
-  return bindingsOnly(bindings);
+  // Wraps `bindingsOnly` rather than replacing it: the controls refresh exactly
+  // as every other section's do, and this only adds the header on top.
+  //
+  // Written on an actual change, not every frame. Tweakpane's title setter
+  // touches the DOM, and this runs once per frame for a string that changes on
+  // a load or a save -- the same instinct as `panel.ts`'s `setHidden`.
+  const base = bindingsOnly(bindings);
+  let shown = folder.title;
+  return {
+    bindings: base.bindings,
+    refresh: (s, input) => {
+      const title = projectTitle(s.projectName);
+      if (title !== shown) {
+        shown = title;
+        folder.title = title;
+      }
+      base.refresh(s, input);
+    },
+  };
 }
