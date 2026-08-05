@@ -110,18 +110,26 @@
       "force2": {
         "gravity_force": 0.0,
         "gravity_strafe": 0.0,
-        "initial_conditions": 0,
+        "initial_conditions": 2,
         "cohort_fences": 0.0
       },
       "misc2": {
-        "color_sensitivity": 0.3959999978542328,
+        "color_sensitivity": 0.5,
         "color_by_cohort": false,
         "sensor_angle_jitter": 0.0,
-        "sensor_distance_jitter": 0.29422001001119613
+        "sensor_distance_jitter": 0.16599999368190765
       },
       "misc3": {
         "radial_gravity": false
       }
     }
-  ]
+  ],
+  "camera": {
+    "pan": [
+      0.0,
+      0.0
+    ],
+    "zoom": 1.0,
+    "mode": "particles"
+  }
 }
