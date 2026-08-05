@@ -48,10 +48,21 @@ export const CORE_CATEGORY = 'Core';
 export const CUSTOM_CATEGORY = 'Custom';
 
 /**
- * The preset the app opens with -- the desktop's own default
- * (`particle_system.py:45`), so both halves of the A/B start on the same thing.
+ * The preset the app opens with, or `''` to mean "whatever sorts first".
+ *
+ * WAS `'Starcrossedv8'`, the desktop's own default -- and that file has since
+ * been swapped out of `configs/`, so the constant named something that no longer
+ * existed. The app still booted, because `Orchestrator.create` falls through to
+ * the first catalog entry when the default is missing, which is exactly the kind
+ * of silent fallback that hides a broken constant for months.
+ *
+ * EMPTY RATHER THAN A NEW NAME. The shipped library turns over constantly, so
+ * any name written here is a hostage to the next swap -- and there is no longer
+ * a desktop A/B to keep in step with, which was the only reason to pin one.
+ * `npm run sync:configs` builds the manifest and the manifest decides; this
+ * says "take the first" without pretending to know what that is.
  */
-export const DEFAULT_PRESET_NAME = 'Starcrossedv8';
+export const DEFAULT_PRESET_NAME = 'Diversity';
 
 /** One config in the catalog, wherever it came from. */
 export interface ConfigEntry {

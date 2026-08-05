@@ -61,7 +61,7 @@ import { MOUSE_MODES, type Command } from '../orchestrator/commands.ts';
  * simulation's vocabulary. `ui.py:471-473` says the same -- "rule 10 cuts both
  * ways".
  */
-export type LocalAction = 'toggleUi' | 'copyShareLink';
+export type LocalAction = 'toggleUi' | 'copyShareLink' | 'pasteShareLink';
 
 /** One binding. Exactly one of `command`/`local` is set. */
 export interface Hotkey {
@@ -114,7 +114,9 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   // and the failure would be INVISIBLE, because setting a checkpoint shows
   // nothing on screen. It would look like the clipboard silently failed.
   { code: 'KeyC', shift: false, command: { kind: 'setCheckpoint' } },
-  { code: 'KeyV', command: { kind: 'loadLatestCheckpoint' } },
+  // `shift: false` here for the same reason as `KeyC` above: Shift+V is the
+  // share link's paste, and an omitted `shift` would claim both.
+  { code: 'KeyV', shift: false, command: { kind: 'loadLatestCheckpoint' } },
 
   // --- presets, unchanged --------------------------------------------------
   { code: 'ArrowRight', command: { kind: 'nextPreset' } },
@@ -146,7 +148,13 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   // Shift+C rather than a bare key because plain C is the checkpoint, and the
   // two are close enough in spirit -- "keep this" -- that pairing them under
   // one physical key is a mnemonic rather than a collision.
+  //
+  // Shift+C / Shift+V then inherit the SHAPE of the pair below them: C and V
+  // are copy and restore for the in-session checkpoint stack, and shifted they
+  // are copy and restore for the clipboard. The same gesture, one step further
+  // out -- which is a mnemonic worth more than either key on its own.
   { code: 'KeyC', shift: true, local: 'copyShareLink' },
+  { code: 'KeyV', shift: true, local: 'pasteShareLink' },
 ];
 
 /**

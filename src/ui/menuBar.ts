@@ -58,6 +58,11 @@ export interface MenuBarOptions {
    * `CommandBus.projectDocument`.
    */
   readonly onCopyShareLink: () => void;
+  /**
+   * Load a project from a share URL sitting on the clipboard. `onCopyShareLink`
+   * inverted, and owned by the panel for the same reason.
+   */
+  readonly onPasteShareLink: () => void;
   /** Ask to delete a stored config. Opens the confirm dialog. */
   readonly onDeleteConfig: (category: string, name: string) => void;
   /**
@@ -84,6 +89,27 @@ interface ConfigRow {
 }
 
 const configKey = (row: ConfigRow): string => `${row.category}/${row.name}`;
+
+/**
+ * Approximate height of one Load row, in px. Used to decide what fits.
+ *
+ * Measured from `browserRow`'s padding and font size rather than read back from
+ * the DOM, because the decision is made while the menu is still being built and
+ * nothing has been laid out yet.
+ */
+const ROW_HEIGHT_PX = 22;
+
+/**
+ * How much of the viewport the Load menu may fill before folding begins.
+ *
+ * NOT A ROW COUNT. A fixed count was tried and was wrong within the week: it
+ * was calibrated against a 175-preset library that is now 20, so it silently
+ * stopped folding anything -- the same "constant that names a fact about the
+ * config library" problem as the old `DEFAULT_PRESET_NAME`. The real question
+ * is "would this category overflow the screen", which depends on the window,
+ * so it is asked of the window.
+ */
+const COLLAPSE_VIEWPORT_FRACTION = 0.6;
 
 export class MenuBar {
   private readonly root: HTMLElement;
@@ -112,6 +138,26 @@ export class MenuBar {
   private checkpointSignature = '';
   private loadBody: HTMLElement | null = null;
   private checkpointBody: HTMLElement | null = null;
+
+  /**
+   * Which Load categories are folded shut.
+   *
+   * HELD ON THE INSTANCE, NOT IN THE DOM, because `syncLoadMenu` throws the
+   * whole subtree away and rebuilds it whenever the catalog changes. State kept
+   * on the elements would be destroyed by every save and every delete, and the
+   * menu would spring open again at the least convenient moment.
+   *
+   * Session-only: not a preference, so it does not survive a reload. Folding a
+   * category is a "get this out of my way while I look at the other one" move
+   * rather than a setting, and it costs one click to redo.
+   *
+   * Starts EMPTY -- every category open -- so nothing is hidden from someone who
+   * has not asked for it. See `defaultCollapsed` for the one exception.
+   */
+  private readonly collapsedCategories = new Set<string>();
+
+  /** Whether the initial state has been decided; see `syncLoadMenu`. */
+  private collapseDefaulted = false;
 
   constructor(opts: MenuBarOptions) {
     this.opts = opts;
@@ -160,14 +206,18 @@ export class MenuBar {
         this.closeMenus();
         this.opts.onSave();
       });
-      // Beside Save because it is the other way to KEEP this project -- one to
-      // your own browser, one to anyone you send it to. Unlike Save it opens no
-      // dialog: there is nothing to name and nothing to confirm.
-      //
-      // It is here at all because the button that does this lives inside the
-      // SAVE dialog, which a user only opens when they mean to save. Without a
-      // menu row, sharing without saving would be reachable only by a hotkey --
-      // and every other binding in the table has a row here.
+      this.loadBody = this.addSubmenu(body, 'Load');
+    });
+
+    // A MENU OF ITS OWN, not two more rows under File.
+    //
+    // File is about this browser: Save writes to IndexedDB, Load reads the
+    // shipped library back. Both of these cross a boundary to somebody else --
+    // one puts the project on the clipboard for sending, the other takes one
+    // that arrived. They are each other's inverse, and pairing them where the
+    // symmetry is visible says more than filing them next to operations they
+    // only superficially resemble.
+    this.addMenu('Share', (body) => {
       this.addItem(
         body,
         'Copy Link to This Project',
@@ -177,7 +227,15 @@ export class MenuBar {
         },
         localHotkeyLabel('copyShareLink'),
       );
-      this.loadBody = this.addSubmenu(body, 'Load');
+      this.addItem(
+        body,
+        'Load Project from Clipboard URL',
+        () => {
+          this.closeMenus();
+          this.opts.onPasteShareLink();
+        },
+        localHotkeyLabel('pasteShareLink'),
+      );
     });
 
     // "History" rather than "Edit". Every item under it moves along the undo
@@ -446,43 +504,108 @@ export class MenuBar {
       return;
     }
 
+    // ONCE, on the first real catalog. A category long enough to fill the
+    // screen starts folded, because an unscrollable wall of 175 rows is not a
+    // menu -- while a short "Custom" stays open, since hiding three saves
+    // behind a click helps nobody.
+    //
+    // Deliberately NOT re-run on later rebuilds: after the first time, the open
+    // and shut set is the user's, and a save that pushed Custom past the
+    // threshold must not fold it under them.
+    if (!this.collapseDefaulted) {
+      this.collapseDefaulted = true;
+      // Whether the WHOLE menu overflows, not whether one category is long: two
+      // categories of fifteen fill the screen exactly as thoroughly as one of
+      // thirty, and folding neither would leave the menu unusable in the case
+      // this exists to fix.
+      const budget = (window.innerHeight * COLLAPSE_VIEWPORT_FRACTION) / ROW_HEIGHT_PX;
+      const total = categories.reduce((n, [, names]) => n + names.length, 0);
+      if (total > budget) {
+        // Fold the LONG ones and leave the short ones open, largest first, until
+        // what remains fits. A handful of saves under "Custom" stays visible --
+        // hiding three rows behind a click helps nobody, and the wall of
+        // presets is what was actually in the way.
+        const bySize = [...categories].sort((x, y) => y[1].length - x[1].length);
+        let shown = total;
+        for (const [category, names] of bySize) {
+          if (shown <= budget) break;
+          this.collapsedCategories.add(category);
+          shown -= names.length;
+        }
+      }
+    }
+
     for (const [category, names] of categories) {
+      // COLLAPSIBLE, because "Core" is now 175 rows. The header was already a
+      // separate element, so this is a click handler and a display toggle
+      // rather than a restructuring.
       const header = document.createElement('div');
-      header.textContent = `${category} (${names.length})`;
       header.style.cssText =
         'padding:4px 12px;font-size:10px;opacity:0.5;text-transform:uppercase;' +
-        'letter-spacing:0.5px;';
+        'letter-spacing:0.5px;cursor:pointer;user-select:none;';
       this.loadBody.append(header);
+
+      // The rows this header governs, collected so the toggle can hide them
+      // without needing a wrapper element -- a wrapper would nest the rows one
+      // level deeper than `browserRow` expects and change how hover reads.
+      const rows: HTMLElement[] = [];
+      const applyCollapsed = () => {
+        const collapsed = this.collapsedCategories.has(category);
+        // `▸`/`▾` rather than a rotated glyph: the arrow IS the affordance, and
+        // it has to read at 10px where a CSS transform on a triangle does not.
+        header.textContent = `${collapsed ? '▸' : '▾'} ${category} (${names.length})`;
+        for (const row of rows) row.style.display = collapsed ? 'none' : '';
+      };
+      header.addEventListener('click', () => {
+        if (this.collapsedCategories.has(category)) {
+          this.collapsedCategories.delete(category);
+        } else {
+          this.collapsedCategories.add(category);
+          // A collapsed category cannot keep a hover preview alive: the row the
+          // cursor was on is about to be `display:none`, which fires no
+          // `mouseleave`, so the snapshot would never be restored and the
+          // previewed config would stick.
+          this.loadPreview.restoreNow();
+          this.hoveredConfig = null;
+        }
+        applyCollapsed();
+      });
 
       for (const name of names) {
         const row: ConfigRow = { category, name };
-        this.loadBody.append(
-          this.browserRow(
-            name,
-            () => {
-              // Commit: drop the snapshot so closing does not undo this.
-              this.loadPreview.commit(configKey(row));
-              this.opts.send({ kind: 'loadConfig', category, name });
-              this.closeMenus();
-            },
-            () => {
-              // Deleting the previewed config must not leave it applied.
-              this.loadPreview.restoreNow();
-              this.loadPreview.forget();
-              this.opts.onDeleteConfig(category, name);
-              this.closeMenus();
-            },
-            (hovered) => {
-              // Only clear if THIS row is the one recorded: a row-to-row move
-              // fires the new row's `mouseenter` before the old row's
-              // `mouseleave`, and clearing unconditionally would wipe the row
-              // the cursor just arrived on.
-              if (hovered) this.hoveredConfig = row;
-              else if (this.hoveredConfig === row) this.hoveredConfig = null;
-            },
-          ),
+        const element = this.browserRow(
+          name,
+          () => {
+            // Commit: drop the snapshot so closing does not undo this.
+            this.loadPreview.commit(configKey(row));
+            this.opts.send({ kind: 'loadConfig', category, name });
+            this.closeMenus();
+          },
+          () => {
+            // Deleting the previewed config must not leave it applied.
+            this.loadPreview.restoreNow();
+            this.loadPreview.forget();
+            this.opts.onDeleteConfig(category, name);
+            this.closeMenus();
+          },
+          (hovered) => {
+            // Only clear if THIS row is the one recorded: a row-to-row move
+            // fires the new row's `mouseenter` before the old row's
+            // `mouseleave`, and clearing unconditionally would wipe the row
+            // the cursor just arrived on.
+            if (hovered) this.hoveredConfig = row;
+            else if (this.hoveredConfig === row) this.hoveredConfig = null;
+          },
         );
+        rows.push(element);
+        this.loadBody.append(element);
       }
+
+      // AFTER the rows exist, so a category collapsed before a rebuild comes
+      // back collapsed. The signature check rebuilds this whole subtree on any
+      // catalog change -- a save, a delete -- and without this every such
+      // change would silently expand all 175 Core rows again.
+      applyCollapsed();
     }
   }
 

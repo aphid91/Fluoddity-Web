@@ -58,8 +58,8 @@ const BODY: readonly Block[] = [
     'The panel on the right shows your editor and tool preferences.',
     'The panel on the left shows your current project. These values are stored ' +
       'and loaded by File → Save/Load, along with particle behavior and ' +
-      'current mutations. File → Copy Link to This Project puts the whole ' +
-      'thing in a URL you can send to someone.',
+      'current mutations. The Share menu puts the whole thing in a URL you can ' +
+      'send to someone, and opens links other people send you.',
   ],
   DIVIDER,
   'Controls',
@@ -85,6 +85,7 @@ const BODY: readonly Block[] = [
     'Shift-C: copy a link to this project to your clipboard (anyone who opens ' +
       'it gets exactly what you have on screen right now, not the last thing ' +
       'you saved)',
+    'Shift-V: load a project from a share link on your clipboard',
   ],
   DIVIDER,
   'Mouse controls',

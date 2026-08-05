@@ -23,23 +23,11 @@ import { acquireDevice, showUnavailableOverlay, WebGPUUnavailable } from './gpu/
 import { createSurface, type Surface } from './app/surface.ts';
 import { CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
 import { type SavedConfig, fromDocument } from './config/persistence.ts';
-import { decodeShareLink } from './config/shareLink.ts';
+import { SHARED_LINK_NAME, decodeShareLink } from './config/shareLink.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
 import { calibrate } from './calibration/calibrate.ts';
 import { bindInput } from './ui/inputBinding.ts';
 import { Panel } from './ui/panel.ts';
-
-/**
- * What a project opened from a link is called.
- *
- * NOT `Untitled`, which means "nothing has been loaded"; something has. And not
- * the sender's name for it, which the v8 format does not carry -- there is no
- * name field in a document, only a filename on the thing that held it.
- *
- * It reads correctly as the save dialog's default filename too: a recipient who
- * hits Save gets a sensible-if-generic name pre-filled and types over it.
- */
-const SHARED_LINK_NAME = 'Shared Link';
 
 /**
  * The `?debug` readout.
@@ -280,6 +268,7 @@ async function start(): Promise<void> {
     // `?nopanel` takes the toast with the panel, so there would be nowhere to
     // report the result. Copying silently is worse than not copying.
     copyShareLink: () => panel?.copyShareLink(),
+    pasteShareLink: () => panel?.pasteShareLink(),
   });
 
   // --- first-run calibration -------------------------------------------------

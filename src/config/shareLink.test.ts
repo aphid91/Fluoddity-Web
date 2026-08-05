@@ -40,6 +40,7 @@ import {
   ShareLinkError,
   buildShareUrl,
   decodeShareLink,
+  decodeShareText,
   encodeShareLink,
 } from './shareLink.ts';
 
@@ -157,6 +158,45 @@ test('an empty query produces no stray "?"', () => {
   assert.ok(!url.includes('?'), url.slice(0, 60));
 });
 
+// --- 2b. what actually lands on a clipboard ---------------------------------
+
+test('decodeShareText accepts every shape a paste really arrives in', () => {
+  const doc = validDocument();
+  const url = buildShareUrl(LOC, doc);
+  const hash = url.slice(url.indexOf('#'));
+  const bare = hash.slice(1); // `c=...`, from a selection that missed the `#`
+
+  const want = JSON.stringify(doc);
+  const shapes: Record<string, string> = {
+    'a whole URL': url,
+    'just the fragment': hash,
+    'the fragment without its #': bare,
+    'wrapped in whitespace': `  ${url}\n`,
+    // What a mail client that hard-wraps at 78 columns does to a 1800-character
+    // link. The compressor's alphabet has no whitespace in it, so anything
+    // matching this is damage from transit and can be safely removed.
+    'broken across lines': `${url.slice(0, 78)}\n${url.slice(78)}`,
+    'angle-bracketed, as mail clients do': `<${url}>`.replace(/[<>]/g, ''),
+  };
+
+  for (const [shape, text] of Object.entries(shapes)) {
+    assert.equal(JSON.stringify(decodeShareText(text)), want, shape);
+  }
+});
+
+test('decodeShareText says "not ours" rather than "damaged" for ordinary text', () => {
+  // What someone has on their clipboard when they press Shift+V by accident.
+  // Each must be a quiet no, not an error about a corrupt link.
+  for (const text of ['', '   ', 'hello world', 'https://example.com/', 'https://example.com/#about']) {
+    assert.equal(decodeShareText(text), null, JSON.stringify(text));
+  }
+});
+
+test('decodeShareText still rejects a damaged payload', () => {
+  const url = buildShareUrl(LOC, validDocument());
+  assert.throws(() => decodeShareText(url.slice(0, url.length - 400)), ShareLinkError);
+});
+
 // --- 3. fragments that are not ours -----------------------------------------
 
 test('a fragment without our key is not ours, and is not an error', () => {
@@ -211,8 +251,20 @@ test('a future version decodes here and is rejected by the reader', () => {
 // --- 6. the shipped presets -------------------------------------------------
 
 test('a real shipped preset round-trips and stays comfortably short', () => {
-  const file = path.join(REPO_ROOT, 'configs', 'Angles2.json');
-  const doc: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+  // WHICHEVER PRESET IS THERE, never one by name. The shipped library turns
+  // over constantly -- presets are swapped in and out as the interesting ones
+  // change -- and a test that names one breaks on a library edit for a reason
+  // that has nothing to do with share links. `npm run sync:configs` is the
+  // definitive list; this just takes the first thing off disk.
+  const dir = path.join(REPO_ROOT, 'configs');
+  const first = fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith('.json'))
+    .sort()[0];
+  // Guards against a vacuous pass if `configs/` is ever empty or moved.
+  assert.ok(first !== undefined, `no presets found in ${dir}`);
+
+  const doc: unknown = JSON.parse(fs.readFileSync(path.join(dir, first), 'utf8'));
   const hash = encodeShareLink(doc);
 
   assert.equal(JSON.stringify(decodeShareLink(hash)), JSON.stringify(doc));
@@ -223,6 +275,6 @@ test('a real shipped preset round-trips and stays comfortably short', () => {
   // rather than to discover from a user whose link got cut in half.
   assert.ok(
     hash.length < SHARE_LINK_WARN_LENGTH / 2,
-    `a one-config preset encoded to ${hash.length} chars; the threshold is ${SHARE_LINK_WARN_LENGTH}`,
+    `${first} encoded to ${hash.length} chars; the threshold is ${SHARE_LINK_WARN_LENGTH}`,
   );
 });

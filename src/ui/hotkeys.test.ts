@@ -112,6 +112,21 @@ test('the checkpoint and the share link are discriminated by shift', () => {
   assert.equal(share?.command, undefined, 'the clipboard is not simulation state');
 });
 
+test('the checkpoint restore and the share paste are discriminated by shift', () => {
+  // `KeyV` has the same history as `KeyC`: it carried no `shift` until the
+  // share link's paste was added, so Shift+V would have restored a checkpoint.
+  // That one is not even silent -- it would visibly load the wrong project,
+  // which is worse than nothing happening.
+  const restore = matchHotkey(DEFAULT_HOTKEYS, 'KeyV', false);
+  const paste = matchHotkey(DEFAULT_HOTKEYS, 'KeyV', true);
+
+  assert.deepEqual(restore?.command, { kind: 'loadLatestCheckpoint' });
+  assert.equal(restore?.local, undefined);
+
+  assert.equal(paste?.local, 'pasteShareLink');
+  assert.equal(paste?.command, undefined);
+});
+
 // --- 3. what did NOT move keeps its desktop key ---------------------------
 
 test('the uncollided desktop bindings are unchanged', () => {
@@ -204,6 +219,7 @@ test('localHotkeyLabel reaches the bindings that have no command', () => {
   // typed by hand, the staleness this whole group exists to prevent.
   assert.equal(localHotkeyLabel('toggleUi'), 'X');
   assert.equal(localHotkeyLabel('copyShareLink'), 'Shift+C');
+  assert.equal(localHotkeyLabel('pasteShareLink'), 'Shift+V');
 });
 
 // --- 4. matchHotkey itself ------------------------------------------------

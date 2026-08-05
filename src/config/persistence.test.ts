@@ -42,6 +42,28 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 // src/config -> src -> repo root, which is where `configs/` lives.
 const REPO_ROOT = path.join(here, '..', '..');
 
+/**
+ * Where the SEVEN REFERENCE FILES live -- `configs-bu/`, not `configs/`.
+ *
+ * These seven are not "some shipped presets", they are the other half of
+ * `presets.fixture.json`: the fixture records what the retired Python reader
+ * produced from THESE EXACT BYTES, so the pair only means anything together.
+ * Split them and the test is comparing this reader against files it was never
+ * proved on.
+ *
+ * `configs/` is a living library -- presets get swapped in and out constantly,
+ * and every such swap used to break this test for a reason that had nothing to
+ * do with the reader. Pointing at the frozen copies decouples the two: churn in
+ * the shipped library is now invisible here, which is correct, because this
+ * test is about the FORMAT and not about which presets happen to ship.
+ *
+ * The consequence, and it is the intended one: adding or removing a preset must
+ * never require touching this file. If these seven ever move again, move them
+ * together with the fixture or the check silently stops being a cross-reader
+ * comparison and becomes a transcription of our own output.
+ */
+const REFERENCE_DIR = path.join(REPO_ROOT, 'configs-bu');
+
 /** A minimal valid v8 document, which each case below perturbs. */
 function validDocument(): Record<string, unknown> {
   return {
@@ -377,7 +399,7 @@ test('parses the real shipped presets to the values the reference reader produce
 
   for (const [name, expected] of Object.entries(expectedByName)) {
     const raw = JSON.parse(
-      fs.readFileSync(path.join(REPO_ROOT, 'configs', `${name}.json`), 'utf8'),
+      fs.readFileSync(path.join(REFERENCE_DIR, `${name}.json`), 'utf8'),
     );
     const parsed = fromDocument(raw, `${name}.json`);
     const config = parsed.configs[0]!;

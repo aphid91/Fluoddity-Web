@@ -85,6 +85,23 @@ const LZString: LZStringApi =
 const { compressToEncodedURIComponent, decompressFromEncodedURIComponent } = LZString;
 
 /**
+ * What a project opened from a link is called.
+ *
+ * NOT `Untitled`, which means "nothing has been loaded"; something has. And not
+ * the sender's name for it, which the v8 format does not carry -- there is no
+ * name field in a document, only a filename on whatever held it.
+ *
+ * It reads correctly as the save dialog's default filename too: a recipient who
+ * hits Save gets a sensible-if-generic name pre-filled and types over it.
+ *
+ * Lives HERE rather than in `main.ts` because both arrival paths need it -- a
+ * link in the URL at startup, and one pasted mid-session -- and the two must
+ * agree, or the same link would name its project differently depending on how
+ * it got there.
+ */
+export const SHARED_LINK_NAME = 'Shared Link';
+
+/**
  * The fragment key this feature owns.
  *
  * KEYED (`#c=...`) RATHER THAN BARE (`#...`), which costs a few characters and
@@ -193,6 +210,42 @@ export function decodeShareLink(hash: string): unknown | null {
     // remedy is the same.
     throw new ShareLinkError('the share link did not contain a readable config');
   }
+}
+
+/**
+ * The document inside whatever the user had on their clipboard.
+ *
+ * `decodeShareLink` takes a FRAGMENT; this takes anything and finds the
+ * fragment in it, because what is actually on a clipboard is rarely as tidy as
+ * `location.hash`. All of these are things people really paste:
+ *
+ *   - a whole URL, which is the normal case
+ *   - a bare `#c=...`, from someone who selected only the fragment
+ *   - a bare `c=...`, from a selection that missed the `#` too
+ *   - any of the above wrapped in whitespace or newlines, which is what a
+ *     mail client that hard-wrapped the link leaves behind
+ *
+ * Splits on the FIRST `#`, so a URL whose query somehow contains one still
+ * yields the right tail, and returns `null` when there is no `c=` anywhere --
+ * "this is not a share link" being a different answer from "it is damaged", the
+ * same three-way distinction `decodeShareLink` draws and for the same reason.
+ *
+ * Throws `ShareLinkError` for text that IS a share link and will not decode.
+ */
+export function decodeShareText(text: string): unknown | null {
+  const trimmed = text.trim();
+  if (trimmed === '') return null;
+
+  // Everything after the first `#`, or the whole string when there is none --
+  // which is what makes a bare `c=...` work without a special case.
+  const hashAt = trimmed.indexOf('#');
+  const fragment = hashAt === -1 ? trimmed : trimmed.slice(hashAt + 1);
+
+  // Whitespace INSIDE the payload, not just around it: a link that survived a
+  // hard-wrapping mail client comes back with a newline in the middle of it,
+  // and the compressor's alphabet contains no whitespace at all, so anything
+  // matching this cannot be payload and can only be damage from transit.
+  return decodeShareLink(fragment.replace(/\s+/g, ''));
 }
 
 /**

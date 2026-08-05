@@ -48,3 +48,28 @@ export async function copyText(text: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Read the clipboard, or `null` if it cannot be reached.
+ *
+ * READING IS STRICTLY HARDER THAN WRITING, and the difference is not cosmetic.
+ * Writing what the user just asked to copy is uncontroversial; READING is a
+ * privacy question -- the page is asking what else you have been copying -- so
+ * Chrome gates it behind a `clipboard-read` permission PROMPT, and Firefox does
+ * not implement `readText()` for page script at all.
+ *
+ * So `null` here is an ordinary outcome rather than an error: on Firefox it is
+ * the only possible one. Callers must have something useful to do with it --
+ * see `Panel.pasteShareLink`, which falls back to asking for the link directly,
+ * which is also what a denied permission prompt lands on.
+ */
+export async function readText(): Promise<string | null> {
+  if (navigator.clipboard?.readText === undefined) return null;
+  try {
+    return await navigator.clipboard.readText();
+  } catch {
+    // Denied, dismissed, or unimplemented. Indistinguishable here and treated
+    // the same, because the remedy is the same.
+    return null;
+  }
+}

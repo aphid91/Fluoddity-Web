@@ -43,6 +43,7 @@
  * strictly stronger than the tuple of key names it replaces.
  */
 
+import type { SavedConfig } from '../config/persistence.ts';
 import type { PickResult } from '../particleSystem/pick.ts';
 import type { Setting } from '../ui/settingsSpec.ts';
 
@@ -234,6 +235,21 @@ export type Command =
    * command exists so the path is built and testable meanwhile.
    */
   | { readonly kind: 'revertConfig' }
+  /**
+   * Adopt a project that arrived on a share link, mid-session.
+   *
+   * UNDOABLE, unlike the same project arriving in the URL at startup. The two
+   * look alike and are not: at startup there is nothing to lose, so recording
+   * history would only offer to "undo" into a default preset the user never
+   * saw. Here it REPLACES whatever they were working on, which is exactly the
+   * situation undo exists for.
+   *
+   * Carries a parsed `SavedConfig` rather than the URL text, so the Orchestrator
+   * never has to know what a URL is -- decoding belongs to `shareLink.ts` and
+   * validation to `persistence.ts`, both of which have run by the time this is
+   * dispatched.
+   */
+  | { readonly kind: 'loadSharedConfig'; readonly saved: SavedConfig; readonly name: string }
   | { readonly kind: 'clearSaveError' }
   // --- config clipboard: in-session checkpoints ---
   | { readonly kind: 'setCheckpoint' }

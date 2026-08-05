@@ -50,6 +50,8 @@ export interface InputBindingOptions {
    * belongs to the browser, not to the simulation.
    */
   readonly copyShareLink: () => void;
+  /** Handle the `pasteShareLink` local action -- `Shift+V`. */
+  readonly pasteShareLink: () => void;
   /** Defaults to `DEFAULT_HOTKEYS`; a parameter so a test or Step 10 can swap it. */
   readonly hotkeys?: readonly Hotkey[];
 }
@@ -69,7 +71,7 @@ export function bindInput(opts: InputBindingOptions): {
   readonly tracker: InputTracker;
   dispose(): void;
 } {
-  const { surface, dispatch, toggleUi, copyShareLink } = opts;
+  const { surface, dispatch, toggleUi, copyShareLink, pasteShareLink } = opts;
   const canvas = surface.canvas;
   const tracker = new InputTracker();
   const table = opts.hotkeys ?? DEFAULT_HOTKEYS;
@@ -216,6 +218,9 @@ export function bindInput(opts: InputBindingOptions): {
           break;
         case 'copyShareLink':
           copyShareLink();
+          break;
+        case 'pasteShareLink':
+          pasteShareLink();
           break;
         default: {
           const unreachable: never = hit.local;

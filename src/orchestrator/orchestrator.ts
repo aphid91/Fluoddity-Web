@@ -345,22 +345,25 @@ export class Orchestrator implements CommandBus {
     const store = await ConfigStore.open();
     const catalog = store.catalog();
 
+    // ASKING FOR A PRESET BY NAME AND NOT ASKING ARE DIFFERENT SITUATIONS, and
+    // only the first can be disappointed. `?preset=Nope` is a request that
+    // failed and deserves to say so; opening with no preference at all is the
+    // ordinary case, and warning about it on every boot -- which naming a
+    // now-deleted file in `DEFAULT_PRESET_NAME` used to do -- trains everyone to
+    // ignore the console.
     let presetName = opts.presetName ?? DEFAULT_PRESET_NAME;
-    let entry = store.entryByName(presetName);
-    if (entry === null) {
+    let entry = presetName === '' ? null : store.entryByName(presetName);
+    if (entry === null && presetName !== '') {
       console.warn(
         `No preset "${presetName}". Available: ${catalog.order.join(', ')}. ` +
-          `Falling back to ${DEFAULT_PRESET_NAME}.`,
+          `Opening the first one instead.`,
       );
-      presetName = DEFAULT_PRESET_NAME;
-      entry = store.entryByName(presetName);
     }
-    // Last resort: the manifest exists but does not contain the default. Rather
-    // than start on nothing, take whatever is first in the catalog -- and say
-    // so, because it means the shipped set changed without this constant.
+    // Whatever sorts first, which is what an unset default means. `sync:configs`
+    // builds the catalog order, so this follows the shipped library rather than
+    // a constant that has to be maintained alongside it.
     if (entry === null && catalog.order.length > 0) {
       presetName = catalog.order[0]!;
-      console.warn(`Default preset missing; opening "${presetName}" instead.`);
       entry = store.entryByName(presetName);
     }
     if (entry === null) {
@@ -1001,6 +1004,10 @@ export class Orchestrator implements CommandBus {
         this.saveConfig(command.name);
         return;
 
+      case 'loadSharedConfig':
+        this.loadSharedConfig(command.saved, command.name);
+        return;
+
       case 'clearSaveError':
         // Dispatched when the save dialog OPENS. The dialog renders `saveError`
         // from status every frame -- it must not read it once, right after
@@ -1222,6 +1229,31 @@ export class Orchestrator implements CommandBus {
     this.configOrigin = { category: entry.category, name: entry.name };
     // NO CAMERA. Loading a config leaves the view exactly where it was, on every
     // path -- committed load, preview, and the LEFT/RIGHT cycle alike.
+  }
+
+  /**
+   * Adopt a project that came off a share link, mid-session.
+   *
+   * SYNCHRONOUS, unlike every other load here: the bytes already arrived with
+   * the command, so there is no store to read, no promise to guard and no
+   * generation to check. The whole async apparatus above exists for storage,
+   * and a link is not storage.
+   *
+   * `configOrigin` is CLEARED rather than left alone. Whatever the project used
+   * to come from, it is not where this came from -- leaving the old origin would
+   * point "Revert to Saved" at a file that has nothing to do with what is now on
+   * screen, which is worse than the row being greyed out.
+   */
+  private loadSharedConfig(saved: SavedConfig, name: string): void {
+    const before = this.prePreviewProject(this.project);
+    this.setProject(loadSavedInto(this.project, name, saved));
+    // Undoable, because this REPLACED live work. The startup path deliberately
+    // does not record one -- see the `loadSharedConfig` command's comment.
+    this.recordHistory(before, `load ${name}`);
+    this.previewOrigins.clear();
+    this.presetName = name;
+    this.configOrigin = null;
+    this.saveError = '';
   }
 
   /** Commit a load: settings, world, name, camera, and one history entry. */

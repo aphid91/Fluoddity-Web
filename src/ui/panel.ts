@@ -89,8 +89,14 @@ import {
 } from './sections/settingsSection.ts';
 import { Tooltip } from './tooltip.ts';
 import { Toast, type ToastTone } from './toast.ts';
-import { copyText } from './clipboard.ts';
-import { SHARE_LINK_WARN_LENGTH, buildShareUrl } from '../config/shareLink.ts';
+import { copyText, readText } from './clipboard.ts';
+import { fromDocument } from '../config/persistence.ts';
+import {
+  SHARE_LINK_WARN_LENGTH,
+  SHARED_LINK_NAME,
+  buildShareUrl,
+  decodeShareText,
+} from '../config/shareLink.ts';
 import { bindFocusRelease } from './focusRelease.ts';
 import { buildDebugSection } from './sections/debugSection.ts';
 import { buildDrawingSection } from './sections/drawingSection.ts';
@@ -344,6 +350,9 @@ export class Panel {
       },
       onCopyShareLink: () => {
         this.copyShareLink();
+      },
+      onPasteShareLink: () => {
+        this.pasteShareLink();
       },
       onDeleteConfig: (category, name) => {
         this.dialogs.openDelete(category, name);
@@ -737,6 +746,68 @@ export class Panel {
     void copyText(url).then((ok) => {
       this.showShareResult(ok, url);
     });
+  }
+
+  /**
+   * Load the project from a share URL on the clipboard.
+   *
+   * `copyShareLink` inverted, and deliberately forgiving about what it is given:
+   * `decodeShareText` takes a whole URL, a bare fragment, or either wrapped in
+   * the whitespace a hard-wrapping mail client leaves behind.
+   *
+   * THE PROMPT IS NOT A LAST RESORT HERE, it is the Firefox path. Reading the
+   * clipboard is gated behind a permission prompt in Chrome and is not
+   * implemented for page script in Firefox at all -- so unlike copying, where
+   * the fallback is rare, this one is the ONLY route for a whole browser engine.
+   * Asking for the link directly costs one dialog and works everywhere.
+   */
+  pasteShareLink(): void {
+    void readText().then((clip) => {
+      // `null` is "could not read", which is not the same as "read nothing" --
+      // an empty clipboard is a real answer and gets the same prompt, since
+      // either way there is no link to work with.
+      const text = clip !== null && clip.trim() !== ''
+        ? clip
+        : window.prompt('Paste a Fluoddity share link:') ?? '';
+      this.applyShareText(text);
+    });
+  }
+
+  /**
+   * Decode share text and adopt it, reporting either way.
+   *
+   * Split out so the clipboard path and the prompt path cannot drift: both
+   * arrive here with a string of unknown quality and neither is trusted.
+   */
+  private applyShareText(text: string): void {
+    if (text.trim() === '') return; // Cancelled, or nothing to work with.
+
+    let saved;
+    try {
+      const doc = decodeShareText(text);
+      if (doc === null) {
+        this.toast.show(
+          'That does not look like a Fluoddity share link.',
+          'error',
+        );
+        return;
+      }
+      saved = fromDocument(doc, 'shared link');
+    } catch (err: unknown) {
+      // Both halves again: a payload that will not decompress, and one that
+      // decodes to something this version cannot read. The message names
+      // truncation because that is overwhelmingly the likeliest cause.
+      this.toast.show(
+        'That share link could not be read — it may have been truncated when ' +
+          'it was copied.',
+        'error',
+      );
+      console.warn(`Rejected a pasted share link: ${String(err)}`);
+      return;
+    }
+
+    this.bus.dispatch({ kind: 'loadSharedConfig', saved, name: SHARED_LINK_NAME });
+    this.toast.show('Project loaded from link. Press Z to undo.');
   }
 
   /**
