@@ -38,7 +38,8 @@ import { PROGRESSION, budgetMs, type Rung } from './progression.ts';
  * against a fake with no GPU in sight.
  */
 export interface CalibrationTarget {
-  calibrateTo(worldSize: number, physicsSteps: number): Promise<void>;
+  /** Applies a rung. Resolves to whether the simulation was rebuilt. */
+  calibrateTo(worldSize: number, physicsSteps: number): Promise<boolean>;
   probeFrame(): Promise<void>;
   /** Persists the result, rebuilds if needed, and restarts the simulation. */
   commitCalibration(worldSize: number, physicsSteps: number): Promise<void>;
@@ -63,33 +64,62 @@ export interface CalibrationOptions {
 }
 
 /**
- * Probes per rung. Three, reduced by a median, because one scheduling hiccup --
- * a GC pause, another tab waking up -- should not be able to fail a rung the
- * machine can comfortably hold. Three is the smallest count that has a middle.
+ * Probes per rung, reduced by a median.
+ *
+ * Four rather than three: a single scheduling hiccup -- a GC pause, another tab
+ * waking up, a background process taking the GPU -- should not be able to fail
+ * a rung the machine can comfortably hold, and the whole walk finishes so
+ * quickly that the extra sample is free. With an even count the median takes
+ * the upper of the two middle values (see `median`), which leans very slightly
+ * toward caution.
  */
-const SAMPLES = 3;
+const SAMPLES = 4;
 
 /**
- * Discarded frames after each settings change.
+ * Discarded frames after a change that did NOT rebuild.
  *
- * The first frame at a new size pays for things that happen exactly once:
- * pipeline warm-up, first-touch allocation of the freshly built entity buffer,
- * and `ensureUniformCapacity` growing the uniform buffers when the physics rate
- * rises (`particleSystem.ts:1159-1175`). Timing those would charge a rung for
- * work the steady state never repeats, and would fail rungs that are actually
- * affordable.
+ * Covers the one-off costs a physics-rate change still pays: pipeline warm-up
+ * and `ensureUniformCapacity` growing the uniform buffers as the rate rises
+ * (`particleSystem.ts:1159-1175`). The simulation itself carries on from where
+ * the previous rung left it, so there is no simulation state to settle.
  */
 const WARMUP = 2;
+
+/**
+ * Discarded frames after a REBUILD, which is a far more expensive start.
+ *
+ * A world-size change constructs a new `ParticleSystem`, and a new system's
+ * `_frameCount` is zero -- the reset sentinel every shader watches for. The
+ * frames immediately after it regenerate every entity's position, velocity and
+ * rule, and clear the canvas, so they cost materially more than the steady
+ * state that follows.
+ *
+ * **THIS IS WHY FIRST-RUN CALIBRATION CAME OUT TOO CONSERVATIVE.** Measuring
+ * across those frames charges a rung for startup work it never repeats, so
+ * machines were failing rungs they could hold comfortably -- which is exactly
+ * why re-running calibration afterwards (from an already-warm simulation)
+ * landed somewhere better. Burning them first is the fix.
+ *
+ * Only spent when a rebuild actually happened. Three of the six probed rungs
+ * change physics rate alone, and those keep the warm simulation they inherited.
+ */
+const REBUILD_WARMUP = 25;
 
 /**
  * Wall-clock ceiling for the whole walk.
  *
  * The budget bounds a single frame, not the sum of them, and on a very slow
- * machine even passing rungs are slow -- 21 probes plus rebuilds could stretch
- * well past what anyone should wait behind a splash. This bounds the total.
- * Checked between rungs rather than mid-rung so a rung is never half-measured.
+ * machine even passing rungs are slow. This bounds the total, so nobody waits
+ * behind the splash indefinitely. Checked between rungs rather than mid-rung so
+ * a rung is never half-measured.
+ *
+ * Raised from 3 s to 8 s along with the burn-in: three rebuild rungs now spend
+ * 25 discarded frames each before they measure anything, and the old ceiling
+ * would have cut the walk short on precisely the mid-range machines this is
+ * meant to place accurately -- turning a fix for over-conservatism into a
+ * different cause of it. Still bounded, because it must be.
  */
-const CEILING_MS = 3000;
+const CEILING_MS = 8000;
 
 /**
  * Walk the progression and commit the heaviest rung that held the budget.
@@ -116,8 +146,13 @@ export async function calibrate(
       const rung = PROGRESSION[i]!;
       opts.onProgress?.(i, total - 1);
 
-      await target.calibrateTo(rung.worldSize, rung.physicsSteps);
-      for (let w = 0; w < WARMUP; w++) await target.probeFrame();
+      // A rebuild restarts the simulation, and the frames right after a restart
+      // are the expensive ones -- so those rungs burn far more before measuring.
+      // A physics-only rung inherits the warm simulation the previous rung left
+      // running and needs no such settling.
+      const rebuilt = await target.calibrateTo(rung.worldSize, rung.physicsSteps);
+      const warmup = rebuilt ? REBUILD_WARMUP : WARMUP;
+      for (let w = 0; w < warmup; w++) await target.probeFrame();
 
       const samples: number[] = [];
       for (let s = 0; s < SAMPLES; s++) {
@@ -152,7 +187,15 @@ export async function calibrate(
   return best;
 }
 
-/** Middle value of a copy. `samples` is 3 long, so sorting cost is irrelevant. */
+/**
+ * Middle value of a copy. `samples` is 4 long, so sorting cost is irrelevant.
+ *
+ * With an even count this takes the UPPER of the two middle values rather than
+ * averaging them. Deliberate, and the conservative direction: it never invents
+ * a timing that was not actually observed, and it leans very slightly toward
+ * calling a rung expensive -- which costs at most one rung, where the opposite
+ * error ships someone a setting their machine cannot hold.
+ */
 function median(samples: readonly number[]): number {
   const sorted = [...samples].sort((a, b) => a - b);
   return sorted[Math.floor(sorted.length / 2)]!;

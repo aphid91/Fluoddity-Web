@@ -26,6 +26,7 @@ import { type SavedConfig, fromDocument } from './config/persistence.ts';
 import { SHARED_LINK_NAME, decodeShareLink } from './config/shareLink.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
 import { calibrate } from './calibration/calibrate.ts';
+import { ALWAYS_CALIBRATE } from './calibration/progression.ts';
 import { bindInput } from './ui/inputBinding.ts';
 import { Panel } from './ui/panel.ts';
 
@@ -205,7 +206,10 @@ async function start(): Promise<void> {
   // visit gets the welcome copy WITH the progress line under it, and every
   // visit after starts straight in the app. Help > Welcome / Controls is how
   // you get it back.
-  const firstVisit = !orchestrator.preferences.calibrated;
+  // `ALWAYS_CALIBRATE` is a DEVELOPMENT flag that forces every load to behave
+  // like a first one -- see its definition in `calibration/progression.ts`,
+  // which is also where it gets turned back off.
+  const firstVisit = ALWAYS_CALIBRATE || !orchestrator.preferences.calibrated;
 
   // `let`, and the callback reads it rather than closing over a value, because
   // the Panel needs a calibration callback that reports progress THROUGH the

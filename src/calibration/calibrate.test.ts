@@ -34,9 +34,12 @@ function fakeTarget(
     committed: null as Rung | null,
     probes: 0,
     clock: (): number => t,
-    calibrateTo: (worldSize: number, physicsSteps: number): Promise<void> => {
+    // Mirrors the real one: a rebuild happens only when the world size moves,
+    // and that is what drives the much longer burn-in.
+    calibrateTo: (worldSize: number, physicsSteps: number): Promise<boolean> => {
+      const rebuilt = worldSize !== current.worldSize;
       current = { worldSize, physicsSteps };
-      return Promise.resolve();
+      return Promise.resolve(rebuilt);
     },
     probeFrame: (): Promise<void> => {
       state.probes++;
@@ -101,9 +104,9 @@ test('a thrown probe commits whatever had already passed', () => {
   // A device lost mid-walk must not lose the rungs already measured, and must
   // not propagate -- calibration runs on the startup path.
   const msPerCost = budgetMs() / 20 / 2; // Fast: nothing would fail on its own.
-  // Rung 1 costs 5 probes (2 warm-up + 3 timed), so throwing on the 11th lands
-  // in rung 3, after rungs 1 and 2 have passed.
-  const target = fakeTarget(msPerCost, { throwAt: 11 });
+  // Rung 1 costs 29 probes (25 burn-in + 4 timed) and rung 2 costs 6, so
+  // throwing on the 36th lands in rung 3, after rungs 1 and 2 have passed.
+  const target = fakeTarget(msPerCost, { throwAt: 36 });
   return calibrate(target, { now: target.clock }).then((rung) => {
     assert.deepEqual({ ...rung }, { worldSize: 0.25, physicsSteps: 10 });
     assert.deepEqual(target.committed, { worldSize: 0.25, physicsSteps: 10 });
@@ -122,8 +125,10 @@ test('cancelling commits what passed and stops probing', () => {
   }).then((rung) => {
     assert.deepEqual({ ...rung }, { worldSize: 0.25, physicsSteps: 10 });
     assert.deepEqual(target.committed, { worldSize: 0.25, physicsSteps: 10 });
-    // 2 rungs x (2 warm-up + 3 timed). Nothing was probed after the cancel.
-    assert.equal(target.probes, 10);
+    // Rung 1 moves the world (25 burn-in + 4 timed); rung 2 moves only the
+    // physics rate on the same warm system (2 warm-up + 4 timed). Nothing was
+    // probed after the cancel.
+    assert.equal(target.probes, 29 + 6);
   });
 });
 
@@ -134,14 +139,14 @@ test('the wall-clock ceiling ends a walk that is passing but slow', () => {
   const target = fakeTarget(budgetMs() / 20 / 2);
   let now = 0;
   return calibrate(target, {
-    // Two rungs' worth of probes is 10; past that the clock reads beyond the
-    // 3 s ceiling, so the walk ends before rung 3 despite every rung fitting.
-    now: () => (target.probes >= 10 ? 99_999 : now++),
+    // Two rungs' worth of probes is 35; past that the clock reads beyond the
+    // ceiling, so the walk ends before rung 3 despite every rung fitting.
+    now: () => (target.probes >= 35 ? 99_999 : now++),
   }).then((rung) => {
     assert.deepEqual({ ...rung }, { worldSize: 0.25, physicsSteps: 10 });
     assert.deepEqual(target.committed, { worldSize: 0.25, physicsSteps: 10 });
     // The ceiling, not the budget: every rung probed was comfortably fast.
-    assert.equal(target.probes, 10);
+    assert.equal(target.probes, 35);
   });
 });
 
@@ -169,7 +174,7 @@ test('the walk does not resolve until the commit has settled', async () => {
   // there to hide -- so the await is load-bearing, not tidiness.
   let settled = false;
   const target: CalibrationTarget = {
-    calibrateTo: () => Promise.resolve(),
+    calibrateTo: () => Promise.resolve(false),
     probeFrame: () => Promise.resolve(),
     commitCalibration: async () => {
       await Promise.resolve();
@@ -185,7 +190,7 @@ test('a commit that throws is contained', () => {
   // rebuild it triggers touches the GPU. It must not reject into `Panel`'s
   // `finally` as an unhandled path or leave the splash locked.
   const target: CalibrationTarget = {
-    calibrateTo: () => Promise.resolve(),
+    calibrateTo: () => Promise.resolve(false),
     probeFrame: () => Promise.resolve(),
     commitCalibration: () => Promise.reject(new Error('rebuild failed')),
   };
@@ -205,7 +210,7 @@ test('warm-up frames are not timed', () => {
     committed: null,
     calibrateTo: () => {
       probes = 0; // Each rung gets its own expensive first frames.
-      return Promise.resolve();
+      return Promise.resolve(false);
     },
     probeFrame: () => {
       t += probes++ < 2 ? 10_000 : 0.01;
@@ -217,9 +222,44 @@ test('warm-up frames are not timed', () => {
     },
   };
   return calibrate(target, { now: () => t }).then((rung) => {
-    // It still stops on the wall-clock ceiling -- 10 s of warm-up blows past
-    // 3 s -- but the rung it reached proves the warm-up was excluded from the
+    // It still stops on the wall-clock ceiling -- 20 s of warm-up blows past it
+    // -- but the rung it reached proves the warm-up was excluded from the
     // per-rung timing rather than failing it outright.
     assert.ok(cost(rung) > cost(PROGRESSION[0]!), 'warm-up frames were timed');
+  });
+});
+
+test('a rebuilt rung burns far more frames than a physics-only one', () => {
+  // THE FIX FOR OVER-CONSERVATIVE FIRST RUNS. A world-size change builds a new
+  // ParticleSystem whose frameCount starts at zero, and zero is the reset
+  // sentinel: the frames right after it regenerate every entity and clear the
+  // canvas, costing far more than the steady state that follows. Measuring
+  // across them failed rungs the machine could actually hold -- which is why
+  // re-calibrating later, from an already-warm simulation, landed better. A
+  // physics-only rung inherits that warm simulation and needs no such settling.
+  const perRung: number[] = [];
+  let probes = 0;
+  let world = PROGRESSION[0]!.worldSize;
+  const target: CalibrationTarget = {
+    calibrateTo: (worldSize: number) => {
+      if (perRung.length > 0 || probes > 0) perRung.push(probes);
+      probes = 0;
+      const rebuilt = worldSize !== world;
+      world = worldSize;
+      return Promise.resolve(rebuilt);
+    },
+    probeFrame: () => {
+      probes++;
+      return Promise.resolve();
+    },
+    commitCalibration: () => {
+      perRung.push(probes);
+      return Promise.resolve();
+    },
+  };
+  return calibrate(target, { now: () => 0 }).then(() => {
+    // The progression alternates world / physics all the way down, so the probe
+    // counts alternate too: 29 (25 burn-in + 4 timed) then 6 (2 warm-up + 4).
+    assert.deepEqual(perRung, [29, 6, 29, 6, 29, 6]);
   });
 });

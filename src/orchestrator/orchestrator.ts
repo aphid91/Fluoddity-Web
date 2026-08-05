@@ -1708,11 +1708,22 @@ export class Orchestrator implements CommandBus {
    * Only rebuilds when the world size actually moves. Physics rate is live --
    * `frame()` re-reads it every frame -- so half the rungs cost nothing but an
    * assignment.
+   *
+   * **RETURNS WHETHER IT REBUILT**, and the ladder needs to know. A rebuild
+   * constructs a fresh `ParticleSystem` whose `_frameCount` starts at zero, and
+   * zero is the reset sentinel every shader watches for (`reset()` at
+   * `particleSystem.ts:800`): the next frames regenerate every entity's
+   * position, velocity and rule, and clear the canvas. Those frames are far
+   * more expensive than the steady state, so a rung measured across them reads
+   * as unaffordable when it is not. A physics-only change keeps the same system
+   * and its accumulated frame count, so it needs no such burn-in -- which is
+   * the difference this return value carries.
    */
-  async calibrateTo(worldSize: number, physicsSteps: number): Promise<void> {
+  async calibrateTo(worldSize: number, physicsSteps: number): Promise<boolean> {
     const needsRebuild = worldSize !== this.prefs.worldSize;
     this.prefs = Object.freeze({ ...this.prefs, worldSize, physicsSteps });
     if (needsRebuild) await this.rebuildSystem();
+    return needsRebuild;
   }
 
   /**
