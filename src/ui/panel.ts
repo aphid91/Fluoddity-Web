@@ -703,6 +703,30 @@ export class Panel {
   }
 
   /**
+   * Set the splash's progress line. Empty clears it.
+   *
+   * For first-run calibration, which runs behind the splash while the user
+   * reads. Fronts the splash for the same reason `notify` fronts the toast: the
+   * panel owns its surfaces, and `main.ts` should not have to reach through it
+   * to reach one.
+   */
+  setSplashStatus(text: string): void {
+    this.splash.setStatus(text);
+  }
+
+  /**
+   * Whether the welcome splash is still up.
+   *
+   * Calibration polls this to know when to stop. Dismissing the splash is the
+   * user saying they want to use the app, and continuing to rebuild the
+   * simulation underneath them for another several rungs is worse than settling
+   * for the conservative answer already measured.
+   */
+  get splashVisible(): boolean {
+    return this.splash.visible;
+  }
+
+  /**
    * Report a copy, choosing a surface that is actually visible.
    *
    * THE DIALOG WINS WHEN IT IS UP, and this is not a preference. A native

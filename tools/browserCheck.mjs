@@ -34,7 +34,25 @@ const flag = (name, fallback) => {
   return i === -1 ? fallback : argv[i + 1];
 };
 
-const query = flag('--url', '?debug');
+// `?nocalibrate` is appended to WHATEVER `--url` asks for, and is not optional.
+// First-run calibration picks a world size from the machine's measured GPU
+// speed, so without this every screenshot this tool takes would depend on how
+// fast the runner is -- and comparing screenshots is the entire point of the
+// tool. Appended rather than defaulted so a caller passing `--url` cannot
+// silently drop it.
+const query = withNoCalibrate(flag('--url', '?debug'));
+
+function withNoCalibrate(q) {
+  if (q.includes('nocalibrate')) return q;
+  if (q === '' || q === '?') return '?nocalibrate';
+  // A hash has to stay LAST: a share link's payload lives there, and
+  // `?a#b&nocalibrate` would make the flag part of the fragment rather than the
+  // query, where nothing reads it.
+  const hash = q.indexOf('#');
+  const [head, tail] = hash === -1 ? [q, ''] : [q.slice(0, hash), q.slice(hash)];
+  const sep = head.includes('?') ? '&' : '?';
+  return `${head}${sep}nocalibrate${tail}`;
+}
 const shotPath = flag('--shot', null);
 const settleMs = Number(flag('--settle', '4000'));
 const port = Number(flag('--port', '5173'));

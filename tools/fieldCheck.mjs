@@ -140,7 +140,9 @@ chrome = spawn(
     '--window-size=1280,900',
     // hatmanv8, not the default -- see the header. Its 64 cohorts fill the
     // frame, which is what makes "the trails changed HERE" measurable at all.
-    `http://localhost:${port}/?nopanel&preset=${preset}`,
+    // `?nocalibrate`: this diffs screenshots pixel-for-pixel, and a world size
+    // chosen from the runner's GPU speed would change what is being compared.
+    `http://localhost:${port}/?nopanel&preset=${preset}&nocalibrate`,
   ],
   { stdio: ['ignore', 'pipe', 'pipe'] },
 );

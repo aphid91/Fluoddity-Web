@@ -137,6 +137,8 @@ export class Splash {
   private readonly container: HTMLElement;
   private readonly root: HTMLElement;
   private readonly card: HTMLElement;
+  /** The calibration progress line. Empty and hidden unless something sets it. */
+  private readonly status: HTMLElement;
   private readonly onKey: (ev: KeyboardEvent) => void;
   private readonly onVisibilityChange: (visible: boolean) => void;
   private shown = false;
@@ -169,7 +171,19 @@ export class Splash {
     hint.textContent = 'Click anywhere to close';
     hint.style.cssText = 'flex:none;opacity:0.65;font-size:11px;';
 
-    this.root.append(this.card, hint);
+    // Also outside the card, and for a second reason beyond the hint's: this
+    // updates while the user reads, and text that reflows inside a scrolling
+    // region can move the line someone is mid-sentence on.
+    //
+    // Hidden until `setStatus` is given something. Calibration is the only
+    // caller, it does not run for a returning visitor, and an empty reserved
+    // strip would be a permanent gap under the card in the common case.
+    this.status = document.createElement('div');
+    this.status.style.cssText =
+      'flex:none;display:none;opacity:0.75;font-size:11px;' +
+      'font-variant-numeric:tabular-nums;';
+
+    this.root.append(this.card, this.status, hint);
 
     // On `root`, so a click on the backdrop dismisses too -- the whole overlay
     // is the target, including the card.
@@ -263,6 +277,18 @@ export class Splash {
   /** Whether the splash is currently on screen. */
   get visible(): boolean {
     return this.shown;
+  }
+
+  /**
+   * Set the line under the card. Empty hides it.
+   *
+   * Safe to call on a dismissed splash: the node stays in the tree the splash
+   * built either way, so calibration finishing after the user clicked through
+   * writes to something detached rather than having to know it was dismissed.
+   */
+  setStatus(text: string): void {
+    this.status.textContent = text;
+    this.status.style.display = text === '' ? 'none' : '';
   }
 
   /**

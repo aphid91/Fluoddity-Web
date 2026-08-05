@@ -81,7 +81,9 @@ chrome = spawn(
     '--disable-features=Translate,MediaRouter',
     '--enable-unsafe-webgpu',
     '--window-size=1280,900',
-    `http://localhost:${port}/?nopanel&bus`,
+    // `?nocalibrate`: calibration rebuilds the simulation underneath the config
+    // round-trip this checks, and would race the loads it dispatches.
+    `http://localhost:${port}/?nopanel&bus&nocalibrate`,
   ],
   { stdio: ['ignore', 'pipe', 'pipe'] },
 );

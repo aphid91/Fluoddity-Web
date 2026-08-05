@@ -25,6 +25,7 @@ import { CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
 import { type SavedConfig, fromDocument } from './config/persistence.ts';
 import { decodeShareLink } from './config/shareLink.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
+import { calibrate } from './calibration/calibrate.ts';
 import { bindInput } from './ui/inputBinding.ts';
 import { Panel } from './ui/panel.ts';
 
@@ -241,6 +242,49 @@ async function start(): Promise<void> {
     // report the result. Copying silently is worse than not copying.
     copyShareLink: () => panel?.copyShareLink(),
   });
+
+  // --- first-run calibration -------------------------------------------------
+  //
+  // A new visitor otherwise gets `worldSize: 1.0, physicsSteps: 30` regardless
+  // of what their machine can hold -- fine on a discrete GPU, a slideshow on an
+  // integrated one. `calibration/calibrate.ts` walks a fixed progression of
+  // settings and keeps the heaviest that stays inside a 60 fps budget.
+  //
+  // **DELIBERATELY NOT AWAITED.** The rAF loop below has to start immediately:
+  // calibration runs behind the welcome splash so the wait costs the user
+  // nothing, and that only works if the splash is up and the simulation is
+  // visible while the probes run. Awaiting here would blank the screen for the
+  // whole walk, which is precisely the first impression this exists to avoid.
+  //
+  // The two loops overlap safely. Both submit work to the same queue, which
+  // serializes them; rung transitions go through `rebuildSystem`, which builds
+  // the replacement before dropping the old one, so the rAF loop always reads a
+  // valid system. It may render one frame at a rung the ladder has already
+  // moved past, which is invisible.
+  //
+  // `?nocalibrate` is REQUIRED BY THE VERIFICATION TOOLS, not a convenience:
+  // `browserCheck.mjs` compares screenshots, and a run whose world size depends
+  // on the runner's GPU would make every one of those comparisons meaningless.
+  if (!orchestrator.preferences.calibrated && !params.has('nocalibrate')) {
+    void calibrate(orchestrator, {
+      onProgress: (done, total) => {
+        panel?.setSplashStatus(`Calibrating for your display… (${done}/${total})`);
+      },
+      // The splash coming down ends the walk. Someone who clicked through has
+      // said they want to use the app, and rebuilding the simulation under them
+      // for another few rungs is worse than settling for what has passed.
+      // `?nosplash` means there is no splash to wait on, so the walk runs to
+      // completion -- which is what a scripted run wants.
+      cancelled: () =>
+        panel !== null && !params.has('nosplash') && !panel.splashVisible,
+    }).then((rung) => {
+      panel?.setSplashStatus('');
+      console.info(
+        `Calibrated to world size ${rung.worldSize}, physics rate ${rung.physicsSteps}. ` +
+          `Change either in Preferences > Simulation.`,
+      );
+    });
+  }
 
   const overlay = createDebugOverlay();
   let lastTime = performance.now();

@@ -136,6 +136,33 @@ export interface Preferences {
   readonly advancedProject: boolean;
   readonly advancedPreferences: boolean;
   readonly advancedDrawing: boolean;
+
+  // --- calibration ----------------------------------------------------------
+  /**
+   * Whether first-run GPU calibration has already run.
+   *
+   * **THIS IS THE ONLY FIRST-VISIT SIGNAL THE APP HAS.** `load()` seeds from
+   * `DEFAULT_PREFERENCES` and overlays whatever `localStorage` held, so "no
+   * stored record" and "a stored record" collapse into the same `Preferences`
+   * value and are otherwise indistinguishable downstream. A visitor with no
+   * record gets the default `false` here; anyone who has calibrated once carries
+   * `true` forward and is never probed again.
+   *
+   * SET EVEN WHEN CALIBRATION FAILS OR IS CUT SHORT. A probe that threw, or a
+   * splash the user clicked through after two rungs, still counts as done --
+   * otherwise every subsequent load would re-run a calibration that has already
+   * shown it cannot finish, and the cost would recur forever.
+   *
+   * `resetPreferences` adopts `DEFAULT_PREFERENCES` wholesale, so this returns
+   * to `false` and the next load re-calibrates. That is deliberate: a reset is
+   * exactly when the settings should be re-derived rather than left where a
+   * since-changed machine last put them.
+   *
+   * Deliberately NOT a `settingsSpec` entry, for the reason the three
+   * `advanced*` flags above are not: it is bookkeeping, not a control. There is
+   * nothing here a user would meaningfully drag.
+   */
+  readonly calibrated: boolean;
 }
 
 /** `preferences.py:35-92`'s dataclass defaults, verbatim. */
@@ -159,6 +186,8 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   advancedProject: false,
   advancedPreferences: false,
   advancedDrawing: false,
+  // False is what MAKES someone a first-run user -- see the interface.
+  calibrated: false,
 });
 
 /**
@@ -198,6 +227,7 @@ export const PREFERENCE_KINDS = {
   advancedProject: 'bool',
   advancedPreferences: 'bool',
   advancedDrawing: 'bool',
+  calibrated: 'bool',
 } as const satisfies Record<keyof Preferences, 'float' | 'int' | 'bool'>;
 
 export type PreferenceKey = keyof Preferences;

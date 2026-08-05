@@ -1641,6 +1641,89 @@ export class Orchestrator implements CommandBus {
   get preferences(): Preferences {
     return this.prefs;
   }
+
+  // =========================================================================
+  // First-run calibration
+  //
+  // Three narrow methods `calibration/calibrate.ts` drives, and nothing else
+  // calls. They exist because calibration needs two things the normal
+  // preference path deliberately does not offer: settings that change WITHOUT
+  // being persisted, and a frame that runs WHILE PAUSED.
+  // =========================================================================
+
+  /**
+   * Move to a rung's settings without persisting them.
+   *
+   * **THE POINT IS THAT IT DOES NOT SAVE.** `adoptPreferences` writes to
+   * `localStorage` on every change, and a ladder that walked seven rungs
+   * through it would leave whichever rung it happened to abort on as the
+   * user's stored setting -- including a rung that FAILED. Calibration commits
+   * exactly once, at the end, through the normal path; everything before that
+   * is a measurement, not a decision.
+   *
+   * Rebuilds through `rebuildSystem` rather than reimplementing it, so probes
+   * inherit its guarantees: the replacement is built before the old one is
+   * dropped, the live project carries over, and the outgoing GPU resources are
+   * destroyed rather than leaked. Seven rungs would otherwise leak up to seven
+   * entity buffers.
+   *
+   * Only rebuilds when the world size actually moves. Physics rate is live --
+   * `frame()` re-reads it every frame -- so half the rungs cost nothing but an
+   * assignment.
+   */
+  async calibrateTo(worldSize: number, physicsSteps: number): Promise<void> {
+    const needsRebuild = worldSize !== this.prefs.worldSize;
+    this.prefs = Object.freeze({ ...this.prefs, worldSize, physicsSteps });
+    if (needsRebuild) await this.rebuildSystem();
+  }
+
+  /**
+   * Run and submit one physics frame, resolving when the GPU has finished it.
+   *
+   * **WHY NOT JUST TIME `frame()`.** Two reasons, either one fatal.
+   *
+   * The first is the pause. Calibration runs behind the welcome splash, and the
+   * splash pauses the simulation -- a paused `frame()` takes the branch that
+   * skips `runFrame` entirely and renders one still image. Timing that would
+   * measure the camera, not the physics, and would report the same number for
+   * every rung on the ladder.
+   *
+   * The second is that `performance.now()` around `frame()` measures nothing
+   * useful even unpaused. WebGPU submission is asynchronous: `submit` queues a
+   * command buffer and returns, so the wall time around it is CPU-side encoding
+   * cost, which barely moves as the GPU load changes. That is fine for the
+   * debug overlay's readout, which is all it was ever for, and useless as a
+   * calibration signal. `onSubmittedWorkDone` is what actually waits for the
+   * GPU.
+   *
+   * SO THIS IS A DELIBERATELY MINIMAL FRAME: physics only, no camera, no
+   * assembler, no pick. That narrows what is being measured to the thing the
+   * two knobs actually scale, and it is why `HEADROOM` exists to account for
+   * everything left out.
+   */
+  async probeFrame(): Promise<void> {
+    this.system.physicsSteps = Math.max(1, Math.trunc(this.prefs.physicsSteps));
+    const encoder = this.device.createCommandEncoder({ label: 'calibration probe' });
+    // No shove: `shoveState` needs an InputState, and a probe has no user input
+    // to translate. `null` is the same thing a frame with no drag on it passes.
+    this.system.runFrame(encoder, null);
+    this.device.queue.submit([encoder.finish()]);
+    await this.device.queue.onSubmittedWorkDone();
+  }
+
+  /**
+   * Commit a calibration result through the normal preference path.
+   *
+   * Goes through `adoptPreferences` so the result persists and any world-size
+   * change rebuilds exactly as a hand-typed one would. `calibrated` rides along
+   * in the same write, so a machine is never left with tuned settings it will
+   * re-derive on the next load, nor with the flag set and the settings not.
+   */
+  commitCalibration(worldSize: number, physicsSteps: number): void {
+    this.adoptPreferences(
+      Object.freeze({ ...this.prefs, worldSize, physicsSteps, calibrated: true }),
+    );
+  }
 }
 
 /**

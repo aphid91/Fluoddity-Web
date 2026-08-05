@@ -118,7 +118,11 @@ chrome = spawn(
     '--window-size=1280,900',
     // The panel is the subject, so NOT `?nopanel`. `?bus` is how the stored
     // value is read back -- see the header.
-    `http://localhost:${port}/?bus&preset=hatmanv8`,
+    //
+    // `?nocalibrate` because this reads preference values back and asserts on
+    // them: first-run calibration writes worldSize and physicsSteps from a GPU
+    // measurement, which would make those assertions depend on the runner.
+    `http://localhost:${port}/?bus&preset=hatmanv8&nocalibrate`,
   ],
   { stdio: ['ignore', 'pipe', 'pipe'] },
 );
