@@ -578,6 +578,10 @@
           "path": "Core/Starcrossed.json"
         },
         {
+          "name": "Starcrossedv8",
+          "path": "Core/Starcrossedv8.json"
+        },
+        {
           "name": "Stars",
           "path": "Core/Stars.json"
         },
@@ -704,6 +708,59 @@
         {
           "name": "Worms4",
           "path": "Core/Worms4.json"
+        }
+      ]
+    },
+    {
+      "name": "New folder",
+      "entries": [
+        {
+          "name": "Instability",
+          "path": "New folder/Instability.json"
+        },
+        {
+          "name": "Krill",
+          "path": "New folder/Krill.json"
+        },
+        {
+          "name": "Medusa",
+          "path": "New folder/Medusa.json"
+        },
+        {
+          "name": "Moths",
+          "path": "New folder/Moths.json"
+        },
+        {
+          "name": "Prow",
+          "path": "New folder/Prow.json"
+        },
+        {
+          "name": "Pseudocrystal",
+          "path": "New folder/Pseudocrystal.json"
+        },
+        {
+          "name": "Rippler",
+          "path": "New folder/Rippler.json"
+        },
+        {
+          "name": "Snake",
+          "path": "New folder/Snake.json"
+        },
+        {
+          "name": "Stars",
+          "path": "New folder/Stars.json"
+        },
+        {
+          "name": "Streaks",
+          "path": "New folder/Streaks.json"
+        },
+        {
+          "name": "Sublimation",
+          "path": "New folder/Sublimation.json"
+        },
+        {
+          "name": "Symmy",
+          "path": "New folder/Symmy.json"
         }
       ]
     }
