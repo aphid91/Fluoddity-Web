@@ -66,14 +66,17 @@ export interface CalibrationOptions {
 /**
  * Probes per rung, reduced by a median.
  *
- * Four rather than three: a single scheduling hiccup -- a GC pause, another tab
- * waking up, a background process taking the GPU -- should not be able to fail
- * a rung the machine can comfortably hold, and the whole walk finishes so
- * quickly that the extra sample is free. With an even count the median takes
- * the upper of the two middle values (see `median`), which leans very slightly
- * toward caution.
+ * Ten, because the whole walk finishes in well under a second of GPU time and
+ * accuracy is the only thing worth spending that on. A single scheduling hiccup
+ * -- a GC pause, another tab waking up, a background process taking the GPU --
+ * must not be able to fail a rung the machine can comfortably hold, and a
+ * ten-sample median is thoroughly insensitive to one or two bad frames where a
+ * three-sample one was not.
+ *
+ * With an even count the median takes the upper of the two middle values (see
+ * `median`), which leans very slightly toward caution.
  */
-const SAMPLES = 4;
+const SAMPLES = 10;
 
 /**
  * Discarded frames after a change that did NOT rebuild.
@@ -188,7 +191,7 @@ export async function calibrate(
 }
 
 /**
- * Middle value of a copy. `samples` is 4 long, so sorting cost is irrelevant.
+ * Middle value of a copy. `samples` is 10 long, so sorting cost is irrelevant.
  *
  * With an even count this takes the UPPER of the two middle values rather than
  * averaging them. Deliberate, and the conservative direction: it never invents

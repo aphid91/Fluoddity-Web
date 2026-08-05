@@ -104,9 +104,9 @@ test('a thrown probe commits whatever had already passed', () => {
   // A device lost mid-walk must not lose the rungs already measured, and must
   // not propagate -- calibration runs on the startup path.
   const msPerCost = budgetMs() / 20 / 2; // Fast: nothing would fail on its own.
-  // Rung 1 costs 29 probes (25 burn-in + 4 timed) and rung 2 costs 6, so
-  // throwing on the 36th lands in rung 3, after rungs 1 and 2 have passed.
-  const target = fakeTarget(msPerCost, { throwAt: 36 });
+  // Rung 1 costs 35 probes (25 burn-in + 10 timed) and rung 2 costs 12, so
+  // throwing on the 48th lands in rung 3, after rungs 1 and 2 have passed.
+  const target = fakeTarget(msPerCost, { throwAt: 48 });
   return calibrate(target, { now: target.clock }).then((rung) => {
     assert.deepEqual({ ...rung }, { worldSize: 0.25, physicsSteps: 10 });
     assert.deepEqual(target.committed, { worldSize: 0.25, physicsSteps: 10 });
@@ -125,10 +125,10 @@ test('cancelling commits what passed and stops probing', () => {
   }).then((rung) => {
     assert.deepEqual({ ...rung }, { worldSize: 0.25, physicsSteps: 10 });
     assert.deepEqual(target.committed, { worldSize: 0.25, physicsSteps: 10 });
-    // Rung 1 moves the world (25 burn-in + 4 timed); rung 2 moves only the
-    // physics rate on the same warm system (2 warm-up + 4 timed). Nothing was
+    // Rung 1 moves the world (25 burn-in + 10 timed); rung 2 moves only the
+    // physics rate on the same warm system (2 warm-up + 10 timed). Nothing was
     // probed after the cancel.
-    assert.equal(target.probes, 29 + 6);
+    assert.equal(target.probes, 35 + 12);
   });
 });
 
@@ -139,14 +139,14 @@ test('the wall-clock ceiling ends a walk that is passing but slow', () => {
   const target = fakeTarget(budgetMs() / 20 / 2);
   let now = 0;
   return calibrate(target, {
-    // Two rungs' worth of probes is 35; past that the clock reads beyond the
+    // Two rungs' worth of probes is 47; past that the clock reads beyond the
     // ceiling, so the walk ends before rung 3 despite every rung fitting.
-    now: () => (target.probes >= 35 ? 99_999 : now++),
+    now: () => (target.probes >= 47 ? 99_999 : now++),
   }).then((rung) => {
     assert.deepEqual({ ...rung }, { worldSize: 0.25, physicsSteps: 10 });
     assert.deepEqual(target.committed, { worldSize: 0.25, physicsSteps: 10 });
     // The ceiling, not the budget: every rung probed was comfortably fast.
-    assert.equal(target.probes, 35);
+    assert.equal(target.probes, 47);
   });
 });
 
@@ -259,7 +259,7 @@ test('a rebuilt rung burns far more frames than a physics-only one', () => {
   };
   return calibrate(target, { now: () => 0 }).then(() => {
     // The progression alternates world / physics all the way down, so the probe
-    // counts alternate too: 29 (25 burn-in + 4 timed) then 6 (2 warm-up + 4).
-    assert.deepEqual(perRung, [29, 6, 29, 6, 29, 6]);
+    // counts alternate too: 35 (25 burn-in + 10 timed) then 12 (2 warm-up + 10).
+    assert.deepEqual(perRung, [35, 12, 35, 12, 35, 12]);
   });
 });
