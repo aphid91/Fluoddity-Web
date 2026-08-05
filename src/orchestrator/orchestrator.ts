@@ -1398,13 +1398,19 @@ export class Orchestrator implements CommandBus {
    * here is what stops a slider reporting an unmoved value from writing to
    * `localStorage` every frame -- the same early-out
    * `drawing_commands.py:113-114` needs, for the same reason.
+   *
+   * RETURNS THE REBUILD, so a caller that has work to do AFTER the new system
+   * exists can order itself against it (`commitCalibration` resets the
+   * simulation, and must reset the incoming one rather than the outgoing one).
+   * Every other caller ignores it and is unaffected: the rebuild still runs
+   * detached, and the command handlers stay synchronous.
    */
-  private adoptPreferences(updated: Preferences, allowRebuild = true): void {
-    if (updated === this.prefs) return;
+  private adoptPreferences(updated: Preferences, allowRebuild = true): Promise<void> {
+    if (updated === this.prefs) return Promise.resolve();
     const needsRebuild = allowRebuild && requiresRestart(this.prefs, updated);
     this.prefs = updated;
     savePreferences(this.prefs);
-    if (needsRebuild) void this.rebuildSystem();
+    return needsRebuild ? this.rebuildSystem() : Promise.resolve();
   }
 
   /**
@@ -1712,17 +1718,33 @@ export class Orchestrator implements CommandBus {
   }
 
   /**
-   * Commit a calibration result through the normal preference path.
+   * Commit a calibration result through the normal preference path, and restart
+   * the simulation on it.
    *
    * Goes through `adoptPreferences` so the result persists and any world-size
    * change rebuilds exactly as a hand-typed one would. `calibrated` rides along
    * in the same write, so a machine is never left with tuned settings it will
    * re-derive on the next load, nor with the flag set and the settings not.
+   *
+   * **THE RESET IS WHAT THE USER ACTUALLY SEES.** Probing advances the
+   * simulation -- five frames per rung, at up to 20 sub-steps each, across
+   * however many rungs the machine reached. Without this, the first picture
+   * someone gets is a few hundred sub-steps of evolution that happened behind a
+   * splash they were still reading, at world sizes that no longer apply, on a
+   * canvas that was reallocated underneath it. A reset makes the run they watch
+   * start where a run is supposed to start.
+   *
+   * LAST, AFTER THE REBUILD. `adoptPreferences` may replace the whole
+   * `ParticleSystem`, and resetting the outgoing one would zero a frame counter
+   * on an object about to be destroyed. `rebuildSystem` is async, so this is
+   * ordered explicitly rather than by luck -- see below.
    */
-  commitCalibration(worldSize: number, physicsSteps: number): void {
-    this.adoptPreferences(
+  async commitCalibration(worldSize: number, physicsSteps: number): Promise<void> {
+    const rebuild = this.adoptPreferences(
       Object.freeze({ ...this.prefs, worldSize, physicsSteps, calibrated: true }),
     );
+    await rebuild;
+    this.system.reset();
   }
 }
 

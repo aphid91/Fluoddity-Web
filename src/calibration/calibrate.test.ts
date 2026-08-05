@@ -48,8 +48,9 @@ function fakeTarget(
       t += cost(current) * msPerCost;
       return Promise.resolve();
     },
-    commitCalibration: (worldSize: number, physicsSteps: number): void => {
+    commitCalibration: (worldSize: number, physicsSteps: number): Promise<void> => {
       state.committed = { worldSize, physicsSteps };
+      return Promise.resolve();
     },
   };
   return state;
@@ -161,6 +162,38 @@ test('progress is reported once per probed rung', () => {
   });
 });
 
+test('the walk does not resolve until the commit has settled', async () => {
+  // The commit rebuilds the simulation and resets it, and `Panel.calibrate`
+  // unlocks the splash the moment this resolves. Returning early would release
+  // the user into an app still reshaping itself -- the exact state the lock is
+  // there to hide -- so the await is load-bearing, not tidiness.
+  let settled = false;
+  const target: CalibrationTarget = {
+    calibrateTo: () => Promise.resolve(),
+    probeFrame: () => Promise.resolve(),
+    commitCalibration: async () => {
+      await Promise.resolve();
+      settled = true;
+    },
+  };
+  await calibrate(target, { now: () => 0 });
+  assert.ok(settled, 'calibrate resolved before the commit finished');
+});
+
+test('a commit that throws is contained', () => {
+  // Same reasoning as a thrown probe: this runs on the startup path, and the
+  // rebuild it triggers touches the GPU. It must not reject into `Panel`'s
+  // `finally` as an unhandled path or leave the splash locked.
+  const target: CalibrationTarget = {
+    calibrateTo: () => Promise.resolve(),
+    probeFrame: () => Promise.resolve(),
+    commitCalibration: () => Promise.reject(new Error('rebuild failed')),
+  };
+  return calibrate(target, { now: () => 0 }).then((rung) => {
+    assert.ok(rung !== undefined, 'calibrate rejected instead of returning');
+  });
+});
+
 test('warm-up frames are not timed', () => {
   // The first frames after a settings change pay one-off costs -- pipeline
   // warm-up, first-touch allocation, uniform buffer growth. If those were
@@ -180,6 +213,7 @@ test('warm-up frames are not timed', () => {
     },
     commitCalibration: (worldSize, physicsSteps) => {
       target.committed = { worldSize, physicsSteps };
+      return Promise.resolve();
     },
   };
   return calibrate(target, { now: () => t }).then((rung) => {

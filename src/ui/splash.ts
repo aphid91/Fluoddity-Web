@@ -112,6 +112,16 @@ const SUBHEADINGS: ReadonlySet<string> = new Set([
   'Tool: Draw',
 ]);
 
+/**
+ * The dismiss hint, in its two states.
+ *
+ * The locked one has to REPLACE the invitation, not sit beside it: a splash
+ * that says "click anywhere to close" and then ignores the click reads as
+ * broken, which is a worse first impression than the wait it is covering.
+ */
+const HINT_FREE = 'Click anywhere to close';
+const HINT_LOCKED = 'One moment — measuring what your hardware can handle…';
+
 export interface SplashOptions {
   /** Where to mount. Defaults to `document.body`. */
   readonly container?: HTMLElement;
@@ -139,9 +149,19 @@ export class Splash {
   private readonly card: HTMLElement;
   /** The calibration progress line. Empty and hidden unless something sets it. */
   private readonly status: HTMLElement;
+  /** The dismiss hint, which changes while locked -- see `setLocked`. */
+  private readonly hint: HTMLElement;
   private readonly onKey: (ev: KeyboardEvent) => void;
   private readonly onVisibilityChange: (visible: boolean) => void;
   private shown = false;
+
+  /**
+   * Whether dismissal is refused. See `setLocked`.
+   *
+   * NOT a reason to skip `show()`/`dispose()` -- only the two USER dismissal
+   * paths consult it, so the app can always take the splash down regardless.
+   */
+  private locked = false;
 
   constructor(opts: SplashOptions = {}) {
     this.container = opts.container ?? document.body;
@@ -168,8 +188,9 @@ export class Splash {
 
     // OUTSIDE the card, so it stays visible no matter how far the copy scrolls.
     const hint = document.createElement('div');
-    hint.textContent = 'Click anywhere to close';
+    hint.textContent = HINT_FREE;
     hint.style.cssText = 'flex:none;opacity:0.65;font-size:11px;';
+    this.hint = hint;
 
     // Also outside the card, and for a second reason beyond the hint's: this
     // updates while the user reads, and text that reflows inside a scrolling
@@ -183,7 +204,7 @@ export class Splash {
       'flex:none;display:none;opacity:0.75;font-size:11px;' +
       'font-variant-numeric:tabular-nums;';
 
-    this.root.append(this.card, this.status, hint);
+    this.root.append(this.card, this.status, this.hint);
 
     // On `root`, so a click on the backdrop dismisses too -- the whole overlay
     // is the target, including the card.
@@ -265,13 +286,38 @@ export class Splash {
     this.onVisibilityChange(true);
   }
 
-  /** Idempotent: dismissing an already-dismissed splash does nothing. */
+  /**
+   * Idempotent: dismissing an already-dismissed splash does nothing.
+   *
+   * REFUSED WHILE LOCKED. Calibration rebuilds the simulation underneath the
+   * user several times, and letting them out into an app that is still
+   * reshaping itself -- panel values jumping, the picture restarting -- is
+   * worse than a two-second wait behind a screen that explains itself.
+   */
   dismiss(): void {
-    if (!this.shown) return;
+    if (!this.shown || this.locked) return;
     this.shown = false;
     window.removeEventListener('keydown', this.onKey);
     this.root.remove();
     this.onVisibilityChange(false);
+  }
+
+  /**
+   * Hold the splash up, or release it.
+   *
+   * Guards only the two USER paths (`pointerdown`, `keydown`), both of which go
+   * through `dismiss`. `show`, `dispose` and the pause coupling are unaffected,
+   * so the app can always take the splash down even if a lock leaked -- a
+   * calibration that threw must not strand someone behind a screen forever,
+   * which is why `main.ts` releases in a `finally`-equivalent position rather
+   * than only on success.
+   */
+  setLocked(locked: boolean): void {
+    this.locked = locked;
+    this.hint.textContent = locked ? HINT_LOCKED : HINT_FREE;
+    // `default` rather than `pointer` while locked: the cursor should not
+    // promise a click that will not work.
+    this.root.style.cursor = locked ? 'default' : 'pointer';
   }
 
   /** Whether the splash is currently on screen. */

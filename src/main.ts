@@ -208,9 +208,48 @@ async function start(): Promise<void> {
   // first showing for the same reason `?nopanel` exists: `browserCheck.mjs`
   // compares screenshots, and a full-frame overlay would change what those
   // compare. Help > Welcome / Controls still opens it either way.
-  const panel = params.has('nopanel')
+  //
+  // **THE SPLASH IS A FIRST-RUN EXPERIENCE, NOT A TOLL BOOTH.** It used to come
+  // up on every single load, which is right exactly once and an obstacle every
+  // time after -- a full-frame overlay between someone and the app they came
+  // back to use, pausing the simulation until they clear it. `calibrated` is
+  // the same signal that gates calibration, so the two arrive together: a first
+  // visit gets the welcome copy WITH the progress line under it, and every
+  // visit after starts straight in the app. Help > Welcome / Controls is how
+  // you get it back.
+  const firstVisit = !orchestrator.preferences.calibrated;
+
+  // `let`, and the callback reads it rather than closing over a value, because
+  // the Panel needs a calibration callback that reports progress THROUGH the
+  // Panel -- a circular reference the constructor cannot be handed. The callback
+  // only ever runs after construction has returned, so the binding is always
+  // assigned by the time it is read.
+  let panel: Panel | null = null;
+  panel = params.has('nopanel')
     ? null
-    : new Panel({ bus: orchestrator, showSplash: !params.has('nosplash') });
+    : new Panel({
+        bus: orchestrator,
+        showSplash: firstVisit && !params.has('nosplash'),
+        // Omitted under `?nocalibrate`, which leaves `Panel.calibrate()` inert
+        // and so also disables the re-run on Reset Editor Preferences.
+        ...(params.has('nocalibrate')
+          ? {}
+          : {
+              runCalibration: async (): Promise<void> => {
+                const rung = await calibrate(orchestrator, {
+                  onProgress: (done, total) => {
+                    panel?.setSplashStatus(
+                      `Calibrating for your display… (${done}/${total})`,
+                    );
+                  },
+                });
+                console.info(
+                  `Calibrated to world size ${rung.worldSize}, physics rate ` +
+                    `${rung.physicsSteps}. Change either in Preferences > Simulation.`,
+                );
+              },
+            }),
+      });
   orchestrator.panelOpen = panel !== null;
 
   // Reported HERE rather than where it was caught, because until now there was
@@ -250,6 +289,12 @@ async function start(): Promise<void> {
   // integrated one. `calibration/calibrate.ts` walks a fixed progression of
   // settings and keeps the heaviest that stays inside a 60 fps budget.
   //
+  // GOES THROUGH `Panel.calibrate()` rather than calling `calibrate` directly,
+  // so this shares one path with the OTHER trigger -- Reset Editor Preferences,
+  // which puts someone back on defaults their machine was never measured
+  // against. That path holds the splash up and locked for the duration; doing
+  // it here too is what makes the two behave identically.
+  //
   // **DELIBERATELY NOT AWAITED.** The rAF loop below has to start immediately:
   // calibration runs behind the welcome splash so the wait costs the user
   // nothing, and that only works if the splash is up and the simulation is
@@ -265,26 +310,8 @@ async function start(): Promise<void> {
   // `?nocalibrate` is REQUIRED BY THE VERIFICATION TOOLS, not a convenience:
   // `browserCheck.mjs` compares screenshots, and a run whose world size depends
   // on the runner's GPU would make every one of those comparisons meaningless.
-  if (!orchestrator.preferences.calibrated && !params.has('nocalibrate')) {
-    void calibrate(orchestrator, {
-      onProgress: (done, total) => {
-        panel?.setSplashStatus(`Calibrating for your display… (${done}/${total})`);
-      },
-      // The splash coming down ends the walk. Someone who clicked through has
-      // said they want to use the app, and rebuilding the simulation under them
-      // for another few rungs is worse than settling for what has passed.
-      // `?nosplash` means there is no splash to wait on, so the walk runs to
-      // completion -- which is what a scripted run wants.
-      cancelled: () =>
-        panel !== null && !params.has('nosplash') && !panel.splashVisible,
-    }).then((rung) => {
-      panel?.setSplashStatus('');
-      console.info(
-        `Calibrated to world size ${rung.worldSize}, physics rate ${rung.physicsSteps}. ` +
-          `Change either in Preferences > Simulation.`,
-      );
-    });
-  }
+  // It is handled at construction, by withholding `runCalibration` entirely.
+  if (firstVisit) void panel?.calibrate();
 
   const overlay = createDebugOverlay();
   let lastTime = performance.now();

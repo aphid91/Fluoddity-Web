@@ -40,7 +40,8 @@ import { PROGRESSION, budgetMs, type Rung } from './progression.ts';
 export interface CalibrationTarget {
   calibrateTo(worldSize: number, physicsSteps: number): Promise<void>;
   probeFrame(): Promise<void>;
-  commitCalibration(worldSize: number, physicsSteps: number): void;
+  /** Persists the result, rebuilds if needed, and restarts the simulation. */
+  commitCalibration(worldSize: number, physicsSteps: number): Promise<void>;
 }
 
 export interface CalibrationOptions {
@@ -49,10 +50,12 @@ export interface CalibrationOptions {
   /**
    * Asked between rungs; true abandons the walk and commits what passed.
    *
-   * The splash dismissing is what this is for. Someone who clicks through after
-   * two rungs has told us they want to use the app, and continuing to rebuild
-   * the simulation underneath them for another five rungs is worse than
-   * stopping early with a conservative answer.
+   * **NOTHING IN THE APP PASSES THIS TODAY.** It existed for the splash being
+   * dismissed mid-walk, which is no longer reachable -- the splash is locked
+   * shut while calibrating, precisely so a user cannot land in an app that is
+   * still reshaping itself. Kept because the ladder needs a way to be stopped
+   * from outside for reasons the ladder cannot see, and because the tests use
+   * it to exercise the early-exit path that the wall-clock ceiling shares.
    */
   readonly cancelled?: () => boolean;
   /** Injected for tests. Defaults to `performance.now`. */
@@ -137,7 +140,15 @@ export async function calibrate(
   // cancelled. The alternative is leaving `calibrated` false, which re-runs the
   // whole thing on the next load -- so a machine that cannot finish calibration
   // would pay for it on every single visit, forever.
-  target.commitCalibration(best.worldSize, best.physicsSteps);
+  //
+  // AWAITED, and its own try/catch: the commit rebuilds the simulation and
+  // resets it, and returning before that settles would release the splash over
+  // an app still reshaping itself -- which is the state the lock exists to hide.
+  try {
+    await target.commitCalibration(best.worldSize, best.physicsSteps);
+  } catch (err: unknown) {
+    console.warn(`Calibration could not commit its result: ${String(err)}`);
+  }
   return best;
 }
 

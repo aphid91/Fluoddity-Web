@@ -110,8 +110,26 @@ export interface PanelOptions {
    * False still BUILDS it, so Help > Welcome / Controls works either way -- it
    * only suppresses the automatic first showing. That is what `?nosplash`
    * wants, and what a screenshot comparison wants.
+   *
+   * **THE CALLER DECIDES WHAT "FIRST" MEANS.** `main.ts` passes false for a
+   * returning visitor, so the splash is a first-run experience rather than a
+   * toll booth on every load. See its startup block.
    */
   readonly showSplash?: boolean;
+  /**
+   * Run GPU calibration, resolving when it is done.
+   *
+   * Passed IN rather than called by `main.ts` alone, because calibration has
+   * two triggers and only one of them is startup: resetting preferences puts a
+   * user back at defaults they never chose, and re-deriving the settings is the
+   * point of the reset. The panel owns the reset dialog, so it has to be able to
+   * start a second run -- without a page reload, which would discard the live
+   * project.
+   *
+   * Omitted when there is nothing to calibrate (`?nocalibrate`), in which case
+   * the reset path simply skips it.
+   */
+  readonly runCalibration?: () => Promise<void>;
 }
 
 /** Which side of the screen, and therefore which tier flag governs it. */
@@ -238,6 +256,19 @@ export class Panel {
    */
   private pausedBySplash = false;
 
+  /** See `PanelOptions.runCalibration`. Null when there is nothing to run. */
+  private readonly runCalibration: (() => Promise<void>) | null;
+
+  /**
+   * Whether a calibration run is in flight.
+   *
+   * Guards against a second run being started on top of the first -- two
+   * ladders rebuilding the simulation against each other would interleave their
+   * rungs and commit whichever finished last. Reachable in practice: the reset
+   * dialog can be opened again while the run it started is still walking.
+   */
+  private calibrating = false;
+
   /**
    * Teardown for the focus-release listeners, one per side.
    *
@@ -250,9 +281,25 @@ export class Panel {
   constructor(opts: PanelOptions) {
     this.bus = opts.bus;
     this.lastMouseMode = this.bus.status().mouseMode;
+    this.runCalibration = opts.runCalibration ?? null;
 
+    // **RESETTING PREFERENCES RE-CALIBRATES.** A reset puts World Size and
+    // Physics Rate back to compiled-in defaults the user never chose and their
+    // machine was never measured against -- which for anyone whose hardware
+    // does not match those defaults is the state calibration exists to prevent.
+    // So the reset re-derives them, behind the splash, exactly as a first visit
+    // does.
+    //
+    // AFTER the dispatch, not before: `resetPreferences` writes
+    // `DEFAULT_PREFERENCES` wholesale, so a calibration that had already
+    // committed would be overwritten by the reset it was supposed to follow.
+    //
+    // Intercepted on `send` rather than on the dialog's button, so it holds
+    // however the command is raised -- the dialog today, a hotkey or a menu
+    // item tomorrow.
     const send = (command: Command): void => {
       this.bus.dispatch(command);
+      if (command.kind === 'resetPreferences') void this.calibrate();
     };
     this.dialogs = new Dialogs({
       send,
@@ -705,25 +752,40 @@ export class Panel {
   /**
    * Set the splash's progress line. Empty clears it.
    *
-   * For first-run calibration, which runs behind the splash while the user
-   * reads. Fronts the splash for the same reason `notify` fronts the toast: the
-   * panel owns its surfaces, and `main.ts` should not have to reach through it
-   * to reach one.
+   * For calibration, which runs behind the splash while the user reads. Fronts
+   * the splash for the same reason `notify` fronts the toast: the panel owns
+   * its surfaces, and `main.ts` should not have to reach through it to reach
+   * one.
    */
   setSplashStatus(text: string): void {
     this.splash.setStatus(text);
   }
 
   /**
-   * Whether the welcome splash is still up.
+   * Run calibration behind a splash that is up and locked shut for the duration.
    *
-   * Calibration polls this to know when to stop. Dismissing the splash is the
-   * user saying they want to use the app, and continuing to rebuild the
-   * simulation underneath them for another several rungs is worse than settling
-   * for the conservative answer already measured.
+   * The one path both triggers go through -- startup and Reset Editor
+   * Preferences -- so the two cannot drift into behaving differently. Shows the
+   * splash if it is not already up, since the reset case starts from an app the
+   * user is already looking at.
+   *
+   * **THE UNLOCK IS UNCONDITIONAL.** `calibrate` is documented never to throw,
+   * but a lock that leaked would strand the user behind a screen with no way
+   * out and no keyboard escape -- the one failure here worse than a bad world
+   * size. So the release is in `finally`, and `calibrating` is cleared with it.
    */
-  get splashVisible(): boolean {
-    return this.splash.visible;
+  async calibrate(): Promise<void> {
+    if (this.runCalibration === null || this.calibrating) return;
+    this.calibrating = true;
+    this.splash.show(); // No-op when it is already up, as at startup.
+    this.splash.setLocked(true);
+    try {
+      await this.runCalibration();
+    } finally {
+      this.splash.setLocked(false);
+      this.splash.setStatus('');
+      this.calibrating = false;
+    }
   }
 
   /**
