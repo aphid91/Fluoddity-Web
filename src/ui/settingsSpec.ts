@@ -216,7 +216,7 @@ export const SETTINGS: readonly Setting[] = [
     source: CONFIG,
     kind: SLIDER,
     lo: 0.0,
-    hi: 1.0,
+    hi: 0.6,
     help:
       "How much each cohort's rule is randomly varied from the base rule. The " +
       'most consequential control here: 0 makes every particle obey the same ' +
@@ -421,7 +421,7 @@ export const SETTINGS: readonly Setting[] = [
     source: CONFIG,
     kind: SLIDER,
     lo: 0.0,
-    hi: 2.0,
+    hi: 1.0,
     help:
       'Master multiplier on every force a particle applies to itself. Raise for ' +
       'faster, more violent motion; lower for languid drift.',
@@ -602,7 +602,7 @@ export const SETTINGS: readonly Setting[] = [
     source: CONFIG,
     kind: SLIDER,
     lo: 0.0,
-    hi: 2.0,
+    hi: 0.5,
     help:
       'Strength of sideways displacement that moves a particle without changing ' +
       'its velocity -- a sidestep rather than a push.',
@@ -669,7 +669,7 @@ export const SETTINGS: readonly Setting[] = [
     source: PREFS,
     kind: INT,
     lo: 1,
-    hi: 120,
+    hi: 60,
     help:
       'Simulation sub-steps per rendered frame. Higher runs the simulation ' +
       'faster in wall-clock terms, at proportional GPU cost.',
@@ -758,7 +758,7 @@ export const SETTINGS: readonly Setting[] = [
     source: PREFS,
     kind: SLIDER,
     lo: 0.0,
-    hi: 3.0,
+    hi: 1.0,
     help: 'Strength of the glow.',
     group: 'Display',
     revealsOn: 'bloomEnabled',
@@ -770,7 +770,7 @@ export const SETTINGS: readonly Setting[] = [
     source: PREFS,
     kind: SLIDER,
     lo: 0.1,
-    hi: 3.0,
+    hi: 1.0,
     help: 'Spread of the blur kernel -- how far the glow reaches.',
     group: 'Display',
     revealsOn: 'bloomEnabled',

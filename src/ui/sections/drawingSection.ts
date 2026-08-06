@@ -47,7 +47,7 @@ const CONTROLS: readonly DrawControl[] = [
   {
     field: 'drawSize',
     label: 'Brush Size',
-    params: { min: 0.01, max: 0.5 },
+    params: { min: 0.01, max: 2.5 },
     help: "The airbrush's radius. Shared by the Draw and Shove tools.",
   },
   {
