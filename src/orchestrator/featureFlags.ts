@@ -13,18 +13,25 @@
  */
 
 /**
- * Reset the simulation whenever a config is committed.
+ * Reset the simulation whenever the config on screen CHANGES.
  *
  * Many configs only look right from their initial conditions, so thumbing
  * through File -> Load without this shows each preset's settings applied to
  * whatever soup the previous one had already evolved into. With it, every
- * committed load starts the simulation over, the same as pressing R.
+ * config arrives on a fresh simulation, the same as pressing R.
  *
- * Covers the committed paths only -- File -> Load, the LEFT/RIGHT preset
- * cycle, Revert to Saved, a shared link opened mid-session, and restoring a
- * checkpoint. Hover-preview is deliberately NOT covered: browsing forty rows
- * would restart the simulation forty times, and the restore on mouse-out could
- * not put back what the resets destroyed. See `Orchestrator.resetForConfig`.
+ * **THE HOVER IS THE LOAD.** The menu applies each row as the pointer reaches
+ * it, so that -- not the click afterwards -- is the moment a config first
+ * appears and first needs restarting. The committed click changes nothing: the
+ * project already holds the previewed config, so resetting there would restart
+ * a simulation the user had been watching settle since they hovered the row
+ * they chose. Restoring on mouse-out likewise resets, or abandoning the menu
+ * would leave the original config's settings running on a previewed sim's
+ * evolved state.
+ *
+ * Covers hover-preview, the mouse-out restore, and the paths with no hover at
+ * all: the LEFT/RIGHT preset cycle, Revert to Saved, a shared link opened
+ * mid-session, and checkpoint apply/restore. See `Orchestrator.resetForConfig`.
  */
 export const RESET_ON_CONFIG_LOAD = true;
 
@@ -37,4 +44,4 @@ export const RESET_ON_CONFIG_LOAD = true;
  * an edit gesture is a different act from loading a preset, and wanting the
  * one restarted is not wanting the other restarted.
  */
-export const RESET_ON_CONFIG_UNDO_REDO = true;
+export const RESET_ON_CONFIG_UNDO_REDO = false;

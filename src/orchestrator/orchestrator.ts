@@ -885,22 +885,42 @@ export class Orchestrator implements CommandBus {
   }
 
   /**
-   * Restart the simulation after a committed config load, if the flag allows.
+   * Restart the simulation when the config on screen CHANGES, if the flag allows.
    *
    * **THE single place the load paths reset**, for the same reason `setProject`
-   * is the single place project state changes: five call sites (`adoptSaved`,
-   * `loadSharedConfig`, `commitCheckpoint` and the two the first of those
-   * serves) either all restart or all do not, and a sixth load path added later
-   * should be a one-line call rather than a copy of the flag check.
+   * is the single place project state changes: every path that swaps the config
+   * either all restart or all do not, and a path added later should be a
+   * one-line call rather than a copy of the flag check.
    *
    * Called AFTER `setProject`, never before: `reset()` only sets a sentinel the
    * next `advance()` reads, so the configs the GPU regenerates from must
    * already be the new ones.
    *
-   * Not called from `previewConfig` -- see `RESET_ON_CONFIG_LOAD`.
+   * **KEYED ON THE CHANGE, NOT ON THE CLICK.** Hover-preview is what the user
+   * experiences as "loading" -- each row applies as the pointer reaches it, so
+   * that is where a config first needs its opening conditions. The committed
+   * click that follows changes NOTHING: the project already holds the previewed
+   * config, so it resets nothing and merely closes the menu. Resetting there
+   * would restart a simulation the user had been watching settle since they
+   * hovered the row they then chose. See `RESET_ON_CONFIG_LOAD`.
    */
   private resetForConfig(): void {
     if (RESET_ON_CONFIG_LOAD) this.system.reset();
+  }
+
+  /**
+   * Reset for a committed load ONLY if no preview already did.
+   *
+   * `adoptSaved` serves two kinds of caller and they want opposite things. A
+   * click in the Load menu arrives with a browse in flight: the config is
+   * already on screen, already restarted, and resetting again would throw away
+   * the settling the user just spent time watching. The LEFT/RIGHT cycle,
+   * Revert to Saved and `loadPreset` arrive with no browse at all, having
+   * changed the config for the first time right here -- and they must restart,
+   * or those paths would silently lose the feature.
+   */
+  private resetIfUnpreviewed(previewed: boolean): void {
+    if (!previewed) this.resetForConfig();
   }
 
   /** The undo/redo half of `resetForConfig`, gated on its own flag. */
@@ -1077,6 +1097,8 @@ export class Orchestrator implements CommandBus {
         const checkpoint = this.checkpoints.byKey(command.key);
         if (checkpoint === null) return;
         this.setProject(checkpoint.project);
+        // The hover is the load here too, exactly as in `previewConfig`.
+        this.resetForConfig();
         return;
       }
 
@@ -1100,7 +1122,15 @@ export class Orchestrator implements CommandBus {
         // The other half of hover-preview; likewise never recorded. Restores
         // only THIS surface's origin -- another open browser keeps its own.
         const origin = this.previewOrigins.get(command.surface);
-        if (origin !== undefined) this.setProject(origin);
+        // Restoring is itself a config change, so it resets too: abandoning the
+        // menu would otherwise leave the ORIGINAL config's settings running on
+        // whatever state the last preview's simulation had evolved into. Only
+        // when a preview actually applied -- closing a menu never hovered
+        // changes nothing and must not restart anything.
+        if (origin !== undefined) {
+          this.setProject(origin);
+          this.resetForConfig();
+        }
         this.previewOrigins.delete(command.surface);
         return;
       }
@@ -1251,6 +1281,10 @@ export class Orchestrator implements CommandBus {
     saved: Awaited<ReturnType<ConfigStore['read']>>,
   ): void {
     const before = this.prePreviewProject(this.project);
+    // READ BEFORE THE CLEAR BELOW. A browse in flight means the config being
+    // committed is already on screen and already running on a simulation the
+    // preview restarted, which is exactly the case that must NOT reset again.
+    const previewed = this.previewOrigins.size > 0;
     this.setProject(loadSavedInto(this.project, entry.name, saved));
     this.recordHistory(before, `load ${entry.name}`);
     // A commit ends EVERY browse, not just the one that produced it: the loaded
@@ -1264,10 +1298,12 @@ export class Orchestrator implements CommandBus {
     // NO CAMERA. Loading a config leaves the view exactly where it was, on every
     // path -- committed load, preview, and the LEFT/RIGHT cycle alike.
     //
-    // The simulation, unlike the camera, DOES restart: a config's look is a
-    // property of the simulation and often only reachable from its opening
-    // conditions, whereas where you were looking is not. See `resetForConfig`.
-    this.resetForConfig();
+    // AND NO RESET, when the commit follows a hover-preview: the preview
+    // already applied this config and already restarted the simulation for it,
+    // so the click that closes the menu must leave the running sim alone.
+    // `resetIfUnpreviewed` is what tells the two cases apart -- the LEFT/RIGHT
+    // cycle and Revert reach here with no preview in flight and DO restart.
+    this.resetIfUnpreviewed(previewed);
   }
 
   /**
@@ -1346,6 +1382,10 @@ export class Orchestrator implements CommandBus {
       .then((saved) => {
         if (generation !== this.configGeneration) return;
         this.setProject(loadSavedInto(this.project, entry.name, saved));
+        // THE HOVER IS THE LOAD, so this is where a config gets its opening
+        // conditions. Inside the generation guard deliberately: a superseded
+        // read must not restart the simulation the newer preview is running.
+        this.resetForConfig();
       })
       .catch((e: unknown) => {
         // Only warned: a preview that fails should not put an error banner up
@@ -1457,11 +1497,16 @@ export class Orchestrator implements CommandBus {
   /** Commit a checkpoint restore, recording against where browsing started. */
   private commitCheckpoint(checkpoint: Checkpoint): void {
     const before = this.prePreviewProject(this.project);
+    // Before the clear below, for the reason `adoptSaved` gives.
+    const previewed = this.previewOrigins.size > 0;
     this.setProject(checkpoint.project);
     this.recordHistory(before, `restore ${checkpoint.name}`);
     // Ends every browse, for the reason `adoptSaved` gives.
     this.previewOrigins.clear();
-    this.resetForConfig();
+    // Clicking a hovered checkpoint locks in what is already running; the
+    // keyboard shortcut for the latest checkpoint arrives with no hover and
+    // does restart. Same split as `adoptSaved`.
+    this.resetIfUnpreviewed(previewed);
   }
 
   /**
