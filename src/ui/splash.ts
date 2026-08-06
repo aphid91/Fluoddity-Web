@@ -58,8 +58,7 @@ const BODY: readonly Block[] = [
     'The panel on the right shows your editor and tool preferences.',
     'The panel on the left shows your current project. These values are stored ' +
       'and loaded by File → Save/Load, along with particle behavior and ' +
-      'current mutations. The Share menu puts the whole thing in a URL you can ' +
-      'send to someone, and opens links other people send you.',
+      'mutations.',
   ],
   DIVIDER,
   'Controls',
@@ -82,10 +81,8 @@ const BODY: readonly Block[] = [
     'V: restore most recent checkpoint',
   ],
   [
-    'Shift-C: copy a link to this project to your clipboard (anyone who opens ' +
-      'it gets exactly what you have on screen right now, not the last thing ' +
-      'you saved)',
-    'Shift-V: load a project from a share link on your clipboard',
+    'Shift-C: copy a shareable url link to this project to your clipboard',
+    'Shift-V: load a project from a share link in your clipboard',
   ],
   DIVIDER,
   'Mouse controls',
@@ -95,11 +92,11 @@ const BODY: readonly Block[] = [
     'mutation. This process can be repeated, making it possible to explore the ' +
     'space of possible behaviors. When in select mode, right click is mapped ' +
     'to undo.',
-  DIVIDER,
+  
   'Tool: Shove',
   'Hold left mouse to push particles away from your cursor. Hold right mouse ' +
     'to pull them in.',
-  DIVIDER,
+  
   'Tool: Draw',
   'Left click to draw barriers that repel particles. Right click to erase.',
 ];

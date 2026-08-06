@@ -62,7 +62,7 @@ export const CUSTOM_CATEGORY = 'Custom';
  * `npm run sync:configs` builds the manifest and the manifest decides; this
  * says "take the first" without pretending to know what that is.
  */
-export const DEFAULT_PRESET_NAME = 'Diversity';
+export const DEFAULT_PRESET_NAME = 'Medley';
 
 /** One config in the catalog, wherever it came from. */
 export interface ConfigEntry {
