@@ -6,6 +6,18 @@
       "name": "Core",
       "entries": [
         {
+          "name": "Burbles",
+          "path": "Core/Burbles.json"
+        },
+        {
+          "name": "Cars",
+          "path": "Core/Cars.json"
+        },
+        {
+          "name": "Critters",
+          "path": "Core/Critters.json"
+        },
+        {
           "name": "Crystal",
           "path": "Core/Crystal.json"
         },
@@ -16,10 +28,6 @@
         {
           "name": "Diversity",
           "path": "Core/Diversity.json"
-        },
-        {
-          "name": "Instability",
-          "path": "Core/Instability.json"
         },
         {
           "name": "Krill",
@@ -44,6 +52,10 @@
         {
           "name": "Membranes",
           "path": "Core/Membranes.json"
+        },
+        {
+          "name": "MoreMembranes",
+          "path": "Core/MoreMembranes.json"
         },
         {
           "name": "Moths",
@@ -84,6 +96,10 @@
         {
           "name": "Tangle",
           "path": "Core/Tangle.json"
+        },
+        {
+          "name": "Weave",
+          "path": "Core/Weave.json"
         }
       ]
     }
