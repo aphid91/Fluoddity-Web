@@ -29,8 +29,14 @@
  *     an imgui `selectable()` spans the full menu width, so a delete button
  *     placed after it with `same_line()` sits ON TOP of the selectable's click
  *     area -- the selectable wins the click, and pressing X silently LOADS the
- *     entry instead of deleting it. A flex row has two disjoint hit areas, so
- *     the bug is structurally impossible. Do not "tidy" this into an overlay.
+ *     entry instead of deleting it. Do not "tidy" this into an overlay.
+ *
+ *     `browserRow` DOES listen on the whole row, which sounds like the same
+ *     shape and is not. The X is a real child element, so it is the click's
+ *     target and handles it first; its `stopPropagation` is what keeps the
+ *     event off the row. The imgui version had no such child -- the button was
+ *     painted over a region that had already claimed the click. Deleting that
+ *     one `stopPropagation` call is the way to bring the bug back.
  *
  * ## Hover-preview is driven per frame, not per event
  *
@@ -43,6 +49,7 @@
 
 import type { Command, Status } from '../orchestrator/commands.ts';
 import { MOUSE_MODES } from '../orchestrator/commands.ts';
+import { CORE_CATEGORY } from '../config/configStore.ts';
 import { localHotkeyLabel } from './hotkeys.ts';
 import { PreviewSession } from './previewSession.ts';
 
@@ -101,6 +108,16 @@ const SUBMENU_MAX_VIEWPORT_FRACTION = 0.7;
 /** Breathing room between a submenu and the window edge. See `fitSubmenu`. */
 const SUBMENU_MARGIN_PX = 8;
 
+/**
+ * How long a submenu stays open after the cursor leaves it.
+ *
+ * Long enough to cross the corner between the parent row and a flyout entry far
+ * down the list, short enough that a menu the user has finished with does not
+ * linger. Below roughly 150ms the diagonal is still a race; much above 400ms and
+ * deliberately leaving feels unresponsive.
+ */
+const SUBMENU_CLOSE_DELAY_MS = 300;
+
 export class MenuBar {
   private readonly root: HTMLElement;
   private readonly opts: MenuBarOptions;
@@ -145,6 +162,18 @@ export class MenuBar {
    * open by default, so nothing is hidden from someone who has not asked for it.
    */
   private readonly collapsedCategories = new Set<string>();
+
+  /**
+   * One "shut this submenu now" per submenu, for `setOpenMenu` to call.
+   *
+   * The delayed close in `addSubmenu` is the only timer in this class, and it
+   * outlives the state it was scheduled against: closing File while a close is
+   * pending, then reopening it, would let the old timer fire and hide a flyout
+   * the user had just reopened. Closing them all when the OPEN MENU changes
+   * settles that -- the submenu of a menu that is no longer open should be shut
+   * regardless of where the cursor went.
+   */
+  private readonly submenuClosers: (() => void)[] = [];
 
   constructor(opts: MenuBarOptions) {
     this.opts = opts;
@@ -471,13 +500,42 @@ export class MenuBar {
     // `overscroll-behavior:contain` stops a wheel that reaches the end of this
     // list from continuing into the page behind it, which would scroll the app
     // out from under an open menu.
+    //
+    // `min-width:0` OVERRIDES the 180px floor in `MENU_BODY_CSS`, which is set
+    // for top-level dropdowns and is far too wide here: rows are `nowrap`, so a
+    // flyout shrink-wraps its longest preset name on its own. The declaration
+    // has to come AFTER the base string -- this is one `cssText`, so the later
+    // one wins.
     inner.style.cssText =
-      `${MENU_BODY_CSS}left:100%;top:0;` +
+      `${MENU_BODY_CSS}left:100%;top:0;min-width:0;` +
       `max-height:${Math.round(SUBMENU_MAX_VIEWPORT_FRACTION * 100)}vh;` +
       'overflow-y:auto;overscroll-behavior:contain;';
 
+    // The pending close from `mouseleave`, or `null`. See `SUBMENU_CLOSE_DELAY_MS`.
+    let closeTimer: ReturnType<typeof setTimeout> | null = null;
+    const cancelClose = (): void => {
+      if (closeTimer === null) return;
+      clearTimeout(closeTimer);
+      closeTimer = null;
+    };
+    const closeNow = (): void => {
+      cancelClose();
+      row.style.background = 'transparent';
+      inner.style.display = 'none';
+    };
+    // Registered so `setOpenMenu` can drop a pending close: a timer that fires
+    // after the whole menu reopened would hide a submenu the user just asked for.
+    this.submenuClosers.push(closeNow);
+
     row.addEventListener('mouseenter', () => {
+      // BEFORE anything else: re-entering within the grace period means the
+      // cursor never really left, and the half-open state must not be finished.
+      cancelClose();
       row.style.background = MENU_HOVER_BG;
+      // Already open and merely re-entered -- leave the scroll position alone.
+      // Resetting here would yank a long list back to the top every time the
+      // cursor clipped the edge, which is the very thing the delay prevents.
+      if (inner.style.display === 'block') return;
       inner.style.display = 'block';
       // Opened fresh each time. A submenu left half-scrolled from a previous
       // visit reopens showing the middle of the list, which reads as the menu
@@ -494,8 +552,14 @@ export class MenuBar {
       // not actually left.
       const to = ev.relatedTarget as Node | null;
       if (to !== null && (inner.contains(to) || inner === to)) return;
-      row.style.background = 'transparent';
-      inner.style.display = 'none';
+      // ON A DELAY, not at once. The flyout opens at `left:100%` beside a row
+      // near the top of a list that can be 175 rows long, so the natural move --
+      // from `Load` diagonally down to a row far below -- cuts the corner and
+      // leaves both elements for a few pixels. Closing on that instant makes the
+      // menu impossible to reach without tracing an L. The grace period is in
+      // TIME rather than space because the cursor is only ever outside briefly.
+      cancelClose();
+      closeTimer = setTimeout(closeNow, SUBMENU_CLOSE_DELAY_MS);
     });
 
     row.append(inner);
@@ -602,13 +666,26 @@ export class MenuBar {
             this.opts.send({ kind: 'loadConfig', category, name });
             this.closeMenus();
           },
-          () => {
-            // Deleting the previewed config must not leave it applied.
-            this.loadPreview.restoreNow();
-            this.loadPreview.forget();
-            this.opts.onDeleteConfig(category, name);
-            this.closeMenus();
-          },
+          // NO X ON A SHIPPED PRESET. `ConfigStore.remove` refuses anything
+          // whose source is the manifest, so the button could only ever lie --
+          // and it lied loudly: it closed the menu, opened a confirm dialog
+          // promising "this cannot be undone", and then failed into
+          // `status.saveError`, which nothing but the Debug section renders. A
+          // user pressing it saw a scary prompt followed by silence.
+          //
+          // Keyed off the CATEGORY because that is all the UI is given:
+          // `catalog()` flattens `ConfigEntry.source` away, so `Core` is the
+          // only signal that survives to here. `CORE_CATEGORY` is imported
+          // rather than written as `'Core'` so the two cannot drift.
+          category === CORE_CATEGORY
+            ? null
+            : () => {
+                // Deleting the previewed config must not leave it applied.
+                this.loadPreview.restoreNow();
+                this.loadPreview.forget();
+                this.opts.onDeleteConfig(category, name);
+                this.closeMenus();
+              },
           (hovered) => {
             // Only clear if THIS row is the one recorded: a row-to-row move
             // fires the new row's `mouseenter` before the old row's
@@ -675,34 +752,53 @@ export class MenuBar {
   }
 
   /**
-   * One browsable row: a name to load, and an X to remove it.
+   * One browsable row: a name to load, and -- if it can be removed -- an X.
    *
-   * The name and the X are SEPARATE flex children with disjoint hit areas -- see
-   * the file header for the imgui bug that made this worth stating.
+   * THE WHOLE ROW OPENS, not just the text. The click used to sit on the name
+   * span, which left the row's own `padding` gutters and the `gap` before the X
+   * dead: a strip down each side that showed `cursor:pointer` (it comes from
+   * `MENU_ITEM_CSS`, which styles the row) and then did nothing when clicked.
+   * The row is what looks clickable, so the row is what listens.
+   *
+   * That does NOT reintroduce the imgui bug in the file header. There the delete
+   * button was drawn ON TOP of a full-width selectable, so the selectable took
+   * the click and X loaded the entry instead of deleting it. Here the X is a
+   * real child element that receives its own click first and calls
+   * `stopPropagation` -- so the row's listener is LOAD-BEARING BUT NEVER REACHED
+   * from the X. Removing that `stopPropagation` would resurrect the bug exactly.
+   *
+   * `onDelete` is `null` for rows that cannot be deleted. See `syncLoadMenu`.
    */
   private browserRow(
     label: string,
     onOpen: () => void,
-    onDelete: () => void,
+    onDelete: (() => void) | null,
     onHover: (hovered: boolean) => void,
   ): HTMLElement {
     const row = document.createElement('div');
     row.style.cssText = `${MENU_ITEM_CSS}gap:8px;`;
     row.dataset['row'] = label;
+    row.addEventListener('click', onOpen);
 
     const name = document.createElement('span');
     name.textContent = label;
-    name.style.cssText = 'flex:1;min-width:110px;';
-    name.addEventListener('click', onOpen);
+    // No `min-width`: the row is the hit area now, so padding the name out to a
+    // floor only widened the flyout without making anything easier to click.
+    name.style.cssText = 'flex:1;';
+    row.append(name);
 
-    const remove = document.createElement('button');
-    remove.textContent = '×';
-    remove.title = `Delete ${label}`;
-    remove.style.cssText = DELETE_BUTTON_CSS;
-    remove.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      onDelete();
-    });
+    if (onDelete !== null) {
+      const remove = document.createElement('button');
+      remove.textContent = '×';
+      remove.title = `Delete ${label}`;
+      remove.style.cssText = DELETE_BUTTON_CSS;
+      remove.addEventListener('click', (ev) => {
+        // KEEPS THE X FROM LOADING THE ENTRY. See the note above.
+        ev.stopPropagation();
+        onDelete();
+      });
+      row.append(remove);
+    }
 
     // Hovering the X counts as hovering the row, or the preview would snap back
     // as the cursor crossed to it (`config_menu.py:263-267`).
@@ -715,7 +811,6 @@ export class MenuBar {
       onHover(false);
     });
 
-    row.append(name, remove);
     return row;
   }
 
@@ -727,6 +822,10 @@ export class MenuBar {
 
   private setOpenMenu(title: string | null): void {
     this.openMenu = title;
+    // Cancels any pending delayed close along with hiding them -- see
+    // `submenuClosers`. Must run whether opening or closing: a submenu left
+    // showing under a dropdown that is now hidden would reappear with it.
+    for (const close of this.submenuClosers) close();
     for (const body of this.root.querySelectorAll<HTMLElement>('[data-menu-body]')) {
       body.style.display = body.dataset['menuBody'] === title ? 'block' : 'none';
     }

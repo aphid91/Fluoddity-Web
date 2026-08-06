@@ -101,9 +101,15 @@ test('every registry entry routes to a source that actually accepts it', () => {
     if (setting.field === '') continue; // the Gravity gate stores nothing
     if (setting.kind === 'seed') continue; // exercised by randomizeSeed below
 
-    // A value guaranteed different from every default, and legal for the kind.
+    // A value guaranteed different from THIS setting's current default, and
+    // legal for the kind. A bool must be read off the defaults and negated
+    // rather than hardcoded to `true`: `bloomEnabled` already defaults to
+    // `true`, so a fixed `true` is a legitimate no-op and the assertion below
+    // would report a routing bug that is not there.
     const value: number | boolean =
-      setting.kind === 'bool' ? true : (setting.lo + setting.hi) / 2 + 0.0001;
+      setting.kind === 'bool'
+        ? DEFAULT_PREFERENCES[setting.field as keyof typeof DEFAULT_PREFERENCES] !== true
+        : (setting.lo + setting.hi) / 2 + 0.0001;
     const result = applySettingEdit(sources, setting, value);
 
     if (result.kind === 'prefs') {

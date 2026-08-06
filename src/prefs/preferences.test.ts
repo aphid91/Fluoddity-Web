@@ -166,7 +166,14 @@ test('withValue returns the receiver when nothing changed', () => {
   // (`drawing_commands.py:107-110`).
   const prefs = DEFAULT_PREFERENCES;
   assert.equal(withValue(prefs, 'brightness', prefs.brightness), prefs);
-  assert.equal(withValue(prefs, 'physicsSteps', 30.4), prefs, 'truncates to the same int');
+  // DERIVED FROM THE DEFAULT, not a literal: the point is that a fractional
+  // value truncating onto the CURRENT int is a no-op, and a hardcoded probe
+  // stops testing that the moment someone changes the default out from under it.
+  assert.equal(
+    withValue(prefs, 'physicsSteps', prefs.physicsSteps + 0.4),
+    prefs,
+    'truncates to the same int',
+  );
 });
 
 test('withValue returns the receiver for an unknown or unusable value', () => {
