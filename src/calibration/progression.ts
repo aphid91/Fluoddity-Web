@@ -26,27 +26,6 @@
  * without dragging the GPU stack into their import graph.
  */
 
-/**
- * DEVELOPMENT ONLY: re-run the splash and calibration on every single visit,
- * ignoring the stored `calibrated` flag.
- *
- * **SET THIS BACK TO `false` BEFORE SHIPPING.** With it on, every load is a
- * first load: the welcome splash comes up, the ladder walks, and the result is
- * committed over whatever was there. That is exactly wrong for a real user --
- * they get a modal and a rebuild every time they open the app -- and exactly
- * right while working on calibration itself, where the alternative is clearing
- * `localStorage` by hand between every test run.
- *
- * ONE FLAG, ONE LINE, NO OTHER MACHINERY. Deliberately not a URL parameter, an
- * env var or a build define: those all have a way of surviving into production
- * unnoticed. A literal `true` in the source is visible in review and in a diff,
- * and turning it off is a one-character edit.
- *
- * `?nocalibrate` still wins over this -- the verification tools depend on that,
- * and a debug convenience must not be able to break the screenshot comparisons.
- */
-export const ALWAYS_CALIBRATE = true;
-
 /** One point on the path: a world size paired with a physics rate. */
 export interface Rung {
   readonly worldSize: number;

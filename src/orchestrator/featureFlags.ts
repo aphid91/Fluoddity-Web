@@ -45,3 +45,27 @@ export const RESET_ON_CONFIG_LOAD = true;
  * one restarted is not wanting the other restarted.
  */
 export const RESET_ON_CONFIG_UNDO_REDO = false;
+
+/**
+ * Re-run the welcome splash and GPU calibration on EVERY visit.
+ *
+ * Normally both happen exactly once, on a genuine first visit, gated on the
+ * `calibrated` preference. With this on, every load behaves like a first one:
+ * the splash comes up, the ladder walks, and the result is committed over
+ * whatever was already stored.
+ *
+ * **A DEVELOPMENT AID, NOT A PRODUCT BEHAVIOUR.** For a real user this is
+ * plainly wrong -- a modal and a full simulation rebuild every time they open
+ * the app. It exists because tuning calibration otherwise means clearing
+ * `localStorage` by hand between every single test run, which is enough
+ * friction to discourage the measuring that tuning needs.
+ *
+ * Unlike the two flags above, this one is NOT an open question about the
+ * product: the answer is permanently `false` for anything shipped. It stays
+ * because the next person to touch the progression, the burn-in or the frame
+ * budget will want it again, and rediscovering the trick is wasted work.
+ *
+ * `?nocalibrate` still overrides it. The verification tools depend on that, and
+ * a debug convenience must never be able to break the screenshot comparisons.
+ */
+export const ALWAYS_CALIBRATE = false;
