@@ -34,6 +34,10 @@
           "path": "Core/Medley.json"
         },
         {
+          "name": "Medley2",
+          "path": "Core/Medley2.json"
+        },
+        {
           "name": "Medusa",
           "path": "Core/Medusa.json"
         },
@@ -76,10 +80,6 @@
         {
           "name": "Stars",
           "path": "Core/Stars.json"
-        },
-        {
-          "name": "Streaks",
-          "path": "Core/Streaks.json"
         },
         {
           "name": "Tangle",

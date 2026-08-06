@@ -101,6 +101,7 @@ import {
   type Status,
 } from './commands.ts';
 import { type Checkpoint, CheckpointStore } from './clipboardCommands.ts';
+import { RESET_ON_CONFIG_LOAD, RESET_ON_CONFIG_UNDO_REDO } from './featureFlags.ts';
 import { type PendingStroke, strokeFor } from './drawingCommands.ts';
 import { shoveState } from './shoveCommands.ts';
 import {
@@ -884,6 +885,30 @@ export class Orchestrator implements CommandBus {
   }
 
   /**
+   * Restart the simulation after a committed config load, if the flag allows.
+   *
+   * **THE single place the load paths reset**, for the same reason `setProject`
+   * is the single place project state changes: five call sites (`adoptSaved`,
+   * `loadSharedConfig`, `commitCheckpoint` and the two the first of those
+   * serves) either all restart or all do not, and a sixth load path added later
+   * should be a one-line call rather than a copy of the flag check.
+   *
+   * Called AFTER `setProject`, never before: `reset()` only sets a sentinel the
+   * next `advance()` reads, so the configs the GPU regenerates from must
+   * already be the new ones.
+   *
+   * Not called from `previewConfig` -- see `RESET_ON_CONFIG_LOAD`.
+   */
+  private resetForConfig(): void {
+    if (RESET_ON_CONFIG_LOAD) this.system.reset();
+  }
+
+  /** The undo/redo half of `resetForConfig`, gated on its own flag. */
+  private resetForUndoRedo(): void {
+    if (RESET_ON_CONFIG_UNDO_REDO) this.system.reset();
+  }
+
+  /**
    * The state from before any hover-preview began, or `fallback`.
    *
    * A committed load arrives with the project ALREADY moved by the preview that
@@ -947,14 +972,23 @@ export class Orchestrator implements CommandBus {
         // back to (`selection_commands.py:176-177`).
         this.history.breakCoalescing();
         const previous = this.history.undo();
-        if (previous !== null) this.setProject(previous);
+        // Only when a step actually happened: undo at the end of the timeline
+        // returns null and changes nothing, and restarting the simulation on a
+        // keypress that did nothing would be the most confusing reset of all.
+        if (previous !== null) {
+          this.setProject(previous);
+          this.resetForUndoRedo();
+        }
         return;
       }
 
       case 'redo': {
         this.history.breakCoalescing();
         const next = this.history.redo();
-        if (next !== null) this.setProject(next);
+        if (next !== null) {
+          this.setProject(next);
+          this.resetForUndoRedo();
+        }
         return;
       }
 
@@ -1229,6 +1263,11 @@ export class Orchestrator implements CommandBus {
     this.configOrigin = { category: entry.category, name: entry.name };
     // NO CAMERA. Loading a config leaves the view exactly where it was, on every
     // path -- committed load, preview, and the LEFT/RIGHT cycle alike.
+    //
+    // The simulation, unlike the camera, DOES restart: a config's look is a
+    // property of the simulation and often only reachable from its opening
+    // conditions, whereas where you were looking is not. See `resetForConfig`.
+    this.resetForConfig();
   }
 
   /**
@@ -1254,6 +1293,7 @@ export class Orchestrator implements CommandBus {
     this.presetName = name;
     this.configOrigin = null;
     this.saveError = '';
+    this.resetForConfig();
   }
 
   /** Commit a load: settings, world, name, camera, and one history entry. */
@@ -1421,6 +1461,7 @@ export class Orchestrator implements CommandBus {
     this.recordHistory(before, `restore ${checkpoint.name}`);
     // Ends every browse, for the reason `adoptSaved` gives.
     this.previewOrigins.clear();
+    this.resetForConfig();
   }
 
   /**

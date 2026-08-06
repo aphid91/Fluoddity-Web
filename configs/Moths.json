@@ -110,7 +110,7 @@
       "force2": {
         "gravity_force": 0.0,
         "gravity_strafe": 0.0,
-        "initial_conditions": 1,
+        "initial_conditions": 0,
         "cohort_fences": 0.0
       },
       "misc2": {
