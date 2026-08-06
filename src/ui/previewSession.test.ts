@@ -63,6 +63,53 @@ test('unhovering after a commit does not restore either', () => {
   assert.deepEqual(log, ['snapshot', 'apply:A']);
 });
 
+/**
+ * THE ROW THAT FAILS SILENTLY, in the other direction.
+ *
+ * A restore is a config change and therefore resets the simulation. Opening a
+ * menu and closing it without hovering anything changed nothing, so restoring
+ * there restarts the sim for no reason the user can see -- which is what
+ * clicking `File` twice did.
+ */
+test('opening and closing without hovering restores nothing', () => {
+  const { session, log } = tracked();
+  session.begin();
+  session.end();
+  assert.deepEqual(log, ['snapshot'], 'closing an untouched menu restored');
+});
+
+test('restoreNow before any hover does nothing', () => {
+  // Collapsing a category calls this even when nothing was previewed.
+  const { session, log } = tracked();
+  session.begin();
+  session.restoreNow();
+  assert.deepEqual(log, ['snapshot']);
+});
+
+test('a session that hovered and unhovered still restores on close', () => {
+  // `sync(null)` already restored, but the session HAS touched the world, so
+  // the close-time restore stays -- the guard is "never applied", not
+  // "not currently previewing".
+  const { session, log } = tracked();
+  session.begin();
+  session.sync('A');
+  session.sync(null);
+  session.end();
+  assert.deepEqual(log, ['snapshot', 'apply:A', 'restore', 'restore']);
+});
+
+test('a reopened session does not restore on the strength of the last one', () => {
+  const { session, log } = tracked();
+  session.begin();
+  session.sync('A');
+  session.end();
+  log.length = 0;
+  // Second visit, nothing hovered: `begin` must have cleared the applied flag.
+  session.begin();
+  session.end();
+  assert.deepEqual(log, ['snapshot']);
+});
+
 test('moving between rows previews each without restoring between', () => {
   const { session, log } = tracked();
   session.begin();

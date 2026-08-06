@@ -60,6 +60,23 @@ export class PreviewSession<T, K> {
   /** Key of the item currently previewed, or `null`. */
   private previewing: K | null = null;
 
+  /**
+   * Whether anything was ever APPLIED during this session.
+   *
+   * Distinct from `snapshot`, which `begin()` sets on open no matter what. The
+   * restore is a config change, so it resets the simulation -- and a session
+   * that opened and closed with nothing hovered has nothing to put back, so
+   * restoring there resets the sim for a menu the user merely glanced at.
+   * Opening File and closing it again did exactly that.
+   *
+   * Set by `sync` at the moment of the apply, and NOT cleared on unhover:
+   * `sync(null)` restores, which is itself a change that a later `end()` need
+   * not repeat, but by then the session has already touched the world and
+   * `previewing` is back to `null` -- so the flag has to outlive the preview it
+   * describes. `begin()` clears it, since that starts a new session.
+   */
+  private applied = false;
+
   constructor(callbacks: PreviewCallbacks<T>, keyOf: (item: T) => K) {
     this.callbacks = callbacks;
     this.keyOf = keyOf;
@@ -71,17 +88,27 @@ export class PreviewSession<T, K> {
     this.open = true;
     this.committed = false;
     this.previewing = null;
+    this.applied = false;
     this.snapshot = true;
     this.callbacks.onSnapshot();
   }
 
-  /** Call when the surface closes. Restores unless a click committed. */
+  /**
+   * Call when the surface closes. Restores unless a click committed.
+   *
+   * **NOTHING HOVERED MEANS NOTHING TO RESTORE.** A restore resets the
+   * simulation, so firing one for a session that never applied a preview
+   * restarts the sim because the user opened a menu and closed it again --
+   * which is what clicking `File` twice used to do. `applied` is the test;
+   * `snapshot` cannot be, since `begin()` sets it unconditionally.
+   */
   end(): void {
     if (!this.open) return;
     this.open = false;
-    if (!this.committed && this.snapshot) this.callbacks.onRestore();
+    if (!this.committed && this.snapshot && this.applied) this.callbacks.onRestore();
     this.snapshot = false;
     this.previewing = null;
+    this.applied = false;
   }
 
   /**
@@ -108,6 +135,7 @@ export class PreviewSession<T, K> {
       }
       this.restoreNow();
     } else {
+      this.applied = true;
       this.callbacks.onApply(hovered);
     }
     this.previewing = key;
@@ -125,9 +153,16 @@ export class PreviewSession<T, K> {
     this.previewing = key;
   }
 
-  /** Put the snapshot back without ending the session. No-op after a commit. */
+  /**
+   * Put the snapshot back without ending the session. No-op after a commit.
+   *
+   * Guarded on `applied` for the reason `end()` is: collapsing a category calls
+   * this to drop a preview that a `display:none` row will never fire
+   * `mouseleave` for, and doing that before anything was hovered would reset the
+   * simulation for a fold.
+   */
   restoreNow(): void {
-    if (this.snapshot) this.callbacks.onRestore();
+    if (this.snapshot && this.applied) this.callbacks.onRestore();
   }
 
   /**
