@@ -20,6 +20,9 @@
  * Core first, then the remaining categories alphabetically -- `discover()`'s
  * ordering (`:362-367`), preserved because the flat concatenation of it is the
  * LEFT/RIGHT preset cycle. `Custom` sorts into the alphabetical run naturally.
+ *
+ * `Archive` is pinned LAST rather than sorting into that run, and is the one
+ * category left out of the cycle entirely. See `ARCHIVE_CATEGORY`.
  */
 
 import type { PresetCatalog } from '../orchestrator/projectCommands.ts';
@@ -46,6 +49,24 @@ export const CORE_CATEGORY = 'Core';
  * only ever a label in a menu, beside "Core".
  */
 export const CUSTOM_CATEGORY = 'Custom';
+
+/**
+ * The v8 backlog: shipped and browsable, but deliberately out of the way.
+ *
+ * `configs/Archive/` needs no special handling to BUILD -- `syncConfigs.ts`
+ * turns any subdirectory into a category. It is named here because two things
+ * treat it differently from every other category:
+ *
+ *   1. It sorts LAST rather than alphabetically, so it sits under Custom
+ *      instead of above it (`catalog()`).
+ *   2. It is excluded from `order`, the LEFT/RIGHT preset cycle, and starts
+ *      COLLAPSED in the Load menu (`menuBar.ts`).
+ *
+ * Both follow from what it is: a backlog to occasionally look through, not part
+ * of the rotation. 176 entries in the cycle would bury the 24 Core presets that
+ * arrow-keying exists to thumb through.
+ */
+export const ARCHIVE_CATEGORY = 'Archive';
 
 /**
  * The preset the app opens with, or `''` to mean "whatever sorts first".
@@ -161,15 +182,14 @@ export class ConfigStore {
       else names.push(record.name);
     }
 
-    // Core first, then alphabetical -- `discover():362-367`. Empty categories are
-    // omitted, which is also what `discover()` does (`:359-360`).
+    // Core first, Archive last, everything else alphabetical between them --
+    // `discover():362-367` plus the Archive rule. Empty categories are omitted,
+    // which is also what `discover()` does (`:359-360`).
+    const rank = (name: string): number =>
+      name === CORE_CATEGORY ? 0 : name === ARCHIVE_CATEGORY ? 2 : 1;
     const ordered = [...byCategory.entries()]
       .filter(([, names]) => names.length > 0)
-      .sort(([a], [b]) => {
-        if (a === CORE_CATEGORY) return b === CORE_CATEGORY ? 0 : -1;
-        if (b === CORE_CATEGORY) return 1;
-        return a.localeCompare(b);
-      });
+      .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b));
 
     const categories: Record<string, readonly string[]> = {};
     const order: string[] = [];
@@ -180,7 +200,14 @@ export class ConfigStore {
       // order, derived from the same source rather than built separately -- which
       // is what stops the menu and the LEFT/RIGHT cycle disagreeing about what
       // comes next (`project_commands.py:79-80`).
-      order.push(...sorted);
+      //
+      // ARCHIVE IS THE ONE EXCEPTION, and it is a deliberate split of what used
+      // to be one list. The cycle is for thumbing through the shipped presets;
+      // dropping 176 archived v8 configs into it would mean arrowing off the end
+      // of Core into a backlog nobody asked to visit. Archive stays fully
+      // loadable -- `entry()` resolves it, the menu lists it -- it just is not
+      // part of the rotation.
+      if (category !== ARCHIVE_CATEGORY) order.push(...sorted);
     }
     return { categories: Object.freeze(categories), order: Object.freeze(order) };
   }

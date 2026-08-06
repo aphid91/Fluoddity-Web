@@ -49,7 +49,7 @@
 
 import type { Command, Status } from '../orchestrator/commands.ts';
 import { MOUSE_MODES } from '../orchestrator/commands.ts';
-import { CORE_CATEGORY } from '../config/configStore.ts';
+import { ARCHIVE_CATEGORY, CORE_CATEGORY } from '../config/configStore.ts';
 import { localHotkeyLabel } from './hotkeys.ts';
 import { PreviewSession } from './previewSession.ts';
 
@@ -158,10 +158,19 @@ export class MenuBar {
    * category is a "get this out of my way while I look at the other one" move
    * rather than a setting, and it costs one click to redo.
    *
-   * Starts EMPTY and stays that way until the user clicks: every category is
-   * open by default, so nothing is hidden from someone who has not asked for it.
+   * Starts holding ARCHIVE ONLY, and every File > Load open re-folds it (see
+   * `setOpenMenu`). Core and Custom are open by default, so nothing a user works
+   * with day to day is hidden from them; the 176-entry v8 backlog is folded
+   * because it is a thing to go looking through occasionally, and unfolded it
+   * would be the overwhelming majority of the menu.
+   *
+   * ARCHIVE IS RE-FOLDED PER VISIT rather than remembered, unlike the others:
+   * expanding it is "let me dig through the backlog now", which does not imply
+   * wanting to be dropped back into 176 rows on the next unrelated visit to
+   * Save. Expanding Core or Custom, by contrast, is left exactly as the user put
+   * it for the rest of the session.
    */
-  private readonly collapsedCategories = new Set<string>();
+  private readonly collapsedCategories = new Set<string>([ARCHIVE_CATEGORY]);
 
   /**
    * One "shut this submenu now" per submenu, for `setOpenMenu` to call.
@@ -174,6 +183,16 @@ export class MenuBar {
    * regardless of where the cursor went.
    */
   private readonly submenuClosers: (() => void)[] = [];
+
+  /**
+   * Per-category "re-apply your fold state to the DOM", keyed by category.
+   *
+   * Populated by `syncLoadMenu` and cleared by it, since each closure captures
+   * that build's header and rows. Exists so `foldArchive` can fold a category
+   * between rebuilds -- the signature guard means a rebuild is NOT guaranteed to
+   * happen when the menu closes.
+   */
+  private readonly applyCollapsedFns = new Map<string, () => void>();
 
   constructor(opts: MenuBarOptions) {
     this.opts = opts;
@@ -607,6 +626,9 @@ export class MenuBar {
     if (signature === this.catalogSignature || this.loadBody === null) return;
     this.catalogSignature = signature;
     this.loadBody.textContent = '';
+    // Cleared with the DOM it refers to: every closure in here captures elements
+    // that are about to be discarded.
+    this.applyCollapsedFns.clear();
 
     const categories = Object.entries(status.configCategories);
     if (categories.length === 0) {
@@ -641,6 +663,9 @@ export class MenuBar {
         header.textContent = `${collapsed ? '▸' : '▾'} ${category} (${names.length})`;
         for (const row of rows) row.style.display = collapsed ? 'none' : '';
       };
+      // Registered so `foldArchive` can re-apply this category's fold without a
+      // rebuild. Rebuilt with the subtree, so it never outlives its elements.
+      this.applyCollapsedFns.set(category, applyCollapsed);
       header.addEventListener('click', () => {
         if (this.collapsedCategories.has(category)) {
           this.collapsedCategories.delete(category);
@@ -836,6 +861,13 @@ export class MenuBar {
     if (title !== 'File') {
       this.hoveredConfig = null;
       this.loadPreview.end();
+      // RE-FOLD THE ARCHIVE as File closes, so the next visit starts folded
+      // however the user left it. Done on CLOSE rather than open because
+      // `applyCollapsed` runs from `syncLoadMenu`, which only rebuilds when the
+      // catalog changes -- folding on open would set the flag with no rebuild to
+      // act on it, and the rows would stay visible until the next save.
+      // `foldArchive` moves the DOM directly, so it works either way.
+      this.foldArchive();
     }
     if (title !== 'History') {
       this.hoveredCheckpoint = null;
@@ -843,6 +875,23 @@ export class MenuBar {
     }
     if (title === 'File') this.loadPreview.begin();
     if (title === 'History') this.checkpointPreview.begin();
+  }
+
+  /**
+   * Fold the Archive back up, so the next File > Load starts collapsed.
+   *
+   * A no-op when it is already folded, which is the common case -- the flag and
+   * the DOM are set together, so re-applying is idempotent.
+   */
+  private foldArchive(): void {
+    if (this.collapsedCategories.has(ARCHIVE_CATEGORY)) return;
+    this.collapsedCategories.add(ARCHIVE_CATEGORY);
+    // The rows are about to be hidden, and `display:none` fires no `mouseleave`
+    // -- the same trap the collapse click handler documents. The preview session
+    // has already been ended by the caller, so only the sticky hover needs
+    // clearing here, or reopening would re-preview a row that is now invisible.
+    this.hoveredConfig = null;
+    this.applyCollapsedFns.get(ARCHIVE_CATEGORY)?.();
   }
 
   private closeMenus(): void {
