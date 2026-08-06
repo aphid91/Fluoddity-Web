@@ -229,6 +229,113 @@ test('warm-up frames are not timed', () => {
   });
 });
 
+test('nothing is probed until the page is visible', async () => {
+  // A hidden tab is throttled hard -- rAF stops, GPU work is deprioritised --
+  // so probes run in that state time as wildly slow and would fail rungs the
+  // machine holds easily. The result would then be committed permanently, since
+  // `calibrated` is set either way. So the walk must not start at all.
+  const target = fakeTarget(budgetMs() / 20 / 2);
+  let release = (): void => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+
+  const walk = calibrate(target, {
+    now: target.clock,
+    waitUntilVisible: () => gate,
+  });
+
+  // Give the walk every chance to misbehave before the gate opens.
+  for (let i = 0; i < 10; i++) await null;
+  assert.equal(target.probes, 0, 'probed while the page was hidden');
+  assert.equal(target.committed, null, 'committed while the page was hidden');
+
+  release();
+  const rung = await walk;
+  assert.ok(target.probes > 0, 'never probed after becoming visible');
+  assert.deepEqual({ ...rung }, { ...PROGRESSION.at(-1)! });
+});
+
+test('waiting for visibility is not charged against the ceiling', async () => {
+  // The ceiling stops a pathologically slow GPU from holding the splash
+  // forever. A backgrounded tab is not that -- it is the user not looking --
+  // and charging the wait would abort the walk of anyone who opened the site in
+  // a background tab and came back a minute later. Which is the exact case the
+  // gating exists to serve.
+  const target = fakeTarget(budgetMs() / 20 / 2);
+  let clock = 0;
+  let release = (): void => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+
+  const walk = calibrate(target, {
+    now: () => clock,
+    // Blocks once, before the first rung.
+    waitUntilVisible: (() => {
+      let first = true;
+      return () => {
+        if (!first) return Promise.resolve();
+        first = false;
+        return gate;
+      };
+    })(),
+  });
+
+  for (let i = 0; i < 10; i++) await null;
+  // A very long time passes while hidden -- far beyond the ceiling.
+  clock = 60_000;
+  release();
+
+  const rung = await walk;
+  // It still reached the top: the wait was excluded, so the ceiling never fired.
+  assert.deepEqual({ ...rung }, { ...PROGRESSION.at(-1)! });
+});
+
+test('backgrounding mid-walk pauses rather than corrupting the result', async () => {
+  // The rungs already banked were measured while visible and stay valid; the
+  // walk picks up where it left off instead of measuring a throttled rung and
+  // failing it. Anything else would produce the under-calibration this gating
+  // is here to prevent, just later in the ladder.
+  const target = fakeTarget(budgetMs() / 20 / 2);
+  const waitingEvents: boolean[] = [];
+  let release = (): void => {};
+  let calls = 0;
+
+  const rung = await calibrate(target, {
+    now: target.clock,
+    onWaiting: (w) => waitingEvents.push(w),
+    waitUntilVisible: () => {
+      // Visible except once, partway down the ladder.
+      if (++calls !== 3) return Promise.resolve();
+      return new Promise<void>((r) => {
+        release = r;
+        // Resolve on a later microtask, so the walk genuinely suspends.
+        queueMicrotask(() => {
+          release();
+        });
+      });
+    },
+  });
+
+  assert.deepEqual({ ...rung }, { ...PROGRESSION.at(-1)! }, 'the walk did not finish');
+  // Reported exactly one suspend/resume pair, and only for the blocking wait.
+  assert.deepEqual(waitingEvents, [true, false]);
+});
+
+test('a visible page never reports waiting', async () => {
+  // The common path. `onWaiting` firing here would flash a "come back" message
+  // on screen once per rung for every user.
+  const target = fakeTarget(budgetMs() / 20 / 2);
+  const waitingEvents: boolean[] = [];
+  await calibrate(target, {
+    now: target.clock,
+    onWaiting: (w) => waitingEvents.push(w),
+    waitUntilVisible: () => Promise.resolve(),
+  });
+  assert.deepEqual(waitingEvents, []);
+});
+
 test('a rebuilt rung burns far more frames than a physics-only one', () => {
   // THE FIX FOR OVER-CONSERVATIVE FIRST RUNS. A world-size change builds a new
   // ParticleSystem whose frameCount starts at zero, and zero is the reset

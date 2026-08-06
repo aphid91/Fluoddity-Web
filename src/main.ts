@@ -228,10 +228,25 @@ async function start(): Promise<void> {
           ? {}
           : {
               runCalibration: async (): Promise<void> => {
+                // Held across the two callbacks so resuming can restore the
+                // progress line rather than blanking it -- `onProgress` does
+                // not fire again until the NEXT rung starts.
+                let progress = '';
                 const rung = await calibrate(orchestrator, {
                   onProgress: (done, total) => {
+                    progress = `Calibrating for your display… (${done}/${total})`;
+                    panel?.setSplashStatus(progress);
+                  },
+                  // A hidden tab is throttled hard enough that measuring it
+                  // would misjudge the GPU badly, so the walk waits. Say so:
+                  // the splash is locked shut meanwhile, and a frozen counter
+                  // with no explanation reads as a hang.
+                  onWaiting: (waiting) => {
                     panel?.setSplashStatus(
-                      `Calibrating for your display… (${done}/${total})`,
+                      waiting
+                        ? 'Paused while this tab is in the background — ' +
+                            'calibration resumes when you come back.'
+                        : progress,
                     );
                   },
                 });

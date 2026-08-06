@@ -49,6 +49,16 @@ export interface CalibrationOptions {
   /** Progress, as `(rungIndex, total)`, before each rung is probed. */
   readonly onProgress?: (done: number, total: number) => void;
   /**
+   * Called with true when the walk starts waiting on a hidden tab, false when
+   * it resumes.
+   *
+   * The splash is up and locked throughout, so without this a user who
+   * backgrounds the tab returns to a frozen progress line and no explanation.
+   * Fires only on an actual transition, so a walk that never waits never calls
+   * it.
+   */
+  readonly onWaiting?: (waiting: boolean) => void;
+  /**
    * Asked between rungs; true abandons the walk and commits what passed.
    *
    * **NOTHING IN THE APP PASSES THIS TODAY.** It existed for the splash being
@@ -61,6 +71,50 @@ export interface CalibrationOptions {
   readonly cancelled?: () => boolean;
   /** Injected for tests. Defaults to `performance.now`. */
   readonly now?: () => number;
+  /**
+   * Resolves once the page is visible; called before the walk and between rungs.
+   *
+   * **A HIDDEN TAB CANNOT BE MEASURED.** Browsers throttle background tabs
+   * hard: `requestAnimationFrame` stops entirely, compositing is suspended, and
+   * GPU work is deprioritised behind whatever is on screen. Probes submitted in
+   * that state time as wildly slow, so a walk that ran while backgrounded would
+   * fail early rungs and commit a floor-level result -- permanently, since
+   * `calibrated` is set either way. Someone who opens the site in a background
+   * tab and comes back later would find a deliberately tiny simulation and no
+   * indication why.
+   *
+   * Defaults to `whenVisible`. Injected so the ladder stays testable without a
+   * DOM, and so a caller with a better signal can supply one.
+   */
+  readonly waitUntilVisible?: () => Promise<void>;
+}
+
+/**
+ * Resolves when the document is visible, immediately if it already is.
+ *
+ * `visibilitychange` is the signal browsers actually tie throttling to, and it
+ * covers every way a page stops being on screen: another tab in front, the
+ * window minimised, the OS locked, a phone screen off.
+ *
+ * **DELIBERATELY NOT ALSO `hasFocus()`.** A visible but unfocused window --
+ * someone typing in another app while this one sits on a second monitor -- is
+ * NOT throttled and measures correctly. Waiting for focus there would stall
+ * calibration indefinitely for a tab the user can see perfectly well and may
+ * never click on.
+ *
+ * Resolves at most once, and removes its own listener, so a walk that waits
+ * several times does not accumulate handlers.
+ */
+export function whenVisible(): Promise<void> {
+  if (typeof document === 'undefined' || !document.hidden) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onChange = (): void => {
+      if (document.hidden) return;
+      document.removeEventListener('visibilitychange', onChange);
+      resolve();
+    };
+    document.addEventListener('visibilitychange', onChange);
+  });
 }
 
 /**
@@ -109,12 +163,16 @@ const WARMUP = 2;
 const REBUILD_WARMUP = 25;
 
 /**
- * Wall-clock ceiling for the whole walk.
+ * Ceiling on the walk's WORKING time -- see how `started` is adjusted below.
  *
  * The budget bounds a single frame, not the sum of them, and on a very slow
  * machine even passing rungs are slow. This bounds the total, so nobody waits
  * behind the splash indefinitely. Checked between rungs rather than mid-rung so
  * a rung is never half-measured.
+ *
+ * Time spent waiting for a hidden tab does not count against it: that is the
+ * user not looking, not the GPU struggling, and there is no reason to punish a
+ * page that was backgrounded for a minute.
  *
  * Raised from 3 s to 8 s along with the burn-in: three rebuild rungs now spend
  * 25 discarded frames each before they measure anything, and the old ceiling
@@ -134,17 +192,59 @@ export async function calibrate(
   opts: CalibrationOptions = {},
 ): Promise<Rung> {
   const now = opts.now ?? ((): number => performance.now());
-  const started = now();
+  const waitUntilVisible = opts.waitUntilVisible ?? whenVisible;
   const total = PROGRESSION.length;
 
   // The floor, accepted without being probed: there is nothing lighter to fall
   // back to, so measuring it could only tell us something we cannot act on.
   let best: Rung = PROGRESSION[0]!;
 
+  // **THE CEILING COUNTS WORKING TIME, NOT WALL TIME.** It exists to stop a
+  // pathologically slow GPU from holding the splash forever, and time spent
+  // waiting for a hidden tab is not the GPU being slow -- it is the user not
+  // looking. Charging the wait against the budget would abort the walk of
+  // anyone who opened the site in a background tab and came back a minute
+  // later, which is precisely the case this gating exists to serve. So the
+  // start is pushed forward by however long each wait took.
+  let started = now();
+  const waitVisible = async (): Promise<void> => {
+    const before = now();
+    const gate = waitUntilVisible();
+
+    // `onWaiting` must not fire on the common path, where the tab is visible
+    // and the gate is already resolved -- that would flash "waiting for you"
+    // on screen once per rung for everybody. `settled` is written by a `then`
+    // callback, which for an already-resolved promise runs on the very next
+    // microtask, so the `await null` below is enough to observe it.
+    let settled = false;
+    void gate.then(() => {
+      settled = true;
+    });
+    await null;
+
+    if (!settled) {
+      opts.onWaiting?.(true);
+      await gate;
+      opts.onWaiting?.(false);
+      started += now() - before;
+    }
+  };
+
   try {
+    // Before the first rung, not just between them: a tab that was NEVER
+    // visible is the common case here -- opened in the background from a link,
+    // or restored on browser startup behind other tabs.
+    await waitVisible();
+
     for (let i = 1; i < total; i++) {
       if (opts.cancelled?.() === true) break;
       if (now() - started > CEILING_MS) break;
+
+      // Between rungs, so backgrounding mid-walk pauses rather than corrupts
+      // it. Checked BEFORE the rung is applied, so a rung is never measured
+      // half-hidden -- the rungs already banked were all measured while
+      // visible, and this one will be too.
+      await waitVisible();
 
       const rung = PROGRESSION[i]!;
       opts.onProgress?.(i, total - 1);
