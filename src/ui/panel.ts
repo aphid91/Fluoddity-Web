@@ -860,6 +860,13 @@ export class Panel {
   }
 
   /**
+   * Show the splash screen (help menu).
+   */
+  showSplash(): void {
+      this.splash.show();
+  }
+
+  /**
    * Report a copy, choosing a surface that is actually visible.
    *
    * THE DIALOG WINS WHEN IT IS UP, and this is not a preference. A native

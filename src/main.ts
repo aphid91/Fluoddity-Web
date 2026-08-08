@@ -285,6 +285,9 @@ async function start(): Promise<void> {
       panel.setHidden(!panel.hidden);
       orchestrator.panelOpen = panel.isOpen;
     },
+    showWelcome: () => {
+        panel?.showSplash();
+    },
     // `?nopanel` takes the toast with the panel, so there would be nowhere to
     // report the result. Copying silently is worse than not copying.
     copyShareLink: () => panel?.copyShareLink(),

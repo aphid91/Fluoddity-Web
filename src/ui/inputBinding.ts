@@ -43,6 +43,8 @@ export interface InputBindingOptions {
   readonly dispatch: (command: Command) => void;
   /** Handle the `toggleUi` local action -- the `X` key. */
   readonly toggleUi: () => void;
+  /** Handle the `showWelcome` local action -- the `?` key. */
+  readonly showWelcome: () => void;
   /**
    * Handle the `copyShareLink` local action -- `Shift+C`.
    *
@@ -71,7 +73,7 @@ export function bindInput(opts: InputBindingOptions): {
   readonly tracker: InputTracker;
   dispose(): void;
 } {
-  const { surface, dispatch, toggleUi, copyShareLink, pasteShareLink } = opts;
+  const { surface, dispatch, toggleUi, showWelcome, copyShareLink, pasteShareLink } = opts;
   const canvas = surface.canvas;
   const tracker = new InputTracker();
   const table = opts.hotkeys ?? DEFAULT_HOTKEYS;
@@ -215,6 +217,9 @@ export function bindInput(opts: InputBindingOptions): {
       switch (hit.local) {
         case 'toggleUi':
           toggleUi();
+          break;
+        case 'showWelcome':
+          showWelcome();
           break;
         case 'copyShareLink':
           copyShareLink();

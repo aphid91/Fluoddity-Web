@@ -381,7 +381,7 @@ export class MenuBar {
     // `setOpenMenu` -- only File and History gate hover-preview sessions -- so
     // this one is an ordinary menu with nothing to keep in sync.
     this.addMenu('Help', (body) => {
-      this.addItem(body, 'Welcome / Controls...', () => this.opts.onShowWelcome());
+      this.addItem(body, 'Welcome / Controls...', () => this.opts.onShowWelcome(), '?');
     });
   }
 

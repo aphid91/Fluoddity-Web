@@ -61,7 +61,7 @@ import { MOUSE_MODES, type Command } from '../orchestrator/commands.ts';
  * simulation's vocabulary. `ui.py:471-473` says the same -- "rule 10 cuts both
  * ways".
  */
-export type LocalAction = 'toggleUi' | 'copyShareLink' | 'pasteShareLink';
+export type LocalAction = 'toggleUi' | 'showWelcome' | 'copyShareLink' | 'pasteShareLink';
 
 /** One binding. Exactly one of `command`/`local` is set. */
 export interface Hotkey {
@@ -140,6 +140,7 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
 
   // --- the UI's own ---------------------------------------------------------
   { code: 'KeyX', local: 'toggleUi' },
+  { code: 'Slash', shift: true, local: 'showWelcome' },
   // `local`, not a `Command`, for the reason `toggleUi` is: the clipboard is
   // the browser's and the Orchestrator has no DOM in it at all. It hands over a
   // document when asked (`CommandBus.projectDocument`) and never learns that a
@@ -215,6 +216,12 @@ export function localHotkeyLabel(
  * was real but unreachable; the share link reaches it.
  */
 function keyLabel(row: Hotkey): string {
+  // Annoying special-case, because "Shift-Slash" is not how we talk about the
+  // question mark key.
+  if (row.code == 'Slash' && row.shift) {
+      return '?';
+  }
+
   const key = row.code.replace(/^(Key|Digit)/, '');
   return row.shift === true ? `Shift+${key}` : key;
 }

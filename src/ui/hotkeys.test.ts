@@ -167,6 +167,12 @@ test('X is handled locally rather than dispatched', () => {
   assert.equal(hit?.command, undefined, 'hiding the panel is not simulation state');
 });
 
+test('? is handled locally rather than dispatched', () => {
+  const hit = matchHotkey(DEFAULT_HOTKEYS, 'Slash', true);
+  assert.equal(hit?.local, 'showWelcome');
+  assert.equal(hit?.command, undefined, 'showing the welcome the panel is not simulation state');
+});
+
 // --- 3b. hotkeyLabel: the shortcut hints in the overlay --------------------
 //
 // The mutation overlay advertises its shortcuts -- "Reroll Mutations (F)",
@@ -218,6 +224,7 @@ test('localHotkeyLabel reaches the bindings that have no command', () => {
   // which is why the share button's "(Shift-C)" would otherwise have to be
   // typed by hand, the staleness this whole group exists to prevent.
   assert.equal(localHotkeyLabel('toggleUi'), 'X');
+  assert.equal(localHotkeyLabel('showWelcome'), '?');
   assert.equal(localHotkeyLabel('copyShareLink'), 'Shift+C');
   assert.equal(localHotkeyLabel('pasteShareLink'), 'Shift+V');
 });
