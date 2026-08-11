@@ -78,6 +78,16 @@ class SearchConfig:
     #: Configs to start generation 0 from. Empty means start from immigrants.
     seed_configs: list = field(default_factory=list)
 
+    #: How many random rules to draw for generation 0 when there are no
+    #: seed_configs. 0 means "as many as the beam holds", which is the old
+    #: behaviour and the right default for a search -- generation 0 exists to
+    #: fill the beam, so drawing more would be wasted work.
+    #:
+    #: Set it when generation 0 IS the point: a pure sampling run wants a
+    #: number chosen for coverage, not one inherited from the beam. Ignored
+    #: when seed_configs is non-empty, since then generation 0 is the seeds.
+    sample_size: int = 0
+
     # --- scoring ---
     #: 'texture' needs no torch and no download; 'clip' needs both.
     backend: str = "texture"
@@ -168,9 +178,19 @@ class SearchConfig:
             problems.append(f"beam_width must be >= 1 (got {self.beam_width})")
         if self.children_per_parent < 0 or self.immigrants < 0:
             problems.append("children_per_parent and immigrants must be >= 0")
-        if self.children_per_parent == 0 and self.immigrants == 0:
-            problems.append("children_per_parent and immigrants are both 0; "
-                            "the search would produce nothing")
+        if self.sample_size < 0:
+            problems.append(f"sample_size must be >= 0 (got {self.sample_size})")
+        # children_per_parent and immigrants may BOTH be zero: that is a
+        # sampling run, where generation 0 is the whole point and there is
+        # deliberately nothing after it. Only complain if such a run would also
+        # produce no generation 0 -- i.e. nothing at all.
+        if (self.children_per_parent == 0 and self.immigrants == 0
+                and self.generations > 1):
+            problems.append(
+                f"children_per_parent and immigrants are both 0, so nothing "
+                f"is produced after generation 0 -- set generations to 1 "
+                f"(got {self.generations}) or give the search something to "
+                f"breed")
         if self.backend not in ('texture', 'clip'):
             problems.append(f"backend must be 'texture' or 'clip' "
                             f"(got {self.backend!r})")
@@ -196,4 +216,37 @@ class SearchConfig:
 
     @property
     def candidates_per_generation(self):
+        """Candidates in a BREEDING generation (1 and later)."""
         return self.beam_width * self.children_per_parent + self.immigrants
+
+    @property
+    def generation_zero_size(self):
+        """Candidates in generation 0, which is a different shape.
+
+        Generation 0 is seeds if there are any, and otherwise a draw of random
+        rules -- never the beam x children arithmetic that governs the rest.
+        Worth its own property because a sampling run's whole output is this
+        number, and reporting the breeding size instead would be wrong by
+        orders of magnitude.
+        """
+        if self.seed_configs:
+            return len(self.seed_configs)
+        return self.sample_size or max(self.beam_width, self.immigrants)
+
+    @property
+    def is_sampling_run(self):
+        """True when this run only draws random rules and stops."""
+        return (self.generations <= 1
+                and not self.seed_configs
+                and self.children_per_parent == 0)
+
+    def describe_plan(self):
+        """One line saying what this config will actually do."""
+        if self.is_sampling_run:
+            return f"sample {self.generation_zero_size} random rules"
+        first = (f"{len(self.seed_configs)} seed config(s)" if self.seed_configs
+                 else f"{self.generation_zero_size} random rules")
+        if self.generations <= 1:
+            return f"evaluate {first}"
+        return (f"{first}, then {self.generations - 1} generation(s) of "
+                f"{self.candidates_per_generation} candidates")

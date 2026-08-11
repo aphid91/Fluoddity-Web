@@ -330,7 +330,12 @@ class SearchRun:
 
         # The checkpoint is what makes this candidate breedable next
         # generation. Released later if it does not survive the cull.
-        move_lib.checkpoint(self.client, candidate)
+        #
+        # Skipped entirely for a sampling run: nothing will ever breed from
+        # these, and a run drawing a few thousand rules would otherwise
+        # accumulate a whole Project per candidate in the app for no reason.
+        if not self.cfg.is_sampling_run:
+            move_lib.checkpoint(self.client, candidate)
         return candidate
 
     def _by_id(self, candidate_id):
@@ -612,9 +617,7 @@ def main(argv=None):
     if overrides:
         cfg = dataclasses.replace(cfg, **overrides)
 
-    print(f"search: {cfg.generations} generations x "
-          f"{cfg.candidates_per_generation} candidates "
-          f"(~{cfg.warmup_steps} steps each)")
+    print(f"search: {cfg.describe_plan()} (~{cfg.warmup_steps} steps each)")
     SearchRun(cfg).run()
     return 0
 

@@ -94,12 +94,19 @@ class BeamSearch:
 
         Configs the user named, if any; otherwise a population of immigrants.
         Starting from nothing is a legitimate way to run this -- it is a search
-        of the whole space rather than a refinement of somewhere in it.
+        of the whole space rather than a refinement of somewhere in it, and
+        with generations=1 it is simply a random sample of N rules.
+
+        `sample_size` sizes that sample when generation 0 is the point. It
+        defaults to filling the beam, which is what a search wants: generation
+        0 exists to give the beam something to breed from, so drawing more than
+        the beam can hold would be work thrown away.
         """
         if self.seed_configs:
             return [Move(origin=ROOT, config_path=str(path))
                     for path in self.seed_configs]
-        count = max(self.cfg.beam_width, self.cfg.immigrants)
+        count = (self.cfg.sample_size or
+                 max(self.cfg.beam_width, self.cfg.immigrants))
         return [Move(origin=IMMIGRANT) for _ in range(count)]
 
     def observe(self, evaluated):

@@ -60,24 +60,52 @@ So annealing it over generations is well-founded, if you want that later.
 **The move is deterministic.** Given `(parent, scale, seed)` the child is
 reproducible exactly, which is why the manifest records all three.
 
+### Generations are numbered from 0
+
+| generation | what it is | how many |
+|---|---|---|
+| **0** | seed configs, or random rules if there are none | `len(seed_configs)`, else `sample_size` (or `max(beam_width, immigrants)`) |
+| **1+** | children of the beam, plus immigrants | `beam_width × children_per_parent + immigrants` |
+
+So `generations: 1` runs **only generation 0** — it evaluates its starting
+points and stops. `generations: 2` adds one round of breeding.
+
 ### Two presets
 
 **`search.json`** — a multi-generation beam search. Hill-climbs: keep the best
 K, breed M children each, repeat.
 
-**`fan_search.json`** — two generations, no selection pressure. Generation 0
-evaluates each seed config unchanged; generation 1 fans every one of them out
-into children. `immigrants: 0`, and `beam_width` is set deliberately high so
-**every** seed survives to breed (the beam is capped at
-`min(seeds_scored, beam_width)`, so a narrow beam would silently drop the
-worst-scoring seeds before they ever fan out).
+**`fan_search.json`** — explores wide rather than deep. As shipped it is a
+**pure sampling run**: draw `sample_size` random rules, score them all, stop.
 
-Use the fan preset to explore the neighbourhood of configs you already like, or
-to sample fresh rules from an all-zero seed. Total candidates are
-`seeds + seeds × children_per_parent`.
+```json
+"generations": 1,
+"sample_size": 200,
+"seed_configs": [],
+"children_per_parent": 0,
+"immigrants": 0
+```
 
-Note `generations: 1` would score the seeds and stop — no mutations at all.
-Two is the minimum that produces children.
+`sample_size` is the only knob that changes the count. Nothing breeds, so
+nothing is checkpointed — a run drawing thousands of rules would otherwise
+accumulate a whole project per candidate inside the app for no reason.
+
+**To fan instead of sample**, set `generations: 2` and
+`children_per_parent > 0`, and optionally fill `seed_configs`. Generation 0 then
+evaluates the seeds (or `sample_size` random rules) unchanged, and generation 1
+fans every survivor out. Keep `beam_width` at least the number of seeds, or the
+worst-scoring ones are culled before they ever breed.
+
+The run prints what it will do before it starts:
+
+```
+search: sample 200 random rules (~2000 steps each)
+search: 4 seed config(s), then 1 generation(s) of 68 candidates (~2000 steps each)
+```
+
+**A random sample is not a zero-rule seed.** Each immigrant adopts its generated
+rule the moment it is made, so it is a normal population member before it is
+ever scored — see below.
 
 ### Seeding from an all-zero rule
 
@@ -212,6 +240,7 @@ python -m pilot.run --config search.json \
 | `beam_width` / `children_per_parent` | `K` survivors, `M` children each. |
 | `immigrants` | Fresh random behaviours per generation. **Keep this nonzero.** |
 | `seed_configs` | Start from configs you already like. Empty starts from immigrants. |
+| `sample_size` | Random rules in generation 0 when there are no seeds. 0 = fill the beam. |
 | `backend` | `texture` (scipy) or `clip` (torch). |
 | `reference_dir` | Images to search toward. Omit for a scoreless smoke run. |
 | `caption` | A text prompt to search toward. CLIP only; excludes `reference_dir`. |

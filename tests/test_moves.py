@@ -306,9 +306,15 @@ def test_config_validation():
     check("cohorts != 1 is rejected",
           any('cohorts' in p for p in problems), str(problems))
 
-    problems = SearchConfig(children_per_parent=0, immigrants=0).validate()
-    check("a search that would produce nothing is rejected",
-          any('produce nothing' in p for p in problems), str(problems))
+    # Breeding nothing is FINE at generations=1 -- that is a sampling run --
+    # but across several generations it means empty rounds forever.
+    problems = SearchConfig(children_per_parent=0, immigrants=0,
+                            generations=5).validate()
+    check("a multi-generation search that breeds nothing is rejected",
+          any('generation 0' in p for p in problems), str(problems))
+    check("but a single-generation sampling run is allowed",
+          SearchConfig(children_per_parent=0, immigrants=0,
+                       generations=1).validate() == [])
 
     problems = SearchConfig(backend='banana').validate()
     check("an unknown backend is rejected",
@@ -337,17 +343,60 @@ def test_presets():
         check(f"{name} validates", problems == [], str(problems))
 
     fan = SearchConfig.load(ROOT / 'fan_search.json')
-    # The preset's whole shape: seeds, then exactly one round of children.
-    check("fan_search runs 2 generations", fan.generations == 2,
-          str(fan.generations))
-    check("fan_search adds no immigrants", fan.immigrants == 0,
-          str(fan.immigrants))
-    # A beam narrower than the seed list would silently drop the worst seeds
-    # before they ever fan out, which is the opposite of what a fan is for.
-    check("fan_search's beam is wide enough not to cull seeds",
-          fan.beam_width >= 32, str(fan.beam_width))
-    check("fan_search fans each parent out",
-          fan.children_per_parent > 1, str(fan.children_per_parent))
+    # As shipped it is a pure sampling run: draw N random rules, score, stop.
+    check("fan_search is a sampling run", fan.is_sampling_run,
+          fan.describe_plan())
+    check("fan_search draws sample_size candidates",
+          fan.generation_zero_size == fan.sample_size,
+          f"{fan.generation_zero_size} vs sample_size {fan.sample_size}")
+    check("fan_search samples a useful number", fan.sample_size >= 50,
+          str(fan.sample_size))
+    check("fan_search's plan reads as sampling",
+          'sample' in fan.describe_plan(), fan.describe_plan())
+
+    # search.json is the opposite: a real multi-generation hill-climb.
+    beam = SearchConfig.load(ROOT / 'search.json')
+    check("search.json is NOT a sampling run", not beam.is_sampling_run,
+          beam.describe_plan())
+    check("search.json breeds", beam.children_per_parent > 0,
+          str(beam.children_per_parent))
+
+
+def test_sampling_runs():
+    """A run that only draws random rules must be expressible."""
+    print("\nsampling runs")
+
+    sampling = SearchConfig(generations=1, children_per_parent=0,
+                            immigrants=0, sample_size=200)
+    check("children=0 and immigrants=0 is allowed at generations=1",
+          sampling.validate() == [], str(sampling.validate()))
+    check("recognized as a sampling run", sampling.is_sampling_run)
+    check("generation 0 is sample_size", sampling.generation_zero_size == 200)
+    check("the plan says so", 'sample 200' in sampling.describe_plan(),
+          sampling.describe_plan())
+
+    # But a run that breeds nothing across SEVERAL generations is a mistake:
+    # generations 2+ would produce empty rounds forever.
+    broken = SearchConfig(generations=5, children_per_parent=0, immigrants=0)
+    problems = broken.validate()
+    check("breeding nothing across many generations is rejected",
+          any('generation 0' in p for p in problems), str(problems))
+
+    check("negative sample_size is rejected",
+          any('sample_size' in p
+              for p in SearchConfig(sample_size=-1).validate()))
+
+    # sample_size defaults off, preserving the old beam-filling behaviour.
+    default = SearchConfig(beam_width=8, immigrants=4)
+    check("sample_size defaults to filling the beam",
+          default.sample_size == 0 and default.generation_zero_size == 8,
+          str(default.generation_zero_size))
+
+    # And it is ignored when seeds are given -- generation 0 is the seeds then.
+    seeded = SearchConfig(seed_configs=['a.json', 'b.json'], sample_size=500)
+    check("sample_size is ignored when seed_configs is set",
+          seeded.generation_zero_size == 2, str(seeded.generation_zero_size))
+    check("a seeded run is not a sampling run", not seeded.is_sampling_run)
 
 
 def main():
@@ -360,6 +409,7 @@ def main():
     test_zero_rule_parent_children()
     test_seed_reroll_on_generated_rules()
     test_presets()
+    test_sampling_runs()
     test_candidate_roundtrip()
     test_checkpoint_names()
     test_config_validation()

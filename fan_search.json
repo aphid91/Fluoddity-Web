@@ -1,5 +1,5 @@
 {
-  "_preset": "FAN SEARCH -- seed configs, then one round of mutations. Two generations, no selection pressure: generation 0 evaluates each seed config unchanged, generation 1 fans every seed out into children. Use it to explore the neighbourhood of configs you already like, or to sample fresh rules from an all-zero seed. For a real multi-generation hill-climb, use search.json instead.",
+  "_preset": "FAN SEARCH -- explore WIDE rather than deep. As shipped it is a pure sampling run: draw sample_size random rules, score them all, stop. Point seed_configs at configs you already like and it fans each one out into children instead. For a real multi-generation hill-climb, use search.json.",
 
   "run_dir": "documents/sequences/fan",
   "resume": false,
@@ -11,24 +11,23 @@
   "warmup_steps": 2000,
   "capture_size": 396,
 
-  "_generations": "2 = seeds (gen 0) + one round of children (gen 1). This is the minimum that produces mutations at all; 1 would only score the seeds.",
-  "generations": 2,
+  "_mode_sampling": "AS SHIPPED: generations 1, no seed_configs, children_per_parent 0. Generation 0 is the whole run -- sample_size independent random rules, each scored and captured. Nothing breeds. Raise sample_size for more coverage; it is the only knob that changes the candidate count in this mode.",
+  "_mode_fan": "TO FAN INSTEAD: set generations to 2 and children_per_parent to something above 0, and optionally fill seed_configs. Generation 0 then evaluates the seeds (or sample_size random rules) unchanged, and generation 1 fans every survivor out. Keep beam_width >= the number of seeds, or the worst ones are culled before they breed.",
 
-  "_beam_width": "Set high enough that EVERY seed survives generation 0 and gets to breed. The beam is capped at min(seeds scored, beam_width), so a small beam here would silently drop the worst-scoring seeds before they fan out.",
-  "beam_width": 32,
+  "generations": 1,
+  "sample_size": 200,
+  "seed_configs": [],
 
-  "_children_per_parent": "How wide each seed fans. Total candidates = seeds + (seeds x this) + immigrants.",
-  "children_per_parent": 24,
-
+  "children_per_parent": 0,
   "immigrants": 0,
 
-  "_mutation_scale": "How far children stray from their seed. Measured L2 from the parent rule: 0.19 / 0.38 / 1.34 / 3.82 at scale 0.05 / 0.1 / 0.35 / 1.0. IGNORED when a seed's rule is all zeros -- see _zero_rule_note.",
+  "_beam_width": "Only matters once something breeds. In sampling mode it just caps how many survivors the summary reports as the beam.",
+  "beam_width": 32,
+
+  "_mutation_scale": "Unused in sampling mode. When fanning: measured L2 from the parent rule is 0.19 / 0.38 / 1.34 / 3.82 at scale 0.05 / 0.1 / 0.35 / 1.0. IGNORED on an all-zero seed rule -- see _zero_rule_note.",
   "mutation_scale": 0.2,
 
-  "_zero_rule_note": "An all-zero rule is the engine's 'no behaviour authored' sentinel: the shader generates a rule from mutation_seed instead of reading one, and generated rules are never mutated. So on such a seed, mutation_scale does nothing (pinned to 0) and each child is an INDEPENDENT random rule rather than a small step -- measured L2 between them is 8-12, where authored siblings at scale 0.15 sit near 0.75. Selecting the particle writes the generated rule in as a real one, so the children themselves are normal population members and can be mutated properly afterwards. Rows produced this way carry extra.from_zero_rule in the manifest.",
-
-  "_seed_configs": "The configs to fan out from. Paths are relative to the repo root. An empty list falls back to random immigrants, which makes this a pure random sampling run.",
-  "seed_configs": [],
+  "_zero_rule_note": "An all-zero rule is the engine's 'no behaviour authored' sentinel: the shader generates a rule from mutation_seed instead of reading one, and generated rules are never mutated. So mutation_scale does nothing on such a parent (the app pins it to 0) and each child is an INDEPENDENT random rule -- measured pairwise L2 of 9.9-12.2, against 0.87-1.06 for children of an authored parent at scale 0.2. Note the random rules this preset samples are NOT affected: every immigrant adopts its generated rule immediately, so it is a normal population member before it is ever scored.",
 
   "backend": "clip",
   "crops": 6,

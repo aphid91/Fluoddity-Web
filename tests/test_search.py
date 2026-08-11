@@ -100,6 +100,17 @@ def test_generation_zero():
     check("carries the config paths",
           [m.config_path for m in moves] == ['a.json', 'b.json'])
 
+    # sample_size sizes generation 0 when generation 0 IS the run.
+    sampling = SearchConfig(generations=1, children_per_parent=0,
+                            immigrants=0, sample_size=137, beam_width=8)
+    drawn = BeamSearch(sampling).propose(0)
+    check("sample_size drives the generation-0 count",
+          len(drawn) == 137, f"{len(drawn)} moves")
+    check("and they are all immigrants",
+          all(m.origin == IMMIGRANT for m in drawn))
+    check("a sampling run proposes nothing after generation 0",
+          BeamSearch(sampling).propose(1) == [], "it would breed")
+
 
 def test_proposal_shape():
     print("\nproposal shape")
