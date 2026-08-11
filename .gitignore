@@ -34,3 +34,10 @@ preferences.json
 # project source. A canonical default layout, if ever wanted, ships as
 # default_imgui.ini the way Reference/ does.
 imgui.ini
+
+# Search output: a run writes a config and a 512px capture per candidate, so a
+# few generations is hundreds of files and tens of megabytes. Results are
+# working data -- promote a config worth keeping into configs/custom/ by hand.
+documents/
+# tex_sim.py's embedding cache, keyed by backend signature.
+.texsim_cache/

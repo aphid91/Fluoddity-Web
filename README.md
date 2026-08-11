@@ -18,8 +18,10 @@ The design is documented, and the documentation is kept current:
   changing anything.**
 - [docs/API.md](docs/API.md) — the piloting API: drive the app from another
   program over HTTP.
-- [docs/CLIP_INTEGRATION.md](docs/CLIP_INTEGRATION.md) — the plan for
-  CLIP-guided search over mutation space. Not built.
+- [docs/SEARCH.md](docs/SEARCH.md) — the automated search: let a program hunt
+  through mutation space for patterns you like, while you watch.
+- [docs/CLIP_INTEGRATION.md](docs/CLIP_INTEGRATION.md) — how the two processes
+  relate, what was measured, and what is still open.
 
 ## Running it
 
@@ -28,15 +30,25 @@ Scratch.venv/Scripts/python.exe main.py                  # the app
 Scratch.venv/Scripts/python.exe main.py --api-port 8765  # plus the API
 ```
 
+With the API up, a search can drive it from another terminal:
+
+```
+Scratch.venv/Scripts/python.exe -m pilot.run --write-example search.json
+Scratch.venv/Scripts/python.exe -m pilot.run --config search.json
+```
+
 Tests are standalone scripts, each returning an exit code:
 
 ```
 Scratch.venv/Scripts/python.exe tests/test_schedule_parse.py     # no GPU
 Scratch.venv/Scripts/python.exe tests/test_pending_selection.py  # no GPU
+Scratch.venv/Scripts/python.exe tests/test_moves.py              # no GPU
+Scratch.venv/Scripts/python.exe tests/test_search.py             # no GPU
 Scratch.venv/Scripts/python.exe tests/test_async_pick.py         # GPU, no window
 Scratch.venv/Scripts/python.exe tests/test_hot_reload.py         # GPU, no window
 Scratch.venv/Scripts/python.exe tests/test_api_capture.py        # GPU, no window
 Scratch.venv/Scripts/python.exe tests/test_api_loopback.py       # needs a display
+Scratch.venv/Scripts/python.exe tests/test_pilot_loopback.py     # needs a display
 ```
 
 ## Algorithm Structure

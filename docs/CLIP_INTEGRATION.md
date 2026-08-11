@@ -1,187 +1,128 @@
-# CLIP-guided search — the plan
+# CLIP integration — status and background
 
-**Status: not built.** This records the design so the piloting API can be judged
-against what it is actually for, and so the next conversation starts from
-decisions already made rather than remaking them.
+**This is built.** See **[SEARCH.md](SEARCH.md)** for how to run a search, every
+knob, and how to extend it.
 
-What exists today: [`../api/`](../api/) and [API.md](API.md) — the app can be
-driven programmatically. [`../demos/tex_sim.py`](../demos/tex_sim.py) — a
-working, standalone CLI that embeds, ranks, captions and clusters images. The
-two have never been connected.
+This file keeps what SEARCH.md does not need to repeat: how the two processes
+relate, what was measured on the way, and what is still open.
 
 ---
 
-## The idea
-
-Fluoddity's mutation space is large and unlabelled. Finding interesting
-behaviour means looking at a lot of frames, and the looking is the bottleneck —
-the simulation can produce candidates far faster than a person can judge them.
-
-So: let a program do the looking. Render candidates, embed the frames, score
-them against a text prompt or a reference image, and let the ranking steer which
-part of mutation space gets explored next. The operator watches it happen and
-intervenes when something looks promising.
-
----
-
-## The boundary, and why it is where it is
-
-**The app never imports torch.** That is the load-bearing statement of this
-document.
-
-Two processes:
+## The boundary
 
 ```
    pilot process                        app process
    ─────────────                        ───────────
-   torch, open_clip, numpy      HTTP    moderngl, glfw, imgui
+   scipy / torch / numpy        HTTP    moderngl, glfw, imgui
    search strategy            ───────>  the simulation
-   embeddings, scoring        <───────  PNG bytes / files
+   embeddings, scoring        <───────  PNG captures
 ```
 
-Three reasons, in order of how much trouble they save:
+**The app never imports torch, and `pilot/` never imports the app.** One
+repository, two processes, and the HTTP API is the whole of the contact between
+them.
 
-1. **Driver conflicts.** torch/CUDA and moderngl competing for the same GPU in
-   one process is a category of problem that produces intermittent crashes with
-   no useful stack trace. Separate processes make it someone else's scheduler
-   problem.
+Three reasons, in the order they will bite:
+
+1. **Driver conflicts.** torch/CUDA and moderngl competing for one GPU in one
+   process produces intermittent crashes with no useful stack trace.
 2. **The pilot must be restartable.** Search strategies get rewritten
-   constantly. Restarting the pilot without losing a running simulation — its
-   loaded config, its checkpoint list, its warmed-up canvas — is the difference
-   between an afternoon of iteration and an afternoon of waiting for startup.
-3. **The app stays a desktop app.** It has no dependency on the search, and
-   removing the search means deleting a directory that was never on the app's
-   side of the wire.
+   constantly. Restarting the pilot without losing a warmed-up simulation is the
+   difference between iterating and waiting.
+3. **The app stays a desktop app.** Deleting `pilot/` leaves it untouched.
 
-This is also why the API is HTTP rather than a Python import: the boundary is
-enforced by the transport, not by discipline.
+The transport enforces this rather than discipline doing it.
 
 ---
 
-## The seam
+## What was measured
 
-`tex_sim.py`'s entire contract with the outside world is one method:
+Recorded because each one changed a decision, and because re-deriving them costs
+an afternoon.
 
-```python
-def embed_images(self, paths: list[Path]) -> np.ndarray:
-    """Return (N, C, D) -- C crops/views per image, L2-normalized rows."""
-```
+**Throughput is bound by `advance()`, not by rendering.** Skipping the render
+measured **6–9%** — inside the noise. A render-skipping fast-forward path was
+planned, measured, and dropped: it would have saved ~20ms on a ~300ms candidate
+while costing the ability to watch a run, which is the reason the app is not
+headless in the first place.
 
-It discovers images by walking a directory and caches embeddings per file, keyed
-by `(resolved path, size, mtime)` — `file_key()` — into
-`.texsim_cache/{backend}_{signature}.npz`. New images are cheap; changing a
-backend hyperparameter changes `signature()` and therefore the cache file, so
-stale embeddings cannot silently survive a configuration change.
+**`world_size` is the real lever.** 0.1 gives 17,000 steps/s against 1,785 at
+full size — a 10× difference that decides whether a generation takes seconds or
+minutes. Full table in SEARCH.md.
 
-**That means the integration works today with zero changes to `tex_sim.py`**:
-the app writes PNGs to a folder, the pilot points `get_embeddings` at it. Start
-there.
+**Which flips the bottleneck to the embedding.** At ~0.3s of simulation per
+candidate, a per-candidate model call would cost more than the thing it
+measures. Hence generation-batched embedding, and hence the composed
+`evaluate_candidate` command — one HTTP round trip per candidate instead of six.
 
-The one thing to add on the app side is **stable identity**. `Row.path` is the
-only identifier that survives into the CSV and HTML output; nothing carries a
-config id. A filename convention that encodes the candidate — seed, scale,
-parent checkpoint — is the cheapest way to make results traceable back to the
-state that produced them.
+**`mutation_scale` is linear in distance** (0.19 / 0.38 / 1.34 / 3.82 at
+0.05 / 0.1 / 0.35 / 1.0), so it is a genuine step-size dial rather than an
+on/off. An earlier draft of this document claimed mutation space had "no
+gradient to follow" — that is true of the *seed*, which is an opaque selector,
+and wrong about the scale.
 
-If disk round-trips later prove too slow, the seam to change is exactly one
-method: an `embed_images(frames: list[np.ndarray])` variant fed by the API's
-bytes-back capture, plus a replacement for `file_key`/`cache_path` (both
-`Path.stat()`-bound) with a parameter hash. Do not do this speculatively — a
-PNG write is microseconds next to a CLIP forward pass.
+**A zero rule is immune to mutation.** The trap that would have made random
+immigrants sterile. Described in SEARCH.md and asserted in `tests/test_moves.py`.
 
 ---
 
-## Two backends, and when each is right
+## About the backends
 
-**`ClipBackend`** (`ViT-B-32` / `laion2b_s34b_b79k`) — semantic. Scores against
-text. This is what makes "find me something that looks like coral" a query.
+`demos/tex_sim.py` is the working implementation of both, and `pilot/embedding.py`
+imports it rather than reimplementing it. Its hard-won details — the crop
+sampling, the Euler-characteristic curve, the float32 discipline — are exactly
+what a clean rewrite would quietly get wrong.
 
-**`TextureBackend`** — no torch, interpretable, and arguably the better fit for
-Turing-like patterns. Four concatenated blocks: radially-averaged FFT power
-spectrum, angular power distribution, Euler-characteristic curve, intensity
-histogram. The Euler curve is the interesting one:
+**`TextureBackend` is the default and needs no torch.** Four concatenated
+blocks: radially-averaged FFT power, angular power distribution, an
+Euler-characteristic curve, an intensity histogram. The Euler curve is the
+interesting one:
 
 > `chi(t) = components(fg) - holes(fg)` across intensity thresholds. Separates
-> spots / labyrinths / inverted spots, which is exactly the Turing morphology
-> axis.
+> spots / labyrinths / inverted spots — the Turing morphology axis.
 
-`similar --backend texture --explain` against Fluoddity renders would rank
-configs by characteristic wavelength and spot/labyrinth morphology, with no
-model download and no GPU contention. **Worth trying first**, precisely because
-it is cheap and its failures are legible.
+For a simulation whose output is texture, this is arguably a better match than a
+semantic model, and its failures are legible in a way a neural embedding's are
+not.
 
----
+**`ClipBackend` understands text**, at the cost of a torch install and a model
+download. Two things about it worth knowing before relying on it:
 
-## Two things about CLIP that change what the app should capture
+- **CLIP preprocesses to 224×224**, so capture resolution matters far less than
+  instinct suggests for whole-frame scoring.
+- **Crops are how you make it describe texture rather than composition.** From
+  `tex_sim.py`'s own help: *"8–16 makes it describe local texture."* This is the
+  setting that matters for this simulation, and it argues the opposite way on
+  resolution — more pixels give the crops more to work with.
 
-**CLIP preprocesses to 224×224.** Capturing at 1024² for a whole-frame embedding
-throws away 95% of the pixels. This is why [API.md](API.md)'s note about capture
-resolution being resampling rather than detail matters less than it sounds —
-for whole-frame scoring, window resolution is nearly irrelevant.
-
-**Crops are how you make it describe texture rather than layout.** From
-`tex_sim.py`'s own help: *"CLIP: embed N random crops per image instead of the
-whole frame. 8–16 makes it describe local texture."* For a simulation whose
-output is texture, this is the setting that matters, and it argues the *opposite*
-way on resolution — a larger capture gives crops more to work with. Somewhere
-around 512–768 square is likely the sweet spot. Measure it.
-
-**Raw cosines are uninformative and must be calibrated.** `cmd_rank` scores
-against 30 background captions and reports a robust z-score:
-
-```python
-med = np.median(bgs, 1)
-mad = np.median(np.abs(bgs - med[:, None]), 1) * 1.4826
-z = (s - med) / np.maximum(mad, 0.01)
-```
-
-with the printed warning *"rank by z, not raw cosine"*. Any scoring built on top
-of this must do the same or the ranking is mostly measuring caption length.
+`tex_sim.py`'s per-file embedding cache is deliberately **not** used by the
+pilot: it keys on `(path, size, mtime)` to avoid re-embedding a stable corpus,
+which is right for a CLI pointed at a photo library and wrong here, where every
+capture is written once, embedded once, and never seen again.
 
 ---
 
-## The part that is genuinely undesigned
+## Still open
 
-**What "a direction in mutation space" means.** The API exposes the knobs —
-`mutation_seed`, `mutation_scale`, `adopt_rule` via `select_particle_at`,
-checkpoints — but which of them constitutes a *move*, and what a neighbourhood
-looks like, is an open question. Some observations that constrain it:
+**Whether the objective tracks taste.** The measured smoke run produced 19
+distinct scores that visually separated structured patterns from featureless
+blobs. That is the scorer being *discriminating*; it is not evidence that it is
+*right*. The check in SEARCH.md — rank configs you already have, look at both
+ends — is the one that decides this, and it has not been done with a real
+reference set.
 
-- `mutation_seed` is an **opaque selector**, not a coordinate. Nearby seeds are
-  not nearby behaviours; the hash sees to that. So there is no gradient to
-  follow in seed space — only sampling.
-- `mutation_scale` *is* a real axis: it controls how far cohorts spread from the
-  base rule. Low scale is exploitation, high scale is exploration, and the
-  search can move along it deliberately.
-- `select_particle_at(index=N)` is the only genuine **hill-climbing move**:
-  adopting a particle's mutated rule as the new base recentres the population
-  around something the search liked. It changes exactly one field, which makes
-  it clean to undo and clean to reason about. This is almost certainly the
-  primitive the search should be built on.
-- Checkpoints give **backtracking** for free, in-session and cheap.
+**Whether CLIP says anything useful about abstract texture.** Worth measuring
+against `ReferenceImageScorer` on identical captures before trusting a search to
+a prompt. `PromptScorer`'s docstring records the calibration it would need.
 
-A plausible first loop: checkpoint, adopt a well-scoring particle, reroll at
-lower scale, render, score, keep or restore. Whether that is beam search,
-evolutionary, or something simpler is the design conversation this document is
-deferring, not answering.
+**Novelty and quality-diversity.** Both fit the shipped interfaces without
+changing them — see the stubs in `pilot/scoring.py` and the note in
+`pilot/search.py`. The one real design question is whether a novelty archive
+holds every candidate (unbounded) or only survivors (biased toward what the beam
+already liked).
 
-**Also unanswered:** how long to run before capturing. Patterns take time to
-develop and there is no reason to assume a fixed number of frames is right for
-every config — a candidate might be scored at several timepoints, which makes a
-schedule per candidate rather than a capture per candidate.
-
----
-
-## First milestone
-
-Small enough to learn something from:
-
-1. Pick 50 existing configs from `configs/custom/`.
-2. A schedule per config: load, reset, pin `physics_steps`, run 1000 frames,
-   capture to `documents/sequences/<name>.png`, sleep.
-3. `texsim rank --backend texture` over the folder against a reference image.
-4. Look at the top 10 and the bottom 10 by eye.
-
-If the ranking agrees with taste, the loop is worth closing. If it does not, that
-is worth knowing before building a search on top of it — and it costs an
-afternoon rather than a week.
+**Multi-timepoint evaluation.** A candidate is currently judged from one capture
+at a fixed step count. A pattern that looks good at 2000 steps and dies by
+10,000 scores the same as one that persists. Capturing at several timepoints
+would catch that and give a stability signal for free, at roughly one extra
+`run_steps` per capture.

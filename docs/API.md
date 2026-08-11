@@ -169,6 +169,48 @@ writes the *previous* rule and never notices.
 taking `name`. In-session only — nothing is written to disk. Setting a name that
 already exists replaces it.
 
+### Search support
+
+Three composed commands, added for the automated search
+(see [SEARCH.md](SEARCH.md)). They add no capability — each is a sequence of
+handlers above — and exist purely for **latency**: at a small world size a
+candidate is ~0.3s of simulation, so six round trips and their PNG encodes stop
+being free.
+
+| Command | Args | Notes |
+|---|---|---|
+| `run_steps` | `steps`, `capture` | Advance exactly N physics steps, then optionally capture |
+| `fresh_candidate` | — | New random behaviour, made step-mutable |
+| `evaluate_candidate` | `warmup_steps`, `mutate`, `reset`, `capture` | The whole move recipe in one call |
+
+**`run_steps` is the reproducible warmup, and frame-keyed schedules are not.**
+An app frame runs `physics_steps` sub-steps, so "1000 frames" is 30,000 steps at
+the default rate and 60,000 at double — two candidates evaluated that way are
+not the same experiment. Counting steps is the only way to compare like with
+like.
+
+It **blocks the frame loop**: nothing renders, no input is polled, no OS events
+are pumped. That is the intended trade for a warmup nobody is watching, and it
+is why `MAX_RUN_STEPS` caps a single call. Split a long warmup across several
+calls if the window needs to stay responsive. Refused while paused.
+
+**`fresh_candidate` does two things, and the second is not optional.**
+`randomize_behavior` zeroes the rule, and an all-zero rule is a *sentinel*: the
+shader generates a behaviour from `mutation_seed` instead of reading one, and
+generated rules are never mutated. So a freshly randomized config ignores
+`mutation_scale` entirely — measured, 0.35 and 1.0 give byte-identical results.
+Adopting the generated rule writes it in as a real rule and makes the candidate
+mutable. Without it a search's random immigrants are permanently sterile.
+
+`evaluate_candidate` optionally mutates (`{"scale": S, "seed": ...}`), resets,
+runs the warmup, and captures — returning the resulting rule so the caller need
+not reproduce the shader's arithmetic.
+
+**Rendering is not skipped during a warmup, and that was measured**, not
+assumed: it costs 6–9% on top of `advance()`, which is inside the noise. The
+simulation is GPU-bound in `advance()` itself, so a render-skipping path would
+buy nothing and cost the ability to watch.
+
 ### Capture
 
 ```
@@ -346,6 +388,7 @@ api/runner.py       the frame loop's half: draining, schedule execution
 api/server.py       HTTP routes and the command allowlist
 
 orchestrator/api_commands.py    the handlers themselves
+pilot/                          a client that uses all of this -- see SEARCH.md
 ```
 
 The transport is a directory: `api/` touches no GL and holds no simulation
@@ -366,3 +409,5 @@ Scratch.venv/Scripts/python.exe tests/test_api_loopback.py     # needs a display
 The loopback test launches the real app and drives it over HTTP, including the
 sleep/wake cycle and a schedule. It is the one that catches transport bugs,
 because those look like hangs rather than errors.
+
+`tests/test_pilot_loopback.py` exercises the same transport under a real search.

@@ -60,6 +60,8 @@ API_COMMANDS = frozenset({
     'select_particle_at', 'set_mouse_mode', 'clear_strafe_field',
     # capture, state, lifecycle
     'screenshot', 'query_state', 'sleep', 'wake',
+    # search support
+    'run_steps', 'fresh_candidate', 'evaluate_candidate',
 })
 
 #: Commands that exist in the table but are UI-only, listed so the error can say

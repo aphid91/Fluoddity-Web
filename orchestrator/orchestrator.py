@@ -337,6 +337,10 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             'sleep': self._cmd_sleep,
             'wake': self._cmd_wake,
             'query_state': self._cmd_query_state,
+            # search support: composed sequences, for latency (see SEARCH.md)
+            'run_steps': self._cmd_run_steps,
+            'fresh_candidate': self._cmd_fresh_candidate,
+            'evaluate_candidate': self._cmd_evaluate_candidate,
         }
 
     # ------------------------------------------------------------------

@@ -1,6 +1,15 @@
+# --- the app ---
 moderngl>=5.8.0
 glfw>=2.6.0
 imgui-bundle>=1.0.0
 numpy>=1.24.0
 Pillow>=10.0.0
 pyopengl>=3.1.0
+
+# --- the search pilot (pilot/, docs/SEARCH.md) ---
+# Only needed to run a search; the app itself does not import these.
+# scipy: the texture backend's Euler-characteristic curve, which is what
+# separates spots from labyrinths -- the Turing morphology axis.
+scipy>=1.10.0
+# For backend='clip' instead, add:
+#   torch  open_clip_torch

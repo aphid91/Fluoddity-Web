@@ -15,6 +15,13 @@ thing, and the second one would be the one nobody tested.
 Three commands genuinely implement something new, because nothing in the GUI
 ever wanted them: screenshot capture, window resize, and sleep/wake.
 
+A fourth group -- run_steps, fresh_candidate, evaluate_candidate -- exists for
+LATENCY rather than for capability. Each is a sequence the pilot could issue as
+separate calls, and at world_size 0.1 a candidate is ~0.3s of simulation, so six
+HTTP round trips and their PNG encodes stop being free. Composing them here
+turns a candidate into one request. They add no behaviour: every one is a
+handful of calls to handlers that already exist. See docs/SEARCH.md.
+
 EVERYTHING HERE RUNS ON THE MAIN THREAD, inside the frame loop's drain step.
 The API's socket thread never calls these directly -- see api/protocol.py for
 the handoff. Anything touching GL depends on that and says so.
@@ -55,6 +62,19 @@ IDLE_POLL_SECONDS = 0.05
 #: Default cap on a sleep, in seconds. A pilot that dies mid-schedule must not
 #: leave a window that can only be killed from Task Manager.
 DEFAULT_SLEEP_TIMEOUT = 300.0
+
+#: Ceiling on one run_steps() call. The frame loop is blocked for the whole of
+#: it -- no render, no input, no OS event pump -- so this is the point past
+#: which the window would be marked unresponsive. At world_size 0.1 (~17k
+#: steps/s) this is about ten seconds; at full size, closer to three minutes,
+#: which is why a caller wanting a long warmup should issue several calls.
+MAX_RUN_STEPS = 200_000
+
+#: The entity a search selects from. Arbitrary BY CONSTRUCTION: the search runs
+#: at cohorts=1, where get_cohort() returns a fraction in [0,1) for every index
+#: and the shader floors it, so every particle carries the identical rule.
+#: There is nothing to choose between them, so choose the cheapest.
+_SEARCH_ENTITY_INDEX = 0
 
 
 class ApiCommands:
@@ -509,6 +529,146 @@ class ApiCommands:
         target.parent.mkdir(parents=True, exist_ok=True)
         image.save(target)
         return {'path': str(target), 'size': list(size)}
+
+    # ------------------------------------------------------------------
+    # Search support
+    #
+    # Composed from the handlers above. These exist because the search loop is
+    # latency-bound, not because the app needs to know what a search is.
+    # ------------------------------------------------------------------
+
+    def _cmd_run_steps(self, steps, capture=None):
+        """Advance EXACTLY `steps` physics steps, then optionally capture.
+
+        THE REPRODUCIBLE WARMUP. The obvious alternative -- schedule the
+        capture N app frames out -- is wrong for evaluating candidates: an app
+        frame runs `physics_steps` sub-steps, so "1000 frames" is 30,000 steps
+        at the default rate and 60,000 at double, and a search whose candidates
+        depend on the physics rate is not comparing like with like. Counting
+        steps is the only way to make two candidates the same experiment.
+
+        BLOCKS THE FRAME LOOP for the duration: nothing renders, no input is
+        polled, no OS events are pumped. That is the intended trade -- a
+        warmup nobody is going to look at should not pay for 160 presented
+        frames -- but it is why MAX_RUN_STEPS exists. Split a long warmup
+        across several calls if the window needs to stay responsive.
+
+        Rendering is NOT skipped as an optimization. It was measured: at
+        world_size 1.0 the render costs 6-9% on top of advance(), which is
+        inside the noise. The simulation is GPU-bound in advance() itself, so
+        there is nothing to win by dropping the frame -- see docs/SEARCH.md.
+        """
+        steps = int(steps)
+        if steps < 0:
+            raise ValueError(f"steps must be >= 0, got {steps}")
+        if steps > MAX_RUN_STEPS:
+            raise ValueError(
+                f"steps {steps} exceeds MAX_RUN_STEPS ({MAX_RUN_STEPS}); "
+                "issue several calls so the window stays responsive")
+
+        if self.paused:
+            raise ValueError("cannot run steps while paused; set_paused(false)")
+
+        # Hoisted exactly as the frame loop hoists them: the field cannot
+        # change while this runs (no input is being polled), and shove is a
+        # cursor condition that has no meaning here.
+        strafe_field = self.strafe_field.current_texture()
+        for _ in range(steps):
+            self.system.advance(strafe_field, None)
+
+        result = {'steps': steps, 'physics_frame': self.system.frame_count}
+        if capture is not None:
+            # A capture needs a rendered frame to assemble from, and the loop
+            # has not run one since the simulation moved. Render here rather
+            # than making the caller wait a frame -- which would also mean the
+            # capture showed a state `physics_steps` further on than the one
+            # it asked for.
+            self._render_for_capture()
+            result['capture'] = self._cmd_screenshot(**capture)
+        return result
+
+    def _render_for_capture(self):
+        """Draw one camera sample of the CURRENT state, off the frame loop.
+
+        A single sample, deliberately: motion blur averages several renders
+        taken at different points in an advance, and there is no advance
+        happening here. Averaging one moment N times is the same picture.
+        """
+        window_size = self.window.size()
+        self.camera.begin_frame(window_size, 1)
+        self.camera.render(
+            canvas_texture=self.system.current_canvas_texture(),
+            entity_buffer=self.system.entity_buffer,
+            entity_count=self.system.entity_count,
+            canvas_size=self.system.canvas_size,
+            window_size=window_size,
+            color_sensitivity=self.project.config.color_sensitivity,
+            color_by_cohort=self.project.config.color_by_cohort,
+        )
+
+    def _cmd_fresh_candidate(self):
+        """A brand-new random behaviour, made step-mutable.
+
+        THE SECOND HALF IS NOT OPTIONAL. randomize_behavior zeroes the rule,
+        and an all-zero rule is a SENTINEL: the shader generates a behaviour
+        from mutation_seed instead of reading one, and generated rules are
+        never mutated. So a fresh candidate ignores mutation_scale entirely --
+        measured, scale 0.35 and scale 1.0 on a zeroed config give byte-
+        identical results -- and cannot be stepped, only rerolled wholesale.
+
+        Adopting the generated rule writes it into the config as a real rule.
+        The sentinel stops firing, and the candidate becomes mutable like any
+        other. Without this a search's random immigrants would be permanently
+        sterile, in a way that looks like the mutation rate being ignored.
+        """
+        self._cmd_randomize_behavior()
+        self._cmd_select_particle_at(index=_SEARCH_ENTITY_INDEX)
+        return {'rule': list(self.project.config.rule),
+                'mutation_seed': self.project.config.mutation_seed}
+
+    def _cmd_evaluate_candidate(self, warmup_steps, mutate=None, reset=True,
+                                capture=None):
+        """Optionally mutate, then run the candidate and capture it.
+
+        ONE ROUND TRIP FOR ONE CANDIDATE. The sequence is the user's move
+        recipe, and every step of it is an existing handler:
+
+            mutation_scale = S        the population spreads around the rule
+            select particle #0        adopt one variant as the new base rule
+            mutation_scale = 0        the child is ONE behaviour, not a spread
+            reset                     start from a clean canvas
+            run N steps               the warmup
+            capture                   the thing that gets embedded
+
+        `mutate` is {'scale': S, 'seed': optional}. Omit it to evaluate the
+        current config unchanged -- which is what a parent needs.
+
+        WHY SCALE RETURNS TO ZERO. A candidate is judged from one picture, so
+        the population has to obey one rule while it is being judged; at
+        nonzero scale the image is a blend of a whole spread of behaviours and
+        the score would describe the spread rather than the child.
+        """
+        applied = None
+        if mutate is not None:
+            scale = float(mutate['scale'])
+            seed = mutate.get('seed')
+            if seed is not None:
+                self._cmd_set_setting('config', 'mutation_seed', float(seed))
+            self._cmd_set_setting('config', 'mutation_scale', scale)
+            # Synchronous and exact: with cohorts=1 the rule is a pure function
+            # of the config and the index, so no GPU pick is involved.
+            self._cmd_select_particle_at(index=_SEARCH_ENTITY_INDEX)
+            self._cmd_set_setting('config', 'mutation_scale', 0.0)
+            applied = {'scale': scale,
+                       'seed': self.project.config.mutation_seed}
+
+        if reset:
+            self._cmd_reset()
+
+        result = self._cmd_run_steps(warmup_steps, capture=capture)
+        result['mutated'] = applied
+        result['rule'] = list(self.project.config.rule)
+        return result
 
     # ------------------------------------------------------------------
     # State
