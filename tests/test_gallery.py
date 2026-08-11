@@ -271,6 +271,195 @@ def test_score_colour():
           score_colour(1.0, 1.0, 1.0) is not None)
 
 
+def test_view_transform():
+    """Pan and zoom: round-trip, drag direction, and the zoom anchor.
+
+    All three fail QUIETLY. An inverted axis still draws a plot and still
+    hovers correctly (hover compares screen positions, so it is immune); it
+    just makes dragging feel wrong. A to_screen/_from_screen pair that
+    disagree still renders, and only shows up as the view creeping while you
+    zoom. Cheap to assert, invisible to notice.
+    """
+    print("\nview transform")
+
+    from types import SimpleNamespace
+
+    from pilot.projection import Projection
+    from pilot.umap_view import Viewer
+
+    points = np.array([[0.5, 0.5], [0.2, 0.8], [0.9, 0.1]], np.float32)
+    gallery = gallery_lib.Gallery(
+        items=[gallery_lib.Item(path=Path(f"{i}.png"), index=i)
+               for i in range(3)],
+        embeddings=np.zeros((3, 4), np.float32), root=Path('.'))
+    view = Viewer(gallery, Projection(points, 15, 0.1, 42))
+
+    origin = SimpleNamespace(x=100.0, y=50.0)
+    size = SimpleNamespace(x=800.0, y=600.0)
+
+    def worst_roundtrip():
+        worst = 0.0
+        for point in points:
+            sx, sy = view.to_screen(point, origin, size)
+            back = view._from_screen(SimpleNamespace(x=sx, y=sy), origin, size)
+            worst = max(worst, abs(back[0] - point[0]),
+                        abs(back[1] - point[1]))
+        return worst
+
+    check("round-trips at rest", worst_roundtrip() < 1e-5)
+    view.pan, view.zoom = [0.13, -0.27], 3.4
+    check("round-trips panned and zoomed in", worst_roundtrip() < 1e-5)
+    view.pan, view.zoom = [-0.4, 0.6], 0.7
+    check("round-trips panned and zoomed out", worst_roundtrip() < 1e-5)
+
+    # Dragging must move the plot WITH the cursor, in both axes. The y flip
+    # applies to the point, not to the pan; applying it to both inverted the
+    # drag while leaving hover correct, which is exactly how it shipped.
+    view.pan, view.zoom = [0.0, 0.0], 1.0
+    x0, y0 = view.to_screen(points[0], origin, size)
+    view.pan[0] += 60.0 / size.x
+    view.pan[1] += 60.0 / size.y
+    x1, y1 = view.to_screen(points[0], origin, size)
+    check("dragging right moves points right", x1 > x0, f"dx={x1 - x0:+.1f}")
+    check("dragging down moves points down", y1 > y0, f"dy={y1 - y0:+.1f}")
+    check("and it tracks the cursor 1:1",
+          abs((x1 - x0) - 60.0) < 0.01 and abs((y1 - y0) - 60.0) < 0.01,
+          f"dx={x1 - x0:.2f} dy={y1 - y0:.2f}")
+
+    # Cursor-anchored zoom: whatever was under the mouse stays under it.
+    for direction, label in ((1, 'in'), (-1, 'out')):
+        view.pan, view.zoom = [0.05, -0.1], 2.0
+        mouse = SimpleNamespace(x=origin.x + 620.0, y=origin.y + 140.0)
+        before = view._from_screen(mouse, origin, size)
+        was = view.to_screen(before, origin, size)
+        view.zoom = float(np.clip(view.zoom * (1.1 ** direction), 0.5, 40.0))
+        after = view._from_screen(mouse, origin, size)
+        view.pan[0] += (after[0] - before[0]) * view.zoom
+        view.pan[1] -= (after[1] - before[1]) * view.zoom
+        now = view.to_screen(before, origin, size)
+        drift = max(abs(now[0] - was[0]), abs(now[1] - was[1]))
+        check(f"zooming {label} holds the point under the cursor", drift < 0.5,
+              f"drifted {drift:.3f}px")
+
+
+class FakeTextBackend:
+    """Text-capable backend with placed vectors. Same idea as test_search's.
+
+    Unknown captions cluster near a shared axis, reproducing the narrow cone
+    real CLIP text embeddings occupy (measured pairwise cosine 0.51-0.94).
+    Random directions would make the calibration look broken when it is not.
+    """
+
+    name = 'fake'
+    supports_text = True
+
+    def __init__(self, vectors, dim=32):
+        self.vectors = vectors
+        self.dim = dim
+        self.grayscale = False
+        axis = np.zeros(dim, dtype=np.float32)
+        axis[-1] = 1.0
+        self._generic = axis
+
+    def embed_texts(self, texts):
+        out = np.zeros((len(texts), self.dim), dtype=np.float32)
+        for i, text in enumerate(texts):
+            vector = self.vectors.get(text)
+            if vector is None:
+                rng = np.random.default_rng(abs(hash(text)) % (2 ** 31))
+                noise = rng.normal(size=self.dim)
+                vector = self._generic + 0.35 * (noise / np.linalg.norm(noise))
+            vector = np.asarray(vector, dtype=np.float32)
+            out[i] = vector / (np.linalg.norm(vector) + 1e-12)
+        return out
+
+
+def test_caption_colouring():
+    """Scoring a gallery against a typed caption.
+
+    The feature that makes the viewer worth opening: colour the map by a
+    phrase, see which cluster lights up, and you have both tested the wording
+    and identified a negative caption worth subtracting in a search.
+    """
+    print("\ncaption colouring")
+
+    dim = 32
+    want = np.zeros(dim, np.float32); want[0] = 1.0
+    other = np.zeros(dim, np.float32); other[1] = 1.0
+    backend = FakeTextBackend({'a maze': want, 'noise': other}, dim=dim)
+
+    generic = backend._generic
+    images = np.stack([
+        (generic + want) / np.linalg.norm(generic + want),      # on caption
+        (generic + other) / np.linalg.norm(generic + other),    # off caption
+        generic,                                                # generic
+    ]).astype(np.float32)
+
+    gallery = gallery_lib.Gallery(
+        items=[gallery_lib.Item(path=Path(f"{i}.png"), index=i)
+               for i in range(3)],
+        embeddings=images, root=Path('.'))
+
+    scores = gallery_lib.score_caption(gallery, 'a maze', backend)
+    check("returns one score per image", scores.shape == (3,), str(scores.shape))
+    check("the on-caption image scores highest",
+          int(np.argmax(scores)) == 0, str(np.round(scores, 3)))
+
+    # Calibration is what makes the numbers comparable to a search's.
+    raw = gallery_lib.score_caption(gallery, 'a maze', backend,
+                                    calibrate=False)
+    check("uncalibrated also ranks it first", int(np.argmax(raw)) == 0,
+          str(np.round(raw, 3)))
+    check("calibration widens the spread",
+          float(scores.max() - scores.min()) > float(raw.max() - raw.min()),
+          f"raw {raw.max() - raw.min():.4f} vs z {scores.max() - scores.min():.4f}")
+
+    # A different caption must light up a different image -- the whole point
+    # of trying several against one map.
+    negative = gallery_lib.score_caption(gallery, 'noise', backend)
+    check("a different caption favours a different image",
+          int(np.argmax(negative)) == 1, str(np.round(negative, 3)))
+
+    print("\n  viewer wiring")
+    from pilot.projection import Projection
+    from pilot.umap_view import COLOUR_CAPTION, COLOUR_PLAIN, Viewer
+
+    view = Viewer(gallery, Projection(np.full((3, 2), 0.5, np.float32),
+                                      15, 0.1, 42), backend=backend)
+    check("starts plain with no manifest scores",
+          view.colour_mode == COLOUR_PLAIN, str(view.colour_mode))
+    check("nothing to shade before a caption", view.active_scores() is None)
+
+    view.caption = 'a maze'
+    view.apply_caption()
+    check("applying a caption switches the colour mode",
+          view.colour_mode == COLOUR_CAPTION)
+    check("and records what is displayed",
+          view.caption_applied == 'a maze', view.caption_applied)
+    shading = view.active_scores()
+    check("shading is available", shading is not None)
+    check("shading bounds come from the caption scores",
+          shading is not None and shading[1] < shading[2],
+          str(shading[1:] if shading else None))
+
+    view.caption = '   '
+    view.apply_caption()
+    check("an empty caption is refused, leaving the old colours",
+          view.caption_applied == 'a maze' and 'caption' in view.status.lower(),
+          view.status)
+
+    # A text-less backend must say so rather than raising into the frame loop.
+    import tex_sim
+    plain_view = Viewer(gallery, Projection(np.full((3, 2), 0.5, np.float32),
+                                            15, 0.1, 42),
+                        backend=tex_sim.TextureBackend())
+    plain_view.caption = 'a maze'
+    plain_view.apply_caption()
+    check("the texture backend reports it cannot embed text",
+          plain_view.caption_scores is None and 'clip' in plain_view.status,
+          plain_view.status)
+
+
 def main():
     print("Gallery and projection")
     test_find_images()
@@ -280,6 +469,8 @@ def main():
     test_normalize()
     test_projection_edges()
     test_score_colour()
+    test_view_transform()
+    test_caption_colouring()
 
     print()
     if _failures:

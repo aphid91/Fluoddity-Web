@@ -226,6 +226,31 @@ def build(folder, cfg, recursive=True, refresh=False, progress=print):
                    root=root)
 
 
+def score_caption(gallery, caption, backend, calibrate=True, aggregate='mean'):
+    """Score every image in the gallery against one caption.
+
+    FOR CHOOSING CAPTIONS, not for running a search. The whole point is that
+    the embeddings are already computed and cached, so trying a caption costs
+    a single text encode -- milliseconds -- against the minutes it would take
+    to discover the same thing by running a search and looking at the results.
+
+    Especially useful for finding NEGATIVE captions: colour the map by "a
+    dense field of small dots", see which cluster lights up, and you have
+    both confirmed the failure mode and named it well enough to subtract.
+
+    Returns (N,) scores, calibrated the same way PromptScorer calibrates so
+    the numbers here mean what they will mean in a run.
+    """
+    from .scoring import PromptScorer
+
+    scorer = PromptScorer(backend, caption, aggregate=aggregate,
+                          calibrate=calibrate)
+    # PromptScorer expects (N, C, D); the gallery stores crops already
+    # collapsed, so present them as a single view.
+    vectors = gallery.embeddings.reshape(len(gallery), 1, -1)
+    return scorer.score(vectors)
+
+
 def _enrich(items, root, progress=print):
     """Attach manifest metadata to items whose name matches a candidate id."""
     manifest = find_manifest(root)

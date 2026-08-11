@@ -430,6 +430,9 @@ scrolling a report.
 - **Drag** to pan, **scroll** to zoom (anchored on the cursor).
 - **Colour by score** shades points blue → orange, so high-scoring regions are
   visible without hovering.
+- **Type a caption** and press Enter (or *Recompute colour from caption*) to
+  shade the map by similarity to that phrase. **~40ms** on 4,292 images, so
+  trying twenty phrasings is seconds of work.
 - **n_neighbors / min_dist / seed** re-project on the **Recompute** button, not
   on slider release: UMAP on a few thousand points takes ~25s and brushing a
   slider should not freeze the window. A `*` on the button means the plot is
@@ -446,6 +449,31 @@ else.
 It works on any folder of images, not just a run — point it at `refim/` or a
 hand-assembled collection. A `manifest.jsonl` beside the folder just makes the
 tooltips richer.
+
+#### Choosing captions with the map
+
+This is the fastest way to answer *"does this phrase mean what I think against
+these images"*, and the fastest way to find **negative captions**.
+
+The embeddings are already cached, so a caption costs one text encode. Type
+one, see which cluster lights up, and read the tooltips there. Two things fall
+out:
+
+- **A positive that works** lights up the region you actually like.
+- **A negative worth subtracting** is whatever phrase lights up the cluster
+  your search keeps rediscovering. Name the failure mode, confirm it fires on
+  the right points, then put it in `negative_captions`.
+
+Measured against a real 4,292-capture run: `"meandering river"` topped out on
+`gen023_123` and `gen021_035` — both in that run's actual top five, so the map
+agrees with the search. `"an empty black image"` topped out on `gen001_116` and
+`gen001_122`, which were among its *worst* candidates. That is the workflow in
+one paragraph: the first phrase is a good positive, the second a good negative.
+
+The **calibrate** checkbox does what a caption search does — a robust per-image
+z against 30 generic background captions. Leave it on; the raw cosines it
+replaces span about two percent and mostly describe the caption rather than the
+image. Turn it off once to see that for yourself.
 
 ### Running twice into one folder
 

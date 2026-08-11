@@ -117,20 +117,38 @@ def score_colour(value, low, high):
     return imgui.color_convert_float4_to_u32(imgui.ImVec4(r, g, b, 1.0))
 
 
+#: How points are coloured.
+COLOUR_PLAIN = 0
+COLOUR_SCORE = 1
+COLOUR_CAPTION = 2
+
+
 class Viewer:
     """The window: state, drawing, and the interactions."""
 
-    def __init__(self, gallery, projection, client=None):
+    def __init__(self, gallery, projection, client=None, backend=None,
+                 cfg=None):
         self.gallery = gallery
         self.projection = projection
         self.client = client
+        #: Kept so a caption can be embedded without reloading the model.
+        self.backend = backend
+        self.cfg = cfg
         self.textures = TextureStore()
 
         self.pan = [0.0, 0.0]
         self.zoom = 1.0
         self.point_size = 4.0
-        self.colour_by_score = gallery.has_scores
+        self.colour_mode = COLOUR_SCORE if gallery.has_scores else COLOUR_PLAIN
         self.status = ''
+
+        #: Caption colouring. `caption` is what is typed; `caption_applied` is
+        #: what the colours currently show, and the gap between them is what
+        #: makes a stale plot visible.
+        self.caption = ''
+        self.caption_applied = ''
+        self.caption_scores = None
+        self.caption_calibrate = True
 
         # Slider state, separate from what the CURRENT projection used -- the
         # gap between them is what makes "the plot is stale" visible.
@@ -138,10 +156,8 @@ class Viewer:
         self.min_dist = projection.min_dist
         self.seed = projection.seed
 
-        scores = gallery.scores
-        finite = scores[np.isfinite(scores)]
-        self.score_low = float(finite.min()) if len(finite) else 0.0
-        self.score_high = float(finite.max()) if len(finite) else 1.0
+        # Score bounds are recomputed per draw by active_scores(), because the
+        # caption mode has its own range and it changes with every caption.
 
     # ------------------------------------------------------------------
 
@@ -161,11 +177,63 @@ class Viewer:
         self.n_neighbours = self.projection.n_neighbours
         self.status = f"projected {len(self.gallery)} points"
 
+    def apply_caption(self):
+        """Colour the map by similarity to the typed caption.
+
+        Cheap by design: the image embeddings are already in memory, so this
+        is one text encode plus a matrix multiply. Trying twenty captions
+        against a finished run costs seconds, which is what makes this the
+        right place to choose the negatives for a search.
+        """
+        caption = self.caption.strip()
+        if not caption:
+            self.status = "type a caption first"
+            return
+        if self.backend is None or not getattr(self.backend, 'supports_text',
+                                               False):
+            self.status = "caption colouring needs the clip backend"
+            return
+
+        try:
+            self.caption_scores = gallery_lib.score_caption(
+                self.gallery, caption, self.backend,
+                calibrate=self.caption_calibrate,
+                aggregate=(self.cfg.aggregate if self.cfg else 'mean'))
+        except Exception as e:                                  # noqa: BLE001
+            self.status = f"{type(e).__name__}: {e}"
+            return
+
+        self.caption_applied = caption
+        self.colour_mode = COLOUR_CAPTION
+        finite = self.caption_scores[np.isfinite(self.caption_scores)]
+        if len(finite):
+            self.status = (f'"{caption}"  range {finite.min():+.2f} .. '
+                           f'{finite.max():+.2f}')
+
+    def active_scores(self):
+        """(values, low, high) for the current colour mode, or None."""
+        if self.colour_mode == COLOUR_CAPTION \
+                and self.caption_scores is not None:
+            values = self.caption_scores
+        elif self.colour_mode == COLOUR_SCORE and self.gallery.has_scores:
+            values = self.gallery.scores
+        else:
+            return None
+        finite = values[np.isfinite(values)]
+        if not len(finite):
+            return None
+        return values, float(finite.min()), float(finite.max())
+
     def to_screen(self, point, origin, size):
-        """Normalized layout coords -> screen pixels, through pan and zoom."""
+        """Normalized layout coords -> screen pixels, through pan and zoom.
+
+        PAN IS IN SCREEN SPACE, and both components are added. The y flip
+        below (UMAP's +y is up, the screen's is down) applies to the POINT
+        only; applying it to the pan as well would invert it a second time and
+        make dragging down move the plot up.
+        """
         x = (point[0] - 0.5) * self.zoom + 0.5 + self.pan[0]
-        # Y is flipped: UMAP's +y is up, the screen's is down.
-        y = (0.5 - (point[1] - 0.5) * self.zoom) - self.pan[1]
+        y = (0.5 - (point[1] - 0.5) * self.zoom) + self.pan[1]
         return origin.x + x * size.x, origin.y + y * size.y
 
     # ------------------------------------------------------------------
@@ -204,16 +272,66 @@ class Viewer:
         _, self.point_size = imgui.slider_float("size", self.point_size,
                                                 1.5, 12.0)
 
-        if self.gallery.has_scores:
-            imgui.same_line()
-            _, self.colour_by_score = imgui.checkbox("colour by score",
-                                                     self.colour_by_score)
-
         if self.stale:
             imgui.text_disabled(
                 f"showing {self.projection.describe()} -- press Recompute")
-        elif self.status:
+
+        self._caption_controls()
+
+        if self.status:
             imgui.text_disabled(self.status)
+
+    def _caption_controls(self):
+        """Colour the map by a caption. The reason this tool earns its keep.
+
+        Seeing WHICH cluster a caption lights up answers two questions a
+        report cannot: whether the words mean what you think against these
+        images, and what to put in negative_captions -- name the thing the
+        search keeps rediscovering and you can subtract it.
+        """
+        from imgui_bundle import imgui
+
+        imgui.separator()
+
+        imgui.set_next_item_width(380)
+        entered, self.caption = imgui.input_text(
+            "caption", self.caption,
+            imgui.InputTextFlags_.enter_returns_true.value)
+        # Enter applies too: typing a caption and reaching for the mouse is
+        # the wrong rhythm for trying twenty of them.
+        if entered:
+            self.apply_caption()
+
+        imgui.same_line()
+        pending = self.caption.strip() != self.caption_applied
+        if imgui.button("Recompute colour from caption"
+                        + (" *" if pending and self.caption.strip() else "")):
+            self.apply_caption()
+
+        imgui.same_line()
+        _, self.caption_calibrate = imgui.checkbox("calibrate",
+                                                   self.caption_calibrate)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Score against 30 generic background captions and report a "
+                "robust per-image z, exactly as a caption search does.\n"
+                "Off shows the raw cosine, which occupies a band about two "
+                "percent wide -- mostly a property of the caption rather than "
+                "of the image.")
+
+        # Colour mode. Caption only appears once one has been applied, so the
+        # radio never offers a mode that would show nothing.
+        modes = [("plain", COLOUR_PLAIN)]
+        if self.gallery.has_scores:
+            modes.append(("run score", COLOUR_SCORE))
+        if self.caption_scores is not None:
+            modes.append((f'"{self.caption_applied[:28]}"', COLOUR_CAPTION))
+        if len(modes) > 1:
+            imgui.text("colour by")
+            for label, mode in modes:
+                imgui.same_line()
+                if imgui.radio_button(label, self.colour_mode == mode):
+                    self.colour_mode = mode
 
     def _canvas(self):
         from imgui_bundle import imgui
@@ -249,6 +367,10 @@ class Viewer:
             self.zoom = float(np.clip(self.zoom * (1.1 ** io.mouse_wheel),
                                       MIN_ZOOM, MAX_ZOOM))
             after = self._from_screen(mouse, origin, size)
+            # Shift the pan so the layout point that was under the cursor is
+            # under it again. Both terms scale by the NEW zoom; the y term is
+            # negated because pan is screen-space (down-positive) while the
+            # layout coords these deltas are in are up-positive.
             self.pan[0] += (after[0] - before[0]) * self.zoom
             self.pan[1] -= (after[1] - before[1]) * self.zoom
 
@@ -264,19 +386,20 @@ class Viewer:
                 self._activate(self.gallery.items[hovered])
 
     def _from_screen(self, pixel, origin, size):
-        """Screen pixels -> normalized layout coords. Inverse of to_screen."""
+        """Screen pixels -> normalized layout coords. EXACT inverse of
+        to_screen -- if the two disagree, cursor-anchored zoom drifts."""
         x = (pixel.x - origin.x) / size.x
         y = (pixel.y - origin.y) / size.y
         return ((x - self.pan[0] - 0.5) / self.zoom + 0.5,
-                0.5 - ((y + self.pan[1]) - 0.5) / self.zoom)
+                0.5 - ((y - self.pan[1]) - 0.5) / self.zoom)
 
     def _draw_points(self, draw, origin, size, mouse, can_hover):
         from imgui_bundle import imgui
 
         points = self.projection.points
-        scores = self.gallery.scores
         plain = imgui.color_convert_float4_to_u32(
             imgui.ImVec4(0.85, 0.85, 0.88, 1.0))
+        shading = self.active_scores()
 
         hovered = -1
         best = HIT_RADIUS * HIT_RADIUS
@@ -288,8 +411,8 @@ class Viewer:
                     and origin.y - 8 <= py <= origin.y + size.y + 8):
                 continue
 
-            colour = (score_colour(scores[i], self.score_low, self.score_high)
-                      if self.colour_by_score else plain)
+            colour = (score_colour(shading[0][i], shading[1], shading[2])
+                      if shading is not None else plain)
             draw.add_circle_filled(imgui.ImVec2(px, py), self.point_size,
                                    colour)
 
@@ -313,6 +436,11 @@ class Viewer:
         imgui.begin_tooltip()
         for line in item.tooltip_lines():
             imgui.text(line)
+        # The caption score belongs here as much as on the colour ramp: the
+        # ramp shows where a caption fires, the number says how strongly.
+        if self.caption_scores is not None:
+            imgui.text_disabled(
+                f'"{self.caption_applied}"  {self.caption_scores[index]:+.3f}')
         texture = self.textures.get(item.path)
         if texture:
             imgui.image(imgui.ImTextureRef(texture),
@@ -378,6 +506,7 @@ def main(argv=None):
     parser.add_argument('--min-dist', type=float,
                         default=projection_lib.DEFAULT_MIN_DIST)
     parser.add_argument('--seed', type=int, default=projection_lib.DEFAULT_SEED)
+    parser.add_argument('--caption', help="colour by this caption on open")
     parser.add_argument('--refresh', action='store_true',
                         help="re-embed even if a cache is present")
     parser.add_argument('--no-recursive', action='store_true')
@@ -408,7 +537,14 @@ def main(argv=None):
         gallery.embeddings, n_neighbours=args.neighbours,
         min_dist=args.min_dist, seed=args.seed)
 
-    viewer = Viewer(gallery, projection, client=connect(args.port))
+    # The backend is handed over so a caption can be embedded interactively.
+    # Already loaded by build() above, so this costs nothing.
+    backend = embedding.build_backend(cfg)
+    viewer = Viewer(gallery, projection, client=connect(args.port),
+                    backend=backend, cfg=cfg)
+    if args.caption:
+        viewer.caption = args.caption
+        viewer.apply_caption()
 
     from imgui_bundle import immapp
 
