@@ -183,6 +183,73 @@ def test_zero_rule_is_immune_to_mutation():
           "the adopt did not make the candidate mutable")
 
 
+def test_zero_rule_parent_children():
+    """Children of a zero-rule SEED CONFIG: random samples, not siblings.
+
+    The case a hand-authored seed hits. `randomize_behavior` is not the only
+    way to get an all-zero rule -- a config saved before a behaviour was
+    authored carries one too, and it becomes a search's starting point.
+
+    What the move does there is still useful, and is the intended path: the
+    seed generates a fresh rule, and adopting it writes it in as a real one so
+    the child leaves the sentinel behind. But it is NOT a small step from the
+    parent, and the manifest should not claim otherwise.
+    """
+    print("\nchildren of a zero-rule parent")
+
+    zero_parent = cfg(cohorts=1, mutation_scale=0.2, mutation_seed=0.3,
+                      rule=(0.0,) * 80)
+    check("the seed config is the sentinel",
+          mutation.is_zero_rule(zero_parent.rule))
+
+    children = {}
+    for seed in (0.11, 0.42, 0.73, 0.95):
+        child = rule_of(cfg(cohorts=1, mutation_scale=0.2, mutation_seed=seed,
+                            rule=(0.0,) * 80), 0)
+        children[seed] = child
+
+    check("every child is distinct",
+          len({tuple(np.round(v, 6)) for v in children.values()}) == 4)
+    check("every child escapes the sentinel",
+          all(not mutation.is_zero_rule(tuple(v)) for v in children.values()),
+          "children would inherit a sterile rule")
+
+    # The measured contrast: children of a zero rule are independent samples,
+    # not neighbours. ~8-12 apart versus ~0.75 for authored siblings.
+    values = list(children.values())
+    spread = min(float(np.linalg.norm(values[i] - values[j]))
+                 for i in range(len(values)) for j in range(i + 1, len(values)))
+
+    authored_a = rule_of(cfg(cohorts=1, mutation_scale=0.2,
+                             mutation_seed=0.11), 0)
+    authored_b = rule_of(cfg(cohorts=1, mutation_scale=0.2,
+                             mutation_seed=0.42), 0)
+    sibling = float(np.linalg.norm(authored_a - authored_b))
+
+    check("zero-rule children are far apart (random sampling, not a fan-out)",
+          spread > 5.0 * sibling,
+          f"min separation {spread:.2f} vs authored siblings {sibling:.2f}")
+
+    # And the reason scale is pinned: it does nothing here.
+    scales = {tuple(np.round(rule_of(cfg(cohorts=1, mutation_scale=s,
+                                         mutation_seed=0.42,
+                                         rule=(0.0,) * 80), 0), 6))
+              for s in (0.0, 0.2, 0.5, 1.0)}
+    check("mutation_scale has NO effect on a zero-rule parent",
+          len(scales) == 1,
+          "the sentinel branch may have changed -- re-check "
+          "_cmd_evaluate_candidate's from_zero pin")
+
+    # A child, once adopted, mutates normally.
+    adopted = cfg(cohorts=1, mutation_scale=0.2, mutation_seed=0.5,
+                  rule=tuple(float(v) for v in values[0]))
+    stepped = rule_of(adopted, 0)
+    step = float(np.linalg.norm(stepped - np.asarray(adopted.rule)))
+    check("a child mutates normally once adopted",
+          0.0 < step < spread,
+          f"step {step:.3f} should be a small move, not a resample")
+
+
 def test_seed_reroll_on_generated_rules():
     print("\na zero-rule config can still be JUMPED by seed")
 
@@ -256,6 +323,33 @@ def test_config_validation():
                        immigrants=4).candidates_per_generation == 36)
 
 
+def test_presets():
+    """The shipped search presets load, validate, and mean what they say."""
+    print("\nshipped presets")
+
+    for name in ('search.json', 'fan_search.json'):
+        path = ROOT / name
+        if not path.is_file():
+            check(f"{name} exists", False, "missing")
+            continue
+        config = SearchConfig.load(path)
+        problems = config.validate()
+        check(f"{name} validates", problems == [], str(problems))
+
+    fan = SearchConfig.load(ROOT / 'fan_search.json')
+    # The preset's whole shape: seeds, then exactly one round of children.
+    check("fan_search runs 2 generations", fan.generations == 2,
+          str(fan.generations))
+    check("fan_search adds no immigrants", fan.immigrants == 0,
+          str(fan.immigrants))
+    # A beam narrower than the seed list would silently drop the worst seeds
+    # before they ever fan out, which is the opposite of what a fan is for.
+    check("fan_search's beam is wide enough not to cull seeds",
+          fan.beam_width >= 32, str(fan.beam_width))
+    check("fan_search fans each parent out",
+          fan.children_per_parent > 1, str(fan.children_per_parent))
+
+
 def main():
     print("Move recipe")
     test_cohorts_one_is_uniform()
@@ -263,7 +357,9 @@ def main():
     test_scale_is_a_step_size()
     test_move_is_reproducible()
     test_zero_rule_is_immune_to_mutation()
+    test_zero_rule_parent_children()
     test_seed_reroll_on_generated_rules()
+    test_presets()
     test_candidate_roundtrip()
     test_checkpoint_names()
     test_config_validation()

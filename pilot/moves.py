@@ -143,15 +143,25 @@ def make_mutant(client, cfg, candidate_id, generation, parent, capture_path,
     result = evaluate(client, cfg, None, capture_path,
                       mutate={'scale': scale, 'seed': seed})
 
+    # The app pins scale to 0 when the parent carries the zero-rule sentinel,
+    # because there is nothing there to step from -- the seed generates a fresh
+    # rule instead and the adopt makes it real. Record what ACTUALLY happened
+    # rather than what was asked for, so the manifest does not claim a scale
+    # that had no effect.
+    applied = result.get('mutated') or {}
+    from_zero = bool(applied.get('from_zero_rule'))
+    extra = {'from_zero_rule': True} if from_zero else {}
+
     return Candidate(
         id=candidate_id,
         generation=generation,
         origin=MUTANT,
         rule=tuple(result['rule']),
         parent_id=parent.id,
-        mutation_scale=scale,
+        mutation_scale=applied.get('scale', scale),
         mutation_seed=seed,
         capture_path=str(capture_path),
+        extra=extra,
     )
 
 

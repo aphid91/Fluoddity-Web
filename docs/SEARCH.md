@@ -60,6 +60,49 @@ So annealing it over generations is well-founded, if you want that later.
 **The move is deterministic.** Given `(parent, scale, seed)` the child is
 reproducible exactly, which is why the manifest records all three.
 
+### Two presets
+
+**`search.json`** — a multi-generation beam search. Hill-climbs: keep the best
+K, breed M children each, repeat.
+
+**`fan_search.json`** — two generations, no selection pressure. Generation 0
+evaluates each seed config unchanged; generation 1 fans every one of them out
+into children. `immigrants: 0`, and `beam_width` is set deliberately high so
+**every** seed survives to breed (the beam is capped at
+`min(seeds_scored, beam_width)`, so a narrow beam would silently drop the
+worst-scoring seeds before they ever fan out).
+
+Use the fan preset to explore the neighbourhood of configs you already like, or
+to sample fresh rules from an all-zero seed. Total candidates are
+`seeds + seeds × children_per_parent`.
+
+Note `generations: 1` would score the seeds and stop — no mutations at all.
+Two is the minimum that produces children.
+
+### Seeding from an all-zero rule
+
+A config whose rule is all zeros is the engine's **"no behaviour authored"**
+sentinel, and it is a legitimate thing to seed a search with — it means "start
+from anywhere".
+
+The move behaves differently there, correctly but not obviously:
+
+- **`mutation_scale` is ignored**, and the app pins it to 0. There is nothing to
+  step *from*, because the shader generates a rule from `mutation_seed` rather
+  than reading one, and generated rules are never mutated (measured: identical
+  output at scale 0.0, 0.2, 0.5 and 1.0).
+- **Each child is an independent random rule**, not a small step. Measured
+  pairwise L2 between siblings: **9.9–12.2**, against **0.87–1.06** for children
+  of an authored parent at scale 0.2.
+- **Children are not sterile.** Selecting the particle writes the generated rule
+  in as a real one, so every child leaves the sentinel behind and mutates
+  normally from then on.
+
+So generation 1 from a zero-rule seed is *random sampling*; generation 2 onward
+is a real search. Rows produced this way record `mutation_scale: 0.0` and carry
+`extra.from_zero_rule` in the manifest, so a report never claims a scale that
+had no effect.
+
 ### The zero-rule trap
 
 An all-zero rule is a **sentinel** meaning "no behaviour authored": the shader

@@ -652,6 +652,30 @@ class ApiCommands:
         if mutate is not None:
             scale = float(mutate['scale'])
             seed = mutate.get('seed')
+
+            # A ZERO RULE IS NOT A POINT TO STEP FROM, so there is nothing for
+            # a mutation scale to scale. The shader reads an all-zero rule as
+            # "no behaviour authored" and GENERATES one from mutation_seed
+            # instead, and generated rules are never mutated -- measured, the
+            # adopted rule is byte-identical at scale 0.0, 0.15, 0.5 and 1.0.
+            #
+            # Pinning it to zero here changes no behaviour; it makes the
+            # already-true thing explicit, and stops the manifest recording a
+            # scale that had no effect. What the move DOES do on such a parent
+            # is still useful and is the intended path: the seed generates a
+            # fresh rule, and the adopt below writes it in as a real one, so
+            # the child leaves the sentinel behind and is a normal population
+            # member from then on.
+            #
+            # The children are NOT siblings in the usual sense -- measured L2
+            # between them is 8-12 where authored siblings at scale 0.15 sit
+            # around 0.75. Generation 1 from a zero-rule seed is random
+            # sampling, not a fan-out. That is the correct behaviour and worth
+            # knowing; see docs/SEARCH.md.
+            from_zero = mutation.is_zero_rule(self.project.config.rule)
+            if from_zero:
+                scale = 0.0
+
             if seed is not None:
                 self._cmd_set_setting('config', 'mutation_seed', float(seed))
             self._cmd_set_setting('config', 'mutation_scale', scale)
@@ -660,7 +684,10 @@ class ApiCommands:
             self._cmd_select_particle_at(index=_SEARCH_ENTITY_INDEX)
             self._cmd_set_setting('config', 'mutation_scale', 0.0)
             applied = {'scale': scale,
-                       'seed': self.project.config.mutation_seed}
+                       'seed': self.project.config.mutation_seed,
+                       # Reported so the caller can record what actually
+                       # happened rather than what it asked for.
+                       'from_zero_rule': from_zero}
 
         if reset:
             self._cmd_reset()
