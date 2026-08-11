@@ -842,6 +842,125 @@ def test_rescore_updates_the_view():
     check("and says what happened", 're-scored' in view.status, view.status)
 
 
+def test_live_recolor():
+    """Debounced recolouring: fire once, after the typing stops."""
+    print("\nlive recolor")
+
+    from pilot.umap_view import LIVE_RECOLOR_DELAY, Viewer
+
+    view = Viewer()
+    applied = []
+    view.apply_caption = lambda: applied.append(view.caption.strip())
+
+    def type_text(text, at):
+        """Simulate a keystroke: the box changed, nothing applied yet."""
+        view.caption = text
+        view._tick_live_recolor(pending=True, now=at)
+
+    # Off by default, and off means never.
+    view.live_recolor = False
+    type_text('a river', 0.0)
+    type_text('a river', 10.0)
+    check("does nothing while unchecked", applied == [], str(applied))
+
+    view.live_recolor = True
+    applied.clear()
+
+    # Typing: each keystroke restarts the wait, so nothing fires mid-word.
+    for i, partial in enumerate(['a', 'a r', 'a riv', 'a river']):
+        type_text(partial, i * 0.05)
+    check("does not fire while still typing", applied == [], str(applied))
+
+    # The pause. Polled just past the deadline rather than exactly on it:
+    # the last keystroke was at 0.15, and asking at precisely 0.15 + delay
+    # depends on float addition associating the same way twice.
+    view._tick_live_recolor(pending=True, now=0.15 + LIVE_RECOLOR_DELAY + 1e-6)
+    check("fires once typing stops", applied == ['a river'], str(applied))
+
+    # And only once -- the caller sets pending=False after applying.
+    applied.clear()
+    view._tick_live_recolor(pending=False, now=10.0)
+    check("does not fire again for the same caption", applied == [],
+          str(applied))
+
+    # A slow typist: gaps shorter than the delay must not trigger.
+    applied.clear()
+    for i, partial in enumerate(['b', 'bl', 'blu', 'blue']):
+        type_text(partial, 20.0 + i * (LIVE_RECOLOR_DELAY * 0.6))
+    check("a slow typist is not interrupted mid-word", applied == [],
+          str(applied))
+    view._tick_live_recolor(
+        pending=True, now=20.0 + 4 * LIVE_RECOLOR_DELAY)
+    check("and gets one recolour at the end", applied == ['blue'],
+          str(applied))
+
+    # An empty box has nothing to score.
+    applied.clear()
+    view.caption = '   '
+    view._tick_live_recolor(pending=True, now=30.0)
+    view._tick_live_recolor(pending=True, now=40.0)
+    check("an empty caption never fires", applied == [], str(applied))
+
+    # Unchecking mid-wait cancels rather than firing later.
+    applied.clear()
+    type_text('green', 50.0)
+    view.live_recolor = False
+    view._tick_live_recolor(pending=True, now=50.0 + LIVE_RECOLOR_DELAY * 2)
+    check("unchecking cancels a pending recolour", applied == [], str(applied))
+    check("and clears the timer", view._caption_touched is None)
+
+
+def test_config_auto_reload():
+    """Actions re-read the config file, so Reload is not a required step.
+
+    The workflow was: edit the JSON, press Reload, press Re-score. Forgetting
+    the middle step silently scored against the OLD objective, which looks
+    exactly like the button not working -- and that is how it was reported.
+    """
+    print("\nconfig auto-reload")
+
+    import json
+
+    from pilot.umap_view import Viewer
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        config = root / 'search.json'
+        config.write_text(json.dumps(
+            {'backend': 'clip', 'captions': ['a river']}), encoding='utf-8')
+
+        view = Viewer()
+        view.config_path = str(config)
+        check("loads on request",
+              view._load_config(config) and view.cfg.captions == ['a river'],
+              str(view.cfg.captions))
+
+        # Edit the file WITHOUT pressing Reload.
+        config.write_text(json.dumps(
+            {'backend': 'clip', 'captions': ['a delta', 'a fan']}),
+            encoding='utf-8')
+        check("the in-memory config is still the old one",
+              view.cfg.captions == ['a river'], str(view.cfg.captions))
+
+        check("_refresh_config picks up the edit", view._refresh_config())
+        check("and the new captions are live",
+              view.cfg.captions == ['a delta', 'a fan'], str(view.cfg.captions))
+
+        # A broken file must not discard a working config: a run in progress
+        # is worth more than punishing a half-saved edit.
+        config.write_text('{ not json', encoding='utf-8')
+        check("a malformed config is reported", view._refresh_config() is False)
+        check("and the previous one is kept",
+              view.cfg.captions == ['a delta', 'a fan'], str(view.cfg.captions))
+        check("with the reason in the status",
+              'could not read' in view.status, view.status)
+
+        # No config path at all is fine -- the viewer works without one.
+        blank = Viewer()
+        blank.config_path = ''
+        check("no config path is not an error", blank._refresh_config())
+
+
 def test_default_paths():
     """The GUI opens pre-filled with the paths a session usually wants."""
     print("\ndefault paths")
@@ -882,6 +1001,8 @@ def main():
     test_progress_reporting()
     test_embed_progress()
     test_rescore_updates_the_view()
+    test_live_recolor()
+    test_config_auto_reload()
     test_default_paths()
 
     print()

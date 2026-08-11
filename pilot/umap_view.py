@@ -65,6 +65,13 @@ DEFAULT_CONFIG = 'search.json'
 #: Offered in the config dropdown beside the box. Anything else can be typed.
 KNOWN_CONFIGS = ('search.json', 'fan_search.json')
 
+#: Quiet time before "live recolor" acts on a caption edit. Long enough that
+#: typing a phrase does not fire once per keystroke, short enough that the
+#: recolour feels like a consequence of stopping rather than a separate step.
+#: Scoring itself is ~40ms on several thousand images, so the pause is what
+#: the delay is for -- not the work.
+LIVE_RECOLOR_DELAY = 0.15
+
 
 class TextureStore:
     """GL textures for the previews, uploaded on demand.
@@ -182,6 +189,15 @@ class Viewer:
         self.caption_applied = ''
         self.caption_scores = None
         self.caption_calibrate = True
+        #: Recolour on its own once typing pauses, rather than on a button.
+        self.live_recolor = False
+        #: When the caption last changed, or None when nothing is pending.
+        #: Held rather than a deadline so the wait restarts on every keystroke
+        #: -- otherwise a slow typist would trigger a recolour mid-word.
+        self._caption_touched = None
+        #: The caption the timer above is counting for, so an edit during the
+        #: wait restarts it rather than firing on the older text.
+        self._pending_caption = ''
 
         #: Percentile of the dataset to HIDE. A lens on the plot only: the
         #: layout and the percentile maths always use the full set, so moving
@@ -262,7 +278,7 @@ class Viewer:
 
     # ------------------------------------------------------------------
 
-    def _load_config(self, path):
+    def _load_config(self, path, announce=True):
         """Read a search config. Reports failure rather than raising."""
         if not path:
             self.status = "no config path"
@@ -273,8 +289,31 @@ class Viewer:
             self.status = f"could not read {path}: {e}"
             return False
         self.config_path = str(path)
-        self.status = f"config: {self.cfg.describe_plan()}"
+        if announce:
+            self.status = f"config: {self.cfg.describe_plan()}"
         return True
+
+    def _refresh_config(self):
+        """Re-read the config file before acting on it.
+
+        Every action that USES the config re-reads it first, so editing the
+        JSON and pressing the button is the whole workflow -- pressing Reload
+        in between was a step that existed only to remind the GUI of something
+        the file already said, and forgetting it silently ran the OLD
+        objective, which looks exactly like the action not working.
+
+        Failure is not fatal: the config already in memory is a fine fallback,
+        and refusing to run because a file was mid-save would be worse than
+        running what was last read. The status line says which happened.
+        """
+        if not self.config_path:
+            return True
+        previous = self.cfg
+        if self._load_config(self.config_path, announce=False):
+            return True
+        # _load_config already put the error in the status line.
+        self.cfg = previous
+        return False
 
     def load_folder(self, folder, config_path=None):
         """Embed a folder on a background thread."""
@@ -444,7 +483,9 @@ class Viewer:
         if imgui.button("Reload##config"):
             self._load_config(self.config_path)
         _tip("A search config JSON. Supplies the embedding settings (backend, "
-             "crops, grayscale) and is what a search launched here will run.")
+             "crops, grayscale) and is what a search launched here will run.\n"
+             "Reload is only for SEEING the file's contents now -- re-score, "
+             "report and search all re-read it themselves.")
 
         # The two shipped presets, one click each -- they are what a session
         # switches between, and retyping a filename to compare them is
@@ -481,11 +522,15 @@ class Viewer:
         from imgui_bundle import imgui
 
         imgui.set_next_item_width(380)
-        entered, self.caption = imgui.input_text(
+        changed, self.caption = imgui.input_text(
             "caption", self.caption,
             imgui.InputTextFlags_.enter_returns_true.value)
-        if entered:
+        # enter_returns_true means `changed` is True ONLY on Enter, so the
+        # per-keystroke edits live recolor waits on have to be spotted by
+        # comparing against what is on screen.
+        if changed:
             self.apply_caption()
+            self._caption_touched = None
         _tip("Colour the points by similarity to this phrase. Enter applies "
              "it. Costs one text encode -- try a dozen.")
 
@@ -503,8 +548,58 @@ class Viewer:
              "Off shows the raw cosine, which spans about two percent and "
              "mostly describes the caption rather than the image.")
 
+        imgui.same_line()
+        _, self.live_recolor = imgui.checkbox("live recolor",
+                                              self.live_recolor)
+        _tip(f"Recolour on its own once typing pauses for "
+             f"{LIVE_RECOLOR_DELAY:.2f}s, instead of waiting for Enter or the "
+             f"button. Scoring is ~40ms even on thousands of images, so the "
+             f"pause is nearly all of the delay.")
+
+        self._tick_live_recolor(pending)
+
         self._colour_modes()
         self._cutoff()
+
+    def _tick_live_recolor(self, pending, now=None):
+        """Recolour once the caption has been still for a moment.
+
+        DEBOUNCED ON THE PAUSE, not throttled on a rate: recolouring every
+        keystroke would score partial words ("a mea", "a mean", ...) and each
+        result would be thrown away by the next letter. Waiting for the typing
+        to stop scores the thing the user actually meant, once.
+
+        The timer restarts on every edit rather than counting from the first,
+        so a slow typist is not interrupted mid-phrase.
+
+        Deliberately runs on the frame thread. Scoring is ~40ms on several
+        thousand images, so it costs a few frames at idle -- putting it on a
+        background thread would add a whole synchronization story for
+        something already below the threshold of notice.
+        """
+        if not self.live_recolor:
+            self._caption_touched = None
+            return
+
+        import time
+
+        moment = time.monotonic() if now is None else now
+        caption = self.caption.strip()
+
+        if not pending or not caption:
+            # Nothing outstanding -- either the colours already show this
+            # caption, or the box is empty.
+            self._caption_touched = None
+            return
+
+        if self._caption_touched is None or caption != self._pending_caption:
+            self._caption_touched = moment
+            self._pending_caption = caption
+            return
+
+        if moment - self._caption_touched >= LIVE_RECOLOR_DELAY:
+            self._caption_touched = None
+            self.apply_caption()
 
     def _colour_modes(self):
         from imgui_bundle import imgui
@@ -572,15 +667,18 @@ class Viewer:
             imgui.same_line()
             if imgui.button("Re-score run"):
                 self._rescore()
-            _tip("Re-score every capture against the config's CURRENT "
-                 "objective and rewrite report.txt. Re-embeds nothing; only "
-                 "the text side is new.")
+            _tip("Score every capture against the config's objective and "
+                 "update the map, the cutoff and report.txt. Embeds nothing "
+                 "-- only the text side is new.\n"
+                 "RE-READS THE CONFIG FILE FIRST, so editing the JSON and "
+                 "pressing this is the whole workflow.")
 
             imgui.same_line()
             if imgui.button("Run search"):
                 self._run_search()
-            _tip("Launch a search with the loaded config. Runs on a background "
-                 "thread; Fluoddity must be running with --api-port.")
+            _tip("Launch a search with the config on disk -- it is re-read "
+                 "first. Runs on a background thread; Fluoddity must be "
+                 "running with --api-port.")
 
         # Loading and projecting report in the source panel, beside the
         # controls that start them; only this panel's own work reports here.
@@ -824,6 +922,9 @@ class Viewer:
         if root is None:
             self.status = "no manifest.jsonl -- this is not a run folder"
             return
+        # Re-read first: the report records the objective, and recording a
+        # stale one would misdescribe the ranking it sits above.
+        self._refresh_config()
         cfg = self.cfg
 
         def work(report):
@@ -841,6 +942,10 @@ class Viewer:
         if root is None:
             self.status = "no manifest.jsonl -- this is not a run folder"
             return
+        # THE point of re-scoring is to apply a changed objective, so reading
+        # the file first is not a convenience -- without it the button scores
+        # against whatever was loaded last and appears to do nothing.
+        self._refresh_config()
         cfg = self.cfg
 
         def work(report):
@@ -869,10 +974,14 @@ class Viewer:
     def _run_search(self):
         from . import run as run_lib
 
-        cfg = self.cfg
         if not self.config_path:
             self.status = "load a search config first"
             return
+        # A search runs for minutes off this config; re-reading it is the
+        # difference between "the file says what runs" and "whatever was
+        # loaded last does".
+        self._refresh_config()
+        cfg = self.cfg
 
         def work(report):
             report(cfg.describe_plan())

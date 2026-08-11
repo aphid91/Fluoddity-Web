@@ -98,6 +98,11 @@ def main():
                 view.colour_mode = COLOUR_PLAIN     # cutoff greys out
             if frame == 70:
                 view.cutoff = 0.0
+            if frame == 78:
+                # Live recolor with a caption pending: the debounce runs on
+                # the frame thread, so it has to survive being drawn.
+                view.live_recolor = True
+                view.caption = 'a live caption'
             if frame == 85:
                 # The empty state the window now opens in.
                 view.gallery = None
@@ -132,6 +137,7 @@ def main():
     print("  ok    a counting task's progress bar draws")
     print("  ok    an uncountable task falls back to a status line")
     print("  ok    the cutoff enabling and disabling stays balanced")
+    print("  ok    live recolor draws and debounces on the frame thread")
     print("  ok    the unloaded state draws")
     print("\nPASS")
     return 0
