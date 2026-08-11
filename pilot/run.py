@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 
 from . import moves as move_lib
+from . import report as report_lib
 from . import scoring
 from .candidate import IMMIGRANT, MUTANT, ROOT, Candidate
 from .client import ApiError, FluoddityClient
@@ -81,6 +82,10 @@ class RunFolder:
             handle.write(json.dumps(candidate.to_row()) + '\n')
             handle.flush()
 
+    @property
+    def report(self):
+        return self.root / 'report.txt'
+
     def read(self):
         """Every candidate recorded so far. Tolerates a torn final line."""
         if not self.manifest.is_file():
@@ -122,6 +127,10 @@ class SearchRun:
         #: Beam entries read from a resumed manifest, awaiting app-side
         #: checkpoints. Empty for a fresh run.
         self._pending_restore = None
+        #: Prefix making this session's ids distinct from any already in the
+        #: folder. Empty for the first session, so a single-run folder keeps
+        #: the plain "gen000_000" names. Set in prepare().
+        self._session = ''
 
     # ------------------------------------------------------------------
 
@@ -136,6 +145,17 @@ class SearchRun:
             for problem in problems:
                 print(f"  config error: {problem}")
             raise SystemExit(1)
+
+        existing = self.folder.read() if self.folder.manifest.is_file() else []
+        if existing and not self.cfg.resume:
+            # A second run into an occupied folder. Allowed -- it is a
+            # reasonable thing to want -- but it must not pretend to be the
+            # first: without a distinct session tag it would reuse ids and
+            # overwrite the earlier run's captures and configs.
+            self._session = self._session_tag(existing)
+            print(f"  {len(existing)} candidate(s) already here; this session "
+                  f"tags its ids '{self._session}' so nothing is overwritten "
+                  f"(use --resume to continue the search instead)")
 
         self.folder.create()
         self.cfg.save(self.folder.root / 'search.json')
@@ -167,6 +187,24 @@ class SearchRun:
         # checkpointed against a system about to be rebuilt.
         self._reestablish_checkpoints()
 
+    @staticmethod
+    def _session_tag(existing):
+        """The next free 'bNN_' prefix, given what is already in the folder.
+
+        Scans the ids present rather than counting sessions, so it stays
+        correct even if a folder was assembled by hand or an earlier session
+        was partly deleted.
+        """
+        used = set()
+        for candidate in existing:
+            head, _, _ = candidate.id.partition('gen')
+            used.add(head)
+        for n in range(1, 1000):
+            tag = f"b{n:02d}_"
+            if tag not in used:
+                return tag
+        raise RuntimeError("too many sessions in one run folder")
+
     def _resume(self):
         """Pick up where a previous process stopped.
 
@@ -181,6 +219,11 @@ class SearchRun:
         if not previous:
             print("  resume: nothing recorded yet, starting fresh")
             return
+        # A resumed session continues the generation count, but its RNG starts
+        # over from cfg.seed -- so it will redraw the same mutation seeds and,
+        # without a distinct tag, the same ids. Tag it for the same reason a
+        # repeated run is tagged.
+        self._session = self._session_tag(previous)
         self._pending_restore = self.strategy.restore(previous)
         self.start_generation = max(c.generation for c in previous) + 1
         self._counter = len(previous)
@@ -222,8 +265,22 @@ class SearchRun:
         self._pending_restore = None
 
     def _next_id(self, generation, index):
+        """A candidate id unique within the run folder, across sessions.
+
+        THE SESSION TAG IS LOAD-BEARING. Ids were once just
+        "gen{generation}_{index}", which collides the moment a second run
+        writes into the same folder: generation numbering restarts at 0, the
+        strategy's RNG restarts from the same seed, and the new session
+        produces the same ids for entirely different candidates -- silently
+        overwriting the previous session's configs and captures while both sets
+        of manifest rows survive. A real run lost the captures for its 100
+        best candidates that way, and nothing reported it.
+
+        `_session` is derived from what is already in the folder, so a resumed
+        or repeated run always tags itself differently from what came before.
+        """
         self._counter += 1
-        return f"gen{generation:03d}_{index:03d}"
+        return f"{self._session}gen{generation:03d}_{index:03d}"
 
     # ------------------------------------------------------------------
 
@@ -354,17 +411,139 @@ class SearchRun:
         self.report()
 
     def report(self):
+        """Summarize, and WRITE THE SUMMARY TO DISK.
+
+        Reading everything back from the manifest rather than from
+        strategy.archive, so the report covers the whole folder -- including
+        earlier sessions -- and so it is the same code path the standalone
+        --report mode uses.
+        """
         best = self.strategy.best
         print(f"\nrun complete: {self.folder.root}")
-        print(f"  {len(self.strategy.archive)} candidates evaluated")
+        print(f"  {len(self.strategy.archive)} candidates evaluated this session")
         if best is not None:
             print(f"  best: {best.id}  score {best.score:+.4f}")
             print(f"        {best.config_path}")
             print(f"        {best.capture_path}")
-        print(f"\n  top {min(10, len(self.strategy.beam))}:")
+
+        path = write_report(self.folder, self.cfg)
+        if path is not None:
+            print(f"\n  wrote {path}")
+
+        print(f"\n  top {min(10, len(self.strategy.beam))} this session:")
         for candidate in self.strategy.beam[:10]:
-            print(f"    {candidate.score:+.4f}  {candidate.id:<14}"
+            print(f"    {candidate.score:+.4f}  {candidate.id:<20}"
                   f"{candidate.origin:<10} {candidate.capture_path}")
+
+
+def write_report(folder, cfg=None, count=report_lib.DEFAULT_COUNT):
+    """Write report.txt for a run folder. None if there is nothing to report."""
+    candidates = folder.read()
+    if not candidates:
+        return None
+    kept, shadowed = report_lib.dedupe(candidates)
+    title = f"Fluoddity search results -- {folder.root.name}"
+    if shadowed:
+        # Only possible in folders written before session tagging. Say so in
+        # the report rather than quietly ranking rows whose pictures are gone.
+        title += (f"\n\nNOTE: {shadowed} manifest row(s) share an id with a "
+                  f"later candidate and were overwritten on disk; only the "
+                  f"surviving {len(kept)} are ranked here. See "
+                  f"'--report --all' to rank every row.")
+    return report_lib.write(folder.report, kept, cfg=cfg, count=count,
+                            root=folder.root, title=title)
+
+
+def _report(args):
+    """Rank a finished run. No app, no simulation -- just the manifest.
+
+    Exists because a run's results used to live only in terminal scrollback:
+    an overnight search that completed successfully was unreadable the moment
+    the window closed. Everything needed was always on disk.
+    """
+    cfg = SearchConfig.load(args.config) if args.config else None
+    run_dir = args.report or (cfg.run_dir if cfg else None)
+    if not run_dir:
+        print("--report needs a run directory, or a --config naming one")
+        return 1
+
+    folder = RunFolder(resolve(run_dir))
+    if not folder.manifest.is_file():
+        print(f"no manifest at {folder.manifest}")
+        return 1
+
+    candidates = folder.read()
+    print(f"{len(candidates)} manifest row(s) in {folder.root}")
+
+    kept, shadowed = report_lib.dedupe(candidates)
+    if args.all:
+        kept = candidates
+        if shadowed:
+            print(f"  ranking all rows; {shadowed} of them have a capture on "
+                  f"disk that belongs to a different candidate")
+    elif shadowed:
+        print(f"  {shadowed} row(s) were overwritten by a later session "
+              f"sharing their id; ranking the {len(kept)} whose files survive "
+              f"(--all to include them)")
+
+    if args.rescore:
+        if cfg is None:
+            print("--rescore needs a --config to score against")
+            return 1
+        kept = _rescore(kept, cfg, folder)
+
+    path = report_lib.write(
+        folder.report, kept, cfg=cfg, count=args.top, root=folder.root,
+        title=f"Fluoddity search results -- {folder.root.name}")
+    print(f"wrote {path}\n")
+
+    # Also to stdout, so the common case needs no second command.
+    for line in report_lib.build(kept, cfg=cfg, count=min(args.top, 32),
+                                 root=folder.root):
+        print(line)
+    return 0
+
+
+def _rescore(candidates, cfg, folder):
+    """Re-embed each capture and score it against `cfg`'s objective.
+
+    For asking a finished run a different question -- a new caption, or a
+    different reference folder -- without re-simulating anything. The captures
+    are already on disk; only the embedding is redone.
+    """
+    from . import embedding
+
+    problems = embedding.check_dependencies(cfg.backend)
+    if problems:
+        for problem in problems:
+            print(f"  {problem}")
+        raise SystemExit(1)
+
+    usable = [c for c in candidates
+              if c.capture_path and Path(c.capture_path).is_file()]
+    missing = len(candidates) - len(usable)
+    if missing:
+        print(f"  {missing} candidate(s) have no capture on disk; skipped")
+    if not usable:
+        print("  nothing to re-score")
+        return candidates
+
+    backend = embedding.build_backend(cfg)
+    scorer = scoring.build_scorer(cfg, backend)
+    print(f"  re-scoring {len(usable)} capture(s): {scorer.describe()}")
+
+    # Batched, and in chunks: a long run can hold thousands of captures, and
+    # embedding them all at once would hold every decoded image in memory.
+    rescored = []
+    chunk = 256
+    for start in range(0, len(usable), chunk):
+        batch = usable[start:start + chunk]
+        vectors = embedding.embed_paths(
+            backend, [c.capture_path for c in batch])
+        for candidate, score in zip(batch, scorer.score(vectors)):
+            rescored.append(candidate.scored(float(score)))
+        print(f"    {min(start + chunk, len(usable))}/{len(usable)}")
+    return rescored
 
 
 def main(argv=None):
@@ -376,9 +555,33 @@ def main(argv=None):
     parser.add_argument('--generations', type=int, help="override generations")
     parser.add_argument('--resume', action='store_true',
                         help="continue an existing run_dir")
+    parser.add_argument('--caption', metavar='TEXT',
+                        help="search toward a text prompt (implies "
+                             "backend=clip; overrides reference_dir)")
+    parser.add_argument('--negative', action='append', metavar='TEXT',
+                        default=None,
+                        help="search AWAY from this; repeatable")
     parser.add_argument('--write-example', metavar='PATH',
                         help="write a commented example config and exit")
+    parser.add_argument('--report', metavar='RUN_DIR', nargs='?',
+                        const='', default=None,
+                        help="rank a FINISHED run and write report.txt, "
+                             "without touching the app. Defaults to the "
+                             "config's run_dir.")
+    parser.add_argument('--rescore', action='store_true',
+                        help="--report: re-embed the captures and score them "
+                             "against the CURRENT config's objective, instead "
+                             "of using the scores in the manifest")
+    parser.add_argument('--top', type=int, default=report_lib.DEFAULT_COUNT,
+                        help="--report: how many at each end (default 32)")
+    parser.add_argument('--all', action='store_true',
+                        help="--report: rank every manifest row, including "
+                             "ones whose capture was overwritten by a later "
+                             "session")
     args = parser.parse_args(argv)
+
+    if args.report is not None:
+        return _report(args)
 
     if args.write_example:
         cfg = SearchConfig()
@@ -397,6 +600,15 @@ def main(argv=None):
         overrides['generations'] = args.generations
     if args.resume:
         overrides['resume'] = True
+    if args.caption:
+        # A caption on the command line means a caption run: switch the backend
+        # and drop any reference folder, rather than failing validation over a
+        # combination the user plainly did not intend.
+        overrides['caption'] = args.caption
+        overrides['backend'] = 'clip'
+        overrides['reference_dir'] = ''
+    if args.negative:
+        overrides['negative_captions'] = list(args.negative)
     if overrides:
         cfg = dataclasses.replace(cfg, **overrides)
 

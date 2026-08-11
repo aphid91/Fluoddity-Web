@@ -136,6 +136,29 @@ default. The ones that matter:
 }
 ```
 
+For a **caption** objective instead of a reference folder:
+
+```json
+{
+  "backend": "clip",
+  "caption": "a dense tangled web of filaments",
+  "negative_captions": ["an empty black image", "uniform random noise"],
+  "calibrate": true,
+  "grayscale": true,
+  "crops": 8
+}
+```
+
+or without touching the file:
+
+```bash
+python -m pilot.run --config search.json \
+    --caption "a dense tangled web of filaments" \
+    --negative "an empty black image"
+```
+
+`--caption` implies `backend: clip` and clears `reference_dir`.
+
 | Knob | Notes |
 |---|---|
 | `world_size` | The throughput lever. Once per run. |
@@ -148,8 +171,97 @@ default. The ones that matter:
 | `seed_configs` | Start from configs you already like. Empty starts from immigrants. |
 | `backend` | `texture` (scipy) or `clip` (torch). |
 | `reference_dir` | Images to search toward. Omit for a scoreless smoke run. |
+| `caption` | A text prompt to search toward. CLIP only; excludes `reference_dir`. |
+| `negative_captions` | Things to search *away* from. Needs a caption. |
+| `calibrate` | Background calibration for caption scoring. **Leave it on.** |
 | `grayscale` | Desaturate before embedding. **See below** — CLIP only. |
 | `seed` | Seeds the strategy RNG, so a run replays from `search.json`. |
+
+### Two objectives
+
+**Reference images** (`reference_dir`) — score by similarity to the centroid of
+a folder of images you like. Works with either backend, needs no torch, and the
+objective is inspectable by looking at the folder.
+
+**A caption** (`caption`) — score by similarity to a text prompt. CLIP only.
+
+They are mutually exclusive: with two objectives a result cannot be attributed
+to either, so setting both is a config error.
+
+### Why caption scoring calibrates, and why you should leave it on
+
+Raw CLIP image-text cosines live in a **very narrow band**. Measured across 16
+real captures against one caption: the whole range was **0.18 → 0.25**. Most of
+that number describes the *caption* — its phrasing, its length, how typical it
+is — rather than the image, so ranking on it is largely ranking the prompt
+against itself.
+
+`calibrate: true` (the default) scores each image against 30 generic background
+captions as well, and reports how far the real caption stands out **per image**:
+
+```
+z = (score - median(background)) / (1.4826 * MAD(background))
+```
+
+Per-*image* is the part that matters. An image that scores highly against
+everything — a busy frame — has a high median and gets no credit for it, while
+one that matches your caption and nothing else scores a large z.
+
+Measured effect on the same 16 captures:
+
+| | raw cosine | calibrated |
+|---|---|---|
+| spread | 0.07 | **2.88** |
+
+A 40× wider signal, and the rankings genuinely differ — only 3–5 of the top 5
+survive the change, so it is not a monotonic rescale.
+
+The background embeddings are computed **once** and reused, which makes `z` an
+absolute quantity. That matters here in a way it does not for a one-shot CLI:
+the beam holds survivors from any generation, so scores must be comparable
+across them.
+
+### Negative captions
+
+```json
+"negative_captions": ["an empty black image", "uniform random noise"]
+```
+
+The caption says what you want; negatives say what you keep getting instead.
+Their similarity is subtracted (worst offender wins, so a candidate cannot hide
+one strong match behind several weak ones), on the same calibrated scale as the
+positive. This is the most direct lever for pushing a search out of a rut it
+keeps rediscovering.
+
+### Does CLIP understand these images? Partly.
+
+Two observations from the same caption, *"a dense tangled web of filaments"*,
+and they point in different directions.
+
+**Ranking a fixed set: it did well.** Across 16 unrelated captures the top pick
+was genuinely wispy and strand-like and the bottom was structureless noise.
+
+**Driving a search: less convincing.** A 2-generation run climbed cleanly
+(+3.92 → +4.84, and a mutant beat its parent) but converged on a dense speckled
+*disc* — not a web of filaments. The search machinery did its job; the objective
+led it somewhere the words do not describe.
+
+That is the failure mode to expect: **a caption gives a signal strong enough to
+climb, without necessarily meaning what you meant.** A search will find whatever
+maximizes it, including degenerate answers.
+
+Practical advice:
+
+- **Run 2–3 generations and look before committing to a long run.** This is
+  cheap — under a minute — and it is the only thing that tells you whether the
+  prompt means what you think.
+- **Use `grayscale: true`.** The run above was in colour and converged on a
+  strongly blue result; palette is a shortcut a caption search will happily take.
+- **Add negatives for what you keep getting.** Having seen the speckled disc,
+  `"a dense field of small dots"` is the obvious thing to subtract.
+- **If the prompt keeps missing, use a reference folder instead.** Images say
+  what a sentence cannot, and the texture backend is more predictable on
+  abstract pattern.
 
 ### Colour, and why you probably want it off
 
@@ -186,6 +298,7 @@ Bad settings are caught **before** the app is touched: a missing
 <run_dir>/
     search.json          the config actually used
     manifest.jsonl       one line per candidate, appended live
+    report.txt           top 32 / bottom 32, written at the end
     configs/gen003_007.json
     captures/gen003_007.png
 ```
@@ -201,6 +314,53 @@ up to that moment.
 
 `documents/` is gitignored. Promote a config worth keeping into
 `configs/custom/` and open it in the normal app.
+
+### Reading a finished run
+
+`report.txt` is written automatically at the end of every run: the objective
+used, the run's shape, and the **top 32 and bottom 32** candidates with their
+scores, lineage and capture paths.
+
+To (re-)generate it for a run that has already finished — including one whose
+terminal output is long gone:
+
+```bash
+python -m pilot.run --report documents/sequences/run
+python -m pilot.run --config search.json --report      # uses the config's run_dir
+```
+
+No app, no simulation, no GPU — it reads the manifest. Useful options:
+
+| | |
+|---|---|
+| `--top 64` | how many at each end |
+| `--rescore` | re-embed the captures and score against the **current** config's objective, instead of the scores in the manifest |
+| `--all` | include rows whose capture was overwritten (see below) |
+
+`--rescore` is how you ask a finished run a different question — a new caption,
+a different reference folder — without re-simulating anything. The captures are
+already on disk; only the embedding is redone.
+
+### Running twice into one folder
+
+A second run into an occupied `run_dir` **tags its candidate ids** (`b01_`,
+`b02_`, …) so it cannot overwrite the first. You will see:
+
+```
+8 candidate(s) already here; this session tags its ids 'b01_' so nothing
+is overwritten (use --resume to continue the search instead)
+```
+
+Note the difference: a plain re-run starts a *new* search that happens to share
+a folder, while `--resume` continues the existing one from its beam.
+
+**Folders written before this existed can contain overwritten captures.** Ids
+were `gen{generation}_{index}` only, so a repeated run reused them: both
+manifest rows survive but only the later candidate's files do. `--report` says
+so and ranks only the rows whose files are genuinely theirs; `--all` ranks
+everything, with the caveat that some captures then show a different candidate
+than the row describes. Every row still carries its full 80-float rule, so an
+overwritten candidate can always be reconstructed.
 
 ### Resuming
 
@@ -226,10 +386,8 @@ class Scorer(Protocol):
     def score(self, embeddings: np.ndarray) -> np.ndarray:   # (N,C,D) -> (N,)
 ```
 
-`ReferenceImageScorer` ships. `PromptScorer` and `NoveltyScorer` are stubs whose
-docstrings record what building them involves — notably that **raw CLIP cosines
-must be calibrated** against background captions (`tex_sim.py`'s `cmd_rank`
-already does this; ranking by raw cosine mostly ranks the prompt against itself).
+`ReferenceImageScorer` and `PromptScorer` ship. `NoveltyScorer` is a stub whose
+docstring records what building it involves.
 
 **A strategy** decides what to try:
 

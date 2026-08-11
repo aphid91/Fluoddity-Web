@@ -95,6 +95,15 @@ download. Two things about it worth knowing before relying on it:
   setting that matters for this simulation, and it argues the opposite way on
   resolution — more pixels give the crops more to work with.
 
+**Text scoring needs calibration, and the numbers say why.** Measured across 16
+real captures against one caption, raw cosines spanned **0.18–0.25** — a
+two-percent band, most of which describes the caption rather than the image.
+The per-image background z-score used by `PromptScorer` widens that to a spread
+of **2.88** and reorders the top five. `demos/tex_sim.py`'s `cmd_rank`
+established the method; the search reuses its `BACKGROUND_CAPTIONS` rather than
+inventing a second calibration set, and embeds them **once** so scores stay
+comparable across generations (the beam holds survivors from any of them).
+
 **Colour is a confound here, not a feature.** Particle hue comes from the same
 behaviour output as motion, so palette and structure are coupled at the source
 and a colour-sensitive model will happily rank a well-coloured mess above a
@@ -120,9 +129,22 @@ blobs. That is the scorer being *discriminating*; it is not evidence that it is
 ends — is the one that decides this, and it has not been done with a real
 reference set.
 
-**Whether CLIP says anything useful about abstract texture.** Worth measuring
-against `ReferenceImageScorer` on identical captures before trusting a search to
-a prompt. `PromptScorer`'s docstring records the calibration it would need.
+**Whether CLIP says anything useful about abstract texture.** `PromptScorer`
+ships, and the answer so far is *partly*, with a caveat worth taking seriously.
+
+Asked to RANK a fixed set of 16 captures against *"a dense tangled web of
+filaments"*, it put a genuinely filamentary image first and structureless noise
+last — a sensible ordering. Asked to DRIVE a search with the same caption, it
+climbed cleanly (+3.92 → +4.84 over two generations) and converged on a dense
+speckled disc, which is not a web of filaments.
+
+So the objective is strong enough to optimize against without being faithful to
+the words. That is the classic shape of a proxy objective, and it means a
+caption run needs eyeballing after a couple of generations rather than being
+left overnight on trust.
+
+Still unmeasured: a head-to-head against `ReferenceImageScorer` on identical
+captures, which is what would actually settle which objective to prefer.
 
 **Novelty and quality-diversity.** Both fit the shipped interfaces without
 changing them — see the stubs in `pilot/scoring.py` and the note in
