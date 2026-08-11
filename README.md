@@ -48,6 +48,8 @@ Scratch.venv/Scripts/python.exe tests/test_async_pick.py         # GPU, no windo
 Scratch.venv/Scripts/python.exe tests/test_hot_reload.py         # GPU, no window
 Scratch.venv/Scripts/python.exe tests/test_api_capture.py        # GPU, no window
 Scratch.venv/Scripts/python.exe tests/test_api_loopback.py       # needs a display
+Scratch.venv/Scripts/python.exe tests/test_gallery.py            # no GPU
+Scratch.venv/Scripts/python.exe tests/test_gui_frames.py         # needs a display
 Scratch.venv/Scripts/python.exe tests/test_pilot_loopback.py     # needs a display
 ```
 

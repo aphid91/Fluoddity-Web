@@ -573,6 +573,105 @@ def test_caption_colouring():
           plain_view.status)
 
 
+def test_disabled_pairing():
+    """begin_disabled/end_disabled must pair even when the state flips.
+
+    THE BUG THIS CAUGHT, which only appeared at runtime: the hand-rolled form
+    reads the same expression twice --
+
+        if self.busy: begin_disabled()
+        if button(...): self.start_something()
+        if self.busy: end_disabled()
+
+    -- and pressing the button starts a task, so `busy` is False on the way in
+    and True on the way out. end_disabled() then fires unpaired and imgui
+    asserts, killing the window. Latching the condition once makes it
+    impossible; this asserts the latch actually holds.
+    """
+    print("\ndisabled-block pairing")
+
+    from pilot.umap_view import _disabled_if
+
+    calls = []
+
+    class FakeImgui:
+        def begin_disabled(self, *a):
+            calls.append('begin')
+
+        def end_disabled(self):
+            calls.append('end')
+
+    import pilot.umap_view as view_mod
+
+    # _disabled_if imports imgui itself, so patch where it looks.
+    import sys as _sys
+    fake_bundle = type(_sys)('imgui_bundle')
+    fake_bundle.imgui = FakeImgui()
+    saved = _sys.modules.get('imgui_bundle')
+    _sys.modules['imgui_bundle'] = fake_bundle
+    try:
+        with _disabled_if(True):
+            calls.append('body')
+        check("disabled: begin, body, end", calls == ['begin', 'body', 'end'],
+              str(calls))
+
+        calls.clear()
+        with _disabled_if(False):
+            calls.append('body')
+        check("enabled: no begin/end at all", calls == ['body'], str(calls))
+
+        # The actual failure mode: the condition changing inside the block
+        # must not affect how many times end_disabled is called.
+        calls.clear()
+        flipping = [True]
+        with _disabled_if(flipping[0]):
+            flipping[0] = False        # a task started mid-block
+            calls.append('body')
+        check("a condition that flips inside still pairs",
+              calls == ['begin', 'body', 'end'], str(calls))
+
+        # And an exception must not leave a block open, or every later frame
+        # inherits a greyed-out UI.
+        calls.clear()
+        try:
+            with _disabled_if(True):
+                raise RuntimeError("boom")
+        except RuntimeError:
+            pass
+        check("an exception inside still closes the block",
+              calls == ['begin', 'end'], str(calls))
+    finally:
+        if saved is not None:
+            _sys.modules['imgui_bundle'] = saved
+        else:
+            del _sys.modules['imgui_bundle']
+
+
+def test_default_paths():
+    """The GUI opens pre-filled with the paths a session usually wants."""
+    print("\ndefault paths")
+
+    from pilot.umap_view import (DEFAULT_CONFIG, DEFAULT_FOLDER,
+                                 KNOWN_CONFIGS, Viewer)
+
+    view = Viewer()
+    check("the folder field is pre-filled",
+          view.folder == DEFAULT_FOLDER, view.folder)
+    check("the config field is pre-filled",
+          view.config_path == DEFAULT_CONFIG, view.config_path)
+    check("the shipped presets are offered",
+          'search.json' in KNOWN_CONFIGS and 'fan_search.json' in KNOWN_CONFIGS,
+          str(KNOWN_CONFIGS))
+
+    # Defaults only: nothing is loaded until Load is pressed.
+    check("nothing is loaded on construction", view.gallery is None)
+
+    # A bad config path reports rather than raising into the frame loop.
+    check("a missing config is reported, not raised",
+          view._load_config('definitely/not/here.json') is False
+          and 'could not read' in view.status, view.status)
+
+
 def main():
     print("Gallery and projection")
     test_find_images()
@@ -584,6 +683,8 @@ def main():
     test_score_colour()
     test_view_transform()
     test_caption_colouring()
+    test_disabled_pairing()
+    test_default_paths()
 
     print()
     if _failures:

@@ -655,6 +655,7 @@ one round trip per candidate instead of six.
 Scratch.venv/Scripts/python.exe tests/test_moves.py           # no GPU
 Scratch.venv/Scripts/python.exe tests/test_search.py          # no GPU
 Scratch.venv/Scripts/python.exe tests/test_gallery.py         # no GPU
+Scratch.venv/Scripts/python.exe tests/test_gui_frames.py      # needs a display
 Scratch.venv/Scripts/python.exe tests/test_pilot_loopback.py  # needs a display
 ```
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -53,6 +54,16 @@ MIN_ZOOM, MAX_ZOOM = 0.5, 40.0
 COLOUR_PLAIN = 0
 COLOUR_SCORE = 1
 COLOUR_CAPTION = 2
+
+#: Where the fields point when nothing is given. The default run folder and
+#: the shipped config, which is what a session almost always opens -- typing
+#: the same two paths every time is friction for no reason. Only ever
+#: defaults: whatever is in the boxes wins, and a missing path is reported
+#: rather than assumed.
+DEFAULT_FOLDER = 'documents/sequences/run/captures'
+DEFAULT_CONFIG = 'search.json'
+#: Offered in the config dropdown beside the box. Anything else can be typed.
+KNOWN_CONFIGS = ('search.json', 'fan_search.json')
 
 
 class TextureStore:
@@ -152,8 +163,10 @@ class Viewer:
         self.gallery = None
         self.projection = None
         self.backend = None
-        self.folder = ''
-        self.config_path = ''
+        # Pre-filled with the usual paths so a session is one click, not two
+        # lines of typing. Nothing is loaded until Load is pressed.
+        self.folder = DEFAULT_FOLDER
+        self.config_path = DEFAULT_CONFIG
 
         #: The one piece of background work in flight, if any.
         self.task = None
@@ -230,19 +243,28 @@ class Viewer:
 
     # ------------------------------------------------------------------
 
+    def _load_config(self, path):
+        """Read a search config. Reports failure rather than raising."""
+        if not path:
+            self.status = "no config path"
+            return False
+        try:
+            self.cfg = SearchConfig.load(path)
+        except Exception as e:                                  # noqa: BLE001
+            self.status = f"could not read {path}: {e}"
+            return False
+        self.config_path = str(path)
+        self.status = f"config: {self.cfg.describe_plan()}"
+        return True
+
     def load_folder(self, folder, config_path=None):
         """Embed a folder on a background thread."""
         folder = Path(folder).expanduser()
         if not folder.is_dir():
             self.status = f"not a folder: {folder}"
             return
-        if config_path:
-            try:
-                self.cfg = SearchConfig.load(config_path)
-                self.config_path = str(config_path)
-            except Exception as e:                              # noqa: BLE001
-                self.status = f"could not read config: {e}"
-                return
+        if config_path and not self._load_config(config_path):
+            return
 
         cfg = self.cfg
         self.folder = str(folder)
@@ -401,14 +423,21 @@ class Viewer:
         _, self.config_path = imgui.input_text("config", self.config_path)
         imgui.same_line()
         if imgui.button("Reload##config"):
-            if self.config_path:
-                try:
-                    self.cfg = SearchConfig.load(self.config_path)
-                    self.status = f"config: {self.cfg.describe_plan()}"
-                except Exception as e:                          # noqa: BLE001
-                    self.status = f"could not read config: {e}"
+            self._load_config(self.config_path)
         _tip("A search config JSON. Supplies the embedding settings (backend, "
              "crops, grayscale) and is what a search launched here will run.")
+
+        # The two shipped presets, one click each -- they are what a session
+        # switches between, and retyping a filename to compare them is
+        # friction with no purpose.
+        for name in KNOWN_CONFIGS:
+            imgui.same_line()
+            if imgui.small_button(name):
+                self.config_path = name
+                self._load_config(name)
+
+        if self.cfg is not None:
+            imgui.text_disabled(f"config: {self.cfg.describe_plan()}")
 
         if self.gallery is not None:
             scored = 'scored' if self.gallery.has_scores else 'no scores'
@@ -474,30 +503,25 @@ class Viewer:
 
         shading = self.active_scores()
         enabled = shading is not None
-        if not enabled:
-            imgui.begin_disabled()
 
-        imgui.set_next_item_width(300)
-        _, self.cutoff = imgui.slider_float("percentile cutoff", self.cutoff,
-                                            0.0, 99.0, "%.0f%%")
-        if not enabled:
-            imgui.end_disabled()
-        _tip("Hide points outside the top slice of the CURRENT colour -- run "
-             "score or caption. 0 shows everything; 90 keeps the best tenth.\n"
-             "Needs something scored: pick a colour mode or apply a caption."
-             if not enabled else
-             "Hide all but the best slice of the current colour. A lens only "
-             "-- the layout never moves when you drag this.")
+        with _disabled_if(not enabled):
+            imgui.set_next_item_width(300)
+            _, self.cutoff = imgui.slider_float(
+                "percentile cutoff", self.cutoff, 0.0, 99.0, "%.0f%%")
+            _tip("Hide all but the best slice of the current colour -- run "
+                 "score or caption. 0 shows everything; 90 keeps the best "
+                 "tenth. A lens only: the layout never moves when you drag "
+                 "this."
+                 if enabled else
+                 "Needs something scored to rank by -- pick a colour mode or "
+                 "apply a caption first.")
 
-        imgui.same_line()
-        if not enabled:
-            imgui.begin_disabled()
-        _, self.cutoff_bottom = imgui.checkbox("bottom percentile",
-                                               self.cutoff_bottom)
-        if not enabled:
-            imgui.end_disabled()
-        _tip("Keep the WORST slice instead of the best. Isolating failures is "
-             "how you find a negative caption worth subtracting.")
+            imgui.same_line()
+            _, self.cutoff_bottom = imgui.checkbox("bottom percentile",
+                                                   self.cutoff_bottom)
+            _tip("Keep the WORST slice instead of the best. Isolating "
+                 "failures is how you find a negative caption worth "
+                 "subtracting.")
 
         if enabled and self.cutoff > 0:
             mask = self.visible_mask()
@@ -509,32 +533,33 @@ class Viewer:
     def _actions_panel(self):
         from imgui_bundle import imgui
 
-        if self.busy:
-            imgui.begin_disabled()
+        # Latched once for the whole panel: any of these buttons starts a task,
+        # which would flip `busy` mid-panel and unbalance the disabled block.
+        blocked = self.busy
+        kind, task = self.task_kind, self.task
 
-        if imgui.button("Write report"):
-            self._write_report()
-        _tip("Rank the run's manifest and write report.txt -- top 32 and "
-             "bottom 32 with scores, lineage and capture paths.")
+        with _disabled_if(blocked):
+            if imgui.button("Write report"):
+                self._write_report()
+            _tip("Rank the run's manifest and write report.txt -- top 32 and "
+                 "bottom 32 with scores, lineage and capture paths.")
 
-        imgui.same_line()
-        if imgui.button("Re-score run"):
-            self._rescore()
-        _tip("Re-score every capture against the config's CURRENT objective "
-             "and rewrite report.txt. Re-embeds nothing; only the text side "
-             "is new.")
-
-        imgui.same_line()
-        if imgui.button("Run search"):
-            self._run_search()
-        _tip("Launch a search with the loaded config. Runs on a background "
-             "thread; Fluoddity must be running with --api-port.")
-
-        if self.busy:
-            imgui.end_disabled()
             imgui.same_line()
-            progress = self.task.progress
-            imgui.text(f"{self.task_kind}: {progress.latest}")
+            if imgui.button("Re-score run"):
+                self._rescore()
+            _tip("Re-score every capture against the config's CURRENT "
+                 "objective and rewrite report.txt. Re-embeds nothing; only "
+                 "the text side is new.")
+
+            imgui.same_line()
+            if imgui.button("Run search"):
+                self._run_search()
+            _tip("Launch a search with the loaded config. Runs on a background "
+                 "thread; Fluoddity must be running with --api-port.")
+
+        if blocked and task is not None:
+            imgui.same_line()
+            imgui.text(f"{kind}: {task.progress.latest}")
 
     def _map_panel(self):
         from imgui_bundle import imgui
@@ -556,12 +581,13 @@ class Viewer:
 
         label = ("Compute UMAP" if self.projection is None
                  else "Recompute UMAP" + (" *" if self.stale else ""))
-        if self.busy:
-            imgui.begin_disabled()
-        if imgui.button(label):
-            self.compute_projection()
-        if self.busy:
-            imgui.end_disabled()
+        # LATCHED, not re-read. begin_disabled/end_disabled must pair exactly,
+        # and pressing the button starts a task -- so a second read of
+        # self.busy would come back True and end a block that was never begun.
+        blocked = self.busy
+        with _disabled_if(blocked):
+            if imgui.button(label):
+                self.compute_projection()
         _tip("Project the embeddings to 2D. Takes ~25s for a few thousand "
              "points, which is why it is a button and not automatic.")
 
@@ -817,6 +843,32 @@ def _tip(text):
         imgui.set_tooltip(text)
 
 
+@contextmanager
+def _disabled_if(condition):
+    """Grey out the widgets inside, pairing begin/end_disabled structurally.
+
+    Written as a context manager because the hand-rolled form is a live trap:
+    the natural spelling reads the same expression twice --
+
+        if self.busy: imgui.begin_disabled()
+        if imgui.button(...): self.start_something()
+        if self.busy: imgui.end_disabled()
+
+    -- and pressing the button flips `busy` between the two, so end_disabled()
+    fires without its begin and imgui asserts. Latching the condition once,
+    here, makes that impossible to write.
+    """
+    from imgui_bundle import imgui
+
+    if condition:
+        imgui.begin_disabled()
+    try:
+        yield
+    finally:
+        if condition:
+            imgui.end_disabled()
+
+
 def connect(port):
     """A client for a running app, or None. Never raises."""
     from .client import FluoddityClient
@@ -849,8 +901,15 @@ def main(argv=None):
             print(problem)
         return 1
 
-    cfg = SearchConfig.load(args.config) if args.config else SearchConfig(
-        backend='clip', crops=6, crop_frac=0.5, grayscale=True)
+    # Falls back to the shipped config, then to sensible embedding settings, so
+    # the GUI opens ready to load rather than needing a config chosen first.
+    config_path = args.config or (DEFAULT_CONFIG
+                                  if Path(DEFAULT_CONFIG).is_file() else None)
+    if config_path:
+        cfg = SearchConfig.load(config_path)
+    else:
+        cfg = SearchConfig(backend='clip', crops=6, crop_frac=0.5,
+                           grayscale=True)
     from . import embedding
     problems = embedding.check_dependencies(cfg.backend)
     if problems:
@@ -859,8 +918,12 @@ def main(argv=None):
         return 1
 
     viewer = Viewer(cfg=cfg, client=connect(args.port), port=args.port)
-    viewer.config_path = args.config or ''
+    if args.config:
+        viewer.config_path = args.config
     if args.folder:
+        # A folder on the command line loads immediately; without one the
+        # fields sit pre-filled and wait for Load to be pressed.
+        viewer.folder = args.folder
         viewer.load_folder(args.folder)
     if args.caption:
         viewer.caption = args.caption
