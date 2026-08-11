@@ -22,3 +22,8 @@ scipy>=1.10.0
 # compute capability sm_120); older cu121 wheels will not run on them at all.
 # Check it took with:
 #   python -c "import torch; print(torch.cuda.is_available())"
+
+# --- the UMAP viewer (pilot/umap_view.py) ---
+# Only needed to browse a folder of captures as a map; the search and the app
+# do not import it. Pulls in scikit-learn and numba.
+#   pip install umap-learn

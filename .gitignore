@@ -41,3 +41,5 @@ imgui.ini
 documents/
 # tex_sim.py's embedding cache, keyed by backend signature.
 .texsim_cache/
+# The UMAP viewer's per-folder embedding cache. Regenerable, and large.
+.umap_cache.npz

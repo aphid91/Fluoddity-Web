@@ -413,6 +413,40 @@ No app, no simulation, no GPU — it reads the manifest. Useful options:
 a different reference folder — without re-simulating anything. The captures are
 already on disk; only the embedding is redone.
 
+### Browsing a run as a map
+
+```bash
+python -m pilot.umap_view documents/sequences/run/captures --config search.json
+```
+
+Embeds every capture, projects them to 2D with UMAP, and plots them. Nearby
+points look alike, so clusters are families of similar patterns — which is a
+much faster way to find the interesting corner of a 4,000-candidate run than
+scrolling a report.
+
+- **Hover** a point for the capture, its score and its lineage.
+- **Click** to load that candidate's config into a running Fluoddity. With no
+  app running it copies the path instead — the viewer never requires one.
+- **Drag** to pan, **scroll** to zoom (anchored on the cursor).
+- **Colour by score** shades points blue → orange, so high-scoring regions are
+  visible without hovering.
+- **n_neighbors / min_dist / seed** re-project on the **Recompute** button, not
+  on slider release: UMAP on a few thousand points takes ~25s and brushing a
+  slider should not freeze the window. A `*` on the button means the plot is
+  stale.
+
+It runs in its own process and can sit open beside a search.
+
+**Embeddings are cached** in `.umap_cache.npz` inside the folder, keyed by file
+identity and by the backend signature. Measured on a 4,292-capture run: **98s**
+the first time, **6s** to reopen. Changing the backend, `crops` or `grayscale`
+correctly forces a re-embed rather than serving vectors that mean something
+else.
+
+It works on any folder of images, not just a run — point it at `refim/` or a
+hand-assembled collection. A `manifest.jsonl` beside the folder just makes the
+tooltips richer.
+
 ### Running twice into one folder
 
 A second run into an occupied `run_dir` **tags its candidate ids** (`b01_`,
@@ -512,10 +546,19 @@ pilot/candidate.py   Candidate and Move -- what the search passes around
 pilot/config.py      SearchConfig
 pilot/moves.py       THE move recipe, in one place
 pilot/embedding.py   batched embedding (reuses demos/tex_sim.py)
-pilot/scoring.py     Scorer interface + reference-image implementation
+pilot/scoring.py     Scorer interface + reference-image and prompt scorers
 pilot/search.py      SearchStrategy interface + BeamSearch
 pilot/run.py         the driver
+pilot/report.py      manifest -> report.txt
+
+pilot/gallery.py     a folder of images, embedded and cached
+pilot/projection.py  embeddings -> 2D (UMAP)
+pilot/umap_view.py   the viewer window
 ```
+
+The last three are the map browser and are independent of the search: gallery
+and projection are pure and testable without a window, and only `umap_view`
+draws.
 
 **`pilot/` imports nothing from the app.** They are one repository and two
 processes; the HTTP API is the whole of the contact. That keeps torch away from
@@ -531,6 +574,7 @@ one round trip per candidate instead of six.
 ```
 Scratch.venv/Scripts/python.exe tests/test_moves.py           # no GPU
 Scratch.venv/Scripts/python.exe tests/test_search.py          # no GPU
+Scratch.venv/Scripts/python.exe tests/test_gallery.py         # no GPU
 Scratch.venv/Scripts/python.exe tests/test_pilot_loopback.py  # needs a display
 ```
 
