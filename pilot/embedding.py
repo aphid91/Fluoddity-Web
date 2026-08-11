@@ -53,7 +53,11 @@ def check_dependencies(backend_name):
         try:
             import torch                                        # noqa: F401
         except ImportError:
-            problems.append("the clip backend needs torch: pip install torch")
+            problems.append(
+                "the clip backend needs torch. Install it from the CUDA index, "
+                "not PyPI, or you will get the CPU-only wheel:\n"
+                "    pip install torch torchvision --index-url "
+                "https://download.pytorch.org/whl/cu128")
         try:
             import open_clip                                    # noqa: F401
         except ImportError:
@@ -76,8 +80,21 @@ def build_backend(cfg):
     and a model download but understands text.
     """
     if cfg.backend == 'clip':
-        return tex_sim.ClipBackend(crops=cfg.crops, crop_frac=cfg.crop_frac,
-                                   seed=cfg.seed, grayscale=cfg.grayscale)
+        backend = tex_sim.ClipBackend(crops=cfg.crops, crop_frac=cfg.crop_frac,
+                                      seed=cfg.seed, grayscale=cfg.grayscale)
+        # Load now and report the device. A CPU-only torch install is the
+        # commonest way to end up with a search that works but is ~30x slower
+        # than it should be, and nothing else about the run would say so --
+        # `pip install torch` gives the CPU wheel unless the CUDA index URL is
+        # passed. Loading here also means a broken install fails before the
+        # app is driven rather than after the first generation.
+        backend._load()
+        if backend._device == 'cpu':
+            print("  WARNING: CLIP is running on the CPU. For GPU, see "
+                  "requirements.txt -- torch must come from the CUDA index.")
+        else:
+            print(f"  CLIP on {backend._device}")
+        return backend
     if cfg.backend == 'texture':
         # Always grayscale: TextureBackend works from luminance alone
         # (_load_gray converts to "L"), so cfg.grayscale is already satisfied

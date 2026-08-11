@@ -11,5 +11,14 @@ pyopengl>=3.1.0
 # scipy: the texture backend's Euler-characteristic curve, which is what
 # separates spots from labyrinths -- the Turing morphology axis.
 scipy>=1.10.0
-# For backend='clip' instead, add:
-#   torch  open_clip_torch
+# For backend='clip', add torch + open_clip_torch. INSTALL TORCH FROM THE CUDA
+# INDEX, not from PyPI: a plain `pip install torch` silently gives the CPU-only
+# wheel, which works but embeds a generation about 30x slower.
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#   pip install open_clip_torch
+#
+# cu128 (CUDA 12.8) is the minimum for Blackwell cards (RTX 50-series,
+# compute capability sm_120); older cu121 wheels will not run on them at all.
+# Check it took with:
+#   python -c "import torch; print(torch.cuda.is_available())"

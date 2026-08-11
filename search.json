@@ -13,7 +13,7 @@
   "children_per_parent": 14,
   "immigrants": 4,
   "seed_configs": ["configs/custom/burbles.json"],
-  "backend": "texture",
+  "backend": "clip",
   "reference_dir": "refim",
   "crops": 1,
   "crop_frac": 0.3,
