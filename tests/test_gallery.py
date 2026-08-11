@@ -760,6 +760,88 @@ def test_embed_progress():
         check("a bare callable progress still works", bool(lines), str(lines))
 
 
+def test_rescore_updates_the_view():
+    """Re-scoring must change what is ON SCREEN, not just report.txt.
+
+    THE BUG THIS CAUGHT: _rescore computed new scores, wrote them to
+    report.txt, and dropped them. The gallery's scores still came from the
+    manifest, so the plot colours and the percentile cutoff kept showing the
+    old ranking -- pressing the button appeared to do nothing at all, which is
+    exactly how it was reported.
+    """
+    print("\nre-score updates the live view")
+
+    items = [gallery_lib.Item(path=Path(f"gen000_{i:03d}.png"), index=i,
+                              score=float(i))
+             for i in range(5)]
+    gallery = gallery_lib.Gallery(
+        items=items, embeddings=np.zeros((5, 4), np.float32), root=Path('.'))
+
+    before = [i.score for i in gallery.items]
+    check("starts with the manifest's scores", before == [0., 1., 2., 3., 4.],
+          str(before))
+
+    # A re-score returns {candidate id: new score}; ids are capture stems.
+    applied = gallery.apply_scores({'gen000_000': 9.0, 'gen000_002': -3.0})
+    check("reports how many landed", applied == 2, str(applied))
+    after = [i.score for i in gallery.items]
+    check("the named items take the new scores",
+          after[0] == 9.0 and after[2] == -3.0, str(after))
+    check("the others are left alone",
+          after[1] == 1.0 and after[3] == 3.0 and after[4] == 4.0, str(after))
+
+    # The cutoff reads Gallery.scores, so it must follow -- that is the half
+    # the user actually noticed was broken.
+    ranked = gallery_lib.percentile_mask(gallery.scores, 60)
+    kept = {gallery.items[i].name for i, keep in enumerate(ranked) if keep}
+    check("the percentile cutoff follows the new scores",
+          'gen000_000' in kept and 'gen000_002' not in kept, str(sorted(kept)))
+
+    check("an unknown id is ignored rather than raising",
+          gallery.apply_scores({'not_here': 1.0}) == 0)
+
+    # relabel returns a COPY rather than mutating, so a caller holding an item
+    # cannot have it change underneath them.
+    sample = gallery_lib.Item(path=Path('x.png'), index=0, score=1.0)
+    copy = sample.relabel(7.0)
+    check("relabel returns a copy, leaving the original alone",
+          sample.score == 1.0 and copy.score == 7.0,
+          f"{sample.score} / {copy.score}")
+    check("and carries everything else across",
+          copy.path == sample.path and copy.index == sample.index)
+
+    print("\n  viewer wiring")
+    from pilot.umap_view import COLOUR_CAPTION, COLOUR_SCORE, Viewer
+
+    view = Viewer()
+    view.gallery = gallery
+    view.colour_mode = COLOUR_CAPTION
+    view.caption_scores = np.zeros(5, np.float32)
+    view.task_kind = 'rescore'
+
+    from pilot.task import Progress
+
+    class DoneTask:
+        """A finished task, as _collect() sees one."""
+
+        running = False
+        progress = Progress(
+            label='rescore', done=True,
+            result={'scores': {'gen000_001': 42.0},
+                    'path': 'report.txt', 'count': 1})
+
+    view.task = DoneTask()
+    view._collect()
+    check("collecting a re-score applies the scores",
+          view.gallery.items[1].score == 42.0,
+          str(view.gallery.items[1].score))
+    # Switching to run-score colouring is the point: leaving the map on a
+    # caption would hide the thing the button was pressed to see.
+    check("and switches the map to show them",
+          view.colour_mode == COLOUR_SCORE, str(view.colour_mode))
+    check("and says what happened", 're-scored' in view.status, view.status)
+
+
 def test_default_paths():
     """The GUI opens pre-filled with the paths a session usually wants."""
     print("\ndefault paths")
@@ -799,6 +881,7 @@ def main():
     test_disabled_pairing()
     test_progress_reporting()
     test_embed_progress()
+    test_rescore_updates_the_view()
     test_default_paths()
 
     print()

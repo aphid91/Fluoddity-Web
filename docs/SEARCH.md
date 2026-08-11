@@ -427,12 +427,22 @@ No app, no simulation, no GPU — it reads the manifest. Useful options:
 | | |
 |---|---|
 | `--top 64` | how many at each end |
-| `--rescore` | re-embed the captures and score against the **current** config's objective, instead of the scores in the manifest |
+| `--rescore` | score the captures against the **current** config's objective, instead of using the scores in the manifest |
 | `--all` | include rows whose capture was overwritten (see below) |
 
 `--rescore` is how you ask a finished run a different question — a new caption,
 a different reference folder — without re-simulating anything. The captures are
-already on disk; only the embedding is redone.
+on disk and their embeddings are cached, so **only the text side is new**:
+re-scoring 5,000 captures against a different caption takes seconds.
+
+In the GUI, *Re-score run* also updates the **plot and the percentile cutoff**,
+and switches the colour mode to show them — the point is to see the new
+ranking, not just to have it written down.
+
+**It never rewrites `manifest.jsonl`.** Those scores are the ones that actually
+drove selection and are the only account of why the beam kept what it kept; a
+hypothetical objective must not overwrite them. The new scores go to
+`report.txt` and to the live view.
 
 ### The GUI
 

@@ -67,6 +67,13 @@ class Item:
         return lines
 
 
+    def relabel(self, score):
+        """A copy carrying a different score. For re-scoring."""
+        from dataclasses import replace as _replace
+
+        return _replace(self, score=score)
+
+
 @dataclass
 class Gallery:
     """Images, their embeddings, and their metadata."""
@@ -90,6 +97,25 @@ class Gallery:
     @property
     def has_scores(self):
         return any(i.score is not None for i in self.items)
+
+    def apply_scores(self, by_name):
+        """Replace item scores from a {name: score} mapping. Returns the count.
+
+        THE LIVE VIEW, not the manifest. A re-score answers "what would this
+        run look like under a different objective", and the manifest is the
+        record of what the run ACTUALLY did -- its scores are the ones that
+        drove selection, and overwriting them would destroy the only account
+        of why the beam kept what it kept.
+
+        So the plot and the cutoff follow the new scores, `report.txt` records
+        them, and manifest.jsonl is left alone.
+        """
+        changed = 0
+        for index, item in enumerate(self.items):
+            if item.name in by_name:
+                self.items[index] = item.relabel(float(by_name[item.name]))
+                changed += 1
+        return changed
 
 
 def find_images(folder, recursive=True):

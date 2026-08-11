@@ -243,6 +243,18 @@ class Viewer:
             self.pan, self.zoom = [0.0, 0.0], 1.0
             count = len(self.gallery) if self.gallery is not None else 0
             self.status = f"projected {count} points"
+        elif kind == 'rescore' and isinstance(progress.result, dict):
+            applied = 0
+            if self.gallery is not None:
+                applied = self.gallery.apply_scores(progress.result['scores'])
+                # The run-score colouring now means the NEW objective, so
+                # switch to it: leaving the map on a caption or on plain
+                # would hide the thing the button was pressed to see.
+                if applied:
+                    self.colour_mode = COLOUR_SCORE
+            self.status = (f"re-scored {progress.result['count']}; "
+                           f"{applied} on the map; wrote "
+                           f"{Path(progress.result['path']).name}")
         elif kind == 'searching':
             self.status = progress.result or "search finished"
         else:
@@ -840,11 +852,16 @@ class Viewer:
             # an id describes the capture actually on disk.
             kept, _ = report_lib.dedupe(folder.read())
             report(f"re-scoring {len(kept)} captures")
-            rescored = run_lib._rescore(kept, cfg, folder)
+            rescored = run_lib._rescore(kept, cfg, folder, progress=report)
             path = report_lib.write(
                 folder.report, rescored, cfg=cfg, root=folder.root,
                 title=f"Fluoddity search results -- {folder.root.name}")
-            return f"re-scored {len(rescored)}; wrote {path}"
+            # Handed back so the PLOT follows too. Writing report.txt and
+            # leaving the map showing the old ranking was the whole bug: the
+            # new scores existed and nothing on screen used them.
+            return {'scores': {c.id: c.score for c in rescored
+                               if c.score is not None},
+                    'path': str(path), 'count': len(rescored)}
 
         if self._begin('rescore', "rescore", work):
             self.status = "re-scoring..."

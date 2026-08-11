@@ -538,41 +538,45 @@ def _report(args):
     return 0
 
 
-def _rescore(candidates, cfg, folder):
-    """Re-embed each capture and score it against `cfg`'s objective.
+def _rescore(candidates, cfg, folder, progress=print):
+    """Re-score each capture against `cfg`'s objective. Returns new Candidates.
 
     For asking a finished run a different question -- a new caption, or a
     different reference folder -- without re-simulating anything. The captures
-    are already on disk; only the embedding is redone.
+    are on disk and their embeddings are cached, so only the text side is new.
+
+    DOES NOT TOUCH manifest.jsonl. Those scores are the ones that actually
+    drove selection, and they are the only account of why the beam kept what
+    it kept; overwriting them with a hypothetical would destroy the run's
+    provenance. The new scores go to report.txt and to whoever asked.
     """
     from . import embedding
 
     problems = embedding.check_dependencies(cfg.backend)
     if problems:
         for problem in problems:
-            print(f"  {problem}")
+            progress(f"  {problem}")
         raise SystemExit(1)
 
     usable = [c for c in candidates
               if c.capture_path and Path(c.capture_path).is_file()]
     missing = len(candidates) - len(usable)
     if missing:
-        print(f"  {missing} candidate(s) have no capture on disk; skipped")
+        progress(f"  {missing} candidate(s) have no capture on disk; skipped")
     if not usable:
-        print("  nothing to re-score")
+        progress("  nothing to re-score")
         return candidates
 
     backend = embedding.build_backend(cfg)
     scorer = scoring.build_scorer(cfg, backend)
-    print(f"  re-scoring {len(usable)} capture(s): {scorer.describe()}")
+    progress(f"  re-scoring {len(usable)} capture(s): {scorer.describe()}")
 
     # Through the shared cache: a re-score against a new caption is exactly
     # the case where the captures were embedded minutes ago and nothing about
     # them has changed. Only the text side is new.
     cache = embedding_cache.EmbeddingCache(folder.captures)
     vectors = embedding_cache.embed_cached(
-        [c.capture_path for c in usable], backend, cache,
-        progress=lambda m: print(f"  {m.strip()}"))
+        [c.capture_path for c in usable], backend, cache, progress=progress)
     return [c.scored(float(s))
             for c, s in zip(usable, scorer.score(vectors))]
 
