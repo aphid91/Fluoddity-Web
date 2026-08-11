@@ -37,6 +37,7 @@ imgui.ini
 # hello_imgui writes one of these per viewer window title. Same status as
 # imgui.ini above: per-user session layout, not project source.
 UMAP*.ini
+Fluoddity_pilot.ini
 
 # Search output: a run writes a config and a 512px capture per candidate, so a
 # few generations is hundreds of files and tens of megabytes. Results are
@@ -44,5 +45,6 @@ UMAP*.ini
 documents/
 # tex_sim.py's embedding cache, keyed by backend signature.
 .texsim_cache/
-# The UMAP viewer's per-folder embedding cache. Regenerable, and large.
+# The shared per-folder embedding cache. Regenerable, and large.
+.embeddings.npz
 .umap_cache.npz

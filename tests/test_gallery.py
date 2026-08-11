@@ -77,61 +77,137 @@ def test_find_images():
             check("a missing folder raises", True)
 
 
-def test_cache_key():
-    print("\ncache keying")
+class CountingBackend:
+    """A backend that records how many images it was asked to embed."""
+
+    name = 'counting'
+    supports_text = False
+
+    def __init__(self, signature='fake:v1', crops=3, dim=8):
+        self._signature = signature
+        self.crops = crops
+        self.dim = dim
+        self.calls = 0
+
+    def signature(self):
+        return self._signature
+
+    def embed_images(self, paths):
+        self.calls += len(paths)
+        out = np.ones((len(paths), self.crops, self.dim), np.float32)
+        return out / np.sqrt(self.dim)
+
+
+def test_embedding_cache():
+    """The shared cache. Its whole value is what it does NOT re-embed."""
+    print("\nshared embedding cache")
+
+    from pilot.embedding_cache import EmbeddingCache, embed_cached
 
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
-        make_images(root, ['a', 'b'])
+        make_images(root, [f"{i:02d}" for i in range(5)])
         paths = gallery_lib.find_images(root)
 
-        key = gallery_lib._cache_key(paths, 'sig1')
-        check("stable for the same inputs",
-              key == gallery_lib._cache_key(paths, 'sig1'))
+        backend = CountingBackend()
+        cache = EmbeddingCache(root)
 
-        # The signature carries backend, crops and grayscale. A cache that
-        # ignored it would serve colour vectors to a grayscale run.
-        check("a different signature is a different key",
-              key != gallery_lib._cache_key(paths, 'sig2'))
+        first = embed_cached(paths, backend, cache)
+        check("embeds everything on a cold cache", backend.calls == 5,
+              str(backend.calls))
+        check("keeps the per-crop shape", first.shape == (5, 3, 8),
+              str(first.shape))
 
-        make_images(root, ['c'])
-        more = gallery_lib.find_images(root)
-        # Captured BEFORE the edit below: _cache_key stats the files when it
-        # is called, so comparing two keys computed after the change would
-        # compare the new state against itself.
-        before_edit = gallery_lib._cache_key(more, 'sig1')
-        check("adding a file changes the key", key != before_edit)
+        backend.calls = 0
+        embed_cached(paths, backend, cache)
+        check("a warm cache embeds nothing", backend.calls == 0,
+              str(backend.calls))
 
-        # Content change without a change in file COUNT -- the case a cache
-        # keyed on "how many images" gets wrong.
-        Image.new('RGB', (64, 64), (1, 2, 3)).save(root / 'a.png')
-        after_edit = gallery_lib._cache_key(gallery_lib.find_images(root),
-                                            'sig1')
-        check("editing a file changes the key", before_edit != after_edit,
-              "a replaced capture would be served stale vectors")
+        # THE property the whole design exists for: a search appends captures
+        # generation by generation, and re-embedding the earlier ones each
+        # time would make caching worse than useless.
+        make_images(root, ['05', '06', '07'])
+        grown = gallery_lib.find_images(root)
+        backend.calls = 0
+        out = embed_cached(grown, backend, cache)
+        check("appending re-embeds ONLY the new files", backend.calls == 3,
+              f"embedded {backend.calls}, expected 3")
+        check("and returns the full set in order", out.shape == (8, 3, 8),
+              str(out.shape))
+
+        # A replaced file must not be served its predecessor's vectors.
+        Image.new('RGB', (96, 96), (7, 7, 7)).save(root / '00.png')
+        backend.calls = 0
+        embed_cached(gallery_lib.find_images(root), backend, cache)
+        check("a rewritten file is re-embedded", backend.calls == 1,
+              str(backend.calls))
+
+        print("\n  signatures")
+        other = CountingBackend(signature='fake:v2')
+        embed_cached(paths, other, cache)
+        check("a new signature embeds afresh", other.calls == 5,
+              str(other.calls))
+        check("both signatures coexist in one file",
+              len(cache.signatures()) == 2, str(cache.signatures()))
+        backend.calls = 0
+        embed_cached(paths, backend, cache)
+        check("and the original is still cached", backend.calls == 0,
+              "flipping grayscale would discard the other set")
+
+        print("\n  persistence")
+        cache.flush()
+        reopened = EmbeddingCache(root)
+        check("survives a reopen", len(reopened) == len(cache), str(len(reopened)))
+        backend.calls = 0
+        embed_cached(paths, backend, reopened)
+        check("a reopened cache still hits", backend.calls == 0)
+
+        collapsed = embed_cached(paths, backend, reopened, aggregate='mean')
+        check("aggregate collapses the crop axis on read",
+              collapsed.shape == (5, 8), str(collapsed.shape))
+
+        (root / '.embeddings.npz').write_bytes(b'not an npz')
+        check("a corrupt cache is a miss, not a crash",
+              len(EmbeddingCache(root)) == 0)
 
 
-def test_cache_roundtrip():
-    print("\ncache round-trip")
+def test_percentile_mask():
+    """The cutoff. A lens on the plot, computed over the whole dataset."""
+    print("\npercentile cutoff")
 
-    with tempfile.TemporaryDirectory() as raw:
-        root = Path(raw)
-        vectors = np.random.default_rng(1).normal(size=(5, 8)).astype(np.float32)
+    values = np.arange(100, dtype=np.float32)      # 0..99
 
-        check("a miss returns None",
-              gallery_lib.load_cache(root, 'key') is None)
+    check("0% hides nothing",
+          gallery_lib.percentile_mask(values, 0).all())
 
-        gallery_lib.save_cache(root, 'key', vectors)
-        loaded = gallery_lib.load_cache(root, 'key')
-        check("a hit returns the vectors", loaded is not None)
-        check("the vectors survive intact",
-              loaded is not None and np.allclose(loaded, vectors))
-        check("a different key misses",
-              gallery_lib.load_cache(root, 'other') is None)
+    top10 = gallery_lib.percentile_mask(values, 90)
+    check("90% keeps about the top tenth",
+          9 <= top10.sum() <= 12, str(int(top10.sum())))
+    check("and it is the HIGH end",
+          values[top10].min() >= 89, str(values[top10].min()))
 
-        (root / gallery_lib.CACHE_NAME).write_bytes(b'not an npz')
-        check("a corrupt cache is treated as a miss, not an error",
-              gallery_lib.load_cache(root, 'key') is None)
+    bottom10 = gallery_lib.percentile_mask(values, 90, bottom=True)
+    check("bottom keeps about the worst tenth",
+          9 <= bottom10.sum() <= 12, str(int(bottom10.sum())))
+    check("and it is the LOW end",
+          values[bottom10].max() <= 10, str(values[bottom10].max()))
+    check("the two ends do not overlap",
+          not (top10 & bottom10).any())
+
+    # Computed over the full dataset every time, so dragging the slider is
+    # reversible: 90 then 0 must return exactly what 0 alone gives.
+    check("the cutoff is not cumulative",
+          gallery_lib.percentile_mask(values, 0).sum() == 100)
+
+    with_nan = np.array([1.0, np.nan, 3.0, np.nan, 5.0], np.float32)
+    masked = gallery_lib.percentile_mask(with_nan, 50)
+    check("unscored points are hidden when a cutoff is active",
+          not masked[1] and not masked[3], str(masked))
+    check("unscored points are shown when it is not",
+          gallery_lib.percentile_mask(with_nan, 0).all())
+    check("all-NaN hides everything rather than dividing by zero",
+          not gallery_lib.percentile_mask(
+              np.full(4, np.nan, np.float32), 50).any())
 
 
 def test_manifest_enrichment():
@@ -292,7 +368,9 @@ def test_view_transform():
         items=[gallery_lib.Item(path=Path(f"{i}.png"), index=i)
                for i in range(3)],
         embeddings=np.zeros((3, 4), np.float32), root=Path('.'))
-    view = Viewer(gallery, Projection(points, 15, 0.1, 42))
+    view = Viewer()
+    view.gallery = gallery
+    view.projection = Projection(points, 15, 0.1, 42)
 
     origin = SimpleNamespace(x=100.0, y=50.0)
     size = SimpleNamespace(x=800.0, y=600.0)
@@ -421,14 +499,37 @@ def test_caption_colouring():
           int(np.argmax(negative)) == 1, str(np.round(negative, 3)))
 
     print("\n  viewer wiring")
-    from pilot.projection import Projection
     from pilot.umap_view import COLOUR_CAPTION, COLOUR_PLAIN, Viewer
 
-    view = Viewer(gallery, Projection(np.full((3, 2), 0.5, np.float32),
-                                      15, 0.1, 42), backend=backend)
-    check("starts plain with no manifest scores",
+    def loaded_viewer(with_backend):
+        """A Viewer with a folder already 'loaded'. The GUI starts empty, so
+        tests have to put it in the state a load would."""
+        view = Viewer()
+        view.gallery = gallery
+        view.backend = with_backend
+        return view
+
+    empty = Viewer()
+    check("starts with nothing loaded", empty.gallery is None)
+    check("and nothing projected", empty.projection is None)
+
+    # Every action must survive being pressed before anything is open --
+    # the GUI now starts empty, so that is the state it is first seen in.
+    empty.caption = 'a maze'
+    empty.apply_caption()
+    check("a caption before loading is refused, not crashed",
+          empty.caption_scores is None and 'folder' in empty.status,
+          empty.status)
+    empty.compute_projection()
+    check("projecting before loading is refused",
+          empty.projection is None and 'folder' in empty.status, empty.status)
+
+    view = loaded_viewer(backend)
+    check("plain when the gallery has no manifest scores",
           view.colour_mode == COLOUR_PLAIN, str(view.colour_mode))
     check("nothing to shade before a caption", view.active_scores() is None)
+    check("and no cutoff mask without something to rank",
+          view.visible_mask() is None)
 
     view.caption = 'a maze'
     view.apply_caption()
@@ -442,6 +543,20 @@ def test_caption_colouring():
           shading is not None and shading[1] < shading[2],
           str(shading[1:] if shading else None))
 
+    # The cutoff filters on whatever the current colour is.
+    view.cutoff = 50.0
+    mask = view.visible_mask()
+    check("the cutoff hides part of the set",
+          mask is not None and 0 < mask.sum() < len(gallery),
+          str(mask.sum() if mask is not None else None))
+    view.cutoff_bottom = True
+    inverted = view.visible_mask()
+    check("bottom percentile keeps a different subset",
+          inverted is not None and not np.array_equal(mask, inverted))
+    view.cutoff = 0.0
+    check("a zero cutoff shows everything again",
+          view.visible_mask() is None)
+
     view.caption = '   '
     view.apply_caption()
     check("an empty caption is refused, leaving the old colours",
@@ -450,9 +565,7 @@ def test_caption_colouring():
 
     # A text-less backend must say so rather than raising into the frame loop.
     import tex_sim
-    plain_view = Viewer(gallery, Projection(np.full((3, 2), 0.5, np.float32),
-                                            15, 0.1, 42),
-                        backend=tex_sim.TextureBackend())
+    plain_view = loaded_viewer(tex_sim.TextureBackend())
     plain_view.caption = 'a maze'
     plain_view.apply_caption()
     check("the texture backend reports it cannot embed text",
@@ -463,8 +576,8 @@ def test_caption_colouring():
 def main():
     print("Gallery and projection")
     test_find_images()
-    test_cache_key()
-    test_cache_roundtrip()
+    test_embedding_cache()
+    test_percentile_mask()
     test_manifest_enrichment()
     test_normalize()
     test_projection_edges()

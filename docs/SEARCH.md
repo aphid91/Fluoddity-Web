@@ -212,13 +212,34 @@ For a **caption** objective instead of a reference folder:
 ```json
 {
   "backend": "clip",
-  "caption": "a dense tangled web of filaments",
+  "captions": [
+    "a meandering river",
+    "a verdant river delta",
+    "branching channels"
+  ],
+  "caption_aggregate": "max",
   "negative_captions": ["an empty black image", "uniform random noise"],
   "calibrate": true,
   "grayscale": true,
   "crops": 8
 }
 ```
+
+**Several phrasings usually beat one.** CLIP is sensitive to wording, and three
+descriptions of the same idea pin it down more robustly than any single one.
+`caption_aggregate` decides how they combine:
+
+| | |
+|---|---|
+| `max` *(default)* | matching **any** phrasing is enough — right for alternative descriptions of one thing |
+| `mean` | must match **all** of them; the centroid can land somewhere resembling none |
+| `topk` | averages the best third |
+
+Each caption is calibrated *before* they are combined, so a phrase that happens
+to score high generally cannot dominate the max.
+
+`"captions": "a river"` (a bare string) works too, and an older `"caption"`
+field is folded into `captions` on read — existing configs keep working.
 
 or without touching the file:
 
@@ -413,15 +434,27 @@ No app, no simulation, no GPU — it reads the manifest. Useful options:
 a different reference folder — without re-simulating anything. The captures are
 already on disk; only the embedding is redone.
 
-### Browsing a run as a map
+### The GUI
 
 ```bash
-python -m pilot.umap_view documents/sequences/run/captures --config search.json
+python -m pilot.umap_view                                    # open empty
+python -m pilot.umap_view <folder> --config search.json      # open a folder
 ```
 
-Embeds every capture, projects them to 2D with UMAP, and plots them. Nearby
-points look alike, so clusters are families of similar patterns — which is a
-much faster way to find the interesting corner of a 4,000-candidate run than
+The front end for everything the pilot does: load a folder, colour it by a
+caption, filter to the best or worst of it, write a report, re-score a finished
+run, or launch a search. Every control is labelled and tooltipped.
+
+**It opens empty and projects on demand.** A UMAP of a few thousand points
+costs ~25s, and much of what the GUI is for — trying captions, reading scores,
+launching a search — needs no map at all. So *Compute UMAP* is a button.
+
+**The slow work runs on a thread.** Loading, projecting and searching all take
+longer than a frame; the window stays responsive throughout (verified across a
+75-second load of 4,292 captures) and reports progress as it goes.
+
+Nearby points look alike, so clusters are families of similar patterns — a much
+faster way to find the interesting corner of a 4,000-candidate run than
 scrolling a report.
 
 - **Hover** a point for the capture, its score and its lineage.
@@ -438,13 +471,32 @@ scrolling a report.
   slider should not freeze the window. A `*` on the button means the plot is
   stale.
 
+- **Percentile cutoff** hides all but the top slice by the *current* colour —
+  run score or caption. **Bottom percentile** keeps the worst slice instead,
+  which is how you isolate a failure mode well enough to name it. Greyed out
+  until something is scored. Purely a lens: the layout never moves when you
+  drag it.
+
 It runs in its own process and can sit open beside a search.
 
-**Embeddings are cached** in `.umap_cache.npz` inside the folder, keyed by file
-identity and by the backend signature. Measured on a 4,292-capture run: **98s**
-the first time, **6s** to reopen. Changing the backend, `crops` or `grayscale`
-correctly forces a re-embed rather than serving vectors that mean something
-else.
+#### The shared embedding cache
+
+`.embeddings.npz` inside the image folder, **keyed per file** by name, size,
+mtime and backend signature.
+
+**The search and the viewer share it.** A search embeds each generation as it
+goes; opening that folder afterwards used to re-embed all of it — same files,
+same model, ninety seconds of pure waste. Now it costs nothing: verified on a
+24-candidate run, the viewer loaded in **0.00s having embedded 0 images**.
+
+Per-file rather than per-folder, because a search appends captures generation
+by generation. A single folder-wide key would be invalidated by every new
+capture, making the cache *worse* than useless mid-run. Appending 3 files
+re-embeds exactly 3.
+
+Stored losslessly as per-crop vectors, so changing `aggregate` costs nothing
+and the search still scores on what it actually asked for. Multiple signatures
+coexist, so flipping `grayscale` to compare does not discard the other set.
 
 It works on any folder of images, not just a run — point it at `refim/` or a
 hand-assembled collection. A `manifest.jsonl` beside the folder just makes the

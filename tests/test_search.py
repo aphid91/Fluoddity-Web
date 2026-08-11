@@ -550,17 +550,86 @@ def test_prompt_scorer():
               np.zeros((0, 1, dim), np.float32)).shape == (0,))
 
 
+def test_multiple_captions():
+    """Several positive captions, combined. CLIP is sensitive to wording, so
+    a few phrasings of one idea describe it more robustly than any one."""
+    print("\nmultiple captions")
+
+    import numpy as np
+    from pilot.scoring import PromptScorer
+
+    dim = 64
+    river = np.zeros(dim); river[0] = 1.0
+    delta = np.zeros(dim); delta[1] = 1.0
+    noise = np.zeros(dim); noise[2] = 1.0
+    backend = FakeTextBackend({'a river': river, 'a delta': delta,
+                               'noise': noise}, dim=dim)
+    generic = backend._generic
+
+    def image(*parts):
+        vector = generic + sum(parts)
+        return vector / np.linalg.norm(vector)
+
+    embeddings = np.stack([
+        image(river),          # matches caption 1 only
+        image(delta),          # matches caption 2 only
+        image(noise),          # matches neither
+    ]).reshape(3, 1, dim).astype(np.float32)
+
+    # MAX: matching ANY phrasing is enough, which is what a set of
+    # alternative descriptions of one thing means.
+    best_of = PromptScorer(backend, ['a river', 'a delta'],
+                           caption_aggregate='max')
+    scores = best_of.score(embeddings)
+    check("max scores both matching images above the unrelated one",
+          scores[0] > scores[2] and scores[1] > scores[2],
+          str(np.round(scores, 3)))
+    check("max treats the two matches comparably",
+          abs(scores[0] - scores[1]) < abs(scores[0] - scores[2]),
+          str(np.round(scores, 3)))
+
+    # MEAN asks for both at once, so a one-caption match is penalised.
+    averaged = PromptScorer(backend, ['a river', 'a delta'],
+                            caption_aggregate='mean')
+    mean_scores = averaged.score(embeddings)
+    check("mean scores a single-caption match lower than max does",
+          mean_scores[0] < scores[0],
+          f"mean {mean_scores[0]:.3f} vs max {scores[0]:.3f}")
+
+    check("a single caption is unaffected by the aggregate",
+          np.allclose(
+              PromptScorer(backend, ['a river'],
+                           caption_aggregate='max').score(embeddings),
+              PromptScorer(backend, ['a river'],
+                           caption_aggregate='mean').score(embeddings)))
+
+    check("a bare string still works",
+          PromptScorer(backend, 'a river').score(embeddings).shape == (3,))
+    check("describe() names the count and the aggregate",
+          '2 prompts' in best_of.describe()
+          and 'max' in best_of.describe(), best_of.describe())
+
+    # Empty entries are dropped rather than embedded as blank queries.
+    check("blank captions are ignored",
+          PromptScorer(backend, ['a river', '', '  ']).captions == ['a river'])
+    try:
+        PromptScorer(backend, ['', '   '])
+        check("an all-blank caption list is refused", False, "no error")
+    except ValueError:
+        check("an all-blank caption list is refused", True)
+
+
 def test_prompt_config():
     print("\ncaption configuration")
 
-    cfg = SearchConfig(backend='clip', caption='a maze-like pattern')
+    cfg = SearchConfig(backend='clip', captions=['a maze-like pattern'])
     check("a caption with the clip backend validates", cfg.validate() == [])
 
-    problems = SearchConfig(backend='texture', caption='a maze').validate()
+    problems = SearchConfig(backend='texture', captions=['a maze']).validate()
     check("a caption with the texture backend is rejected",
           any('clip' in p for p in problems), str(problems))
 
-    problems = SearchConfig(backend='clip', caption='a maze',
+    problems = SearchConfig(backend='clip', captions=['a maze'],
                             reference_dir='.').validate()
     check("caption AND reference_dir is rejected",
           any('not both' in p for p in problems), str(problems))
@@ -581,13 +650,35 @@ def test_prompt_config():
 
     with tempfile.TemporaryDirectory() as raw:
         path = Path(raw) / 'search.json'
-        original = SearchConfig(backend='clip', caption='a maze',
+        original = SearchConfig(backend='clip',
+                                captions=['a maze', 'a labyrinth'],
                                 negative_captions=['noise', 'a blur'],
                                 calibrate=True, grayscale=True)
         original.save(path)
         restored = SearchConfig.load(path)
         check("caption config round-trips", restored == original,
               str(json.loads(path.read_text())))
+
+        # Old configs must keep working: `caption` folds into `captions`.
+        path.write_text(json.dumps({'caption': 'a river', 'backend': 'clip'}),
+                        encoding='utf-8')
+        migrated = SearchConfig.load(path)
+        check("a legacy `caption` string migrates",
+              migrated.captions == ['a river'], str(migrated.captions))
+        check("and .caption still reads back",
+              migrated.caption == 'a river', migrated.caption)
+
+        path.write_text(json.dumps({'captions': 'a river', 'backend': 'clip'}),
+                        encoding='utf-8')
+        check("a bare string in `captions` is accepted",
+              SearchConfig.load(path).captions == ['a river'])
+
+    problems = SearchConfig(backend='clip', captions=['x'],
+                            caption_aggregate='banana').validate()
+    check("an unknown caption_aggregate is rejected",
+          any('caption_aggregate' in p for p in problems), str(problems))
+    check("caption_aggregate defaults to max",
+          SearchConfig().caption_aggregate == 'max')
 
 
 def test_report():
@@ -642,7 +733,7 @@ def test_report():
 
     with tempfile.TemporaryDirectory() as raw:
         path = report_lib.write(Path(raw) / 'report.txt', made,
-                                cfg=SearchConfig(caption='a maze',
+                                cfg=SearchConfig(captions=['a maze'],
                                                  backend='clip'))
         check("writes a file", path.is_file())
         body = path.read_text(encoding='utf-8')
@@ -689,6 +780,7 @@ def main():
     test_grayscale_flag()
     test_colour_blind_ranking()
     test_prompt_scorer()
+    test_multiple_captions()
     test_prompt_config()
     test_report()
     test_session_tags()
