@@ -24,6 +24,7 @@ from typing import Protocol
 import numpy as np
 
 from . import embedding
+from .embedding import tex_sim
 
 #: Extensions find_references will pick up.
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.webp'}
@@ -120,7 +121,17 @@ class ConstantScorer:
 
 
 def build_scorer(cfg, backend):
-    """The scorer a run's config asks for."""
+    """The scorer a run's config asks for.
+
+    A caption wins over a reference folder if both are set -- validate()
+    refuses that combination, so reaching here with both means someone
+    constructed a SearchConfig directly.
+    """
+    if cfg.caption:
+        return PromptScorer(backend, cfg.caption,
+                            negative_captions=cfg.negative_captions,
+                            aggregate=cfg.aggregate,
+                            calibrate=cfg.calibrate)
     if cfg.reference_dir:
         return ReferenceImageScorer(backend, find_references(cfg.reference_dir),
                                     aggregate=cfg.aggregate)
@@ -133,30 +144,131 @@ def build_scorer(cfg, backend):
 # ---------------------------------------------------------------------------
 
 class PromptScorer:
-    """Score against a text prompt. CLIP only. NOT IMPLEMENTED.
+    """Score against a text prompt. CLIP only.
 
-    The work is not `embed_texts` -- that is one line. It is calibration.
-    Raw CLIP cosines live in a narrow band and are dominated by properties of
-    the caption rather than of the image, so ranking by them mostly ranks the
-    prompt against itself. demos/tex_sim.py's cmd_rank already solves this: it
-    scores against 30 BACKGROUND_CAPTIONS and reports a robust z,
+    WHY RAW COSINES WILL NOT DO. CLIP image-text similarities live in a narrow
+    band -- measured on real captures, four visually distinct images scored
+    0.2173 / 0.2123 / 0.1971 / 0.1962 against the same caption, a spread of two
+    percent. Most of that number describes the CAPTION (its length, its
+    phrasing, how typical it is) rather than the image, so ranking on it is
+    largely ranking the prompt against itself.
 
-        med = median(bgs); mad = median(|bgs - med|) * 1.4826
-        z = (s - med) / max(mad, 0.01)
+    THE FIX, from demos/tex_sim.py's cmd_rank: score each image against a set
+    of generic BACKGROUND CAPTIONS too, and report how far the real caption
+    stands out from that background, per image:
 
-    printing "rank by z, not raw cosine". Any implementation here must do the
-    same, reusing tex_sim.BACKGROUND_CAPTIONS rather than inventing a second
-    calibration set.
+        med   = median(background scores for this image)
+        mad   = median(|background - med|) * 1.4826      robust sigma
+        z     = (score - med) / max(mad, 0.01)
 
-    Also unresolved: whether CLIP's semantic space says anything useful about
-    abstract texture. Worth measuring against ReferenceImageScorer on the same
-    captures before trusting a search to it.
+    The median and MAD are per-IMAGE, which is the part that matters: an image
+    that scores highly against everything (a busy frame) has a high median and
+    is not rewarded for it, while an image that matches the caption and nothing
+    else scores a large z. Robust statistics rather than mean/std because a
+    couple of background captions genuinely matching an image should not drag
+    the reference point.
+
+    WHAT IS DIFFERENT HERE FROM THE CLI. tex_sim ranks one fixed dataset once.
+    A search scores a new generation every few seconds and must compare
+    candidates ACROSS generations -- the beam holds survivors from any of them.
+    So the background embeddings are computed ONCE at construction and reused,
+    making z an absolute quantity rather than one renormalized per batch. A
+    per-generation renormalization would make scores incomparable between
+    generations and quietly break the beam.
+
+    `negative_captions` is the other half: things to score AGAINST. The prompt
+    says what you want; negatives say what you keep getting instead. Their
+    similarity is subtracted, which is the most direct way to push a search out
+    of a local optimum it keeps rediscovering.
     """
 
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError(
-            "PromptScorer is designed but not built -- see its docstring, and "
-            "use reference_dir with backend='clip' for a semantic objective")
+    def __init__(self, backend, caption, negative_captions=(),
+                 aggregate='mean', calibrate=True,
+                 background_captions=None):
+        if not getattr(backend, 'supports_text', False):
+            raise ValueError(
+                f"the {getattr(backend, 'name', '?')} backend cannot embed "
+                "text; prompt scoring needs backend='clip'")
+        if not caption or not caption.strip():
+            raise ValueError("prompt scoring needs a non-empty caption")
+
+        self.backend = backend
+        self.caption = caption
+        self.negative_captions = list(negative_captions)
+        self.aggregate = aggregate
+        self.calibrate = calibrate
+
+        self.query = embedding.embed_texts(backend, [caption])[0]
+
+        self.negatives = (embedding.embed_texts(backend, self.negative_captions)
+                          if self.negative_captions else None)
+
+        # Embedded once, deliberately -- see the class docstring. These are the
+        # fixed reference frame that makes scores comparable across
+        # generations.
+        self.background = None
+        if calibrate:
+            captions = (background_captions
+                        if background_captions is not None
+                        else tex_sim.BACKGROUND_CAPTIONS)
+            self.background = embedding.embed_texts(backend, list(captions))
+
+    def _reference_frame(self, embeddings):
+        """Per-image (median, robust sigma) over the background captions.
+
+        Per IMAGE, not per batch -- that is what makes a busy frame scoring
+        highly against everything not count as a match, and what keeps the
+        result independent of which other candidates happened to share its
+        generation.
+        """
+        bg = np.stack(
+            [embedding.similarity(embeddings, b, self.aggregate)
+             for b in self.background], axis=1)                  # (N, B)
+        median = np.median(bg, axis=1)
+        mad = np.median(np.abs(bg - median[:, None]), axis=1) * 1.4826
+        # The floor stops z exploding when an image's background scores
+        # collapse to near-identical values.
+        return median, np.maximum(mad, 0.01)
+
+    def score(self, embeddings):
+        if embeddings.shape[0] == 0:
+            return np.zeros(0, dtype=np.float32)
+
+        raw = embedding.similarity(embeddings, self.query, self.aggregate)
+
+        if self.background is not None:
+            median, sigma = self._reference_frame(embeddings)
+            scores = (raw - median) / sigma
+        else:
+            median = sigma = None
+            scores = raw
+
+        if self.negatives is not None:
+            against = np.stack(
+                [embedding.similarity(embeddings, n, self.aggregate)
+                 for n in self.negatives], axis=1)               # (N, K)
+            if median is not None:
+                # Calibrated on the SAME reference frame as the positive, so
+                # the subtraction is between comparable quantities: a raw
+                # cosine and a z-score differ by an order of magnitude, and
+                # mixing them would make the penalty either negligible or
+                # total.
+                against = (against - median[:, None]) / sigma[:, None]
+            # The worst offender decides. Averaging would let a candidate that
+            # strongly matches one negative hide behind the others.
+            scores = scores - against.max(axis=1)
+
+        return scores.astype(np.float32)
+
+    def describe(self):
+        colour = ('grayscale' if getattr(self.backend, 'grayscale', False)
+                  else 'colour')
+        parts = [f'prompt "{self.caption}"',
+                 'calibrated' if self.calibrate else 'RAW COSINE (uncalibrated)',
+                 f'agg={self.aggregate}', colour]
+        if self.negative_captions:
+            parts.append(f"{len(self.negative_captions)} negative(s)")
+        return f"{parts[0]} ({', '.join(parts[1:])})"
 
 
 class NoveltyScorer:

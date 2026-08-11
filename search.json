@@ -2,23 +2,46 @@
   "run_dir": "documents/sequences/run",
   "resume": false,
   "port": 8765,
-  "world_size": 0.1,
+  "world_size": 0.15,
   "cohorts": 1,
-  "physics_steps": 100,
-  "warmup_steps": 5000,
-  "capture_size": 256,
-  "mutation_scale": 0.25,
-  "generations": 5,
-  "beam_width": 18,
-  "children_per_parent": 14,
-  "immigrants": 4,
-  "seed_configs": ["configs/custom/burbles.json"],
+  "physics_steps": 5,
+  "warmup_steps": 2000,
+  "capture_size": 396,
+  "mutation_scale": 0.15,
+  "generations": 30,
+  "beam_width": 8,
+  "children_per_parent": 16,
+  "immigrants": 2,
+  "seed_configs": [],
+
   "backend": "clip",
-  "reference_dir": "refim",
-  "crops": 1,
-  "crop_frac": 0.3,
+  "crops": 6,
+  "crop_frac": 0.5,
   "aggregate": "mean",
   "grayscale": true,
-  "seed": 0
-  
+  "seed": 0,
+
+  "_objective": "PICK ONE: reference_dir OR caption. Setting both is a config error -- with two objectives a result cannot be attributed to either. Keys starting with _ are ignored by the loader (JSON has no comments).",
+
+  "_reference_dir": "",
+
+  "_caption_example": "To switch to caption scoring: set reference_dir to \"\" and move the two keys below out of _disabled_caption_example, or just pass --caption on the command line, which does both for you.",
+  "_disabled_caption_example": {
+    "caption": "a dense tangled web of fine filaments",
+    "negative_captions": [
+      "a dense field of small dots",
+      "an empty black image",
+      "uniform random noise",
+      "a single solid blob"
+    ]
+  },
+
+  "caption": "meandering river",
+  "negative_captions": [
+      "A thin bright line",
+      "an empty black image",
+      "uniform random noise",
+      "a single formless blob"
+    ],
+  "calibrate": true
 }

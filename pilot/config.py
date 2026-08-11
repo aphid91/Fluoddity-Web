@@ -83,6 +83,23 @@ class SearchConfig:
     backend: str = "texture"
     #: Folder of images the search is trying to resemble.
     reference_dir: str = ""
+
+    #: A text prompt to search toward. CLIP only, and mutually exclusive with
+    #: reference_dir -- two objectives at once is a run whose results cannot be
+    #: attributed to either.
+    caption: str = ""
+    #: Things to search AWAY from. The caption says what you want; these say
+    #: what you keep getting instead, and their similarity is subtracted. The
+    #: most direct lever for pushing a search out of a rut it keeps
+    #: rediscovering.
+    negative_captions: list = field(default_factory=list)
+    #: Calibrate the caption score against generic background captions.
+    #: ON BY DEFAULT AND SHOULD STAY ON. Raw CLIP cosines occupy a band about
+    #: two percent wide, most of which describes the caption rather than the
+    #: image -- measured, four visually distinct captures scored 0.2173 /
+    #: 0.2123 / 0.1971 / 0.1962 against one caption. Ranking on that is
+    #: mostly ranking noise. Turn it off only to see that for yourself.
+    calibrate: bool = True
     #: CLIP only: crops per image. 8-16 makes it describe local texture rather
     #: than global composition, which is what matters for this simulation.
     crops: int = 1
@@ -159,6 +176,20 @@ class SearchConfig:
                             f"(got {self.backend!r})")
         if self.reference_dir and not Path(self.reference_dir).is_dir():
             problems.append(f"reference_dir does not exist: {self.reference_dir}")
+
+        # Objective: at most one, and a caption needs a model that reads text.
+        if self.caption and self.reference_dir:
+            problems.append(
+                "set either caption or reference_dir, not both -- with two "
+                "objectives a result cannot be attributed to either")
+        if self.caption and self.backend != 'clip':
+            problems.append(
+                f"caption scoring needs backend='clip' (got "
+                f"{self.backend!r}); the texture backend cannot embed text")
+        if self.negative_captions and not self.caption:
+            problems.append("negative_captions needs a caption to subtract from")
+        if not isinstance(self.negative_captions, (list, tuple)):
+            problems.append("negative_captions must be a list of strings")
         if not 0.0 < self.world_size <= 4.0:
             problems.append(f"world_size out of range: {self.world_size}")
         return problems
