@@ -43,7 +43,7 @@ Tests are standalone scripts, each returning an exit code:
 Scratch.venv/Scripts/python.exe tests/test_schedule_parse.py     # no GPU
 Scratch.venv/Scripts/python.exe tests/test_pending_selection.py  # no GPU
 Scratch.venv/Scripts/python.exe tests/test_moves.py              # no GPU
-Scratch.venv/Scripts/python.exe tests/test_search.py             # no GPU
+Scratch.venv/Scripts/python.exe tests/test_search.py             # no GPU (needs scipy)
 Scratch.venv/Scripts/python.exe tests/test_async_pick.py         # GPU, no window
 Scratch.venv/Scripts/python.exe tests/test_hot_reload.py         # GPU, no window
 Scratch.venv/Scripts/python.exe tests/test_api_capture.py        # GPU, no window

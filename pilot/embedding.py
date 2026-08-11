@@ -77,8 +77,11 @@ def build_backend(cfg):
     """
     if cfg.backend == 'clip':
         return tex_sim.ClipBackend(crops=cfg.crops, crop_frac=cfg.crop_frac,
-                                   seed=cfg.seed)
+                                   seed=cfg.seed, grayscale=cfg.grayscale)
     if cfg.backend == 'texture':
+        # Always grayscale: TextureBackend works from luminance alone
+        # (_load_gray converts to "L"), so cfg.grayscale is already satisfied
+        # here and there is nothing to pass.
         return tex_sim.TextureBackend()
     raise ValueError(f"unknown backend {cfg.backend!r}")
 

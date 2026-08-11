@@ -131,6 +131,7 @@ default. The ones that matter:
   "backend": "texture",
   "reference_dir": "documents/references/coral",
   "aggregate": "mean",
+  "grayscale": false,
   "seed": 0
 }
 ```
@@ -147,7 +148,32 @@ default. The ones that matter:
 | `seed_configs` | Start from configs you already like. Empty starts from immigrants. |
 | `backend` | `texture` (scipy) or `clip` (torch). |
 | `reference_dir` | Images to search toward. Omit for a scoreless smoke run. |
+| `grayscale` | Desaturate before embedding. **See below** — CLIP only. |
 | `seed` | Seeds the strategy RNG, so a run replays from `search.json`. |
+
+### Colour, and why you probably want it off
+
+**Particle hue is driven by the same behaviour output that drives motion**, so
+colour and shape are coupled at the source. In colour, a config that happens to
+land on a palette near your references scores well *regardless of what it is
+doing spatially* — which is how random noise of the right colour outranks a
+genuinely interesting pattern, and the search then optimizes toward the palette
+instead of the structure.
+
+`"grayscale": true` desaturates every image before embedding — references and
+candidates alike, which is the point: a query embedded in colour and a candidate
+embedded in grey are not comparable quantities.
+
+**This only affects `backend: "clip"`.** The texture backend already works from
+luminance alone, so it is colour-blind whatever the flag says — one more reason
+to try it first. The run prints which mode it is in:
+
+```
+scorer: reference-image (3 images, agg=mean, grayscale)
+```
+
+The standalone CLI has the same switch: `python demos/tex_sim.py rank imgs/
+--backend clip --grayscale`.
 
 Bad settings are caught **before** the app is touched: a missing
 `reference_dir`, `cohorts != 1`, a search configured to produce nothing.
@@ -241,6 +267,10 @@ The scorer being *discriminating* is not the same as it being *right*: a smoke
 run gave 19 distinct scores that visually separated structured patterns from
 featureless blobs, which is encouraging and is not evidence that it tracks what
 you actually want.
+
+If the top candidates share a *palette* with your references but not a
+structure, that is the colour coupling described above — set `grayscale: true`
+(or switch to the texture backend) and run it again.
 
 ---
 

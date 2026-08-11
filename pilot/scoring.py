@@ -89,8 +89,15 @@ class ReferenceImageScorer:
         return embedding.similarity(embeddings, self.query, self.aggregate)
 
     def describe(self):
+        # Colour handling is reported because it is invisible in the output and
+        # changes what the run optimizes for -- see SearchConfig.grayscale.
+        if getattr(self.backend, 'name', '') == 'texture':
+            colour = 'grayscale (texture backend is always luminance)'
+        else:
+            colour = ('grayscale' if getattr(self.backend, 'grayscale', False)
+                      else 'colour')
         return (f"reference-image ({len(self.reference_paths)} images, "
-                f"agg={self.aggregate})")
+                f"agg={self.aggregate}, {colour})")
 
 
 class ConstantScorer:

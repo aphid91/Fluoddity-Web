@@ -95,6 +95,15 @@ download. Two things about it worth knowing before relying on it:
   setting that matters for this simulation, and it argues the opposite way on
   resolution — more pixels give the crops more to work with.
 
+**Colour is a confound here, not a feature.** Particle hue comes from the same
+behaviour output as motion, so palette and structure are coupled at the source
+and a colour-sensitive model will happily rank a well-coloured mess above a
+well-shaped one. `grayscale: true` desaturates references and candidates alike
+before embedding. It applies only to CLIP — `TextureBackend` reads luminance
+already — and `tests/test_search.py` asserts the colour-blind case end to end
+by ranking a right-shape/wrong-colour image against a wrong-shape/right-colour
+one.
+
 `tex_sim.py`'s per-file embedding cache is deliberately **not** used by the
 pilot: it keys on `(path, size, mtime)` to avoid re-embedding a stable corpus,
 which is right for a CLI pointed at a photo library and wrong here, where every

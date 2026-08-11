@@ -266,6 +266,128 @@ def test_zero_children_still_explores():
           all(m.origin == IMMIGRANT for m in moves))
 
 
+def test_grayscale_flag():
+    """Colour handling: the flag reaches the backend, and it is colour-blind.
+
+    The reason this matters is specific to Fluoddity. Particle hue is driven by
+    the same behaviour output that drives motion, so colour and shape are
+    coupled at the source: in colour, a config that lands on a palette near the
+    references scores well regardless of what it is doing spatially, and the
+    search drifts toward the palette rather than the pattern.
+    """
+    print("\ngrayscale scoring")
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'demos'))
+    import tex_sim
+
+    colour = tex_sim.ClipBackend(grayscale=False)
+    grey = tex_sim.ClipBackend(grayscale=True)
+    check("the flag reaches ClipBackend", grey.grayscale is True)
+    # Signatures gate tex_sim's embedding cache; identical ones would let a
+    # colour run's vectors be reused for a grayscale run.
+    check("signatures differ so caches cannot cross-contaminate",
+          colour.signature() != grey.signature(),
+          f"{colour.signature()} vs {grey.signature()}")
+    check("the grayscale signature is marked",
+          grey.signature().endswith(':gray'), grey.signature())
+
+    check("SearchConfig carries the flag",
+          SearchConfig(grayscale=True).grayscale is True)
+    check("and defaults to colour", SearchConfig().grayscale is False)
+
+    # The conversion itself, without needing torch: "L" then back to RGB, so
+    # CLIP still receives three channels but they carry only luminance.
+    from PIL import Image
+    import numpy as np
+
+    img = Image.new('RGB', (32, 32))
+    pixels = img.load()
+    for x in range(32):
+        for y in range(32):
+            pixels[x, y] = (230, 40, 230) if (x // 4) % 2 else (0, 0, 0)
+    converted = np.asarray(img.convert('L').convert('RGB'))
+    check("conversion equalizes the channels",
+          (converted[..., 0] == converted[..., 1]).all()
+          and (converted[..., 1] == converted[..., 2]).all())
+    check("conversion preserves structure rather than flattening",
+          converted.std() > 1.0, f"std={converted.std():.2f}")
+
+    # The texture backend is grayscale by construction (_load_gray), so the
+    # flag is a no-op there -- worth asserting, because a future change that
+    # made it colour-sensitive would silently reintroduce the problem.
+    texture = tex_sim.TextureBackend()
+    check("the texture backend has no colour path",
+          not hasattr(texture, 'grayscale'),
+          "TextureBackend grew a colour mode; check _load_gray")
+
+
+def test_colour_blind_ranking():
+    """A colour-blind scorer ranks by shape when shape and colour disagree.
+
+    Constructed so the two signals point at different candidates: the reference
+    is green stripes, one candidate has the right SHAPE in the wrong colour and
+    the other the right COLOUR in the wrong shape. A scorer that follows
+    structure must prefer the first.
+
+    Runs against the texture backend, which needs no torch. It is the default,
+    and it is already colour-blind -- this asserts that end to end rather than
+    trusting the docstring.
+    """
+    print("\ncolour-blind ranking (texture backend)")
+
+    import tempfile
+
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    from pilot import embedding, scoring
+    import tex_sim
+
+    size = 256
+    green, magenta = (40, 230, 40), (230, 40, 230)
+
+    def stripes(colour):
+        img = Image.new('RGB', (size, size), (0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        for x in range(0, size, 16):
+            draw.rectangle([x, 0, x + 7, size], fill=colour)
+        return img
+
+    def blobs(colour):
+        rng = np.random.default_rng(3)
+        img = Image.new('RGB', (size, size), (0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        for _ in range(40):
+            x, y = rng.integers(0, size, 2)
+            r = int(rng.integers(6, 16))
+            draw.ellipse([x - r, y - r, x + r, y + r], fill=colour)
+        return img
+
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw)
+        refs = tmp / 'ref'
+        refs.mkdir()
+        stripes(green).save(refs / 'green_stripes.png')
+
+        shape_match = tmp / 'stripes_magenta.png'     # right shape, wrong hue
+        colour_match = tmp / 'blobs_green.png'        # wrong shape, right hue
+        stripes(magenta).save(shape_match)
+        blobs(green).save(colour_match)
+
+        backend = tex_sim.TextureBackend()
+        scorer = scoring.ReferenceImageScorer(
+            backend, sorted(refs.glob('*.png')), aggregate='mean')
+        scores = scorer.score(embedding.embed_paths(
+            backend, [shape_match, colour_match]))
+
+        check("the shape match outranks the colour match",
+              scores[0] > scores[1],
+              f"stripes_magenta {scores[0]:+.4f} vs "
+              f"blobs_green {scores[1]:+.4f}")
+        check("describe() reports the colour mode",
+              'grayscale' in scorer.describe(), scorer.describe())
+
+
 def main():
     print("Beam search")
     test_generation_zero()
@@ -277,6 +399,8 @@ def main():
     test_reproducible()
     test_restore()
     test_zero_children_still_explores()
+    test_grayscale_flag()
+    test_colour_blind_ranking()
 
     print()
     if _failures:

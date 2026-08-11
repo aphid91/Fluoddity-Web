@@ -1,0 +1,24 @@
+{
+  "run_dir": "documents/sequences/run",
+  "resume": false,
+  "port": 8765,
+  "world_size": 0.1,
+  "cohorts": 1,
+  "physics_steps": 100,
+  "warmup_steps": 5000,
+  "capture_size": 256,
+  "mutation_scale": 0.25,
+  "generations": 5,
+  "beam_width": 18,
+  "children_per_parent": 14,
+  "immigrants": 4,
+  "seed_configs": ["configs/custom/burbles.json"],
+  "backend": "texture",
+  "reference_dir": "refim",
+  "crops": 1,
+  "crop_frac": 0.3,
+  "aggregate": "mean",
+  "grayscale": true,
+  "seed": 0
+  
+}

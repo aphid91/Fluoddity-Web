@@ -87,6 +87,21 @@ class SearchConfig:
     #: than global composition, which is what matters for this simulation.
     crops: int = 1
     crop_frac: float = 0.3
+
+    #: Desaturate every image before embedding -- references and candidates
+    #: alike -- so scoring follows structure rather than palette.
+    #:
+    #: WHY THIS EXISTS. Particle colour in Fluoddity is driven by the same
+    #: behaviour output that drives motion, so hue and shape are coupled at the
+    #: source. In colour, a config that happens to land on a palette close to
+    #: the references scores well whatever it is doing spatially -- which is
+    #: how random noise of the right colour outranks a genuinely good pattern,
+    #: and the search then optimizes toward the palette.
+    #:
+    #: ONLY AFFECTS THE CLIP BACKEND. The texture backend already works from
+    #: luminance alone (its _load_gray converts to "L"), so it is grayscale
+    #: whatever this says -- and is worth trying first for exactly that reason.
+    grayscale: bool = False
     #: How per-crop similarities combine: mean, max, or topk.
     aggregate: str = "mean"
 

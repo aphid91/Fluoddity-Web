@@ -108,13 +108,19 @@ class ClipBackend(Backend):
     supports_text = True
 
     def __init__(self, model_name="ViT-B-32", pretrained="laion2b_s34b_b79k",
-                 crops=1, crop_frac=0.3, seed=0, device=None, batch=32):
+                 crops=1, crop_frac=0.3, seed=0, device=None, batch=32,
+                 grayscale=False):
         self.model_name = model_name
         self.pretrained = pretrained
         self.crops = max(1, crops)
         self.crop_frac = crop_frac
         self.seed = seed
         self.batch = batch
+        #: Desaturate before embedding, so the model judges structure rather
+        #: than palette. Applied to every image alike -- references and
+        #: candidates -- because a query embedded in colour and a candidate
+        #: embedded in grey are not comparable quantities.
+        self.grayscale = grayscale
         self._loaded = False
         self._device = device
 
@@ -154,7 +160,12 @@ class ClipBackend(Backend):
         self._loaded = True
 
     def signature(self) -> str:
-        return f"clip:{self.model_name}:{self.pretrained}:c{self.crops}:f{self.crop_frac}:s{self.seed}"
+        # grayscale is part of the signature: it changes every vector this
+        # backend produces, so a cache written in colour must not be read back
+        # for a grayscale run.
+        return (f"clip:{self.model_name}:{self.pretrained}:c{self.crops}"
+                f":f{self.crop_frac}:s{self.seed}"
+                f"{':gray' if self.grayscale else ''}")
 
     def _views(self, img):
         """Yield PIL views of one image: whole image, or N random crops."""
@@ -178,6 +189,15 @@ class ClipBackend(Backend):
         tensors, owner = [], []
         for i, p in enumerate(paths):
             img = Image.open(p).convert("RGB")
+            if self.grayscale:
+                # Via "L" and back: CLIP's preprocess expects three channels,
+                # so this produces a grey image in RGB form rather than a
+                # single-channel one. PIL's L conversion is ITU-R 601 luma
+                # (0.299R + 0.587G + 0.114B), i.e. perceptual weighting rather
+                # than a flat channel average -- which is what "how bright does
+                # this look" means, and matches what TextureBackend already
+                # does via _load_gray.
+                img = img.convert("L").convert("RGB")
             for v in self._views(img):
                 if self._impl == "open_clip":
                     tensors.append(self.preprocess(v))
@@ -540,7 +560,9 @@ def build_backend(args) -> Backend:
     if args.backend == "texture":
         return TextureBackend(size=args.size)
     return ClipBackend(model_name=args.model, pretrained=args.pretrained,
-                       crops=args.crops, crop_frac=args.crop_frac, seed=args.seed)
+                       crops=args.crops, crop_frac=args.crop_frac,
+                       seed=args.seed,
+                       grayscale=getattr(args, "grayscale", False))
 
 
 def load_vocab(args) -> list[str]:
@@ -754,6 +776,10 @@ def main(argv=None):
                             "whole frame. 8-16 makes it describe local texture.")
         p.add_argument("--crop-frac", type=float, default=0.3,
                        help="crop side as a fraction of the short edge")
+        p.add_argument("--grayscale", action="store_true",
+                       help="CLIP: desaturate before embedding, so ranking "
+                            "follows structure rather than palette. (The "
+                            "texture backend is always grayscale.)")
         p.add_argument("--agg", choices=["mean", "max", "topk"], default="mean",
                        help="how to combine crop scores")
         p.add_argument("--size", type=int, default=256,
