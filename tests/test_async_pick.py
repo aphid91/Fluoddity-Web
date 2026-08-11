@@ -1,10 +1,11 @@
 """The async pick agrees with the blocking one.
 
 WHY THIS TEST EXISTS
-D2 moved click-selection off pick_blocking() -- which stalls the GPU and has no
-WebGPU equivalent -- onto the two-phase request/retrieve path. The two must
-choose the SAME entity for the same target, or selection silently changes
-meaning. pick_blocking() survives precisely so this comparison is possible.
+D2 moved click-selection off pick_blocking() -- which stalls the GPU mid-frame
+for an answer nothing needs until the next one -- onto the two-phase
+request/retrieve path. The two must choose the SAME entity for the same target,
+or selection silently changes meaning. pick_blocking() survives precisely so
+this comparison is possible.
 
 Runs headless (moderngl standalone context), so it needs a GPU but no window.
 

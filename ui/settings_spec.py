@@ -444,3 +444,30 @@ def grouped(tier_advanced: bool, sources):
             order.append(setting.group)
         buckets[setting.group].append(setting)
     return [(name, buckets[name]) for name in order]
+
+
+#: (source, field) -> Setting, built once at import. The registry is a
+#: module-level constant, so this cannot go stale, and a caller that resolves a
+#: setting per command should not be scanning a 60-entry list to do it.
+#:
+#: KEYED ON THE PAIR, not on the field name alone: `world_size` is a PREFS
+#: field and nothing stops a future CONFIG field sharing a name. Making the
+#: source part of the key means that cannot silently resolve to the wrong one.
+_BY_KEY = {(s.source, s.field): s for s in SETTINGS}
+
+
+def find(source: str, field: str):
+    """The registry entry for a (source, field) pair, or None if unknown.
+
+    For callers that hold NAMES rather than the Setting object the UI passes
+    around -- the piloting API receives `{"source": "prefs", "field":
+    "brightness"}` off a wire and has to turn that into something
+    _cmd_edit_setting understands.
+
+    Lives here rather than in the caller because the registry is the thing that
+    knows how to search itself; _find_seed_setting() in
+    orchestrator/settings_commands.py is the same idea for a different question.
+    Returning None rather than raising lets the caller phrase the error in its
+    own vocabulary (an HTTP 400, say) instead of leaking a KeyError upward.
+    """
+    return _BY_KEY.get((source, field))

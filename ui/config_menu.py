@@ -468,8 +468,9 @@ class ConfigMenu:
         #   status save_error the Orchestrator reporting an ATTEMPTED save that
         #                     failed (bad name, unwritable path).
         # Read from _status every frame rather than once after dispatch: the
-        # old code read it on the line after _dispatch and so depended on the
-        # command bus being synchronous, which the port's will not be.
+        # old code read it on the line after _dispatch, which quietly assumed
+        # the handler had already run and written the result -- true today, but
+        # only by accident of the dispatch being a direct call.
         error = self._save_validation or self._status['save_error']
         if error:
             imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(1.0, 0.4, 0.4, 1.0))

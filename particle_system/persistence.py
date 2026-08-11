@@ -214,9 +214,8 @@ def _from_v8(data: dict) -> SavedConfig:
 # LEGACY COMPATIBILITY -- DELETE THIS BLOCK TO DROP v7 SUPPORT
 #
 # This exists ONLY to read configs authored by the original Fluoddity while
-# this rebuild is being tested against them. It is not part of the design and
-# must not appear in the WebGPU port: the spec that port follows is the v8
-# format alone.
+# this rebuild is being tested against them. It is not part of the design --
+# v8 is the only format this app authors.
 #
 # Everything legacy lives between these markers plus the two call sites marked
 # `LEGACY`, so removing it is: delete this block, delete those calls, and

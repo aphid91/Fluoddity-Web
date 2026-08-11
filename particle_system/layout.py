@@ -117,8 +117,9 @@ def _dtype_for_type(type_name, struct_name, field_name, known_structs,
         f'array of vec4, or a struct declared earlier in the file.\n'
         f'  Scalars ride in vec4 lanes (add an accessor); ints ride in float '
         f'lanes via intBitsToFloat/floatBitsToInt.\n'
-        f'  This rule exists so std430 and WGSL agree on the layout -- see the '
-        f'header comment in common.glsl.'
+        f'  This rule exists so the host and the GPU cannot disagree about the '
+        f'layout -- a mismatch does not crash, it silently reinterprets memory. '
+        f'See the header comment in common.glsl.'
     )
 
 

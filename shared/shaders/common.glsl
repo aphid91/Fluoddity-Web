@@ -13,11 +13,13 @@
 //     no int, no vec2/vec3. Scalars ride in vec4 lanes; ints ride in float
 //     lanes via intBitsToFloat/floatBitsToInt.
 //
-//     Why: std430 (GLSL) and WGSL (WebGPU) do NOT agree on how to lay out
-//     structs with mixed scalar types. An all-vec4 struct is 16-byte aligned
-//     with an unambiguous stride in both, so this codebase translates to
-//     WebGPU without a layout audit. layout.py enforces this and will raise
-//     on anything else.
+//     Why: a struct with mixed scalar types has a layout that depends on which
+//     packing rules are being applied, so the host's idea of the memory and the
+//     GPU's can differ. That does not crash -- it silently reinterprets the
+//     buffer and the simulation behaves subtly wrong. An all-vec4 struct is
+//     16-byte aligned with an unambiguous stride under every rule set, so there
+//     is nothing to disagree about. layout.py enforces this and will raise on
+//     anything else.
 //
 //  2. ADD A FIELD BY CLAIMING A RESERVED LANE, not by appending a scalar.
 //     When the reserved lanes run out, add a whole new vec4.

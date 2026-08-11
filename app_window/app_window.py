@@ -67,5 +67,24 @@ class AppWindow:
         displays, and it is the framebuffer that pixel coordinates refer to."""
         return self._size
 
+    def set_size(self, width, height):
+        """Ask the OS to resize the window. Takes effect on the NEXT poll.
+
+        DOES NOT UPDATE self._size, and must not: what this asks for is a
+        WINDOW size, while _size holds the FRAMEBUFFER size, and on a HiDPI
+        display those differ by the content scale. The authoritative new size
+        arrives through _on_resize when the resize actually happens; writing a
+        guess here would leave the render path using coordinates the window
+        never had.
+
+        THE LAG IS ONE FRAME AND IT IS VISIBLE. glfw delivers the resize during
+        poll_events(), which the UI runs at the top of the next frame -- so a
+        caller that resizes and then immediately captures gets the OLD size.
+        Callers that care are told so (see orchestrator/api_commands.py);
+        forcing it by polling here would run imgui's callbacks mid-frame,
+        outside its begin/end pair, and corrupt the input accumulators.
+        """
+        glfw.set_window_size(self.window, int(width), int(height))
+
     def terminate(self):
         glfw.terminate()

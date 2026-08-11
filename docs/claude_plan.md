@@ -1,8 +1,26 @@
 # Fluoddity2 — Orientation Memorandum & Phase 1 Spec
 
-**Status:** agreed 2026-07-24. Part I is orientation for every agent working here.
-Part II is a committed, executable spec. Part III is the roadmap of features that
-each need their own agent + conversation with the user before implementation.
+**Status:** Part I is orientation and is current — read it. **Part II is
+historical**: it is the Phase 1 spec, agreed 2026-07-24 and long since shipped;
+it is kept as the record of what was built and why, not as instructions. Part
+III's roadmap is likewise largely overtaken — see the note at its head.
+
+For what the code looks like *now*, [ARCHITECTURE.md](ARCHITECTURE.md) is the
+authority, and it is kept current.
+
+**Where this branch is going.** The chassis was originally a spec target for a
+WebGPU/web port. **That port is finished and lives on another branch.** This
+branch takes the Python app in a different direction: turning it into a
+*pilotable research instrument*, driven programmatically by an external
+controller conducting a CLIP-guided search over mutation space. See
+[API.md](API.md) for what exists and [CLIP_INTEGRATION.md](CLIP_INTEGRATION.md)
+for where it is heading.
+
+Several design rules were originally justified by the port. They survive on
+their own merits — unambiguous struct layout and a single coordinate
+implementation are worth having regardless of who reads the buffer — and
+ARCHITECTURE.md now states the reasons that still apply. Nothing in the code
+changed when the premise did.
 
 ---
 
@@ -20,11 +38,11 @@ sweep machinery is welded into every individual parameter.
 Fluoddity2 exists to build a **tight chassis**: the core systems wired up
 correctly and simply, deliberately *not* populated with bells and whistles.
 
-**The chassis is a spec target.** The intended end state is a WebGPU/web port,
-and this codebase is what gets translated. That single fact drives most of the
-design rules below. Once the port exists, bells and whistles get built natively
-for the web — and possibly also in this Python version, but that is a later
-question.
+*(Originally, the chassis was a spec target for a WebGPU/web port, and that fact
+drove several of the design rules below. The port has since been completed on
+another branch. The rules stayed — see the status note at the top of this file
+— but where a rule's stated reason was "because WebGPU", ARCHITECTURE.md now
+gives the reason that still holds.)*
 
 **Ethos:** "as simple as possible, but no simpler." When in doubt, build less.
 
@@ -318,28 +336,43 @@ further into the ConfigBuffer.
 
 # Part III — Roadmap
 
-Each item needs a dedicated agent and a design conversation with the user first;
-they are **underspecified on purpose**. Listed roughly in dependency order.
+> **Mostly overtaken.** Nearly everything below has shipped: the UI module, the
+> camera, aspect ratio, the entity picker, save/load, drawing tools, GUI detail
+> tiers, tooltips, the config clipboard and multi-config editor, and the extra
+> ConfigData/WorldData settings. It is kept as the record of what was planned
+> and in what order, not as a to-do list. ARCHITECTURE.md describes what
+> actually got built; its "Deferred / known follow-ups" section is the live list.
+>
+> The one item still genuinely open is **alive/dead particles**, at the bottom.
+> The current direction of this branch is the piloting API and CLIP-guided
+> search — see [API.md](API.md) and [CLIP_INTEGRATION.md](CLIP_INTEGRATION.md).
 
-**Phase 2 — UI module.** Replace/absorb `input/` with a `ui/` module between
+Each item needed a dedicated agent and a design conversation with the user
+first; they were **underspecified on purpose**. Listed roughly in dependency
+order.
+
+**Phase 2 — UI module.** ✅ DONE. Replace/absorb `input/` with a `ui/` module between
 Input and Orchestrator. `imgui-bundle` with docking; interface rebuilt from
 scratch. Must handle: mouse click/drag/position+previous/scroll, key
 press+release, currently-held keys and buttons. Critically it must distinguish
 clicks imgui captures (`io.want_capture_mouse`) from clicks that pass through to
 the canvas. Rule 5 applies: UI owns no simulation truth.
 
-**Camera.** Pan/zoom controls; a Mode toggle including an instanced-render
-particle cam like the original. Note today's `camera/` is really a
-present/display pass, not a viewpoint — expect a rename or a split.
+**Camera.** ✅ DONE. Pan/zoom controls; a Mode toggle including an
+instanced-render particle cam like the original. Note today's `camera/` is
+really a present/display pass, not a viewpoint — expect a rename or a split.
+*(It became a real viewpoint: `CameraState` plus the motion-blur supersampler.)*
 
-**Aspect ratio support.** The convention is fixed (§II.3); this is about making
-non-square canvases actually work end to end, and it is where §II.3 finally gets
-exercised. The reference is ground truth for *behavior*, never for structure.
+**Aspect ratio support.** ✅ DONE. The convention is fixed (§II.3); this is about
+making non-square canvases actually work end to end, and it is where §II.3
+finally gets exercised. The reference is ground truth for *behavior*, never for
+structure.
 
-**Entity picker.** Nearest entity to mouse, accounting for camera and aspect.
-Prefer GPU-side reduction into a small result buffer over the reference's
-19 MB-per-click readback — and note WebGPU readbacks are async, so a synchronous
-mid-frame design will not port.
+**Entity picker.** ✅ DONE. Nearest entity to mouse, accounting for camera and
+aspect. Prefer GPU-side reduction into a small result buffer over the
+reference's 19 MB-per-click readback, and keep the readback off the frame it was
+dispatched on. *(Built as a two-phase request/retrieve; `pick_blocking` survives
+for tests only. See ARCHITECTURE.md "Entity picking".)*
 
 **Save/Load + menu bar.** ✅ DONE. Format v8 (writes only live fields), legacy
 v7 reader, `Core`/subfolder categories with user saves in `configs/custom/`,
@@ -348,25 +381,27 @@ delete with confirmation, and the hover-preview load menu. See ARCHITECTURE.md
 
 *Scope change from this memo:* the "save current simulation state" checkbox was
 **cut and relocated** to OUT FOR NOW (below). Saving the entity buffer is
-multiple megabytes of binary, a poor fit for the browser port, and a clean
-retrofit later — nothing in the v8 format precludes adding it. The save dialog
-therefore offers filename + "Config 0 vs entire ConfigBuffer" only.
+multiple megabytes of binary and a clean retrofit later — nothing in the v8
+format precludes adding it. The save dialog therefore offers filename +
+"Config 0 vs entire ConfigBuffer" only.
 
-**Trail drawing and field drawing.** Needs detailed discussion.
+**Trail drawing and field drawing.** ✅ DONE. Shipped as the Draw and Shove
+tools over the Strafe Field; see ARCHITECTURE.md "The Strafe Field, and
+drawing".
 
-**GUI detail levels.** Multiple complexity tiers — the reference's wall of
-sliders is intimidating. Slider tooltip shaders/system to be copied fairly
-directly.
+**GUI detail levels.** ✅ DONE. Basic/Advanced tiers driven by the
+`ui/settings_spec.py` registry; the animated sensor diagram is the tooltip
+system.
 
-**Help text and control tooltips.** Port from the reference, updating where
-appropriate.
+**Help text and control tooltips.** ✅ DONE. Help text lives on each registry
+entry.
 
-**Config clipboard + multi-config editor.** A window listing current configs;
-click to select and edit its settings; hovering a config highlights the entities
-pointing at it. This is where the ConfigBuffer pays off.
+**Config clipboard + multi-config editor.** ✅ DONE, in two parts: in-session
+checkpoints (`clipboard_commands.py`) and the config manager window. The
+entity-highlighting-on-hover half was not built.
 
-**Extra ConfigData/WorldData settings.** Boundary conditions, initial
-conditions, etc.
+**Extra ConfigData/WorldData settings.** ✅ DONE. Boundary conditions, initial
+conditions, cohort fences, hazard rate, gravity and the rest.
 
 **Stretch: alive/dead particles.** Track liveness so the mouse can erase or
 place particles. Until then, Fluoddity's "every particle always alive" model

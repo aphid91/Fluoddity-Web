@@ -56,9 +56,9 @@ _SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
 MAX_FIELD_DIM = 512
 
 #: Field texel format: RG16F ('f2'), matching the canvas (see CANVAS_DTYPE in
-#: particle_system.py for the WebGPU rationale). Painted deposits are ~1e-2 per
-#: stroke frame and consumed as a smooth displacement, well inside fp16's
-#: range; verified in docs/PORT_AUDIT.md section 1a.
+#: particle_system.py for the rationale). Painted deposits are ~1e-2 per stroke
+#: frame and consumed as a smooth displacement, well inside fp16's range -- so
+#: unlike the canvas, this texture needs no value scaling to be safe here.
 FIELD_DTYPE = 'f2'
 
 

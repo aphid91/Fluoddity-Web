@@ -14,8 +14,8 @@ WHAT THIS MODULE MUST NOT DO (ARCHITECTURE.md rule 10)
   It owns no simulation truth. It does not hold a copy of the config, does not
   reach into ParticleSystem, and does not decide what a command means. It reads
   values handed to it and reports named intents; the Orchestrator does the rest.
-  Where UI state and sim state diverge, the planned WebGPU port stops being a
-  translation and becomes a rewrite.
+  Where UI state and sim state diverge, every question about what the app is
+  doing acquires two answers and neither can be trusted.
 
 FRAME LIFECYCLE
   The imgui frame must open before anything wants input and close after all GL
@@ -359,7 +359,11 @@ class UI(ConfigMenu, ConfigManagerWindow, SettingsWindow,
         imgui.text(f"checkpoints {len(self._status['checkpoints'] or [])}")
         imgui.text(f"history     {self._status['history_cursor'] + 1}"
                    f"/{self._status['history_depth']}")
+        # Two different clocks, deliberately shown together: `frame` counts
+        # physics sub-steps and returns to zero on a reset, `app` counts drawn
+        # frames and never does. The API schedules against the second one.
         imgui.text(f"frame       {self._status['frame_count']}")
+        imgui.text(f"app frame   {self._status['app_frame']}")
         imgui.separator()
 
         if imgui.button("Resume" if self._status['paused'] else "Pause"):

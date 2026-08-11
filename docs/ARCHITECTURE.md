@@ -27,7 +27,8 @@ Every file belongs to a module folder. Each folder is a Python package
 | `strafe_field/`   | The painted Strafe Field: one RG16F texture at canvas resolution, the airbrush shader that writes it (`strafe_draw.frag`), and clear/erase. Live-only — never saved, never in history. |
 | `tooltip_graphic/`| The shader-drawn sensor diagram: an offscreen RGBA8 target and `tooltip_graphic.frag`. Built by the Orchestrator with the shared `ctx` and handed to the UI as a texture id — which is why it is a module of its own rather than a file in `ui/`, the package that must not own GL. |
 | `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state and **no GPU resources**. One file per window (`config_menu`, `settings_window`, `preferences_window`, `config_manager`, `toolbar`, `drawing_window`), composed onto `UI` as mixins; `settings_spec.py` is the control registry, and `hover_preview.py`, `gated_controls.py`, `sensor_diagram.py` and `curved_slider.py` hold the pieces of behaviour extracted out of those windows. |
-| `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`, `drawing_commands`, `shove_commands`). |
+| `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `config_manager_commands`, `drawing_commands`, `shove_commands`, `api_commands`). |
+| `api/`            | The **piloting API**: an optional HTTP transport for driving the app from another program (`--api-port`). Owns the socket thread, the request handoff, and frame-keyed schedules. Touches no GL, holds no simulation state, and imports no simulation module — it is a second UI under rule 10. Absent from a default run entirely. See [API.md](API.md). |
 | `project/`        | The `Project` value type (ConfigBuffer + world settings + name + selection, immutable) and `History`, the undo/redo timeline over those values. |
 | `preferences/`    | Editor state that is **not** saved with a config (brightness, physics rate, world size, canvas aspect, and the whole display pipeline: tone curve, motion blur, bloom, overlays). Persisted to `preferences.json`. |
 | `shared/`         | The sanctioned exception: stateless GL utilities (`read_shader` incl. `#include` resolution, `tryset`, `quad_vbo`/`quad_vao`, and `reload_program`/`reload_compute` — the one implementation of the hot-reload contract) and cross-module shaders (`fullscreen_quad.vert`, **`common.glsl`**). No domain state. |
@@ -126,18 +127,46 @@ These are the load-bearing constraints. Follow them when extending the project.
    ints ride in float lanes via `intBitsToFloat`/`floatBitsToInt`, with named
    accessors in `common.glsl` keeping call sites readable.
 
-   *Why:* std430 (GLSL) and WGSL (WebGPU) do **not** agree on the layout of
-   structs with mixed scalar types. An all-vec4 struct is unambiguous in both,
-   so this codebase translates to WebGPU without a layout audit. This is the
-   single most important rule for the planned port. `layout.py` enforces it.
+   *Why:* an all-vec4 struct has one unambiguous layout under every packing
+   rule, so the host's idea of the memory and the GPU's cannot drift. A struct
+   with mixed scalar types does not: it depends on the standard being applied,
+   and a mismatch does not crash — it silently reinterprets memory and the
+   simulation behaves subtly wrong. `layout.py` enforces the rule.
 
-   *Texture formats follow the same principle.* A format is chosen to work in
-   **base** WebGPU, not to be maximally precise: the canvas and the strafe field
-   are RG16F because base WebGPU can neither filter nor blend `rg32float`
-   without optional device features, while `rg16float` filters, renders, and
-   blends with none. Where that costs precision, the fix lives in the shaders
-   (`CANVAS_VALUE_SCALE` and the saturation clamp in `common.glsl`) rather than
-   in a format upgrade that would narrow the device matrix.
+   *(This began as a portability constraint — std430 and WGSL genuinely
+   disagree about mixed-scalar structs, and the codebase was once a spec target
+   for a WebGPU port. That port is done and lives elsewhere; the rule stays
+   because unambiguous layout is worth having regardless of who is reading the
+   buffer.)*
+
+   *Texture formats are chosen for capability, not maximum precision.* The
+   canvas and the strafe field are **RG16F**: half the bandwidth of 32-bit,
+   filterable and blendable everywhere, and keeping the 2-channel shape means
+   no shader writes wasted lanes. Where that costs precision the fix lives in
+   the shaders rather than in a format upgrade.
+
+   **The precision fix is load-bearing — do not remove it while the canvas is
+   fp16.** A measured A/B (600 sub-steps, real simulation) showed bare fp16
+   tracks fp32 within a few percent at trail persistence ≤ 0.94, but at
+   P = 0.999 — the slider top, and a *used* zone: 23 of 197 real configs sit
+   above 0.99 — trails came out up to **40× dimmer**, because the splat
+   premultiply `(1-P)/P ≈ 1e-3` makes every deposit fp16-subnormal (~3.6e-6)
+   and the blend stage flushes them. Three things ship as a result:
+
+   - `CANVAS_VALUE_SCALE = 512` (`common.glsl`) — stored canvas values ride
+     512× above their physical meaning, lifting deposits clear of the subnormal
+     range. `brush.frag` multiplies; `get_can()` and `camera.frag` divide.
+     The decay/diffuse in `canvas.frag` is linear, so it is scale-invariant.
+   - `TRAIL_PERSISTENCE_MIN` raised 1e-4 → 1e-2 (both writers in lockstep) —
+     the old floor served only typed-in extremes (observed minimum across 197
+     configs: 0.312) and its premultiply of ~1e4 would overflow scaled fp16.
+   - `CANVAS_VALUE_MAX = 60000` saturation clamp — an fp16-only hazard: a texel
+     past 65504 rounds to **inf, and inf survives decay forever** (`inf·P =
+     inf`), permanently poisoning the texel and NaN-ing any particle that
+     senses it.
+
+   A residual ~25% steady-state trail dimming remains at P = 0.999 (ulp
+   granularity, not fixable by scaling) and under 1% at ≤ 0.94. Accepted.
 
 8. **`common.glsl` is the single source of truth for struct layout.** All
    host/GPU structs (`Entity`, `ConfigData`, `WorldData`, `Rule`) are declared
@@ -172,10 +201,15 @@ These are the load-bearing constraints. Follow them when extending the project.
    same boundary as the particles and there is only one trail field, the mode
    lives in `WorldData` — it cannot vary per config.
 
-10. **Simulation truth lives in the ConfigBuffer, not in the UI.** When a UI
-    module lands, it reads config state and issues commands; it does not own a
-    parallel copy. Where UI state and sim state diverge, the WebGPU port stops
-    being a translation and becomes a rewrite.
+10. **Simulation truth lives in the ConfigBuffer, not in the UI.** A UI module
+    reads config state and issues commands; it does not own a parallel copy.
+    Where UI state and simulation state diverge, every question about what the
+    app is currently doing acquires two answers, and neither can be trusted.
+
+    **This applies to the piloting API too, which is a second UI.** It reports
+    named intents and reads status, exactly as imgui does — see `api/` and
+    docs/API.md. The rule is enforced by construction there: the HTTP server is
+    handed a three-callable `PilotHost`, never the Orchestrator.
 
 ## Why mediator, not an event bus
 
@@ -217,16 +251,17 @@ per-entity: `trail_persistence`, `trail_diffusion`, `sqrt_world_size`,
 name; it used to be a `#define` in the shader *and* a Python global, two
 sources of truth that would silently disagree if either moved.
 
-### Features scoped for removal before the web port
+### Features kept deletable
 
-Some machinery earns its place while building the chassis but should not reach
-the port. Each is kept **isolated enough that removing it is a revert or a file
-deletion**, not surgery:
+Some machinery earns its place without being part of the design. Each is kept
+**isolated enough that removing it is a revert or a file deletion**, not
+surgery:
 
-| Feature | Lives in | Why it goes |
-|---------|----------|-------------|
-| Legacy v7 config reading | marked block in `persistence.py`, own commit | The port's spec is the v8 format alone. |
-| Multi-config editing | `orchestrator/config_manager_commands.py`, `ui/config_manager.py`, the save dialog's "entire ConfigBuffer" radio | The initial port exposes only the primary config. The ConfigBuffer *system* stays; only its editing UI goes. |
+| Feature | Lives in | Why it is fenced |
+|---------|----------|------------------|
+| Legacy v7 config reading | marked block in `persistence.py`, own commit | A compatibility shim for the original Fluoddity's files, not a format this app authors. |
+| Multi-config editing | `orchestrator/config_manager_commands.py`, `ui/config_manager.py`, the save dialog's "entire ConfigBuffer" radio | Optional editing surface. The ConfigBuffer *system* is core; only its editing UI is fenced. |
+| The piloting API | `api/` (a whole directory), `orchestrator/api_commands.py`, one flag in `main.py` | A research transport. The app must behave identically without `--api-port`, which is the acceptance test for it. |
 
 When adding something in this category, give it its own file or its own commit
 up front. Retrofitting the isolation later is the expensive path.
@@ -234,11 +269,10 @@ up front. Retrofitting the isolation later is the expensive path.
 ### Legacy config support
 
 `persistence.py` contains a clearly marked `LEGACY COMPATIBILITY` block that
-lets the original Fluoddity's v7 files load. **It is not part of the design**
-and must not reach the WebGPU port, whose spec is the v8 format alone. It lives
-in its own commit (`LEGACY: read the mutation seed from pre-rename config
-files`) so reverting that commit is the entire removal — the block plus two
-call sites tagged `# LEGACY`.
+lets the original Fluoddity's v7 files load. **It is not part of the design** —
+v8 is the format this app authors. It lives in its own commit (`LEGACY: read the
+mutation seed from pre-rename config files`) so reverting that commit is the
+entire removal — the block plus two call sites tagged `# LEGACY`.
 
 ### Gravity, and growing ConfigData
 
@@ -691,8 +725,10 @@ near-zero coefficients and the simulation appearing to die.
 The particle's rule is **recomputed host-side** (`particle_system/mutation.py`),
 not read back from the GPU. The mutation is deterministic in
 `(rule, scale, seed, cohort)`, so Python can reproduce it -- avoiding the extra
-buffer and readback the original needed, and avoiding async readback in the
-port. The price is that the mirror must stay bit-exact with the shader; a probe
+buffer and readback the original needed. It also means selection by entity index
+needs no GPU round trip at all, which is what makes the piloting API's
+`select_particle_at(index=N)` synchronous and exact where a click cannot be.
+The price is that the mirror must stay bit-exact with the shader; a probe
 test runs the simulation's own `mutate_rule` and compares. **Edit one side,
 edit both, and re-run that test.**
 
@@ -793,9 +829,9 @@ could still write afterwards. The index in the key is authoritative, and the
 host looks the position up from it.
 
 **The result is one frame old, and selection is built around that.** Reading a
-buffer the same frame you wrote it forces a GPU sync, and WebGPU has no
-synchronous readback at all — so the deferred shape is both faster now and the
-one that ports. The ~16ms of latency is imperceptible on a click.
+buffer the same frame you wrote it forces a GPU sync — a stall in the middle of
+the frame, for an answer nothing needs until the next one. The ~16ms of latency
+is imperceptible on a click.
 
 A SELECT-mode click therefore does not select. It calls `request_pick()` and
 stores a **pending selection**: the `Project` as it stood *at click time*. The
@@ -819,7 +855,9 @@ rule from a pick aimed somewhere else.
 
 `pick_blocking()` remains for host-side tooling and tests — notably the
 comparison in `tests/test_async_pick.py`, which asserts the async path chooses
-the same entity. It stalls and does not port, and is no longer on any live path.
+the same entity. It stalls, and is deliberately not on any live path. **Do not
+reintroduce it to make something synchronous**, including for the API: index
+selection is already synchronous *and* exact, by not involving the GPU at all.
 
 **Distance is straight-line, in every boundary mode.** The obvious objection is
 that the world wraps, so a particle just past one edge is adjacent to a cursor
@@ -869,6 +907,13 @@ where the mouse is.
 
 ```
 Orchestrator.run() loop:
+       _drain_api()                      # API only: run queued commands, then
+                                         #   any schedule entries due this frame.
+                                         #   A no-op when --api-port was absent.
+       if _asleep: _api_idle(); continue # API only: park. Nothing below runs --
+                                         #   `continue` keeps imgui's new/render
+                                         #   pair balanced by skipping both.
+       app_frame += 1                    # the monotonic scheduling clock
        UI.begin_frame()                  # poll events, snapshot InputState,
                                          #   imgui.new_frame(), fire hotkeys
        _apply_canvas_input(state)        # ACTIVE TOOL decides: pan / select /
@@ -952,6 +997,58 @@ skipped, not the render), and motion blur collapses to a single sample, because
 N samples of an unchanging scene is the same picture at N times the cost. The
 guard that stops shoving lives inside `shove_state()` rather than at the call
 site, so a second caller cannot silently defeat it.
+
+## The piloting API
+
+An optional HTTP transport (`python main.py --api-port 8765`) for driving the
+app from another program. Full reference: [API.md](API.md). What belongs here is
+the five decisions that touch the architecture.
+
+**It is a second UI, and rule 10 applies unchanged.** It reports named intents
+and reads status; it owns no simulation truth. Enforced by construction: the
+server is handed a three-callable `PilotHost` (submit, wake, on_close), never
+the Orchestrator. A module holding a reference to the Orchestrator will
+eventually use it.
+
+**One command table, two consumers.** `Orchestrator._command_table()` is built
+once and handed to both the UI and the API. There is no second registry to keep
+in step. The API reaches a *subset*, via an allowlist in `api/server.py` — an
+allowlist rather than a denylist precisely because the table is shared: without
+it, adding a GUI-only command would silently make it remotely callable. The
+hover-preview handlers are the ones deliberately excluded; they are half of a
+cursor-driven state machine and corrupt `_preview_origin` if called piecemeal.
+
+**The GL context is thread-affine, so commands are queued, not executed where
+they arrive.** An HTTP handler builds a `Request`, queues it, and blocks on a
+`threading.Event`; the frame loop executes it in `_drain_api()` and signals
+completion. Queuing to a *point in the frame* matters beyond thread safety — a
+capture taken mid-physics-loop would read a half-accumulated buffer. The capture
+path asserts on thread identity, because a GL call from the wrong thread
+corrupts rather than raising.
+
+**The scheduling clock is `Orchestrator.app_frame`, and it had to be new.**
+`system.frame_count` counts physics *sub-steps* and is zeroed by `reset()` as a
+shader sentinel; scheduling against it would drift whenever the physics rate
+changed and jump to zero on every reset. `app_frame` counts displayed frames,
+never resets, and does not advance while asleep. Note that an app frame is not a
+fixed quantity of simulation — a reproducible schedule pins `physics_steps`
+first.
+
+**Screenshots are a second `present()`, into an offscreen target.**
+`Assembler.present()` already took `framebuffer` as a parameter, so this needed
+no render-path change. The interface is drawn into the default framebuffer at
+the end of the frame and never into this one, so captures exclude imgui *by
+construction* rather than by suppression — and the target can be any size, since
+`window_size` is passed as the FBO's own dimensions and the letterbox follows
+it. The readback is synchronous and deliberately so: a screenshot is an
+explicitly requested act, not a per-frame cost.
+
+**Sleep parks the loop; pause does not.** Pausing freezes physics and keeps
+rendering and the interface live. Sleeping skips the whole loop body, so the
+pilot can compute without the app competing for the GPU. The idle path calls
+`glfw.wait_events_timeout()` rather than sleeping, because a window that stops
+servicing its OS message queue gets marked unresponsive and greyed out — and the
+premise of this feature is that someone is watching the app work.
 
 ## The frame assembly pipeline
 
@@ -1445,7 +1542,7 @@ command, expect it to follow that shape -- and to need dividing by
   — not in its callers. The reference's six drifting copies of this transform
   are what rule 9 exists to prevent.
 
-Raised by the 2026-07-28 pre-port cleanup, and deliberately left open:
+Raised by the 2026-07-28 cleanup, and deliberately left open:
 
 - **`_preview_origin` is one shared slot for two browsing surfaces.** Safe only
   because File > Load and Load Checkpoint are submenus of the same menu bar and
@@ -1461,14 +1558,16 @@ Raised by the 2026-07-28 pre-port cleanup, and deliberately left open:
 - **~25% steady-state trail dimming at the very top of the persistence slider**,
   from fp16 mantissa granularity rather than subnormals — so the value scale
   does not fix it, and only returning to fp32 would. Negligible at the default;
-  measured and accepted (PORT_AUDIT §1a).
+  measured and accepted — the measurement is recorded under rule 7 above.
 - **`ndc_to_screen()` has no callers.** Kept deliberately as `screen_to_ndc`'s
   inverse: a conversion table missing one direction invites the next caller to
   write it inline, which is the drift rule 9 exists to prevent.
 - **The two untyped string interfaces remain**: the command dict and the status
-  dict. `STATUS_KEYS` now enumerates the latter and the UI indexes rather than
-  defaulting, so a missing key is loud — but typing them properly is the port's
-  job, where they become the TS API.
+  dict. `STATUS_KEYS` enumerates the latter and the UI indexes rather than
+  defaulting, so a missing key is loud. The command dict now has a second
+  consumer (the piloting API), which makes typing it more attractive than it
+  was — but the API's allowlist covers the failure mode that mattered, so this
+  stays open rather than urgent.
 - The UI is one debug panel and the input layer. Physics sliders, GUI detail
   tiers, tooltips, the menu bar and the config editor are each their own design
   conversation; the input plumbing they need is already in place.

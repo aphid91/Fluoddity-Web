@@ -23,13 +23,16 @@ MAX_CONFIGS = 64
 _SHADER_DIR = Path(__file__).parent / "shaders"
 _SHARED_SHADER_DIR = Path(__file__).parent.parent / "shared" / "shaders"
 
-#: Canvas texel format: RG16F ('f2'), not RG32F ('f4'). Chosen for the WebGPU
-#: port: base WebGPU can neither LINEAR-filter nor blend rg32float (both need
-#: optional device features), while rg16float does everything this texture
-#: needs with no features at all -- and at half the bandwidth. The precision
-#: budget was verified numerically against fp32 across the trail-persistence
-#: range; see docs/PORT_AUDIT.md section 1a. Revert to 'f4' only alongside a
-#: decision to require those optional features.
+#: Canvas texel format: RG16F ('f2'), not RG32F ('f4'). Half the bandwidth, and
+#: filterable and blendable everywhere, which 32-bit float is not.
+#:
+#: THE PRECISION FIX IS PART OF THIS CHOICE, not an optimization on top of it.
+#: Bare fp16 was measured against fp32 across the trail-persistence range and
+#: FAILED at the top of it: the splat premultiply drives deposits subnormal and
+#: the blend stage flushes them. CANVAS_VALUE_SCALE, the raised persistence
+#: floor and the saturation clamp in common.glsl are what make this format
+#: viable -- see docs/ARCHITECTURE.md design rule 7 for the measurements.
+#: Do not remove any of them while this is 'f2'.
 CANVAS_DTYPE = 'f2'
 
 
@@ -289,8 +292,8 @@ class ParticleSystem:
         """Dispatch a pick for the nearest entity within `radius_world`.
 
         Phase one of two. The answer is not available now -- reading it this
-        frame would stall the GPU, and WebGPU has no synchronous readback at
-        all (see picker.py). Call retrieve_pick() on a LATER frame.
+        frame would stall the GPU for something nothing needs until the next one
+        (see picker.py). Call retrieve_pick() on a LATER frame.
 
         A second request before the result is read overwrites the first: the
         picker has one result slot, so the newest dispatch is the only one
@@ -310,10 +313,15 @@ class ParticleSystem:
     def pick_blocking(self, target_world, radius_world):
         """Pick the CURRENT frame's answer, stalling until it is ready.
 
-        NOT USED BY THE APP, and must stay that way: it forces a GPU sync and
-        does not translate to WebGPU. It exists for host-side tooling and tests
-        -- notably the mutation probe, which compares a GPU pick against the
-        host's reproduction of the same rule and needs both from one frame.
+        NOT USED BY THE APP, and must stay that way: it forces a GPU sync. It
+        exists for host-side tooling and tests -- notably the mutation probe,
+        which compares a GPU pick against the host's reproduction of the same
+        rule and needs both from one frame.
+
+        DO NOT reach for this to make something synchronous. The piloting API
+        wanted exactly that and did not need it: selection by entity index is
+        pure host-side arithmetic (see mutation.entity_rule), so it is already
+        synchronous AND exact, without involving the GPU at all.
 
         The live click path is request_pick() + retrieve_pick(); see
         orchestrator/selection_commands.py.

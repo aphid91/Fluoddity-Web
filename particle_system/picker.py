@@ -8,15 +8,14 @@ single 4-byte result.
 
 WHY THE RESULT IS ONE FRAME OLD
 Reading a GPU buffer the same frame you wrote it forces a sync point: the CPU
-waits for the GPU to drain. Worse, WebGPU (the port target) has no synchronous
-readback at all, so that shape would have to be rewritten rather than
-translated. Instead the picker reads the PREVIOUS frame's result, which is
-already complete -- no stall, and the structure ports unchanged.
+waits for the GPU to drain, in the middle of the frame, for an answer nothing
+needs until the next one. Instead the picker reads the PREVIOUS frame's result,
+which is already complete -- no stall.
 
 The cost is one frame of latency. At 60fps that is 16ms, well below the ~100ms
 where pointing feels laggy, and invisible for hover-highlighting or clicking.
 Callers that must have an exactly-current answer should say so explicitly
-(see `pick_blocking`), understanding it stalls and will not port.
+(see `pick_blocking`), understanding that it stalls.
 
 DISTANCE IS STRAIGHT-LINE, in every boundary mode -- including wrap, where the
 world really is a torus. The difference only shows for a click within a particle

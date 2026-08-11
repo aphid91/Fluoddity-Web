@@ -1,10 +1,43 @@
 # Fluoddity-Core
-This is a stripped down version of:
-https://github.com/aphid91/Fluoddity
-Fluoddity-Core contains just enough machinery to load and run a config (no jitter or parameter sweeps). It is meant as a companion to the full Fluoddity repo for those who want to tinker and/or understand the algorithm without digging through vibe-coded bells and whistles.
-For more information see the Readme for Fluoddity
 
-It also hosts this claude coded webgl port of the core engine: https://aphid91.github.io/Fluoddity-Core/ This demo can be found in the docs/ folder ("docs" folder is for github pages integration)
+A rebuilt, deliberately structured version of:
+https://github.com/aphid91/Fluoddity
+
+Fluoddity-Core began as a stripped-down companion to the full Fluoddity repo —
+just enough machinery to load and run a config, for anyone who wanted to
+understand the algorithm without digging through vibe-coded bells and whistles.
+It has since grown into the working environment: an editor with tiered settings,
+drawing and shove tools, entity selection, undo/redo, in-session checkpoints,
+hover-preview loading, motion blur and bloom. What it deliberately does *not*
+have is jitter or parameter sweeps; `config_index` subsumes the latter.
+
+The design is documented, and the documentation is kept current:
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module boundaries, the numbered
+  design rules the code cites, and why each one exists. **Read this before
+  changing anything.**
+- [docs/API.md](docs/API.md) — the piloting API: drive the app from another
+  program over HTTP.
+- [docs/CLIP_INTEGRATION.md](docs/CLIP_INTEGRATION.md) — the plan for
+  CLIP-guided search over mutation space. Not built.
+
+## Running it
+
+```
+Scratch.venv/Scripts/python.exe main.py                  # the app
+Scratch.venv/Scripts/python.exe main.py --api-port 8765  # plus the API
+```
+
+Tests are standalone scripts, each returning an exit code:
+
+```
+Scratch.venv/Scripts/python.exe tests/test_schedule_parse.py     # no GPU
+Scratch.venv/Scripts/python.exe tests/test_pending_selection.py  # no GPU
+Scratch.venv/Scripts/python.exe tests/test_async_pick.py         # GPU, no window
+Scratch.venv/Scripts/python.exe tests/test_hot_reload.py         # GPU, no window
+Scratch.venv/Scripts/python.exe tests/test_api_capture.py        # GPU, no window
+Scratch.venv/Scripts/python.exe tests/test_api_loopback.py       # needs a display
+```
 
 ## Algorithm Structure
 System state consists of a particle buffer called "entities" and a texture that stores particle trails called "canvas". 

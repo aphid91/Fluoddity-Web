@@ -12,8 +12,9 @@ computed for the picked entity.
 The original solved this with a shader mode that wrote every particle's mutated
 rule to a buffer for readback. This recomputes it instead: the mutation is
 deterministic in (rule, amount, cohort), so Python can reproduce it exactly.
-No extra buffer, no GPU readback -- and nothing for the WebGPU port to
-translate, where readbacks are async anyway.
+No extra buffer, no GPU readback -- and, because it is pure host-side
+arithmetic, the rule for any entity index can be had synchronously and exactly,
+which is what the piloting API's index-based selection uses.
 
 THE PRICE IS THAT THIS MUST TRACK THE SHADER.
 Ported line-for-line from entity_update.glsl (pcg_hash/hash/hash4,

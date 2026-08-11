@@ -1,10 +1,11 @@
 """Config Manager commands: growing, shrinking and selecting configs.
 
-SCOPED FOR REMOVAL. The multi-config machinery is how the ConfigBuffer system
-gets exercised and tested, but the initial web port will expose only the
-primary config (Config 0). Keeping these handlers in their own file -- rather
-than mixed into the Orchestrator -- means dropping the feature is deleting a
-file and unhooking a mixin, not surgery across a 500-line class.
+KEPT DELETABLE. The multi-config machinery is how the ConfigBuffer system gets
+exercised and tested, but it is an optional editing surface rather than part of
+the core -- a build that exposed only the primary config (Config 0) would still
+be the same app. Keeping these handlers in their own file, rather than mixed
+into the Orchestrator, means dropping the feature is deleting a file and
+unhooking a mixin, not surgery across a 500-line class.
 
 The same reasoning applies to ui/config_manager.py and the "save entire
 ConfigBuffer" radio in the save dialog.

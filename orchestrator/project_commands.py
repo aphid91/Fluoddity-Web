@@ -68,6 +68,13 @@ class ProjectCommands:
             self.project.world.boundary_conditions == BC_WRAP)
         self._end_stroke()
 
+        # A pick dispatched against the OLD system has nothing to return from
+        # the new one. Benign today -- a fresh picker reports a miss and
+        # _resolve_pending_selection drops it silently -- but dropping the
+        # pending state here says so on purpose, rather than relying on a
+        # coincidence two modules away.
+        self._pending_selection = None
+
     # ------------------------------------------------------------------
     # Discovery
     # ------------------------------------------------------------------
@@ -102,18 +109,20 @@ class ProjectCommands:
         """
         self._save_error = ""
 
-    def _cmd_save_config(self, name, save_all):
-        """Write the project to configs/custom/<name>.json."""
-        self._save_error = ""
-        safe = persistence.sanitize_filename(name)
-        if not safe:
-            self._save_error = "That name has no usable characters."
-            return
+    def _write_project(self, path, save_all):
+        """Write the live project to `path`. THE one place a save happens.
 
+        Returns None on success, or an error string -- the caller decides what
+        to do with a failure, because the two callers want different things:
+        the save dialog shows it in the UI, the API returns it over the wire.
+
+        Deliberately does NOT rename the project or rescan the config list.
+        Adopting a destination is a separate act from writing bytes to it, and
+        only one of the two callers wants it (see _cmd_save_config).
+        """
         configs = (list(self.project.configs) if save_all
                    else [self.project.configs[0]])
         cam = self.camera.state
-        path = persistence.custom_dir(self._config_dir) / f"{safe}.json"
         try:
             persistence.save(
                 path, configs, self.project.world,
@@ -121,7 +130,27 @@ class ProjectCommands:
                         'mode': cam.mode.value},
             )
         except OSError as e:
-            self._save_error = f"Could not write {path.name}: {e}"
+            return f"Could not write {path.name}: {e}"
+        return None
+
+    def _cmd_save_config(self, name, save_all):
+        """Write the project to configs/custom/<name>.json.
+
+        A GUI save ADOPTS its destination: the project takes the name, the
+        system's config path follows, and the load menu rescans so the new file
+        shows up. That is what makes Save-then-Save-again overwrite the same
+        file rather than silently forking.
+        """
+        self._save_error = ""
+        safe = persistence.sanitize_filename(name)
+        if not safe:
+            self._save_error = "That name has no usable characters."
+            return
+
+        path = persistence.custom_dir(self._config_dir) / f"{safe}.json"
+        error = self._write_project(path, save_all)
+        if error:
+            self._save_error = error
             return
 
         self.system.set_config_path(str(path))

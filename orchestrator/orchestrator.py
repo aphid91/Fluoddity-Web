@@ -22,6 +22,7 @@ those groups are now mixins:
     clipboard_commands       in-session checkpoints
     settings_commands        slider edits, preference edits
     config_manager_commands  multi-config editing (scoped for removal)
+    api_commands             handlers the piloting API needs (see docs/API.md)
 
 The mixins own no state. They read and replace the attributes defined here,
 which keeps the state in one readable place while the behaviour lives next to
@@ -32,9 +33,13 @@ Input is polled at the TOP of the frame, so the physics and rendering that
 follow act on this frame's input rather than the previous frame's. The imgui
 frame spans the whole loop body -- opened before the simulation runs, closed
 after all GL drawing -- so the interface composites on top of the sim.
+
+Ahead of even that sits the API drain, and the sleep guard that can skip the
+whole body. Both are no-ops without --api-port; see api_commands.py.
 """
 
 import dataclasses
+import threading
 from pathlib import Path
 
 import glfw
@@ -53,6 +58,7 @@ from strafe_field import StrafeField
 from tooltip_graphic import TooltipGraphic
 from ui import UI
 
+from .api_commands import ApiCommands
 from .clipboard_commands import ClipboardCommands, Checkpoint
 from .config_manager_commands import ConfigManagerCommands
 from .drawing_commands import DrawingCommands
@@ -105,7 +111,7 @@ def blur_schedule(prefs):
 
 class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
                    ConfigManagerCommands, SelectionCommands, DrawingCommands,
-                   ShoveCommands):
+                   ShoveCommands, ApiCommands):
 
     #: Where configs live. An attribute so the command mixins can reach it.
     _config_dir = _CONFIG_DIR
@@ -179,6 +185,19 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         #: (Navigation is no longer a tool; it lives on WASD/QE.)
         self.mouse_mode = MouseMode.SELECT
 
+        #: Displayed frames since startup. MONOTONIC: never reset, never wound
+        #: back, and it does not stop for a pause -- a paused frame is still a
+        #: frame that was drawn.
+        #:
+        #: THIS IS THE SCHEDULING CLOCK, and it exists because the obvious
+        #: candidate is wrong. system.frame_count counts PHYSICS SUB-STEPS
+        #: (advance() increments it, and the loop below runs it physics_steps
+        #: times per frame), and reset() sets it to zero as a shader sentinel.
+        #: Scheduling against it would drift whenever the physics rate changed
+        #: and jump to zero on every reset -- a clock that looks correct right
+        #: up until it silently isn't.
+        self.app_frame = 0
+
         #: Whether the simulation is frozen. Pausing stops the physics AND the
         #: Shove tool, so a paused frame is genuinely untouchable; the camera,
         #: the overlays and the whole UI stay live, so a frozen state can still
@@ -205,7 +224,58 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         self._manager_message = ""
         self._save_error = ""
 
-        self.ui = UI(self.window.window, commands={
+        # --- piloting API state (see api_commands.py and docs/API.md) ---
+        # These exist unconditionally, even with the API switched off, so the
+        # frame loop below reads the same attributes either way rather than
+        # growing a second shape for the no-API case.
+
+        #: True while the frame loop is parked. Distinct from `paused`: paused
+        #: freezes the physics and keeps drawing, asleep stops the loop.
+        self._asleep = False
+        self._sleep_deadline = None
+
+        #: The thread the GL context belongs to. Recorded so the capture path
+        #: can refuse to run anywhere else -- a GL call from the API's socket
+        #: thread corrupts silently instead of failing.
+        self._main_thread_ident = threading.get_ident()
+
+        #: Cached capture target, allocated on first screenshot.
+        self._shot_fbo = None
+        self._shot_texture = None
+        self._shot_size = None
+
+        #: The transport, when --api-port was given. None otherwise, and every
+        #: read of it below is guarded: the app must behave identically without
+        #: the flag.
+        self.pilot = None
+
+        #: THE command table: named intent -> handler. Built once and shared by
+        #: every surface that drives the app, so there is exactly one registry
+        #: to keep in step with the handlers.
+        self.commands = self._command_table()
+
+        self.ui = UI(self.window.window, commands=self.commands)
+
+        # Handed over once, not per frame: it is a fixed renderer the UI draws
+        # with, unlike the values in _report_status() which change every frame.
+        self.ui.set_status(tooltip_graphic=self.tooltip_graphic)
+
+        self._refresh_config_list()
+
+    def _command_table(self):
+        """Named intents the app answers to, mapped to their handlers.
+
+        A method rather than a literal in __init__ because it has more than one
+        consumer: the UI dispatches into it by name, and so does the piloting
+        API (api/, see docs/API.md). Both get the SAME dict -- a second registry
+        would be a second thing to forget to update.
+
+        NOT EVERY COMMAND HERE IS SAFE TO CALL REMOTELY. The hover-preview
+        handlers in particular are half of a cursor-driven state machine and
+        only make sense as a matched sequence; the API keeps its own allowlist
+        rather than exposing this wholesale (see api/server.py).
+        """
+        return {
             'reload': self._cmd_reload,
             'reset': self._cmd_reset,
             'toggle_pause': self._cmd_toggle_pause,
@@ -249,13 +319,25 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # drawing
             'edit_draw_pref': self._cmd_edit_draw_pref,
             'clear_strafe_field': self._cmd_clear_strafe_field,
-        })
-
-        # Handed over once, not per frame: it is a fixed renderer the UI draws
-        # with, unlike the values in _report_status() which change every frame.
-        self.ui.set_status(tooltip_graphic=self.tooltip_graphic)
-
-        self._refresh_config_list()
+            # piloting API (api_commands.py). Registered here rather than in a
+            # table of their own so there is one place to look up what a name
+            # means, whichever surface said it.
+            'set_setting': self._cmd_set_setting,
+            'save_config_to': self._cmd_save_config_to,
+            'load_config_path': self._cmd_load_config_path,
+            'set_checkpoint_named': self._cmd_set_checkpoint_named,
+            'load_checkpoint_named': self._cmd_load_checkpoint_named,
+            'delete_checkpoint_named': self._cmd_delete_checkpoint_named,
+            'select_particle_at': self._cmd_select_particle_at,
+            'set_camera': self._cmd_set_camera,
+            'set_camera_mode': self._cmd_set_camera_mode,
+            'set_paused': self._cmd_set_paused,
+            'set_window_size': self._cmd_set_window_size,
+            'screenshot': self._cmd_screenshot,
+            'sleep': self._cmd_sleep,
+            'wake': self._cmd_wake,
+            'query_state': self._cmd_query_state,
+        }
 
     # ------------------------------------------------------------------
     # The frame loop
@@ -263,6 +345,22 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
 
     def run(self):
         while not self.window.should_close():
+            # API commands are serviced BEFORE the frame they affect, so a
+            # command and its consequences land in the same frame rather than
+            # one apart. A no-op when the API is off.
+            self._drain_api()
+
+            # PARKED. Nothing below runs: no physics, no render, no imgui
+            # frame. `continue` rather than a nested loop so the imgui
+            # begin/end pair stays balanced -- skipping both together is what
+            # makes that safe. See _api_idle() for why this still pumps the OS
+            # event queue.
+            if self._asleep:
+                self._api_idle()
+                continue
+
+            self.app_frame += 1
+
             # Poll + snapshot input, open the imgui frame. Everything below
             # sees this frame's input.
             state = self.ui.begin_frame()
@@ -270,8 +368,8 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             # FINISH LAST FRAME'S SELECTION FIRST, before _apply_canvas_input
             # can dispatch this frame's. Reading a pick the same frame it was
             # requested is exactly the GPU stall the two-phase design avoids
-            # (and WebGPU cannot do it at all -- see picker.py), so the read
-            # has to happen before the write, not after it.
+            # (see picker.py), so the read has to happen before the write, not
+            # after it.
             #
             # Here rather than inside advance(): advance() is skipped while
             # paused, and clicking to select must keep working when it is.
@@ -369,6 +467,8 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
 
             self.window.end_frame()
 
+        if self.pilot is not None:
+            self.pilot.stop()
         self.ui.shutdown()
         self.window.terminate()
 
@@ -509,8 +609,8 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         }
 
     #: THE STATUS INTERFACE, enumerated. This is the Orchestrator -> UI data
-    #: contract: 30 keys, one untyped dict, and until the port turns it into a
-    #: typed API this tuple is the only place it is written down.
+    #: contract: one untyped dict, and this tuple is the only place its keys are
+    #: written down.
     #:
     #: The guarantee that makes it usable: _report_status() supplies EVERY key
     #: below, every frame, before the UI builds a single panel (run() calls it
@@ -527,8 +627,10 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
         # camera / cursor
         'mouse_world', 'cam_mode', 'cam_pan', 'cam_zoom',
         'canvas_size', 'window_size',
-        # simulation
+        # simulation. `frame_count` is physics sub-steps and resets; `app_frame`
+        # is displayed frames and never does -- see self.app_frame.
         'mouse_mode', 'paused', 'preset', 'entity_count', 'frame_count',
+        'app_frame',
         # history
         'can_undo', 'can_redo', 'undo_label', 'history_depth', 'history_cursor',
         # picking (selection only -- see self.selected for why there is no
@@ -591,6 +693,7 @@ class Orchestrator(ProjectCommands, ClipboardCommands, SettingsCommands,
             entity_count=self.system.entity_count,
             config_count=self.project.count,
             frame_count=self.system.frame_count,
+            app_frame=self.app_frame,
         )
 
     #: Empty payload reused when no settings window is open, so the common case

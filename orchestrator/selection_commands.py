@@ -8,8 +8,9 @@ HOW THE RULE IS OBTAINED
 Recomputed host-side (particle_system/mutation.py), not read back from the GPU.
 The mutation is deterministic in (rule, scale, seed, cohort), so Python can
 reproduce it exactly; a probe test compares the two over a range of inputs.
-That avoids the extra buffer and readback the original needed -- and avoids
-async readback in the WebGPU port.
+That avoids the extra buffer and readback the original needed. It also means
+selection BY INDEX needs no GPU round trip at all, which is what makes the
+piloting API's select_particle_at(index=N) synchronous and exact.
 
 WHY mutation_scale IS LEFT ALONE
 Adopting a mutated rule while keeping the scale means the population keeps
@@ -99,8 +100,8 @@ class SelectionCommands:
 
         ASYNCHRONOUS: this dispatches the pick and records what it will need to
         finish. The result is read next frame by _resolve_pending_selection(),
-        because reading it now would stall the GPU -- and WebGPU, the port
-        target, has no synchronous readback at all (see picker.py).
+        because reading it now would stall the GPU for an answer nothing needs
+        until then (see picker.py).
 
         `before` is captured HERE, at click time, not when the result arrives:
         history must record against the project as it was when the user
