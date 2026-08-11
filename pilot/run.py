@@ -38,6 +38,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import embedding_cache
 from . import moves as move_lib
 from . import report as report_lib
 from . import scoring
@@ -127,6 +128,9 @@ class SearchRun:
         #: Beam entries read from a resumed manifest, awaiting app-side
         #: checkpoints. Empty for a fresh run.
         self._pending_restore = None
+        #: Shared with the viewer; opened lazily so a smoke run with no
+        #: backend never touches the disk.
+        self._embedding_cache = None
         #: Prefix making this session's ids distinct from any already in the
         #: folder. Empty for the first session, so a single-run folder keeps
         #: the plain "gen000_000" names. Set in prepare().
@@ -348,22 +352,34 @@ class SearchRun:
         """Embed every capture at once, then score.
 
         The batching that the whole generational structure exists for.
+
+        WRITES THROUGH THE SHARED CACHE, so the UMAP viewer never re-embeds
+        what a search has already done. Same files, same model, same settings
+        -- paying for that twice was ninety seconds of pure waste every time a
+        finished run was opened.
         """
         if not candidates:
             return []
-        from . import embedding
+        import numpy as np
 
-        paths = [c.capture_path for c in candidates]
-        embeddings = embedding.embed_paths(self.backend, paths) \
-            if self.backend is not None else None
-        if embeddings is None:
+        if self.backend is None:
             # No backend: a smoke run. The scorer is expected to ignore its
             # argument (see ConstantScorer).
-            import numpy as np
             embeddings = np.zeros((len(candidates), 1, 1), dtype=np.float32)
+        else:
+            embeddings = embedding_cache.embed_cached(
+                [c.capture_path for c in candidates], self.backend,
+                self._cache())
 
         scores = self.scorer.score(embeddings)
         return [c.scored(float(s)) for c, s in zip(candidates, scores)]
+
+    def _cache(self):
+        """The capture folder's embedding cache, opened once per run."""
+        if self._embedding_cache is None:
+            self._embedding_cache = embedding_cache.EmbeddingCache(
+                self.folder.captures)
+        return self._embedding_cache
 
     def run_generation(self, generation):
         started = time.monotonic()
@@ -537,18 +553,15 @@ def _rescore(candidates, cfg, folder):
     scorer = scoring.build_scorer(cfg, backend)
     print(f"  re-scoring {len(usable)} capture(s): {scorer.describe()}")
 
-    # Batched, and in chunks: a long run can hold thousands of captures, and
-    # embedding them all at once would hold every decoded image in memory.
-    rescored = []
-    chunk = 256
-    for start in range(0, len(usable), chunk):
-        batch = usable[start:start + chunk]
-        vectors = embedding.embed_paths(
-            backend, [c.capture_path for c in batch])
-        for candidate, score in zip(batch, scorer.score(vectors)):
-            rescored.append(candidate.scored(float(score)))
-        print(f"    {min(start + chunk, len(usable))}/{len(usable)}")
-    return rescored
+    # Through the shared cache: a re-score against a new caption is exactly
+    # the case where the captures were embedded minutes ago and nothing about
+    # them has changed. Only the text side is new.
+    cache = embedding_cache.EmbeddingCache(folder.captures)
+    vectors = embedding_cache.embed_cached(
+        [c.capture_path for c in usable], backend, cache,
+        progress=lambda m: print(f"  {m.strip()}"))
+    return [c.scored(float(s))
+            for c, s in zip(usable, scorer.score(vectors))]
 
 
 def main(argv=None):
@@ -560,9 +573,10 @@ def main(argv=None):
     parser.add_argument('--generations', type=int, help="override generations")
     parser.add_argument('--resume', action='store_true',
                         help="continue an existing run_dir")
-    parser.add_argument('--caption', metavar='TEXT',
+    parser.add_argument('--caption', action='append', metavar='TEXT',
                         help="search toward a text prompt (implies "
-                             "backend=clip; overrides reference_dir)")
+                             "backend=clip; overrides reference_dir). "
+                             "Repeatable for several phrasings.")
     parser.add_argument('--negative', action='append', metavar='TEXT',
                         default=None,
                         help="search AWAY from this; repeatable")
@@ -608,8 +622,9 @@ def main(argv=None):
     if args.caption:
         # A caption on the command line means a caption run: switch the backend
         # and drop any reference folder, rather than failing validation over a
-        # combination the user plainly did not intend.
-        overrides['caption'] = args.caption
+        # combination the user plainly did not intend. Repeatable, so several
+        # phrasings can be given without editing the config.
+        overrides['captions'] = list(args.caption)
         overrides['backend'] = 'clip'
         overrides['reference_dir'] = ''
     if args.negative:

@@ -29,13 +29,10 @@ from pathlib import Path
 import numpy as np
 
 from . import embedding
+from .embedding_cache import EmbeddingCache, embed_cached
 
 #: What counts as an image worth plotting.
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.webp'}
-
-#: Cache filename inside the folder. Hidden-ish, and named for what it is so a
-#: user who finds it knows it is regenerable.
-CACHE_NAME = '.umap_cache.npz'
 
 
 @dataclass
@@ -144,54 +141,6 @@ def read_manifest(path):
     return rows
 
 
-def _file_key(path):
-    """Identity of a file for cache purposes: size and modification time.
-
-    Content hashing would be more correct and far slower on thousands of
-    images, so this trusts the filesystem's metadata.
-
-    NANOSECOND mtime, not whole seconds. A second's resolution is enough for
-    the photo library tex_sim was written for, and not enough here: a search
-    rewrites a folder of captures in well under a second, so a file replaced
-    by another of the same size would keep its key and be served stale vectors
-    -- silently, since the count and shape would still line up.
-    """
-    stat = path.stat()
-    return f"{stat.st_size}:{stat.st_mtime_ns}"
-
-
-def _cache_key(paths, signature):
-    """One string standing for "these files, embedded this way"."""
-    parts = [signature, str(len(paths))]
-    parts.extend(f"{p.name}|{_file_key(p)}" for p in paths)
-    return '\n'.join(parts)
-
-
-def load_cache(folder, key):
-    """Cached embeddings for `key`, or None."""
-    path = Path(folder) / CACHE_NAME
-    if not path.is_file():
-        return None
-    try:
-        with np.load(path, allow_pickle=False) as data:
-            if str(data['key']) != key:
-                return None
-            return data['embeddings']
-    except (OSError, KeyError, ValueError):
-        # A corrupt or older-format cache is not worth a traceback; it is
-        # regenerable by definition.
-        return None
-
-
-def save_cache(folder, key, embeddings):
-    path = Path(folder) / CACHE_NAME
-    try:
-        np.savez_compressed(path, key=np.array(key), embeddings=embeddings)
-    except OSError as e:
-        print(f"  could not write cache ({e}); continuing without it")
-    return path
-
-
 def build(folder, cfg, recursive=True, refresh=False, progress=print):
     """Embed a folder, using the cache when it applies.
 
@@ -206,19 +155,16 @@ def build(folder, cfg, recursive=True, refresh=False, progress=print):
 
     backend = embedding.build_backend(cfg)
     signature = backend.signature()
-    key = _cache_key(paths, signature)
 
-    vectors = None if refresh else load_cache(root, key)
-    if vectors is not None:
-        progress(f"  {len(paths)} images, embeddings from cache")
-    else:
-        progress(f"  embedding {len(paths)} image(s) [{signature}]")
-        raw = embedding.embed_paths(backend, paths)
-        # Collapse crops here: the viewer wants one point per image, and
-        # caching the aggregated form keeps the file small.
-        vectors = embedding.aggregate(raw, cfg.aggregate)
-        save_cache(root, key, vectors)
-        progress(f"  cached to {root / CACHE_NAME}")
+    # THE SAME cache the search fills. A folder a search has just finished
+    # writing is already embedded, so opening it is instant rather than a
+    # second ninety-second pass over the same images with the same model.
+    cache = EmbeddingCache(root)
+    if refresh:
+        cache.clear(signature)
+    progress(f"  {len(paths)} images [{signature}]")
+    vectors = embed_cached(paths, backend, cache, aggregate=cfg.aggregate,
+                           progress=progress)
 
     items = [Item(path=p, index=i) for i, p in enumerate(paths)]
     _enrich(items, root, progress)
@@ -249,6 +195,41 @@ def score_caption(gallery, caption, backend, calibrate=True, aggregate='mean'):
     # collapsed, so present them as a single view.
     vectors = gallery.embeddings.reshape(len(gallery), 1, -1)
     return scorer.score(vectors)
+
+
+def percentile_mask(values, percentile, bottom=False):
+    """Which points survive a percentile cutoff. Returns a boolean (N,).
+
+    `percentile` is the fraction HIDDEN, so 0 shows everything and 90 keeps
+    only the top tenth. With `bottom`, the same slider keeps the worst tenth
+    instead -- isolating failures is as useful as isolating successes, and
+    naming the bad cluster is how negative captions get chosen.
+
+    Computed over the whole dataset every time rather than over what is
+    currently visible. Filtering the filtered would let the cutoff creep as it
+    is dragged, so a sweep would depend on the path taken to get there.
+
+    Points with no score (NaN) are always hidden when a cutoff is active: they
+    cannot be ranked, and showing them among the survivors would imply they
+    passed.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    finite = np.isfinite(values)
+    if percentile <= 0:
+        return np.ones(len(values), dtype=bool)
+    if not finite.any():
+        return np.zeros(len(values), dtype=bool)
+
+    # `percentile` is the fraction HIDDEN, so the surviving fraction is its
+    # complement. Both branches cut at the same place; they differ only in
+    # which side of it they keep.
+    hidden = float(np.clip(percentile, 0.0, 100.0))
+    scored = values[finite]
+    if bottom:
+        threshold = np.percentile(scored, 100.0 - hidden)
+        return finite & (values <= threshold)
+    threshold = np.percentile(scored, hidden)
+    return finite & (values >= threshold)
 
 
 def _enrich(items, root, progress=print):
