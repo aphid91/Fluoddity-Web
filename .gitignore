@@ -38,6 +38,7 @@ imgui.ini
 # imgui.ini above: per-user session layout, not project source.
 UMAP*.ini
 Fluoddity_pilot.ini
+gui_frame_test.ini
 
 # Search output: a run writes a config and a 512px capture per candidate, so a
 # few generations is hundreds of files and tens of megabytes. Results are
