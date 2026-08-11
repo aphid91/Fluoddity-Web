@@ -111,8 +111,11 @@ class SearchRun:
     """One search, start to finish."""
 
     def __init__(self, cfg, client=None, strategy=None, scorer=None,
-                 backend=None):
+                 backend=None, progress=None):
         self.cfg = cfg
+        #: Where status goes. `print` on the command line; a Task's reporter
+        #: when the GUI is driving, which is what feeds the progress bar.
+        self.progress = progress if progress is not None else print
         self.folder = RunFolder(resolve(cfg.run_dir))
         self.client = client or FluoddityClient(port=cfg.port)
 
@@ -369,7 +372,7 @@ class SearchRun:
         else:
             embeddings = embedding_cache.embed_cached(
                 [c.capture_path for c in candidates], self.backend,
-                self._cache())
+                self._cache(), progress=self.progress)
 
         scores = self.scorer.score(embeddings)
         return [c.scored(float(s)) for c, s in zip(candidates, scores)]
@@ -384,15 +387,24 @@ class SearchRun:
     def run_generation(self, generation):
         started = time.monotonic()
         moves = self.strategy.propose(generation)
-        print(f"\ngeneration {generation}: {len(moves)} candidates")
+        self.progress(f"\ngeneration {generation}: {len(moves)} candidates")
+        step = getattr(self.progress, 'step', None)
 
         evaluated = []
         for index, move in enumerate(moves):
             candidate = self.realize(move, generation, index)
             if candidate is not None:
                 evaluated.append(candidate)
+            # Per candidate, because a sampling generation IS the whole run --
+            # 5,000 of them, so per-generation progress would be a bar that
+            # sits at zero for twenty minutes and then finishes.
+            if step is not None:
+                step(index + 1, len(moves), 'candidates',
+                     label=f"generation {generation}")
         simulated = time.monotonic() - started
 
+        if step is not None:
+            step(0, 0)          # indeterminate: embedding does not tick here
         scored = self.score_generation(evaluated)
         for candidate in scored:
             self.folder.append(candidate)
@@ -404,12 +416,13 @@ class SearchRun:
                                      self.strategy.culled(scored))
 
         elapsed = time.monotonic() - started
-        print(f"  {len(scored)}/{len(moves)} evaluated in {elapsed:.1f}s "
-              f"(sim {simulated:.1f}s, embed+score {elapsed - simulated:.1f}s)")
-        print(f"  {self.strategy.summary()}")
+        self.progress(
+            f"  {len(scored)}/{len(moves)} evaluated in {elapsed:.1f}s "
+            f"(sim {simulated:.1f}s, embed+score {elapsed - simulated:.1f}s)")
+        self.progress(f"  {self.strategy.summary()}")
         if self.strategy.best is not None:
-            print(f"  best so far: {self.strategy.best.id} "
-                  f"({self.strategy.best.score:+.4f})")
+            self.progress(f"  best so far: {self.strategy.best.id} "
+                          f"({self.strategy.best.score:+.4f})")
 
     def run(self):
         self.prepare()

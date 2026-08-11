@@ -33,9 +33,46 @@ class Progress:
     error: str = ''
     result: object = None
 
+    #: How far along, 0..1, or None when the work cannot say. Kept separate
+    #: from the log lines because a bar needs a number and a status line needs
+    #: a sentence, and deriving either from the other means parsing text.
+    fraction: float | None = None
+    #: What the fraction is counting -- "1200/5000 images". Shown inside the
+    #: bar, where a percentage alone is much less useful: on a long embed the
+    #: interesting question is how many are left, not what share is done.
+    detail: str = ''
+
     @property
     def latest(self):
         return self.lines[-1] if self.lines else ''
+
+
+class Reporter:
+    """What background work is handed to describe its own progress.
+
+    CALLABLE, so anything already written against `progress=print` works
+    unchanged; `.step()` is the addition, for work that can count. Keeping
+    both on one object means a function does not need to know whether its
+    caller wants a bar -- it says what it knows and the GUI decides.
+    """
+
+    def __init__(self, log, step=None):
+        self._log = log
+        self._step = step
+
+    def __call__(self, message):
+        self._log(message)
+
+    def step(self, done, total, noun='', label=None):
+        if self._step is not None:
+            self._step(done, total, noun, label)
+
+
+def null_reporter(message=None):
+    """A reporter that discards everything. For callers with no GUI."""
+
+
+null_reporter.step = lambda *a, **k: None
 
 
 class Task:
@@ -70,6 +107,12 @@ class Task:
         return task
 
     def _report(self, message):
+        """Append a status line. Callable, so plain `progress=print` code works.
+
+        Also carries .step() for work that can say how far along it is; making
+        the reporter an object rather than two arguments means a function that
+        only logs needs no changes to be driven by one that also measures.
+        """
         text = str(message).strip()
         if not text:
             return
@@ -78,9 +121,25 @@ class Task:
             if len(self._progress.lines) > self.MAX_LINES:
                 del self._progress.lines[:-self.MAX_LINES]
 
+    def _step(self, done, total, noun='', label=None):
+        """Set the completed fraction. `total` of 0 clears it."""
+        with self._lock:
+            if not total:
+                self._progress.fraction = None
+                self._progress.detail = ''
+            else:
+                self._progress.fraction = max(0.0, min(1.0, done / total))
+                self._progress.detail = (f"{done}/{total} {noun}".strip())
+            if label is not None:
+                self._progress.label = label
+
+    def _make_reporter(self):
+        """The `report` handed to the work: callable, with .step()."""
+        return Reporter(self._report, self._step)
+
     def _run(self):
         try:
-            result = self._work(self._report)
+            result = self._work(self._make_reporter())
         except Exception as e:                                  # noqa: BLE001
             # Caught rather than allowed to kill the thread silently: a
             # background failure that only prints to a console nobody is
@@ -105,7 +164,9 @@ class Task:
                             done=self._progress.done,
                             failed=self._progress.failed,
                             error=self._progress.error,
-                            result=self._progress.result)
+                            result=self._progress.result,
+                            fraction=self._progress.fraction,
+                            detail=self._progress.detail)
 
     @property
     def running(self):

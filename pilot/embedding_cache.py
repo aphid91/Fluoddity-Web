@@ -175,6 +175,7 @@ def embed_cached(paths, backend, cache, aggregate=None, progress=None,
     signature = backend.signature()
     hits, misses = cache.lookup(paths, signature)
 
+    step = getattr(progress, 'step', None)
     if misses and progress:
         progress(f"  embedding {len(misses)} new "
                  f"({len(hits)} from cache)")
@@ -190,8 +191,17 @@ def embed_cached(paths, backend, cache, aggregate=None, progress=None,
         for path, value in zip(batch, vectors):
             cache.put(path, signature, value)
             hits[str(path)] = value
+        done = min(start + chunk, len(misses))
+        # Reported per chunk rather than per image: at 256 a chunk is a few
+        # seconds, which is a fine granularity for a bar, and updating from
+        # inside the batch loop would mean touching the lock thousands of
+        # times for no visible difference.
+        if step is not None:
+            step(done, len(misses), 'images')
         if progress and len(misses) > chunk:
-            progress(f"    {min(start + chunk, len(misses))}/{len(misses)}")
+            progress(f"    {done}/{len(misses)}")
+    if step is not None and misses:
+        step(len(misses), len(misses), 'images')
     cache.flush()
 
     stacked = np.stack([hits[str(p)] for p in paths]).astype(np.float32)

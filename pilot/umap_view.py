@@ -221,7 +221,12 @@ class Viewer:
             self.status = progress.error
             return
 
-        if kind == 'loading':
+        # Each branch checks the result is the SHAPE it expects rather than
+        # trusting task_kind. The two are set together and cannot normally
+        # disagree, but "normally" is doing a lot of work there: a mismatch
+        # would assign a string to self.projection and every later frame would
+        # die inside the draw loop, far from the cause.
+        if kind == 'loading' and isinstance(progress.result, tuple):
             self.gallery, self.backend = progress.result
             self.projection = None
             self.caption_scores = None
@@ -231,11 +236,13 @@ class Viewer:
                                 else COLOUR_PLAIN)
             self.status = (f"loaded {len(self.gallery)} images -- "
                            f"press Compute UMAP to project")
-        elif kind == 'projecting':
+        elif kind == 'projecting' and isinstance(progress.result,
+                                                 projection_lib.Projection):
             self.projection = progress.result
             self.n_neighbours = self.projection.n_neighbours
             self.pan, self.zoom = [0.0, 0.0], 1.0
-            self.status = f"projected {len(self.gallery)} points"
+            count = len(self.gallery) if self.gallery is not None else 0
+            self.status = f"projected {count} points"
         elif kind == 'searching':
             self.status = progress.result or "search finished"
         else:
@@ -445,6 +452,12 @@ class Viewer:
                 f"{len(self.gallery)} images, {scored}   "
                 f"{self.gallery.signature}")
 
+        # Loading is reported HERE rather than beside the action buttons: it
+        # is what this panel started, and a bar next to the wrong control is a
+        # bar about the wrong thing. Embedding 5,000 captures is minutes.
+        if self.busy and self.task_kind in ('loading', 'projecting'):
+            self._progress_bar(self.task_kind, self.task.progress)
+
     def _caption_panel(self):
         """Colour by a caption. The reason this tool earns its keep.
 
@@ -557,9 +570,30 @@ class Viewer:
             _tip("Launch a search with the loaded config. Runs on a background "
                  "thread; Fluoddity must be running with --api-port.")
 
-        if blocked and task is not None:
-            imgui.same_line()
-            imgui.text(f"{kind}: {task.progress.latest}")
+        # Loading and projecting report in the source panel, beside the
+        # controls that start them; only this panel's own work reports here.
+        if blocked and task is not None \
+                and kind not in ('loading', 'projecting'):
+            self._progress_bar(kind, task.progress)
+
+    def _progress_bar(self, kind, progress):
+        """A bar when the work can count itself, a spinner-ish line when not.
+
+        Both matter: embedding and searching can say how far along they are,
+        while projecting and reporting genuinely cannot -- UMAP is one opaque
+        call. Showing a bar stuck at zero for those would be worse than
+        showing none.
+        """
+        from imgui_bundle import imgui
+
+        label = progress.label or kind
+        if progress.fraction is None:
+            imgui.text(f"{label}: {progress.latest}")
+            return
+
+        overlay = progress.detail or f"{progress.fraction * 100:.0f}%"
+        imgui.progress_bar(progress.fraction, imgui.ImVec2(-1.0, 0.0), overlay)
+        imgui.text_disabled(f"{label}: {progress.latest}")
 
     def _map_panel(self):
         from imgui_bundle import imgui
@@ -825,7 +859,7 @@ class Viewer:
 
         def work(report):
             report(cfg.describe_plan())
-            search = run_lib.SearchRun(cfg)
+            search = run_lib.SearchRun(cfg, progress=report)
             search.run()
             best = search.strategy.best
             return (f"search done: {len(search.strategy.archive)} candidates"

@@ -647,6 +647,119 @@ def test_disabled_pairing():
             del _sys.modules['imgui_bundle']
 
 
+def test_progress_reporting():
+    """Background work reports a fraction, not just log lines.
+
+    A bar needs a number and a status line needs a sentence; deriving either
+    from the other means parsing text. The Reporter carries both, and is
+    CALLABLE so anything written against `progress=print` keeps working.
+    """
+    print("\nprogress reporting")
+
+    import time as _time
+
+    from pilot.task import Reporter, Task, null_reporter
+
+    seen = []
+    steps = []
+    reporter = Reporter(seen.append,
+                        lambda d, t, n, label: steps.append((d, t, n, label)))
+    reporter("hello")
+    reporter.step(3, 10, 'images')
+    check("a reporter logs", seen == ['hello'], str(seen))
+    check("and counts", steps == [(3, 10, 'images', None)], str(steps))
+
+    check("null_reporter accepts both without doing anything",
+          null_reporter("x") is None and null_reporter.step(1, 2) is None)
+
+    # A worker that only logs must not need to know about bars.
+    task = Task.start('quiet', lambda report: (report("working"), 'ok')[1])
+    task.join(5)
+    progress = task.progress
+    check("a task that never steps has no fraction",
+          progress.fraction is None, str(progress.fraction))
+    check("and still logs", 'working' in progress.lines, str(progress.lines))
+    check("and returns its result", progress.result == 'ok')
+
+    def counting(report):
+        for i in range(4):
+            report.step(i + 1, 4, 'widgets')
+            report(f"did {i + 1}")
+        return 'done'
+
+    task = Task.start('counting', counting)
+    task.join(5)
+    progress = task.progress
+    check("a counting task reports a fraction",
+          progress.fraction == 1.0, str(progress.fraction))
+    check("and what it counted", progress.detail == '4/4 widgets',
+          progress.detail)
+
+    # A zero total means "cannot say" -- the bar must vanish rather than sit
+    # at zero, which would read as stalled.
+    def indeterminate(report):
+        report.step(1, 4, 'x')
+        report.step(0, 0)
+        return 'done'
+
+    task = Task.start('indeterminate', indeterminate)
+    task.join(5)
+    check("a zero total clears the fraction",
+          task.progress.fraction is None, str(task.progress.fraction))
+
+    # The fraction is clamped: an off-by-one in a caller must not produce a
+    # bar longer than the widget.
+    def overshoot(report):
+        report.step(12, 10, 'x')
+        return None
+
+    task = Task.start('overshoot', overshoot)
+    task.join(5)
+    check("the fraction is clamped to 1.0",
+          task.progress.fraction == 1.0, str(task.progress.fraction))
+
+    # Failures still surface rather than hanging the GUI on a task that
+    # never completes.
+    task = Task.start('boom', lambda report: 1 / 0)
+    task.join(5)
+    check("a failing task completes and reports",
+          task.progress.done and task.progress.failed
+          and 'ZeroDivisionError' in task.progress.error,
+          task.progress.error)
+
+
+def test_embed_progress():
+    """embed_cached drives a bar without needing one."""
+    print("\nembedding progress")
+
+    from pilot.embedding_cache import EmbeddingCache, embed_cached
+    from pilot.task import Reporter
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        make_images(root, [f"{i:03d}" for i in range(9)])
+        paths = gallery_lib.find_images(root)
+
+        steps = []
+        reporter = Reporter(lambda m: None,
+                            lambda d, t, n, label: steps.append((d, t)))
+        embed_cached(paths, CountingBackend(), EmbeddingCache(root),
+                     progress=reporter, chunk=4)
+
+        check("progress is reported during the embed", bool(steps), str(steps))
+        check("it ends at the total",
+              steps[-1] == (9, 9), str(steps[-1]))
+        check("and never exceeds it",
+              all(d <= t for d, t in steps), str(steps))
+
+        # A plain function (no .step) must still work -- that is the whole
+        # reason the reporter is callable rather than a pair of arguments.
+        lines = []
+        embed_cached(paths, CountingBackend(signature='v2'),
+                     EmbeddingCache(root), progress=lines.append, chunk=4)
+        check("a bare callable progress still works", bool(lines), str(lines))
+
+
 def test_default_paths():
     """The GUI opens pre-filled with the paths a session usually wants."""
     print("\ndefault paths")
@@ -684,6 +797,8 @@ def main():
     test_view_transform()
     test_caption_colouring()
     test_disabled_pairing()
+    test_progress_reporting()
+    test_embed_progress()
     test_default_paths()
 
     print()

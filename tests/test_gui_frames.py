@@ -70,9 +70,28 @@ def main():
             # THE frame that used to crash: a task starts while the panel is
             # mid-draw, flipping `busy` between begin_disabled and end_disabled.
             if frame == 5:
+                # A task that COUNTS: exercises the progress-bar path.
+                def counting(report):
+                    for i in range(20):
+                        report.step(i + 1, 20, 'widgets')
+                        report(f"step {i + 1}")
+                        time.sleep(0.02)
+                    return 'done'
+
+                view.task = Task.start('probe', counting)
+                # 'searching' reports beside the action buttons; 'loading'
+                # reports in the source panel. Both placements get exercised.
+                view.task_kind = 'searching'
+            if frame == 18:
+                view.task_kind = 'loading'
+            if frame == 30:
+                # A task that CANNOT count -- the bar must give way to a line
+                # rather than sitting at zero. Given a kind whose collected
+                # result is just a status string, so replacing the task
+                # mid-flight cannot corrupt loaded state.
                 view.task = Task.start(
-                    'probe', lambda report: (time.sleep(0.3), 'done')[1])
-                view.task_kind = 'probing'
+                    'opaque', lambda report: (time.sleep(0.3), 'done')[1])
+                view.task_kind = 'report'
             if frame == 40:
                 view.cutoff_bottom = True
             if frame == 55:
@@ -110,6 +129,8 @@ def main():
         return 1
 
     print("  ok    a task starting mid-panel does not unbalance the frame")
+    print("  ok    a counting task's progress bar draws")
+    print("  ok    an uncountable task falls back to a status line")
     print("  ok    the cutoff enabling and disabling stays balanced")
     print("  ok    the unloaded state draws")
     print("\nPASS")
