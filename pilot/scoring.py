@@ -127,11 +127,12 @@ def build_scorer(cfg, backend):
     refuses that combination, so reaching here with both means someone
     constructed a SearchConfig directly.
     """
-    if cfg.caption:
-        return PromptScorer(backend, cfg.caption,
+    if cfg.captions:
+        return PromptScorer(backend, cfg.captions,
                             negative_captions=cfg.negative_captions,
                             aggregate=cfg.aggregate,
-                            calibrate=cfg.calibrate)
+                            calibrate=cfg.calibrate,
+                            caption_aggregate=cfg.caption_aggregate)
     if cfg.reference_dir:
         return ReferenceImageScorer(backend, find_references(cfg.reference_dir),
                                     aggregate=cfg.aggregate)
@@ -184,21 +185,31 @@ class PromptScorer:
 
     def __init__(self, backend, caption, negative_captions=(),
                  aggregate='mean', calibrate=True,
-                 background_captions=None):
+                 background_captions=None, caption_aggregate='max'):
         if not getattr(backend, 'supports_text', False):
             raise ValueError(
                 f"the {getattr(backend, 'name', '?')} backend cannot embed "
                 "text; prompt scoring needs backend='clip'")
-        if not caption or not caption.strip():
+
+        # One caption or several. CLIP is sensitive to wording, so several
+        # phrasings of the same idea describe it more robustly than any one.
+        captions = [caption] if isinstance(caption, str) else list(caption)
+        captions = [c for c in captions if c and c.strip()]
+        if not captions:
             raise ValueError("prompt scoring needs a non-empty caption")
 
         self.backend = backend
-        self.caption = caption
+        self.captions = captions
+        self.caption = captions[0]
         self.negative_captions = list(negative_captions)
         self.aggregate = aggregate
+        self.caption_aggregate = caption_aggregate
         self.calibrate = calibrate
 
-        self.query = embedding.embed_texts(backend, [caption])[0]
+        self.queries = embedding.embed_texts(backend, captions)
+        #: Kept for callers that want "the" query vector; with several
+        #: captions the scoring below uses them all rather than this one.
+        self.query = self.queries[0]
 
         self.negatives = (embedding.embed_texts(backend, self.negative_captions)
                           if self.negative_captions else None)
@@ -230,18 +241,43 @@ class PromptScorer:
         # collapse to near-identical values.
         return median, np.maximum(mad, 0.01)
 
+    def _combine(self, per_caption):
+        """(N, K) similarities against K captions -> (N,).
+
+        'max' by default: a candidate matching ANY of the phrasings scores
+        well, which is what a set of alternative descriptions of one thing
+        means. 'mean' asks it to match all of them at once -- and the centroid
+        of several captions can sit somewhere resembling none of them.
+        """
+        if per_caption.shape[1] == 1:
+            return per_caption[:, 0]
+        if self.caption_aggregate == 'mean':
+            return per_caption.mean(axis=1)
+        if self.caption_aggregate == 'topk':
+            k = max(1, per_caption.shape[1] // 3)
+            return np.sort(per_caption, axis=1)[:, -k:].mean(axis=1)
+        return per_caption.max(axis=1)
+
     def score(self, embeddings):
         if embeddings.shape[0] == 0:
             return np.zeros(0, dtype=np.float32)
 
-        raw = embedding.similarity(embeddings, self.query, self.aggregate)
+        # Calibrate EACH caption before combining. A raw cosine and a z-score
+        # differ by an order of magnitude, and captions differ from each other
+        # in how high they score generally -- so taking a max over raw
+        # similarities would mostly pick whichever caption happens to run hot,
+        # not whichever the image actually matches.
+        per_caption = np.stack(
+            [embedding.similarity(embeddings, q, self.aggregate)
+             for q in self.queries], axis=1)                    # (N, K)
 
         if self.background is not None:
             median, sigma = self._reference_frame(embeddings)
-            scores = (raw - median) / sigma
+            per_caption = (per_caption - median[:, None]) / sigma[:, None]
         else:
             median = sigma = None
-            scores = raw
+
+        scores = self._combine(per_caption)
 
         if self.negatives is not None:
             against = np.stack(
@@ -263,12 +299,16 @@ class PromptScorer:
     def describe(self):
         colour = ('grayscale' if getattr(self.backend, 'grayscale', False)
                   else 'colour')
-        parts = [f'prompt "{self.caption}"',
-                 'calibrated' if self.calibrate else 'RAW COSINE (uncalibrated)',
+        if len(self.captions) == 1:
+            head = f'prompt "{self.caption}"'
+        else:
+            head = (f'{len(self.captions)} prompts '
+                    f'({self.caption_aggregate}) "{self.caption}", ...')
+        parts = ['calibrated' if self.calibrate else 'RAW COSINE (uncalibrated)',
                  f'agg={self.aggregate}', colour]
         if self.negative_captions:
             parts.append(f"{len(self.negative_captions)} negative(s)")
-        return f"{parts[0]} ({', '.join(parts[1:])})"
+        return f"{head} ({', '.join(parts)})"
 
 
 class NoveltyScorer:

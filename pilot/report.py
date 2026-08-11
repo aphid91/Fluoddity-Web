@@ -65,16 +65,23 @@ def build(candidates, cfg=None, count=DEFAULT_COUNT, root=None, title=None):
     lines.append('')
 
     if cfg is not None:
-        objective = (f'caption "{cfg.caption}"' if cfg.caption
-                     else f"reference images from {cfg.reference_dir}"
-                     if cfg.reference_dir else "no objective (constant scorer)")
+        captions = list(getattr(cfg, 'captions', None) or [])
+        if captions:
+            objective = f'caption "{captions[0]}"'
+        elif cfg.reference_dir:
+            objective = f"reference images from {cfg.reference_dir}"
+        else:
+            objective = "no objective (constant scorer)"
         lines.append(f"objective     {objective}")
-        if cfg.negative_captions:
-            for negative in cfg.negative_captions:
-                lines.append(f"  minus       \"{negative}\"")
+        for extra in captions[1:]:
+            lines.append(f'  or          "{extra}"')
+        if len(captions) > 1:
+            lines.append(f"  combined by {cfg.caption_aggregate}")
+        for negative in cfg.negative_captions:
+            lines.append(f'  minus       "{negative}"')
         lines.append(f"backend       {cfg.backend}"
                      f"{', grayscale' if cfg.grayscale else ', colour'}"
-                     f"{', calibrated' if cfg.caption and cfg.calibrate else ''}")
+                     f"{', calibrated' if captions and cfg.calibrate else ''}")
         lines.append(f"world_size    {cfg.world_size}   "
                      f"warmup {cfg.warmup_steps} steps   "
                      f"capture {cfg.capture_size}px")

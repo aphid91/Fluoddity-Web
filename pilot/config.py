@@ -94,10 +94,24 @@ class SearchConfig:
     #: Folder of images the search is trying to resemble.
     reference_dir: str = ""
 
-    #: A text prompt to search toward. CLIP only, and mutually exclusive with
+    #: Text prompts to search toward. CLIP only, and mutually exclusive with
     #: reference_dir -- two objectives at once is a run whose results cannot be
     #: attributed to either.
-    caption: str = ""
+    #:
+    #: A LIST OR A BARE STRING; load() accepts either, so "captions": "a river"
+    #: and "captions": ["a river", "a delta"] both work. Several phrasings of
+    #: the same idea usually beat one: CLIP is sensitive to wording, and
+    #: "a meandering river" / "a verdant river delta" / "branching channels"
+    #: between them describe the thing more robustly than any one of them.
+    captions: list = field(default_factory=list)
+
+    #: How several positive captions combine. 'max' by default: a candidate
+    #: scores well if it matches ANY of the phrasings, which is what a set of
+    #: alternative descriptions means. 'mean' scores the centroid instead --
+    #: it demands a candidate match all of them at once, and the centroid of
+    #: several captions can land somewhere resembling none of them. 'topk'
+    #: averages the best third.
+    caption_aggregate: str = "max"
     #: Things to search AWAY from. The caption says what you want; these say
     #: what you keep getting instead, and their similarity is subtracted. The
     #: most direct lever for pushing a search out of a rut it keeps
@@ -145,11 +159,40 @@ class SearchConfig:
         newer version still opens, and so a user can leave notes in the file.
         """
         data = json.loads(Path(path).read_text(encoding='utf-8'))
+        data = cls._migrate(data)
         known = {f.name for f in fields(cls)}
         unknown = sorted(set(data) - known)
         if unknown:
             print(f"search config: ignoring unknown keys {unknown}")
         return cls(**{k: v for k, v in data.items() if k in known})
+
+    @staticmethod
+    def _migrate(data):
+        """Accept older and looser spellings, so a config never just breaks.
+
+        `caption` (a single string) predates `captions`. Rather than carry two
+        fields meaning almost the same thing -- which every future reader would
+        have to check, and the docs explain -- it is folded into the list on
+        read. A bare string in `captions` is accepted for the same reason: it
+        is the obvious thing to write for one caption, and refusing it would be
+        pedantry.
+        """
+        data = dict(data)
+        single = data.pop('caption', None)
+        if single and not data.get('captions'):
+            data['captions'] = [single]
+        captions = data.get('captions')
+        if isinstance(captions, str):
+            data['captions'] = [captions] if captions else []
+        negatives = data.get('negative_captions')
+        if isinstance(negatives, str):
+            data['negative_captions'] = [negatives] if negatives else []
+        return data
+
+    @property
+    def caption(self):
+        """The first positive caption, or ''. For callers that want one."""
+        return self.captions[0] if self.captions else ''
 
     def save(self, path):
         """Write the config actually used. Called by the runner into the run
@@ -197,19 +240,24 @@ class SearchConfig:
         if self.reference_dir and not Path(self.reference_dir).is_dir():
             problems.append(f"reference_dir does not exist: {self.reference_dir}")
 
-        # Objective: at most one, and a caption needs a model that reads text.
-        if self.caption and self.reference_dir:
+        # Objective: at most one, and captions need a model that reads text.
+        if not isinstance(self.captions, (list, tuple)):
+            problems.append("captions must be a list of strings")
+        if not isinstance(self.negative_captions, (list, tuple)):
+            problems.append("negative_captions must be a list of strings")
+        if self.captions and self.reference_dir:
             problems.append(
-                "set either caption or reference_dir, not both -- with two "
+                "set either captions or reference_dir, not both -- with two "
                 "objectives a result cannot be attributed to either")
-        if self.caption and self.backend != 'clip':
+        if self.captions and self.backend != 'clip':
             problems.append(
                 f"caption scoring needs backend='clip' (got "
                 f"{self.backend!r}); the texture backend cannot embed text")
-        if self.negative_captions and not self.caption:
+        if self.negative_captions and not self.captions:
             problems.append("negative_captions needs a caption to subtract from")
-        if not isinstance(self.negative_captions, (list, tuple)):
-            problems.append("negative_captions must be a list of strings")
+        if self.caption_aggregate not in ('mean', 'max', 'topk'):
+            problems.append(f"caption_aggregate must be mean, max or topk "
+                            f"(got {self.caption_aggregate!r})")
         if not 0.0 < self.world_size <= 4.0:
             problems.append(f"world_size out of range: {self.world_size}")
         return problems
