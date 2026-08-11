@@ -34,6 +34,9 @@ preferences.json
 # project source. A canonical default layout, if ever wanted, ships as
 # default_imgui.ini the way Reference/ does.
 imgui.ini
+# hello_imgui writes one of these per viewer window title. Same status as
+# imgui.ini above: per-user session layout, not project source.
+UMAP*.ini
 
 # Search output: a run writes a config and a 512px capture per candidate, so a
 # few generations is hundreds of files and tens of megabytes. Results are
