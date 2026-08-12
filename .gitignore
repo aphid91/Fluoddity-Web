@@ -34,3 +34,13 @@ preferences.json
 # project source. A canonical default layout, if ever wanted, ships as
 # default_imgui.ini the way Reference/ does.
 imgui.ini
+
+# Generated run artifacts. Same rationale as imgui.ini: written by a run, not
+# authored. documents/ holds capture sequences whose embeddings run to hundreds
+# of megabytes, past GitHub's 100MB per-file limit, and the *.ini files here are
+# per-run scratch configs rather than the project's own settings.
+*.npz
+documents/
+Fluoddity_pilot.ini
+UMAP____captures.ini
+gui_frame_test.ini
