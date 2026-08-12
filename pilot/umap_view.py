@@ -72,6 +72,9 @@ KNOWN_CONFIGS = ('search.json', 'fan_search.json')
 #: the delay is for -- not the work.
 LIVE_RECOLOR_DELAY = 0.15
 
+#: Dropdown labels, in the order of gallery.SOURCES.
+SOURCE_LABELS = ('CLIP embedding', 'Rule', 'Rule + sliders')
+
 
 class TextureStore:
     """GL textures for the previews, uploaded on demand.
@@ -209,6 +212,13 @@ class Viewer:
         self.min_dist = projection_lib.DEFAULT_MIN_DIST
         self.seed = projection_lib.DEFAULT_SEED
 
+        #: What the map is built from: the CLIP embedding of the picture, or
+        #: the config's own numbers. Two genuinely different questions --
+        #: "which look alike" versus "which ARE alike" -- and a pair that
+        #: disagree is informative rather than a fault.
+        self.source = gallery_lib.SOURCE_CLIP
+        self.projected_source = ''
+
     # ------------------------------------------------------------------
     # Background work
     # ------------------------------------------------------------------
@@ -340,16 +350,23 @@ class Viewer:
         if self.gallery is None:
             self.status = "load a folder first"
             return
-        embeddings = self.gallery.embeddings
+        gallery = self.gallery
         n, d, s = self.n_neighbours, self.min_dist, self.seed
+        source = self.source
 
         def work(report):
-            report(f"projecting {len(embeddings)} points")
-            return projection_lib.project(embeddings, n_neighbours=n,
+            report(f"reading {source} features")
+            # Built on the worker: 'rule' sources read a JSON per item, which
+            # is thousands of small files and far too slow for a frame.
+            features = gallery_lib.source_embeddings(gallery, source,
+                                                     progress=report)
+            report(f"projecting {len(features)} points")
+            return projection_lib.project(features, n_neighbours=n,
                                           min_dist=d, seed=s)
 
         if self._begin('projecting', "projecting", work):
-            self.status = "projecting..."
+            self.projected_source = source
+            self.status = f"projecting from {source}..."
 
     @property
     def stale(self):
@@ -358,7 +375,8 @@ class Viewer:
             return False
         return (self.n_neighbours != self.projection.n_neighbours
                 or abs(self.min_dist - self.projection.min_dist) > 1e-9
-                or self.seed != self.projection.seed)
+                or self.seed != self.projection.seed
+                or self.source != self.projected_source)
 
     def apply_caption(self):
         """Colour the map by similarity to the typed caption.
@@ -709,6 +727,26 @@ class Viewer:
         from imgui_bundle import imgui
 
         count = len(self.gallery) if self.gallery is not None else 3
+
+        imgui.set_next_item_width(200)
+        current = list(gallery_lib.SOURCES).index(self.source)
+        picked, choice = imgui.combo("UMAP source", current,
+                                     list(SOURCE_LABELS))
+        if picked:
+            self.source = gallery_lib.SOURCES[choice]
+        _tip("What the map is built FROM.\n\n"
+             "CLIP embedding -- how the captures LOOK. Two configs land near "
+             "each other when their pictures resemble each other.\n\n"
+             "Rule -- the 80 Fourier coefficients. Near means the same "
+             "behaviour, whatever it happens to look like.\n\n"
+             "Rule + sliders -- the rule plus the physics settings (sensors, "
+             "drag, gravity, trails). Excludes colour and mutation_seed: "
+             "palette is appearance, and the seed is a hash input where "
+             "nearby values mean nothing.\n\n"
+             "The rule sources read each candidate's saved config, so they "
+             "need a run folder with configs/.")
+
+        imgui.same_line()
         imgui.set_next_item_width(200)
         _, self.n_neighbours = imgui.slider_int(
             "n_neighbors", self.n_neighbours, 2, max(3, min(200, count - 1)))

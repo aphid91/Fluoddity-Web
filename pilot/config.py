@@ -14,6 +14,11 @@ import json
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+#: Relative paths in a config resolve against the repo root, not the working
+#: directory -- the app already refuses to depend on CWD, and a pilot launched
+#: from elsewhere must not see a different filesystem.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 @dataclass(frozen=True)
 class SearchConfig:
@@ -76,6 +81,11 @@ class SearchConfig:
     #: the only source of genuinely new rules.
     immigrants: int = 4
     #: Configs to start generation 0 from. Empty means start from immigrants.
+    #:
+    #: ENTRIES MAY BE FOLDERS. Any directory expands to every .json inside it,
+    #: sorted, so a folder of favourites is one line rather than fifty. Files
+    #: still work and the two can be mixed -- there is no second field to keep
+    #: in step, and an existing config keeps loading unchanged.
     seed_configs: list = field(default_factory=list)
 
     #: How many random rules to draw for generation 0 when there are no
@@ -278,8 +288,37 @@ class SearchConfig:
         orders of magnitude.
         """
         if self.seed_configs:
-            return len(self.seed_configs)
+            # Counted through the expansion, so a folder reports the number of
+            # configs in it rather than 1 -- the banner would otherwise
+            # under-report a run by a factor of fifty.
+            return len(self.expand_seed_configs(self.seed_configs))
         return self.sample_size or max(self.beam_width, self.immigrants)
+
+    @staticmethod
+    def expand_seed_configs(entries):
+        """Resolve seed_configs, expanding any folder to the .json files in it.
+
+        A folder of favourites is one line rather than fifty, and dropping a
+        file into it changes the next run without editing anything.
+
+        Sorted within each folder, so generation 0 evaluates them in a stable
+        order and two runs of one config produce the same ids. NOT recursive:
+        a folder means the configs in it, not a tree the user may not have
+        meant to sweep.
+        """
+        out = []
+        for entry in entries or []:
+            path = Path(entry).expanduser()
+            if not path.is_absolute():
+                path = _REPO_ROOT / path
+            if path.is_dir():
+                found = sorted(path.glob('*.json'))
+                if not found:
+                    print(f"  seed_configs: no .json in {path}")
+                out.extend(found)
+            else:
+                out.append(path)
+        return out
 
     @property
     def is_sampling_run(self):
@@ -292,7 +331,11 @@ class SearchConfig:
         """One line saying what this config will actually do."""
         if self.is_sampling_run:
             return f"sample {self.generation_zero_size} random rules"
-        first = (f"{len(self.seed_configs)} seed config(s)" if self.seed_configs
+        # generation_zero_size, not len(seed_configs): an entry may be a
+        # FOLDER, and reporting "1 seed config" for a directory of fifty
+        # under-states the run by a factor of fifty.
+        first = (f"{self.generation_zero_size} seed config(s)"
+                 if self.seed_configs
                  else f"{self.generation_zero_size} random rules")
         if self.generations <= 1:
             return f"evaluate {first}"

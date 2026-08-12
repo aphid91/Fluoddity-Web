@@ -107,6 +107,33 @@ search: 4 seed config(s), then 1 generation(s) of 68 candidates (~2000 steps eac
 rule the moment it is made, so it is a normal population member before it is
 ever scored — see below.
 
+### Seeding from a folder
+
+```json
+"seed_configs": ["configs/custom/favourites", "one_specific.json"]
+```
+
+Any entry that is a directory expands to every `.json` inside it, sorted.
+Files still work and the two can be mixed, so dropping a config into the
+folder changes the next run without editing anything. Not recursive — a folder
+means the configs in it.
+
+### Seed configs are locked in before use
+
+A saved config very often has a **nonzero `mutation_scale`**, and that spread is
+part of what its author was looking at. Loading it and simply setting the scale
+to 0 would evaluate the *base* rule instead — measured, a config saved at scale
+0.30 lands **L2 1.16** away from what its author saw, which is the size of a
+whole mutation step.
+
+So a seed is loaded, particle 0 is **adopted**, and only then is the scale
+zeroed. The rule the population actually obeyed becomes the config's own rule,
+so the candidate evaluates as it looked. Verified end to end at **L2 0.000000**
+for configs saved at scale 0.30, 0.25 and 0.00.
+
+This also matters for the **Rule** UMAP sources: they read the saved rule, so
+without the lock-in a seeded run's configs would carry rules nobody ever saw.
+
 ### Seeding from an all-zero rule
 
 A config whose rule is all zeros is the engine's **"no behaviour authored"**
@@ -260,7 +287,7 @@ python -m pilot.run --config search.json \
 | `mutation_scale` | Step size. See the table above. |
 | `beam_width` / `children_per_parent` | `K` survivors, `M` children each. |
 | `immigrants` | Fresh random behaviours per generation. **Keep this nonzero.** |
-| `seed_configs` | Start from configs you already like. Empty starts from immigrants. |
+| `seed_configs` | Start from configs you already like. **Folders expand** to the `.json` files in them. Empty starts from immigrants. |
 | `sample_size` | Random rules in generation 0 when there are no seeds. 0 = fill the beam. |
 | `backend` | `texture` (scipy) or `clip` (torch). |
 | `reference_dir` | Images to search toward. Omit for a scoreless smoke run. |
@@ -480,6 +507,27 @@ scrolling a report.
   on slider release: UMAP on a few thousand points takes ~25s and brushing a
   slider should not freeze the window. A `*` on the button means the plot is
   stale.
+
+- **UMAP source** decides what the map is built *from*:
+
+  | | |
+  |---|---|
+  | **CLIP embedding** *(default)* | how the captures **look** |
+  | **Rule** | the 80 Fourier coefficients — same *behaviour*, whatever it looks like |
+  | **Rule + sliders** | the rule plus the physics settings (sensors, drag, gravity, trails) |
+
+  The rule sources read each candidate's saved config, so they need a run
+  folder with `configs/`. Colour and `mutation_seed` are deliberately
+  excluded: palette is appearance, and the seed is a hash input where nearby
+  values mean nothing.
+
+  Every dimension is z-scored across the folder before projecting — rule
+  coefficients span about ±3 while drag sits near 0.5, so raw distances would
+  be decided by units rather than meaning.
+
+  **The sources disagree, and that is the point.** On a real run the top-5
+  neighbours of a given candidate had *zero* overlap between CLIP and Rule:
+  configs that look alike are not the ones that *are* alike.
 
 - **Percentile cutoff** hides all but the top slice by the *current* colour —
   run score or caption. **Bottom percentile** keeps the worst slice instead,

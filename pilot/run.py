@@ -58,6 +58,10 @@ def resolve(path):
     return path if path.is_absolute() else _REPO_ROOT / path
 
 
+#: Re-exported: it lives in config.py, beside the field it expands.
+expand_seed_configs = SearchConfig.expand_seed_configs
+
+
 class RunFolder:
     """Where a run's output lives, and how a resumed run finds its place."""
 
@@ -124,7 +128,7 @@ class SearchRun:
         self.backend = backend
         self.scorer = scorer
         self.strategy = strategy or BeamSearch(
-            cfg, seed_configs=[resolve(p) for p in cfg.seed_configs])
+            cfg, seed_configs=expand_seed_configs(cfg.seed_configs))
 
         self.start_generation = 0
         self._counter = 0
@@ -261,8 +265,14 @@ class SearchRun:
                 continue
             try:
                 self.client.load_config(candidate.config_path)
-                self.client.set_config(cohorts=self.cfg.cohorts,
-                                       mutation_scale=0.0)
+                # Same lock-in as make_root: a config written by this run has
+                # mutation_scale 0 already, but one hand-edited between
+                # sessions may not, and re-establishing a beam member as
+                # something other than what it scored as would corrupt the
+                # search silently.
+                self.client.set_config(cohorts=self.cfg.cohorts)
+                self.client.cmd('select_particle_at', index=0)
+                self.client.set_config(mutation_scale=0.0)
                 move_lib.checkpoint(self.client, candidate)
                 restored.append(candidate)
             except ApiError as e:

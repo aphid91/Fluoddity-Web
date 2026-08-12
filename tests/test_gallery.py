@@ -961,6 +961,186 @@ def test_config_auto_reload():
         check("no config path is not an error", blank._refresh_config())
 
 
+def _write_config(path, rule=None, **blocks):
+    """A minimal v8 save file, as the app writes them."""
+    import json
+
+    config = {'rule': list(rule if rule is not None
+                           else [0.1 * i for i in range(80)])}
+    config.setdefault('sensor', {'gain': 1.0, 'angle': 0.2, 'distance': 1.0})
+    config.setdefault('force', {'global_mult': 0.4, 'drag': 0.5,
+                                'strafe': 0.2, 'axial': 0.37})
+    config.setdefault('misc', {'lateral': -0.7, 'hazard_rate': 0.0,
+                               'cohorts': 1, 'mutation_seed': 0.5})
+    config.setdefault('force2', {'gravity_force': 0.0, 'gravity_strafe': 0.0,
+                                 'initial_conditions': 2,
+                                 'cohort_fences': 0.0})
+    config.setdefault('misc2', {'color_sensitivity': 0.5,
+                                'color_by_cohort': False,
+                                'sensor_angle_jitter': 0.0,
+                                'sensor_distance_jitter': 0.0})
+    config.setdefault('misc3', {'radial_gravity': False})
+    config.update(blocks)
+    path.write_text(json.dumps({
+        'version': 8,
+        'world': {'trail_persistence': 0.94, 'trail_diffusion': 1.0,
+                  'boundary_conditions': 1},
+        'configs': [config]}), encoding='utf-8')
+
+
+def test_umap_sources():
+    """The map can be built from the picture or from the config's numbers."""
+    print("\nUMAP sources")
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        good = root / 'a.json'
+        _write_config(good)
+
+        rule_only = gallery_lib.config_features(good, include_sliders=False)
+        with_sliders = gallery_lib.config_features(good, include_sliders=True)
+        check("the rule alone is 80 dims", len(rule_only) == 80,
+              str(len(rule_only)))
+        expected = 80 + len(gallery_lib.SLIDER_FIELDS) \
+            + len(gallery_lib.WORLD_FIELDS)
+        check("rule+sliders adds the physics fields",
+              len(with_sliders) == expected,
+              f"{len(with_sliders)}, expected {expected}")
+        check("and starts with the same rule",
+              with_sliders[:80] == rule_only, "the blocks are misaligned")
+
+        # Appearance and the seed must NOT be in there: palette is the same
+        # confound grayscale removes from CLIP, and mutation_seed is a hash
+        # input where nearby values mean nothing.
+        blocks = {b for b, _ in gallery_lib.SLIDER_FIELDS}
+        keys = {k for _, k in gallery_lib.SLIDER_FIELDS}
+        check("colour is excluded",
+              'color_sensitivity' not in keys and 'color_by_cohort' not in keys,
+              str(sorted(keys)))
+        check("mutation_seed is excluded", 'mutation_seed' not in keys)
+        check("world settings are included",
+              'trail_persistence' in gallery_lib.WORLD_FIELDS)
+
+        # A folder assembled by hand may hold anything; one bad file must not
+        # stop a map of thousands.
+        bad = root / 'bad.json'
+        bad.write_text('{ not json', encoding='utf-8')
+        check("a malformed config returns None",
+              gallery_lib.config_features(bad, False) is None)
+        check("a missing file returns None",
+              gallery_lib.config_features(root / 'nope.json', False) is None)
+
+        short = root / 'short.json'
+        _write_config(short, rule=[0.0] * 40)
+        check("a wrong-length rule returns None",
+              gallery_lib.config_features(short, False) is None)
+
+    print("\n  standardization")
+    # Rule floats span about +-3 while drag sits near 0.5; without z-scoring
+    # the widest-ranging column decides the layout regardless of meaning.
+    raw_matrix = np.array([[100.0, 0.50, 5.0],
+                           [200.0, 0.51, 5.0],
+                           [300.0, 0.52, 5.0]], np.float32)
+    out = gallery_lib._standardize(raw_matrix)
+    norms = np.linalg.norm(out, axis=1)
+    # Rows 0 and 2 are off-centre and come out unit length. Row 1 is exactly
+    # the mean of every column, so it centres to the zero vector and has no
+    # direction to normalize -- it stays at the origin rather than being
+    # pushed somewhere arbitrary.
+    check("off-centre rows come out unit length",
+          np.allclose(norms[[0, 2]], 1.0), str(norms))
+    check("a perfectly average row stays at the origin",
+          norms[1] < 1e-6, str(norms[1]))
+    # The two varying columns had wildly different scales but identical
+    # SHAPE, so after standardizing they must contribute equally.
+    check("columns are put on equal footing",
+          abs(abs(out[0, 0]) - abs(out[0, 1])) < 1e-5,
+          f"{out[0, 0]:.4f} vs {out[0, 1]:.4f}")
+    check("a constant column contributes nothing",
+          np.allclose(out[:, 2], 0.0), str(out[:, 2]))
+    check("an empty matrix is handled",
+          gallery_lib._standardize(np.zeros((0, 3), np.float32)).size == 0)
+
+    print("\n  source selection")
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        items = []
+        for i in range(4):
+            config = root / f"{i}.json"
+            _write_config(config, rule=[float(i)] * 80)
+            items.append(gallery_lib.Item(path=root / f"{i}.png", index=i,
+                                          config_path=str(config)))
+        gallery = gallery_lib.Gallery(
+            items=items, embeddings=np.eye(4, 6, dtype=np.float32),
+            root=root)
+
+        clip = gallery_lib.source_embeddings(gallery, gallery_lib.SOURCE_CLIP)
+        check("the clip source returns the embeddings untouched",
+              clip.shape == (4, 6), str(clip.shape))
+
+        rule = gallery_lib.source_embeddings(gallery, gallery_lib.SOURCE_RULE)
+        check("the rule source reads the configs", rule.shape == (4, 80),
+              str(rule.shape))
+        both = gallery_lib.source_embeddings(
+            gallery, gallery_lib.SOURCE_RULE_SLIDERS)
+        check("rule+sliders is wider", both.shape[1] > rule.shape[1],
+              f"{both.shape} vs {rule.shape}")
+
+        # An item with no config still gets a row rather than shifting every
+        # later item's index -- it lands at the origin, which is honest.
+        items.append(gallery_lib.Item(path=root / 'x.png', index=4))
+        gallery.embeddings = np.eye(5, 6, dtype=np.float32)
+        rows = gallery_lib.source_embeddings(gallery, gallery_lib.SOURCE_RULE)
+        check("an item with no config still gets a row",
+              rows.shape == (5, 80), str(rows.shape))
+        # Row count and ordering are what matter: a missing config must not
+        # shift every later item's index, which would mis-label the whole map.
+        check("and the rows stay aligned with the items",
+              len(rows) == len(gallery.items), str(len(rows)))
+        check("rows carry real values rather than being all-zero",
+              float(np.abs(rows).max()) > 0.0, str(np.abs(rows).max()))
+
+
+def test_seed_folders():
+    """seed_configs entries may be folders."""
+    print("\nseed config folders")
+
+    from pilot.config import SearchConfig
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        folder = root / 'favourites'
+        folder.mkdir()
+        for name in ('c', 'a', 'b'):
+            _write_config(folder / f"{name}.json")
+        (folder / 'notes.txt').write_text('ignore me')
+        loose = root / 'one.json'
+        _write_config(loose)
+
+        expand = SearchConfig.expand_seed_configs
+
+        got = expand([str(folder)])
+        check("a folder expands to its configs", len(got) == 3, str(len(got)))
+        check("ignoring non-json", all(p.suffix == '.json' for p in got))
+        check("sorted, so ids are stable between runs",
+              [p.stem for p in got] == ['a', 'b', 'c'],
+              str([p.stem for p in got]))
+
+        check("a plain file still works", len(expand([str(loose)])) == 1)
+        check("and the two can be mixed",
+              len(expand([str(folder), str(loose)])) == 4)
+        check("an empty list is empty", expand([]) == [])
+        check("an empty folder is not an error", expand([str(root / 'gone')]))
+
+        cfg = SearchConfig(seed_configs=[str(folder)])
+        check("generation_zero_size counts the expansion",
+              cfg.generation_zero_size == 3, str(cfg.generation_zero_size))
+        # A folder reported as "1 seed config" understates a run by however
+        # many files are in it.
+        check("describe_plan counts them too",
+              '3 seed config' in cfg.describe_plan(), cfg.describe_plan())
+
+
 def test_default_paths():
     """The GUI opens pre-filled with the paths a session usually wants."""
     print("\ndefault paths")
@@ -1003,6 +1183,8 @@ def main():
     test_rescore_updates_the_view()
     test_live_recolor()
     test_config_auto_reload()
+    test_umap_sources()
+    test_seed_folders()
     test_default_paths()
 
     print()

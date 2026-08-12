@@ -223,6 +223,123 @@ def score_caption(gallery, caption, backend, calibrate=True, aggregate='mean'):
     return scorer.score(vectors)
 
 
+#: Floats in a rule: 10 Fourier centers x (frequency[4] + amplitude[4]).
+RULE_FLOATS = 80
+
+#: What the UMAP is built from.
+SOURCE_CLIP = 'clip'
+SOURCE_RULE = 'rule'
+SOURCE_RULE_SLIDERS = 'rule+sliders'
+SOURCES = (SOURCE_CLIP, SOURCE_RULE, SOURCE_RULE_SLIDERS)
+
+#: The physics fields that join the rule under 'rule+sliders', named by their
+#: position in the v8 save format: (block, key). Read straight from the JSON
+#: rather than through particle_system.persistence, because pilot/ does not
+#: import the app -- the HTTP API is the whole of the contact between them,
+#: and a viewer that could not open a config folder without the app installed
+#: would be a worse tool.
+#:
+#: DELIBERATELY EXCLUDES three things. `color_sensitivity` and
+#: `color_by_cohort` are appearance, and letting palette shape the layout is
+#: the same confound grayscale exists to remove from CLIP scoring.
+#: `mutation_seed` is an opaque hash input -- 0.30 and 0.31 are no more
+#: similar than 0.30 and 0.90 -- so including it would add a dimension of pure
+#: noise to every distance.
+SLIDER_FIELDS = (
+    ('sensor', 'gain'), ('sensor', 'angle'), ('sensor', 'distance'),
+    ('force', 'global_mult'), ('force', 'drag'), ('force', 'strafe'),
+    ('force', 'axial'),
+    ('misc', 'lateral'), ('misc', 'hazard_rate'), ('misc', 'cohorts'),
+    ('force2', 'gravity_force'), ('force2', 'gravity_strafe'),
+    ('force2', 'initial_conditions'), ('force2', 'cohort_fences'),
+    ('misc2', 'sensor_angle_jitter'), ('misc2', 'sensor_distance_jitter'),
+    ('misc3', 'radial_gravity'),
+)
+#: World settings, which are per-save rather than per-config.
+WORLD_FIELDS = ('trail_persistence', 'trail_diffusion', 'boundary_conditions')
+
+
+def _standardize(matrix):
+    """Z-score each column, then L2-normalize each row.
+
+    WITHOUT THIS THE LAYOUT IS DECIDED BY UNITS. Rule coefficients range about
+    +-3 while drag sits near 0.5 and hazard_rate near 0, so raw distances would
+    be dominated by whichever field happens to have the widest spread rather
+    than by anything meaningful. Columns with no variation across the dataset
+    contribute nothing and are left at zero rather than dividing by ~0.
+    """
+    matrix = np.asarray(matrix, dtype=np.float32)
+    if matrix.size == 0:
+        return matrix
+    mean = matrix.mean(axis=0, keepdims=True)
+    spread = matrix.std(axis=0, keepdims=True)
+    quiet = spread < 1e-8
+    centred = (matrix - mean) / np.where(quiet, 1.0, spread)
+    centred[:, quiet[0]] = 0.0
+    # A row that is exactly average in every dimension centres to the zero
+    # vector and cannot be given a direction. It stays at the origin rather
+    # than being pushed somewhere arbitrary -- which is honest, and is where
+    # UMAP will treat it as equidistant from everything.
+    norms = np.linalg.norm(centred, axis=1, keepdims=True)
+    return (centred / np.maximum(norms, 1e-12)).astype(np.float32)
+
+
+def config_features(path, include_sliders):
+    """The feature row for one saved config, or None if it cannot be read.
+
+    Reads the v8 JSON directly. A malformed or older file returns None rather
+    than raising: a folder assembled by hand may contain anything, and one bad
+    config should not stop a map of four thousand.
+    """
+    try:
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
+        config = data['configs'][0]
+        values = [float(v) for v in config['rule']]
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        return None
+    if len(values) != RULE_FLOATS:
+        return None
+
+    if include_sliders:
+        for block, key in SLIDER_FIELDS:
+            values.append(float(config.get(block, {}).get(key, 0.0) or 0.0))
+        world = data.get('world', {})
+        for name in WORLD_FIELDS:
+            values.append(float(world.get(name, 0.0) or 0.0))
+    return values
+
+
+def rule_embeddings(items, include_sliders, progress=None):
+    """(N, D) features read from each item's saved config.
+
+    Items whose config is missing or unreadable get a zero row, which
+    standardization leaves at the origin -- they cluster together in the middle
+    rather than vanishing, which is honest: they are the ones with no data.
+    """
+    rows, missing = [], 0
+    width = RULE_FLOATS + (len(SLIDER_FIELDS) + len(WORLD_FIELDS)
+                           if include_sliders else 0)
+    for item in items:
+        row = (config_features(item.config_path, include_sliders)
+               if item.config_path else None)
+        if row is None or len(row) != width:
+            missing += 1
+            row = [0.0] * width
+        rows.append(row)
+    if missing and progress:
+        progress(f"  {missing}/{len(items)} items have no readable config")
+    return _standardize(np.asarray(rows, dtype=np.float32))
+
+
+def source_embeddings(gallery, source, progress=None):
+    """The matrix a UMAP should be built from, for the chosen source."""
+    if source == SOURCE_CLIP:
+        return gallery.embeddings
+    return rule_embeddings(gallery.items,
+                           include_sliders=(source == SOURCE_RULE_SLIDERS),
+                           progress=progress)
+
+
 def percentile_mask(values, percentile, bottom=False):
     """Which points survive a percentile cutoff. Returns a boolean (N,).
 

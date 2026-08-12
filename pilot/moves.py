@@ -79,11 +79,25 @@ def make_root(client, cfg, candidate_id, generation, config_path,
     config is being asked "are you any good", not "is a variant of you".
     """
     client.load_config(config_path)
-    # Re-pin after loading. A saved config carries its own cohorts and
-    # mutation_scale, and a file authored by hand very likely has neither at
-    # the values the recipe needs -- so a load silently breaks the invariant
-    # unless it is restored here.
-    client.set_config(cohorts=cfg.cohorts, mutation_scale=0.0)
+    # Cohorts first, so the adopt below reads the rule the recipe assumes: at
+    # cohorts>1 particle 0 is one of several behaviours rather than the whole
+    # population's.
+    client.set_config(cohorts=cfg.cohorts)
+
+    # LOCK IN THE SPREAD BEFORE FLATTENING IT. A saved config very often has a
+    # nonzero mutation_scale -- that spread is part of what the author was
+    # looking at when they saved it. Setting scale to 0 without adopting first
+    # throws it away and evaluates the BASE rule instead: measured, a config
+    # saved at scale 0.30 lands L2 1.16 from what its author saw, which is the
+    # size of a whole mutation step. Adopting particle 0 writes the rule the
+    # population actually obeys into the config, so zeroing the scale then
+    # preserves the behaviour rather than discarding it.
+    #
+    # Harmless on a zero-rule config: the adopt defuses the sentinel, which is
+    # wanted anyway, and there is no spread to lose because scale does nothing
+    # to a generated rule.
+    client.cmd('select_particle_at', index=0)
+    client.set_config(mutation_scale=0.0)
 
     result = evaluate(client, cfg, None, capture_path)
     return Candidate(

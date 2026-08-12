@@ -250,6 +250,56 @@ def test_zero_rule_parent_children():
           f"step {step:.3f} should be a small move, not a resample")
 
 
+def test_seed_config_lock_in():
+    """A seed config's mutation spread must be adopted, not discarded.
+
+    THE BUG: make_root set mutation_scale to 0 WITHOUT adopting first. A
+    config saved at nonzero scale -- which most hand-saved configs are -- then
+    evaluated as its BASE rule rather than as the behaviour its author was
+    looking at when they saved it. Measured below: L2 1.16 apart, the size of
+    a whole mutation step.
+    """
+    print("\nseed config lock-in")
+
+    seed = cfg(cohorts=1, mutation_scale=0.30, mutation_seed=0.42)
+    obeyed = rule_of(seed, 0)
+    base = np.asarray(seed.rule)
+
+    gap = float(np.linalg.norm(obeyed - base))
+    check("a nonzero scale means the population obeys something else",
+          gap > 0.5, f"L2 {gap:.4f}")
+
+    # What the old code did: flatten without adopting.
+    discarded = rule_of(dataclasses.replace(seed, mutation_scale=0.0), 0)
+    check("zeroing the scale alone discards the spread",
+          float(np.linalg.norm(discarded - obeyed)) > 0.5,
+          "the bug would not reproduce")
+
+    # What it does now: adopt particle 0, THEN flatten.
+    locked = dataclasses.replace(seed, rule=tuple(float(v) for v in obeyed),
+                                 mutation_scale=0.0)
+    check("adopting first preserves it exactly",
+          float(np.linalg.norm(rule_of(locked, 0) - obeyed)) < 1e-6,
+          f"L2 {float(np.linalg.norm(rule_of(locked, 0) - obeyed)):.6f}")
+
+    # A config already at scale 0 must be unaffected -- the adopt is a no-op
+    # there, so runs that were correct stay identical.
+    flat = cfg(cohorts=1, mutation_scale=0.0, mutation_seed=0.42)
+    flat_obeyed = rule_of(flat, 0)
+    relocked = dataclasses.replace(
+        flat, rule=tuple(float(v) for v in flat_obeyed))
+    check("a config already at scale 0 is unchanged by the adopt",
+          np.allclose(rule_of(relocked, 0), flat_obeyed, atol=1e-6))
+
+    # And on a zero-rule seed the adopt is still right: it defuses the
+    # sentinel, and there is no spread to lose because scale does nothing.
+    zero = cfg(cohorts=1, mutation_scale=0.30, rule=(0.0,) * 80,
+               mutation_seed=0.42)
+    generated = rule_of(zero, 0)
+    check("a zero-rule seed still generates a real rule",
+          not mutation.is_zero_rule(tuple(float(v) for v in generated)))
+
+
 def test_seed_reroll_on_generated_rules():
     print("\na zero-rule config can still be JUMPED by seed")
 
@@ -342,24 +392,19 @@ def test_presets():
         problems = config.validate()
         check(f"{name} validates", problems == [], str(problems))
 
-    fan = SearchConfig.load(ROOT / 'fan_search.json')
-    # As shipped it is a pure sampling run: draw N random rules, score, stop.
-    check("fan_search is a sampling run", fan.is_sampling_run,
-          fan.describe_plan())
-    check("fan_search draws sample_size candidates",
-          fan.generation_zero_size == fan.sample_size,
-          f"{fan.generation_zero_size} vs sample_size {fan.sample_size}")
-    check("fan_search samples a useful number", fan.sample_size >= 50,
-          str(fan.sample_size))
-    check("fan_search's plan reads as sampling",
-          'sample' in fan.describe_plan(), fan.describe_plan())
-
-    # search.json is the opposite: a real multi-generation hill-climb.
-    beam = SearchConfig.load(ROOT / 'search.json')
-    check("search.json is NOT a sampling run", not beam.is_sampling_run,
-          beam.describe_plan())
-    check("search.json breeds", beam.children_per_parent > 0,
-          str(beam.children_per_parent))
+    # These are WORKING FILES, edited between runs, so asserting a particular
+    # shape would just break whenever they are retuned. What must hold is that
+    # they stay runnable and describe themselves honestly.
+    for name in ('search.json', 'fan_search.json'):
+        cfg_file = SearchConfig.load(ROOT / name)
+        plan = cfg_file.describe_plan()
+        check(f"{name} describes a plan", bool(plan), plan)
+        check(f"{name} plans a positive number of candidates",
+              cfg_file.generation_zero_size > 0
+              or cfg_file.candidates_per_generation > 0, plan)
+        # The one invariant the move recipe genuinely requires.
+        check(f"{name} keeps cohorts at 1", cfg_file.cohorts == 1,
+              str(cfg_file.cohorts))
 
 
 def test_sampling_runs():
@@ -407,6 +452,7 @@ def main():
     test_move_is_reproducible()
     test_zero_rule_is_immune_to_mutation()
     test_zero_rule_parent_children()
+    test_seed_config_lock_in()
     test_seed_reroll_on_generated_rules()
     test_presets()
     test_sampling_runs()
