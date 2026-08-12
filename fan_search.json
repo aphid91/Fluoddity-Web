@@ -8,14 +8,14 @@
   "world_size": 0.15,
   "cohorts": 1,
   "physics_steps": 5,
-  "warmup_steps": 2000,
-  "capture_size": 396,
+  "warmup_steps": 1500,
+  "capture_size": 256,
 
   "_mode_sampling": "AS SHIPPED: generations 1, no seed_configs, children_per_parent 0. Generation 0 is the whole run -- sample_size independent random rules, each scored and captured. Nothing breeds. Raise sample_size for more coverage; it is the only knob that changes the candidate count in this mode.",
   "_mode_fan": "TO FAN INSTEAD: set generations to 2 and children_per_parent to something above 0, and optionally fill seed_configs. Generation 0 then evaluates the seeds (or sample_size random rules) unchanged, and generation 1 fans every survivor out. Keep beam_width >= the number of seeds, or the worst ones are culled before they breed.",
 
   "generations": 1,
-  "sample_size": 200,
+  "sample_size": 10000,
   "seed_configs": [],
 
   "children_per_parent": 0,
@@ -30,15 +30,15 @@
   "_zero_rule_note": "An all-zero rule is the engine's 'no behaviour authored' sentinel: the shader generates a rule from mutation_seed instead of reading one, and generated rules are never mutated. So mutation_scale does nothing on such a parent (the app pins it to 0) and each child is an INDEPENDENT random rule -- measured pairwise L2 of 9.9-12.2, against 0.87-1.06 for children of an authored parent at scale 0.2. Note the random rules this preset samples are NOT affected: every immigrant adopts its generated rule immediately, so it is a normal population member before it is ever scored.",
 
   "backend": "clip",
-  "crops": 6,
-  "crop_frac": 0.5,
+  "crops": 10,
+  "crop_frac": 0.3,
   "aggregate": "mean",
   "grayscale": true,
   "seed": 0,
 
   "_objective": "PICK ONE: reference_dir OR caption. Setting both is a config error. Keys starting with _ are ignored by the loader (JSON has no comments).",
   "reference_dir": "",
-  "caption": "meandering river",
+  "caption": "Crisp edges, Meandering rivers, Lightning, Crystals, Loops",
   "negative_captions": [
     "A thin bright line",
     "an empty black image",
