@@ -1,49 +1,52 @@
 {
-  "run_dir": "documents/sequences/run",
-  "resume": false,
-  "port": 8765,
-  "world_size": 0.15,
-  "cohorts": 1,
-  "physics_steps": 5,
-  "warmup_steps": 1500,
-  "capture_size": 256,
-  "mutation_scale": 0.15,
-  "generations": 30,
-  "beam_width": 8,
-  "children_per_parent": 16,
-  "immigrants": 2,
-  "seed_configs": ["configs/custom/beambase.json"],
+  "_preset": "The default search: a multi-generation hill-climb from a seed config. For a wide one-shot sampling run instead, use fan_search.json.",
 
-  "backend": "clip",
-  "_clip_model": "B32 (default, ~600MB, fast) | L14 (~1.7GB, better separation) | SO400M (SigLIP at 384px, ~3.5GB, strongest on text and slowest). Scores from two models are NOT comparable -- different vector spaces. Switching re-embeds the folder once, then caches per model, so switching back is instant.",
-  "clip_model": "B32",
-  "crops": 4,
-  "crop_frac": 0.4,
-  "aggregate": "mean",
-  "grayscale": true,
-  "seed": 0,
+  "_sections": "Three groups: vision (how images become vectors), scoring (what a good one looks like) and search (how many, and how they breed). Only vision is part of the embedding cache key -- change one of those and the folder is re-embedded; change anything in scoring and a re-score is free. A file with vision and scoring but NO search block can create embeddings and re-score, but the Run search button stays greyed.",
 
-  "_objective": "PICK ONE: reference_dir OR caption. Setting both is a config error -- with two objectives a result cannot be attributed to either. Keys starting with _ are ignored by the loader (JSON has no comments).",
-
-  "_reference_dir": "",
-
-  "_caption_example": "To switch to caption scoring: set reference_dir to \"\" and move the two keys below out of _disabled_caption_example, or just pass --caption on the command line, which does both for you.",
-  "_disabled_caption_example": {
-    "caption": "C shapes",
-    "negative_captions": [
-      "a dense field of small dots",
-      "an empty black image",
-      "uniform random noise",
-      "a single bright point right in the middle"
-    ]
+  "vision": {
+    "_clip_model": "B32 (default, ~600MB, fast) | L14 (~1.7GB, better separation) | SO400M (SigLIP at 384px, ~3.5GB, strongest on text and slowest). Scores from two models are NOT comparable -- different vector spaces. Switching re-embeds the folder once, then caches per model, so switching back is instant.",
+    "_seed_lives_here": "seed and crop_frac look like search knobs and are not: both are in the cache key. Moving either into the search block would default it and orphan every embedding made with the other value.",
+    "backend": "clip",
+    "clip_model": "B32",
+    "crops": 4,
+    "crop_frac": 0.4,
+    "grayscale": true,
+    "seed": 0
   },
 
-  "caption": "C shapes",
+  "scoring": {
+    "_objective": "PICK ONE: reference_dir OR captions. Setting both is a config error -- with two objectives a result cannot be attributed to either. Keys starting with _ are ignored by the loader (JSON has no comments).",
+    "_reference_dir_example": "Set this to a folder of images to search toward instead of a caption, and set captions to [].",
+    "reference_dir": "",
+    "captions": "C shapes",
     "negative_captions": [
       "a dense field of small dots",
       "an empty black image",
       "uniform random noise",
       "a single bright point right in the middle"
     ],
-  "calibrate": true
+    "caption_aggregate": "max",
+    "aggregate": "mean",
+    "calibrate": true
+  },
+
+  "search": {
+    "run_dir": "documents/sequences/run",
+    "resume": false,
+    "port": 8765,
+
+    "world_size": 0.15,
+    "cohorts": 1,
+    "physics_steps": 5,
+    "warmup_steps": 1500,
+    "capture_size": 256,
+
+    "generations": 30,
+    "beam_width": 8,
+    "children_per_parent": 16,
+    "immigrants": 2,
+    "mutation_scale": 0.15,
+    "sample_size": 0,
+    "seed_configs": ["configs/custom/beambase.json"]
+  }
 }

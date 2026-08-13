@@ -1,52 +1,59 @@
 {
   "_preset": "FAN SEARCH -- explore WIDE rather than deep. As shipped it is a pure sampling run: draw sample_size random rules, score them all, stop. Point seed_configs at configs you already like and it fans each one out into children instead. For a real multi-generation hill-climb, use search.json.",
 
-  "run_dir": "documents/sequences/big",
-  "resume": false,
-  "port": 8765,
+  "_sections": "Three groups: vision (how images become vectors), scoring (what a good one looks like) and search (how many, and how they breed). Only vision is part of the embedding cache key -- change one of those and the folder is re-embedded; change anything in scoring and a re-score is free. A file with vision and scoring but NO search block can create embeddings and re-score, but the Run search button stays greyed.",
 
-  "world_size": 0.25,
-  "cohorts": 1,
-  "physics_steps": 5,
-  "warmup_steps": 3500,
-  "capture_size": 256,
+  "vision": {
+    "_clip_model": "B32 (default, ~600MB, fast) | L14 (~1.7GB, better separation) | SO400M (SigLIP at 384px, ~3.5GB, strongest on text and slowest). Scores from two models are NOT comparable -- different vector spaces. Switching re-embeds the folder once, then caches per model, so switching back is instant.",
+    "_seed_lives_here": "seed and crop_frac look like search knobs and are not: both are in the cache key. Moving either into the search block would default it and orphan every embedding made with the other value.",
+    "backend": "clip",
+    "clip_model": "SO400M",
+    "crops": 4,
+    "crop_frac": 0.4,
+    "grayscale": true,
+    "seed": 0
+  },
 
-  "_mode_sampling": "AS SHIPPED: generations 1, no seed_configs, children_per_parent 0. Generation 0 is the whole run -- sample_size independent random rules, each scored and captured. Nothing breeds. Raise sample_size for more coverage; it is the only knob that changes the candidate count in this mode.",
-  "_mode_fan": "TO FAN INSTEAD: set generations to 2 and children_per_parent to something above 0, and optionally fill seed_configs. Generation 0 then evaluates the seeds (or sample_size random rules) unchanged, and generation 1 fans every survivor out. Keep beam_width >= the number of seeds, or the worst ones are culled before they breed.",
+  "scoring": {
+    "_objective": "PICK ONE: reference_dir OR captions. Setting both is a config error. Keys starting with _ are ignored by the loader (JSON has no comments).",
+    "_captions": "Crisp edges, Meandering rivers, Lightning, Crystals, Loops",
+    "captions": "Crisp edges, Meandering rivers, Lightning, Crystals, Loops, microscopic life",
+    "negative_captions": [
+      "A thin bright line",
+      "an empty black image",
+      "uniform random noise",
+      "a single formless blob"
+    ],
+    "reference_dir": "",
+    "caption_aggregate": "max",
+    "aggregate": "mean",
+    "calibrate": true
+  },
 
-  "generations": 1,
-  "sample_size": 25000,
-  "seed_configs": [],
+  "search": {
+    "_mode_sampling": "AS SHIPPED: generations 1, no seed_configs, children_per_parent 0. Generation 0 is the whole run -- sample_size independent random rules, each scored and captured. Nothing breeds. Raise sample_size for more coverage; it is the only knob that changes the candidate count in this mode.",
+    "_mode_fan": "TO FAN INSTEAD: set generations to 2 and children_per_parent to something above 0, and optionally fill seed_configs. Generation 0 then evaluates the seeds (or sample_size random rules) unchanged, and generation 1 fans every survivor out. Keep beam_width >= the number of seeds, or the worst ones are culled before they breed.",
+    "_beam_width": "Only matters once something breeds. In sampling mode it just caps how many survivors the summary reports as the beam.",
+    "_mutation_scale": "Unused in sampling mode. When fanning: measured L2 from the parent rule is 0.19 / 0.38 / 1.34 / 3.82 at scale 0.05 / 0.1 / 0.35 / 1.0. IGNORED on an all-zero seed rule -- see _zero_rule_note.",
+    "_zero_rule_note": "An all-zero rule is the engine's 'no behaviour authored' sentinel: the shader generates a rule from mutation_seed instead of reading one, and generated rules are never mutated. So mutation_scale does nothing on such a parent (the app pins it to 0) and each child is an INDEPENDENT random rule -- measured pairwise L2 of 9.9-12.2, against 0.87-1.06 for children of an authored parent at scale 0.2. Note the random rules this preset samples are NOT affected: every immigrant adopts its generated rule immediately, so it is a normal population member before it is ever scored.",
 
-  "children_per_parent": 0,
-  "immigrants": 0,
+    "run_dir": "documents/sequences/big",
+    "resume": false,
+    "port": 8765,
 
-  "_beam_width": "Only matters once something breeds. In sampling mode it just caps how many survivors the summary reports as the beam.",
-  "beam_width": 20000,
+    "world_size": 0.25,
+    "cohorts": 1,
+    "physics_steps": 5,
+    "warmup_steps": 3500,
+    "capture_size": 256,
 
-  "_mutation_scale": "Unused in sampling mode. When fanning: measured L2 from the parent rule is 0.19 / 0.38 / 1.34 / 3.82 at scale 0.05 / 0.1 / 0.35 / 1.0. IGNORED on an all-zero seed rule -- see _zero_rule_note.",
-  "mutation_scale": 0.2,
+    "generations": 1,
+    "sample_size": 25000,
+    "seed_configs": [],
 
-  "_zero_rule_note": "An all-zero rule is the engine's 'no behaviour authored' sentinel: the shader generates a rule from mutation_seed instead of reading one, and generated rules are never mutated. So mutation_scale does nothing on such a parent (the app pins it to 0) and each child is an INDEPENDENT random rule -- measured pairwise L2 of 9.9-12.2, against 0.87-1.06 for children of an authored parent at scale 0.2. Note the random rules this preset samples are NOT affected: every immigrant adopts its generated rule immediately, so it is a normal population member before it is ever scored.",
-
-  "backend": "clip",
-  "_clip_model": "B32 (default, ~600MB, fast) | L14 (~1.7GB, better separation) | SO400M (SigLIP at 384px, ~3.5GB, strongest on text and slowest). Scores from two models are NOT comparable -- different vector spaces. Switching re-embeds the folder once, then caches per model, so switching back is instant. The pilot GUI's radio button overrides this while its window is open.",
-  "clip_model": "SO400M",
-  "crops": 4,
-  "crop_frac": 0.4,
-  "aggregate": "mean",
-  "grayscale": true,
-  "seed": 0,
-
-  "_objective": "PICK ONE: reference_dir OR caption. Setting both is a config error. Keys starting with _ are ignored by the loader (JSON has no comments).",
-  "reference_dir": "",
-  "_caption": "Crisp edges, Meandering rivers, Lightning, Crystals, Loops",
-  "caption": "Crisp edges, Meandering rivers, Lightning, Crystals, Loops, microscopic life",
-  "negative_captions": [
-    "A thin bright line",
-    "an empty black image",
-    "uniform random noise",
-    "a single formless blob"
-  ],
-  "calibrate": true
+    "children_per_parent": 0,
+    "immigrants": 0,
+    "beam_width": 20000,
+    "mutation_scale": 0.2
+  }
 }
