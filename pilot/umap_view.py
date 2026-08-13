@@ -33,6 +33,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import clip_models
 from . import gallery as gallery_lib
 from . import projection as projection_lib
 from .config import SearchConfig
@@ -188,6 +189,20 @@ class Viewer:
         self.colour_mode = COLOUR_PLAIN
         self.status = 'no folder loaded'
 
+        #: Which CLIP model the buttons here act with, as a short name.
+        #:
+        #: OVERRIDES THE CONFIG FILE while the window is open. Every action
+        #: re-reads search.json first (see _refresh_config), so without an
+        #: override the radio would be reset by the very button it was set to
+        #: affect -- pressing Re-score would load clip_model from disk, discard
+        #: the selection, and score with the old model while the GUI still
+        #: showed the new one. It starts at whatever the config says and stops
+        #: following the file once the user touches it.
+        self.clip_model = clip_models.normalize(
+            getattr(self.cfg, 'clip_model', None)) or clip_models.DEFAULT
+        #: True once the radio has been clicked, so the file stops winning.
+        self.clip_model_pinned = False
+
         self.caption = ''
         self.caption_applied = ''
         self.caption_scores = None
@@ -299,9 +314,33 @@ class Viewer:
             self.status = f"could not read {path}: {e}"
             return False
         self.config_path = str(path)
+        self._apply_model_choice()
         if announce:
             self.status = f"config: {self.cfg.describe_plan()}"
         return True
+
+    def _apply_model_choice(self):
+        """Reconcile the radio with the config just read.
+
+        Two directions, and which one wins is the whole point:
+
+        UNPINNED -- the radio follows the file. Opening a config that says
+        "L14" moves the radio to L14, which is what makes the file the source
+        of truth until someone disagrees with it.
+
+        PINNED -- the file follows the radio. Once the radio has been clicked
+        it overrides clip_model on every config read, because every action
+        re-reads the file and would otherwise undo the click before acting on
+        it. SearchConfig is frozen, so this replaces it rather than mutating.
+        """
+        from dataclasses import replace
+
+        if not self.clip_model_pinned:
+            self.clip_model = (clip_models.normalize(self.cfg.clip_model)
+                               or clip_models.DEFAULT)
+            return
+        if self.cfg.clip_model != self.clip_model:
+            self.cfg = replace(self.cfg, clip_model=self.clip_model)
 
     def _refresh_config(self):
         """Re-read the config file before acting on it.
@@ -429,6 +468,16 @@ class Viewer:
         if self.backend is None or not getattr(self.backend, 'supports_text',
                                                False):
             self.status = "caption colouring needs the clip backend"
+            return
+        # Refused rather than silently scored with the wrong model. The
+        # gallery's vectors and this backend's text vectors would be from two
+        # different models, and their cosine is a plausible-looking number with
+        # no meaning -- the one failure here that would not announce itself.
+        # Re-embedding is minutes, so it is a button (_reembed), not something
+        # a caption keystroke triggers.
+        if self._model_mismatch():
+            self.status = (f"loaded with a different model than {self.clip_model}"
+                           f" -- press Re-embed to re-encode this folder")
             return
 
         try:
@@ -618,8 +667,70 @@ class Viewer:
 
         self._tick_live_recolor(pending)
 
+        self._model_picker()
         self._colour_modes()
         self._cutoff()
+
+    def _model_picker(self):
+        """Which CLIP model the caption and re-score buttons use.
+
+        HERE rather than beside the UMAP settings because this is a property of
+        the SCORING, not of the layout: it decides what the caption box and
+        Re-score mean. Changing it does not move a single point until something
+        re-embeds.
+        """
+        from imgui_bundle import imgui
+
+        imgui.text("clip model")
+        for model in clip_models.MODELS:
+            imgui.same_line()
+            if imgui.radio_button(model.key, self.clip_model == model.key):
+                self._pick_model(model.key)
+            _tip(f"{model.architecture} / {model.pretrained}\n"
+                 f"{model.dim}-d, {model.download} download\n\n"
+                 f"{model.blurb}\n\n"
+                 f"Applies to Re-score run and Recompute colour from caption. "
+                 f"Both re-embed if this folder has not been seen with this "
+                 f"model before -- the first time is a full pass over the "
+                 f"folder, and afterwards it is cached per model.")
+
+        # The loaded gallery was embedded with ONE model, and a caption scored
+        # against a different one is a cosine between two unrelated vector
+        # spaces -- a number that looks fine and means nothing. Say so rather
+        # than letting the colours quietly lie.
+        if self._model_mismatch():
+            imgui.same_line()
+            imgui.text_disabled("* loaded with another model -- press Re-embed")
+
+    def _pick_model(self, key):
+        """Take the radio's word for it from now on."""
+        if key == self.clip_model:
+            return
+        self.clip_model = key
+        # Pinned on the FIRST click and never unpinned: the click is the user
+        # disagreeing with the file, and every action re-reads that file.
+        self.clip_model_pinned = True
+        self._apply_model_choice()
+        self.status = (f"clip model {clip_models.describe(key)} -- "
+                       f"overrides the config until this window closes")
+
+    def _model_mismatch(self):
+        """True when what is on screen was embedded with a different model.
+
+        Read off the gallery's signature rather than a remembered field: the
+        signature is what the cache was keyed by, so it is the honest record of
+        which model produced these vectors even if the config has changed
+        several times since.
+        """
+        if self.gallery is None or not self.gallery.signature.startswith('clip:'):
+            return False
+        try:
+            architecture = clip_models.get(self.clip_model).architecture
+        except ValueError:
+            return False
+        # 'clip:ViT-B-32:laion2b_...' -- the architecture is the second field.
+        parts = self.gallery.signature.split(':')
+        return len(parts) > 1 and parts[1] != architecture
 
     def _tick_live_recolor(self, pending, now=None):
         """Recolour once the caption has been still for a moment.
@@ -732,6 +843,15 @@ class Viewer:
                  "-- only the text side is new.\n"
                  "RE-READS THE CONFIG FILE FIRST, so editing the JSON and "
                  "pressing this is the whole workflow.")
+
+            imgui.same_line()
+            if imgui.button("Re-embed"
+                            + (" *" if self._model_mismatch() else "")):
+                self._reembed()
+            _tip("Re-encode the loaded folder with the selected clip model.\n"
+                 "The first time with a given model is a full pass over the "
+                 "folder -- minutes on thousands of captures. Cached per "
+                 "model afterwards, so switching back is instant.")
 
             imgui.same_line()
             if imgui.button("Run search"):
@@ -1053,6 +1173,32 @@ class Viewer:
 
         if self._begin('rescore', "rescore", work):
             self.status = "re-scoring..."
+
+    def _reembed(self):
+        """Re-encode the loaded folder with the currently selected model.
+
+        Deliberately just load_folder again. Loading already embeds through the
+        shared cache under the config's signature, and the selected model is
+        now part of that signature -- so "re-embed with L14" and "load this
+        folder" are the same operation with a different key. A second code path
+        that embedded without filling the cache would be the bug this exists to
+        avoid.
+
+        A model already used on this folder comes back from the cache in
+        seconds, which is what makes flipping between two models to compare
+        them practical rather than a ten-minute commitment.
+        """
+        if self.gallery is None or not self.folder:
+            self.status = "load a folder first"
+            return
+        if not self.gallery.has_images:
+            self.status = "this is a config folder -- nothing to embed"
+            return
+        # Re-read so a config edited since the last load is honoured, exactly
+        # as the other actions do; _apply_model_choice then re-imposes the
+        # radio on top of whatever the file said.
+        self._refresh_config()
+        self.load_folder(self.folder)
 
     def _run_search(self):
         from . import run as run_lib

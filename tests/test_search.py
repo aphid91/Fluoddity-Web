@@ -766,6 +766,105 @@ def test_session_tags():
     check("the new tag is unused", SearchRun._session_tag(existing) not in tags)
 
 
+def test_clip_model_choice():
+    """Choosing a model must reach the backend AND split the cache.
+
+    Two halves, and the second is the one that would fail silently. Loading the
+    wrong model is loud -- the vectors come out the wrong width. Loading the
+    right model but keeping the old cache key is not: L14 would be handed B32's
+    vectors for every image already embedded, and the only symptom would be a
+    ranking that quietly meant nothing.
+    """
+    print("\nclip model choice")
+
+    import json
+    import tempfile
+
+    from pilot import clip_models
+    from pilot import embedding
+    from pilot import report as report_lib
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'demos'))
+    import tex_sim
+
+    check("three models are offered", len(clip_models.MODELS) == 3,
+          str(clip_models.keys()))
+    check("the default is B32", clip_models.DEFAULT == 'B32')
+    check("SearchConfig defaults to it",
+          SearchConfig().clip_model == clip_models.DEFAULT)
+
+    # Short names, not checkpoint designations -- the whole point of the
+    # registry. A key with a slash or a training tag in it has missed it.
+    for key in clip_models.keys():
+        check(f"{key} is a short name",
+              '/' in key or '_' not in key, key)
+
+    # Aliases: a config should not break over punctuation.
+    check("ViT-L/14 normalizes", clip_models.normalize('ViT-L/14') == 'L14')
+    check("lowercase normalizes", clip_models.normalize('l14') == 'L14')
+    check("siglip normalizes", clip_models.normalize('siglip') == 'SO400M')
+    check("an empty name is the default",
+          clip_models.normalize('') == clip_models.DEFAULT)
+    check("an unknown name is None, not a guess",
+          clip_models.normalize('ViT-H/14') is None)
+
+    # Validation reports a bad name rather than failing at load time.
+    problems = SearchConfig(backend='clip', clip_model='nope').validate()
+    check("a bad model is a config error", len(problems) == 1, str(problems))
+    check("and the error lists the valid keys",
+          all(k in problems[0] for k in clip_models.keys()), str(problems))
+
+    # The signature is the cache key. Different models MUST differ.
+    signatures = {}
+    for key in clip_models.keys():
+        model = clip_models.get(key)
+        backend = tex_sim.ClipBackend(model_name=model.architecture,
+                                      pretrained=model.pretrained)
+        signatures[key] = backend.signature()
+        check(f"{key}'s signature names its architecture",
+              model.architecture in signatures[key], signatures[key])
+    check("all three signatures differ, so caches cannot cross-contaminate",
+          len(set(signatures.values())) == 3, str(signatures))
+
+    # A config written with an alias must land on the canonical key, or it
+    # would produce a second cache under a name meaning the same thing.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'search.json'
+        path.write_text(json.dumps({'backend': 'clip', 'clip_model': 'ViT-L/14'}),
+                        encoding='utf-8')
+        check("an alias in a config is canonicalized on load",
+              SearchConfig.load(path).clip_model == 'L14')
+
+        # Round-trip: a run writes its config into its output folder, and a
+        # model that did not survive that would break reproducing the run.
+        SearchConfig(clip_model='SO400M').save(path)
+        check("the model survives save/load",
+              SearchConfig.load(path).clip_model == 'SO400M')
+
+    # Per-model dependencies. SO400M needs transformers for its tokenizer, and
+    # the whole point of declaring it is that the check runs BEFORE the 3.5GB
+    # download rather than after it -- so assert the wiring, not the outcome,
+    # which depends on what happens to be installed.
+    check("only SO400M declares an extra requirement",
+          [m.key for m in clip_models.MODELS if m.extra_requires] == ['SO400M'])
+    check("and it is transformers",
+          clip_models.get('SO400M').extra_requires == ('transformers',))
+    check("a model with no extras never reports one",
+          clip_models.missing_requirements('B32') == []
+          and clip_models.missing_requirements('L14') == [])
+    # check_dependencies must accept a model without one being required, so
+    # existing callers that pass only a backend keep working.
+    check("check_dependencies still takes a backend alone",
+          isinstance(embedding.check_dependencies('texture'), list))
+
+    # The report is the only record of which vector space a ranking lives in.
+    lines = report_lib.build([], cfg=SearchConfig(backend='clip',
+                                                  clip_model='L14',
+                                                  captions=['a river']))
+    body = '\n'.join(lines)
+    check("the report records the model", 'L14' in body, body[:400])
+
+
 def main():
     print("Beam search")
     test_generation_zero()
@@ -778,6 +877,7 @@ def main():
     test_restore()
     test_zero_children_still_explores()
     test_grayscale_flag()
+    test_clip_model_choice()
     test_colour_blind_ranking()
     test_prompt_scorer()
     test_multiple_captions()

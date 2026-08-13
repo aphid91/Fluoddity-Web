@@ -79,7 +79,12 @@ def build(candidates, cfg=None, count=DEFAULT_COUNT, root=None, title=None):
             lines.append(f"  combined by {cfg.caption_aggregate}")
         for negative in cfg.negative_captions:
             lines.append(f'  minus       "{negative}"')
-        lines.append(f"backend       {cfg.backend}"
+        # The MODEL is named for the clip backend, because scores from two
+        # models are cosines in different vector spaces -- +0.31 under B32 and
+        # +0.31 under L14 say nothing about each other. Without this line a
+        # report is a ranking whose units cannot be recovered.
+        model = (f" {cfg.clip_model}" if cfg.backend == 'clip' else '')
+        lines.append(f"backend       {cfg.backend}{model}"
                      f"{', grayscale' if cfg.grayscale else ', colour'}"
                      f"{', calibrated' if captions and cfg.calibrate else ''}")
         lines.append(f"world_size    {cfg.world_size}   "

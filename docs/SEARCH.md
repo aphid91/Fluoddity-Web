@@ -290,6 +290,7 @@ python -m pilot.run --config search.json \
 | `seed_configs` | Start from configs you already like. **Folders expand** to the `.json` files in them. Empty starts from immigrants. |
 | `sample_size` | Random rules in generation 0 when there are no seeds. 0 = fill the beam. |
 | `backend` | `texture` (scipy) or `clip` (torch). |
+| `clip_model` | `B32`, `L14` or `SO400M`. CLIP only. **See below.** |
 | `reference_dir` | Images to search toward. Omit for a scoreless smoke run. |
 | `caption` | A text prompt to search toward. CLIP only; excludes `reference_dir`. |
 | `negative_captions` | Things to search *away* from. Needs a caption. |
@@ -307,6 +308,45 @@ objective is inspectable by looking at the folder.
 
 They are mutually exclusive: with two objectives a result cannot be attributed
 to either, so setting both is a config error.
+
+### Which CLIP model
+
+`clip_model` picks between three, by short name. The config says `"L14"`, not an
+open_clip architecture/checkpoint pair — the pair is an implementation detail
+that lives in `pilot/clip_models.py` and can be corrected without touching a
+single config.
+
+| Key | What it loads | Dim | Download | When |
+| --- | --- | --- | --- | --- |
+| `B32` | `ViT-B-32` / `laion2b_s34b_b79k` | 512 | ~600MB | **The default.** Fast, and what every score in this project predating the field was measured with. |
+| `L14` | `ViT-L-14` / `laion2b_s32b_b82k` | 768 | ~1.7GB | The obvious step up when B32 cannot separate two clusters you can see are different. Same objective, bigger model, finer patches. A few times slower. |
+| `SO400M` | `ViT-SO400M-14-SigLIP-384` / `webli` | 1152 | ~3.5GB | SigLIP, not CLIP: a sigmoid pairwise loss and a shape found by scaling search. Strongest on text by a clear margin, and at 384px it sees a crop at nearly twice the linear resolution — which matters here, since crops are what makes this describe texture. Slowest by far, and **needs `pip install transformers`** for its tokenizer. |
+
+`SO400M` is the only one with an extra dependency: its text side uses a
+SentencePiece tokenizer that open_clip loads through `transformers`, rather than
+the built-in BPE the two CLIP models use. This is checked *before* the 3.5GB
+download, so a missing tokenizer is a one-line message rather than a misleading
+`install open_clip_torch` several minutes in.
+
+Spellings like `"ViT-L/14"`, `"l14"` or `"siglip"` are accepted and normalized to
+the canonical key on load, so a config never breaks over punctuation.
+
+**Scores from two models are not comparable.** They are cosines in different
+vector spaces; a `+0.31` under B32 and a `+0.31` under L14 say nothing about each
+other. `report.txt` records which model produced a ranking for exactly this
+reason. Re-score a run before comparing it to one scored under a different model.
+
+**Switching models re-embeds, and costs nothing to switch back.** The model is
+part of the embedding cache key, so the first run under a new model is a full
+pass over the folder and every run after that is cached. The old vectors are not
+discarded — flipping back to B32 finds them still there. Two full copies is the
+price; re-embedding thousands of captures each way is the alternative.
+
+In the pilot GUI the model is a radio button beside the caption box. Clicking it
+**overrides the config file** for as long as the window is open: every action
+re-reads `search.json` first, so without the override the button you pressed
+would reset the choice you made before acting on it. Until you click it, the
+radio follows the file.
 
 ### Why caption scoring calibrates, and why you should leave it on
 

@@ -26,6 +26,8 @@ from pathlib import Path
 
 import numpy as np
 
+from . import clip_models
+
 _DEMOS = Path(__file__).resolve().parent.parent / 'demos'
 if str(_DEMOS) not in sys.path:
     sys.path.insert(0, str(_DEMOS))
@@ -33,13 +35,17 @@ if str(_DEMOS) not in sys.path:
 import tex_sim                                                      # noqa: E402
 
 
-def check_dependencies(backend_name):
+def check_dependencies(backend_name, clip_model=None):
     """What is missing for `backend_name`, as install advice. Empty if ready.
 
     Checked BEFORE a run touches the app, because the alternative is finding
     out inside the first embedding call -- after a generation of simulation has
     already been paid for, and with a traceback pointing into tex_sim rather
     than at the thing to install.
+
+    `clip_model` is optional so existing callers that only care about the
+    backend keep working; pass it to also check what that particular model
+    needs on top of torch and open_clip.
     """
     problems = []
     if backend_name == 'texture':
@@ -67,6 +73,11 @@ def check_dependencies(backend_name):
                 problems.append(
                     "the clip backend needs open_clip_torch (or transformers "
                     "as a fallback): pip install open_clip_torch")
+        # Per-MODEL requirements on top of the backend's. SigLIP needs a
+        # tokenizer open_clip loads through transformers, and finding that out
+        # after the download is the failure this prevents.
+        if clip_model is not None:
+            problems.extend(clip_models.missing_requirements(clip_model))
     return problems
 
 
@@ -80,7 +91,21 @@ def build_backend(cfg):
     and a model download but understands text.
     """
     if cfg.backend == 'clip':
-        backend = tex_sim.ClipBackend(crops=cfg.crops, crop_frac=cfg.crop_frac,
+        # Resolved from the config's short name ('L14') to the architecture and
+        # checkpoint pair open_clip wants. get() raises on an unknown name,
+        # which validate() will normally have caught first -- this is the
+        # backstop for a SearchConfig built in code rather than loaded.
+        model = clip_models.get(cfg.clip_model)
+        # BEFORE the download, and as a clear error rather than tex_sim's.
+        # open_clip builds a SigLIP model happily and only then reaches its
+        # tokenizer, so the natural failure is minutes and gigabytes late and
+        # says "install open_clip_torch" -- which is already installed.
+        missing = clip_models.missing_requirements(model.key)
+        if missing:
+            raise SystemExit(missing[0])
+        backend = tex_sim.ClipBackend(model_name=model.architecture,
+                                      pretrained=model.pretrained,
+                                      crops=cfg.crops, crop_frac=cfg.crop_frac,
                                       seed=cfg.seed, grayscale=cfg.grayscale)
         # Load now and report the device. A CPU-only torch install is the
         # commonest way to end up with a search that works but is ~30x slower
@@ -88,6 +113,11 @@ def build_backend(cfg):
         # `pip install torch` gives the CPU wheel unless the CUDA index URL is
         # passed. Loading here also means a broken install fails before the
         # app is driven rather than after the first generation.
+        #
+        # It is also where a first-time model download happens, which for
+        # SO400M is 3.5GB -- so say which model is being loaded BEFORE the
+        # call, or a several-minute silence looks like a hang.
+        print(f"  CLIP model {clip_models.describe(cfg.clip_model)}")
         backend._load()
         if backend._device == 'cpu':
             print("  WARNING: CLIP is running on the CPU. For GPU, see "

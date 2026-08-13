@@ -15,6 +15,8 @@
   "seed_configs": ["configs/custom/beambase.json"],
 
   "backend": "clip",
+  "_clip_model": "B32 (default, ~600MB, fast) | L14 (~1.7GB, better separation) | SO400M (SigLIP at 384px, ~3.5GB, strongest on text and slowest). Scores from two models are NOT comparable -- different vector spaces. Switching re-embeds the folder once, then caches per model, so switching back is instant.",
+  "clip_model": "B32",
   "crops": 4,
   "crop_frac": 0.4,
   "aggregate": "mean",

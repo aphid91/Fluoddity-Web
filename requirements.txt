@@ -22,6 +22,13 @@ scipy>=1.10.0
 # compute capability sm_120); older cu121 wheels will not run on them at all.
 # Check it took with:
 #   python -c "import torch; print(torch.cuda.is_available())"
+#
+# The B32 and L14 models need nothing further. SO400M (SigLIP) additionally
+# needs transformers, because its text side uses a SentencePiece tokenizer that
+# open_clip loads through it rather than CLIP's built-in BPE:
+#   pip install transformers
+# The pilot checks this BEFORE downloading 3.5GB of weights, so a missing
+# tokenizer is a one-line message rather than a late and misleading one.
 
 # --- the UMAP viewer (pilot/umap_view.py) ---
 # Only needed to browse a folder of captures as a map; the search and the app

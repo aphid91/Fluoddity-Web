@@ -14,6 +14,8 @@ import json
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from . import clip_models
+
 #: Relative paths in a config resolve against the repo root, not the working
 #: directory -- the app already refuses to depend on CWD, and a pilot launched
 #: from elsewhere must not see a different filesystem.
@@ -101,6 +103,19 @@ class SearchConfig:
     # --- scoring ---
     #: 'texture' needs no torch and no download; 'clip' needs both.
     backend: str = "texture"
+
+    #: WHICH CLIP model, by short name -- 'B32', 'L14' or 'SO400M'. See
+    #: pilot/clip_models.py for what each one actually loads and why the config
+    #: says a short name rather than an open_clip architecture/checkpoint pair.
+    #:
+    #: Ignored by the texture backend, which has no model to choose.
+    #:
+    #: CHANGING THIS INVALIDATES NOTHING AND RECOMPUTES EVERYTHING. The model
+    #: name is part of the embedding cache key, so switching to L14 re-embeds
+    #: the folder and switching back to B32 finds the old vectors still there.
+    #: Scores from two models are NOT comparable -- different vector spaces --
+    #: so a report written under one says which model produced it.
+    clip_model: str = "B32"
     #: Folder of images the search is trying to resemble.
     reference_dir: str = ""
 
@@ -197,6 +212,15 @@ class SearchConfig:
         negatives = data.get('negative_captions')
         if isinstance(negatives, str):
             data['negative_captions'] = [negatives] if negatives else []
+        # Canonicalize the model name HERE, at the one boundary a config
+        # crosses, so everything downstream -- the signature, the cache key,
+        # the report, the GUI radio -- compares against one spelling. A config
+        # written "ViT-L/14" then behaves identically to one written "L14"
+        # instead of quietly missing the cache. An unrecognized name is left
+        # alone for validate() to report by its original spelling.
+        model = data.get('clip_model')
+        if model is not None:
+            data['clip_model'] = clip_models.normalize(model) or model
         return data
 
     @property
@@ -247,6 +271,14 @@ class SearchConfig:
         if self.backend not in ('texture', 'clip'):
             problems.append(f"backend must be 'texture' or 'clip' "
                             f"(got {self.backend!r})")
+        # Checked even for the texture backend, which ignores the field: a
+        # config with a typo'd model name is wrong whether or not this
+        # particular run would have loaded it, and saying so now is better than
+        # the first time someone flips backend to clip.
+        if clip_models.normalize(self.clip_model) is None:
+            problems.append(
+                f"clip_model must be one of "
+                f"{', '.join(clip_models.keys())} (got {self.clip_model!r})")
         if self.reference_dir and not Path(self.reference_dir).is_dir():
             problems.append(f"reference_dir does not exist: {self.reference_dir}")
 
