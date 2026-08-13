@@ -26,6 +26,7 @@ alternative.
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -113,19 +114,54 @@ class EmbeddingCache:
         return hits, misses
 
     def flush(self):
-        """Write the cache out. Safe to call any time; a no-op when clean."""
+        """Write the cache out. Safe to call any time; a no-op when clean.
+
+        WRITTEN TO A TEMPORARY AND RENAMED, never over the live file. This
+        archive reaches hundreds of megabytes on a real run -- measured at
+        865MB for 25,100 captures -- and np.savez over the destination leaves
+        it a truncated, unreadable zip for the several seconds it takes to
+        write. Interrupt the process in that window (Ctrl-C, a crash, closing
+        the GUI) and hours of embedding are gone, with the only trace being
+        _load quietly treating the wreckage as an empty cache.
+
+        os.replace is atomic on both POSIX and Windows, so a reader sees either
+        the old archive or the new one, and an interrupted write costs a
+        discarded temp file rather than the cache.
+        """
         with self._lock:
             if not self._dirty:
                 return self.path
             entries = dict(self._entries)
             self._dirty = 0
+        temporary = None
         try:
             self.folder.mkdir(parents=True, exist_ok=True)
+            # Beside the target, not in the system temp dir: os.replace is only
+            # atomic within a filesystem, and the cache may well sit on a
+            # different drive from %TEMP%.
+            temporary = self.path.with_suffix(f'.npz.{os.getpid()}.tmp')
+            # Written through an open HANDLE, not a path: np.savez appends
+            # '.npz' to any filename that does not already end in it, so
+            # passing this path directly produces '....tmp.npz' and the rename
+            # below then fails on a file that does not exist. Measured, not
+            # assumed -- the first version of this did exactly that.
+            #
             # Uncompressed: these are dense float32 blocks that compress
             # poorly, and a 4,000-entry save is noticeably slower with it on.
-            np.savez(self.path, **entries)
+            with open(temporary, 'wb') as handle:
+                np.savez(handle, **entries)
+            os.replace(temporary, self.path)
+            temporary = None
         except (OSError, ValueError) as e:
             print(f"  could not write embedding cache ({e})")
+        finally:
+            if temporary is not None:
+                # A failed write must not leave a partial file behind to be
+                # mistaken for a cache or to fill the disk on the next attempt.
+                try:
+                    Path(temporary).unlink(missing_ok=True)
+                except OSError:
+                    pass
         return self.path
 
     # ------------------------------------------------------------------
@@ -143,6 +179,28 @@ class EmbeddingCache:
         with self._lock:
             return sorted({k.rsplit('|', 1)[-1] for k in self._entries})
 
+    def rival_signatures(self, signature, minimum=1):
+        """Other signatures this folder holds, biggest first.
+
+        WHY THIS EXISTS. The cache key is the whole backend signature, so one
+        changed setting -- grayscale, crops, the model -- makes every stored
+        vector unreachable and the only symptom is "embedding 25,100 new" on a
+        folder that was embedded yesterday. Measured on a real 25,100-capture
+        folder: a complete SO400M set was present under `...:s0:gray` while the
+        config asked for `...:s0`, and nothing on screen connected the two.
+
+        Returns [(signature, count)] so a caller can say what else is here and
+        let the reader spot the one word that differs.
+        """
+        counts = {}
+        with self._lock:
+            for key in self._entries:
+                found = key.rsplit('|', 1)[-1]
+                if found != signature:
+                    counts[found] = counts.get(found, 0) + 1
+        return sorted(((s, n) for s, n in counts.items() if n >= minimum),
+                      key=lambda pair: -pair[1])
+
     def clear(self, signature=None):
         """Drop everything, or just one signature's entries."""
         with self._lock:
@@ -153,6 +211,65 @@ class EmbeddingCache:
                                  if not k.endswith('|' + signature)}
             self._dirty = 1
         return self.flush()
+
+
+#: How a signature field maps to the config key that produced it. Signatures
+#: are positional -- 'clip:ARCH:TAG:cN:fN:sN[:gray]' -- so a field is named by
+#: its prefix rather than its index, and ':gray' is a flag whose ABSENCE is the
+#: other value.
+_FIELD_NAMES = (('c', 'crops'), ('f', 'crop_frac'), ('s', 'seed'))
+
+
+def describe_difference(have, want):
+    """Which config key separates two signatures, in words. '' if unclear.
+
+    The point is to name the fix. "have ...:s0:gray / want ...:s0" is already
+    on screen by the time this is called, and a reader still has to diff two
+    forty-character strings by eye to find the one token that moved -- which is
+    exactly the step that makes a stale cache look like a broken one.
+    """
+    # Strip the trailing flag before comparing fields: it is a flag rather than
+    # a 'key=value' field, so it would otherwise show up as a length mismatch
+    # and defeat the positional diff below.
+    have_grey, want_grey = have.endswith(':gray'), want.endswith(':gray')
+    have_parts = have[:-5].split(':') if have_grey else have.split(':')
+    want_parts = want[:-5].split(':') if want_grey else want.split(':')
+
+    # BACKEND AND MODEL BEFORE GRAYSCALE, because they subsume it: a cached set
+    # from a different model is not made reusable by flipping grayscale, and
+    # advising that first sends the reader to change the wrong key. Measured on
+    # a real cache, where a stray B32 entry sat beside the SO400M ones and was
+    # reported as a grayscale difference.
+    if have_parts[0] != want_parts[0]:
+        return f"a different backend ({have_parts[0]} vs {want_parts[0]})"
+    if len(have_parts) > 1 and len(want_parts) > 1 \
+            and have_parts[1] != want_parts[1]:
+        return (f"a different clip_model -- those are {have_parts[1]}, "
+                f"this is {want_parts[1]}")
+
+    if have_grey != want_grey:
+        # Name the value that makes the CACHED set usable, since reusing them
+        # is the reason this message exists.
+        wanted = 'true' if have_grey else 'false'
+        other = 'false' if have_grey else 'true'
+        return (f"set grayscale: {wanted} to reuse them "
+                f"(or leave it {other} and re-embed)")
+
+    if len(have_parts) != len(want_parts):
+        return ''
+
+    differences = []
+    for mine, theirs in zip(have_parts[2:], want_parts[2:]):
+        if mine == theirs:
+            continue
+        for prefix, name in _FIELD_NAMES:
+            if mine.startswith(prefix) and theirs.startswith(prefix):
+                differences.append(
+                    f"{name}: {mine[len(prefix):]} vs {theirs[len(prefix):]}")
+                break
+    if differences:
+        return "differs by " + ", ".join(differences)
+    return ''
 
 
 def embed_cached(paths, backend, cache, aggregate=None, progress=None,
@@ -179,6 +296,19 @@ def embed_cached(paths, backend, cache, aggregate=None, progress=None,
     if misses and progress:
         progress(f"  embedding {len(misses)} new "
                  f"({len(hits)} from cache)")
+        # A big miss on a folder that is already embedded under some OTHER
+        # setting is nearly always one changed key, not a cold cache. Say so:
+        # without this the only signal is a long progress bar, and the fix
+        # (put the setting back) is invisible.
+        for other, count in cache.rival_signatures(signature)[:3]:
+            if count > len(hits):
+                progress(f"    NOTE {count} embeddings here under a different "
+                         f"setting:")
+                progress(f"      have {other}")
+                progress(f"      want {signature}")
+                difference = describe_difference(other, signature)
+                if difference:
+                    progress(f"      {difference}")
     elif progress:
         progress(f"  {len(hits)} embeddings from cache")
 

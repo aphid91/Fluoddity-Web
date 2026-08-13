@@ -154,6 +154,62 @@ def test_embedding_cache():
         check("and the original is still cached", backend.calls == 0,
               "flipping grayscale would discard the other set")
 
+        print("\n  near-miss reporting")
+        # One changed setting makes every stored vector unreachable, and the
+        # only symptom is a long progress bar on a folder embedded yesterday.
+        # Measured on a real 25,100-capture folder: a complete SO400M set sat
+        # under ':gray' while the config asked without it, and nothing on
+        # screen connected the two.
+        rivals = cache.rival_signatures('fake:v1')
+        check("another signature is reported as a rival",
+              [s for s, _ in rivals] == ['fake:v2'], str(rivals))
+        check("and counted", rivals[0][1] == 5, str(rivals))
+        check("a signature is not its own rival",
+              'fake:v1' not in [s for s, _ in rivals])
+
+        from pilot.embedding_cache import describe_difference
+
+        # The advice must name the key that actually needs changing. Model and
+        # backend take precedence over grayscale: flipping grayscale does not
+        # make another model's vectors usable, and saying so would send the
+        # reader to the wrong setting.
+        check("grayscale is named, with the value that reuses the cache",
+              'grayscale: true' in describe_difference(
+                  'clip:ViT-B-32:l2b:c4:f0.4:s0:gray',
+                  'clip:ViT-B-32:l2b:c4:f0.4:s0'))
+        check("and the other direction",
+              'grayscale: false' in describe_difference(
+                  'clip:ViT-B-32:l2b:c4:f0.4:s0',
+                  'clip:ViT-B-32:l2b:c4:f0.4:s0:gray'))
+        check("a model difference outranks a grayscale one",
+              'clip_model' in describe_difference(
+                  'clip:ViT-B-32:l2b:c4:f0.4:s0:gray',
+                  'clip:ViT-SO400M:webli:c4:f0.4:s0'))
+        check("crops and crop_frac are named",
+              describe_difference('clip:a:b:c4:f0.4:s0',
+                                  'clip:a:b:c10:f0.3:s0')
+              == 'differs by crops: 4 vs 10, crop_frac: 0.4 vs 0.3',
+              describe_difference('clip:a:b:c4:f0.4:s0',
+                                  'clip:a:b:c10:f0.3:s0'))
+        check("a backend difference is named",
+              'backend' in describe_difference('texture:256:r32:a16:e16:h16',
+                                               'clip:a:b:c4:f0.4:s0'))
+        check("identical signatures say nothing",
+              describe_difference('clip:a:b:c4:f0.4:s0',
+                                  'clip:a:b:c4:f0.4:s0') == '')
+
+        print("\n  atomic flush")
+        # The archive reaches 865MB on a real run. np.savez over the live file
+        # leaves it a truncated zip for seconds; interrupt that and hours of
+        # embedding are gone, with _load treating the wreckage as empty.
+        cache.flush()
+        leftovers = list(root.glob('*.tmp')) + list(root.glob('*.tmp.npz'))
+        check("no temporary file is left behind", not leftovers,
+              str(leftovers))
+        check("and the archive is readable after a rewrite",
+              len(EmbeddingCache(root)) == len(cache),
+              f"{len(EmbeddingCache(root))} vs {len(cache)}")
+
         print("\n  persistence")
         cache.flush()
         reopened = EmbeddingCache(root)
