@@ -206,33 +206,68 @@ Observed on a real run: 19 candidates, 3 generations, **7.5 seconds** total.
 ## Configuration
 
 `python -m pilot.run --write-example search.json` writes every knob with its
-default. The ones that matter:
+default. Fields group into three sections:
+
+| Section | What it decides | Changing it costs |
+|---|---|---|
+| `vision` | how an image becomes a vector | **a full re-embed** — these are the cache key |
+| `scoring` | what a good image looks like | nothing; a re-score is free |
+| `search` | how many candidates, and how they breed | only what the next run does |
 
 ```json
 {
-  "run_dir": "documents/sequences/coral-hunt",
-  "port": 8765,
+  "vision": {
+    "backend": "texture",
+    "clip_model": "B32",
+    "crops": 1,
+    "crop_frac": 0.3,
+    "grayscale": false,
+    "seed": 0
+  },
 
-  "world_size": 0.1,
-  "cohorts": 1,
-  "warmup_steps": 5000,
-  "capture_size": 512,
+  "scoring": {
+    "reference_dir": "documents/references/coral",
+    "captions": [],
+    "negative_captions": [],
+    "caption_aggregate": "max",
+    "aggregate": "mean",
+    "calibrate": true
+  },
 
-  "mutation_scale": 0.35,
+  "search": {
+    "run_dir": "documents/sequences/coral-hunt",
+    "port": 8765,
 
-  "generations": 20,
-  "beam_width": 8,
-  "children_per_parent": 4,
-  "immigrants": 4,
-  "seed_configs": [],
+    "world_size": 0.1,
+    "cohorts": 1,
+    "warmup_steps": 5000,
+    "capture_size": 512,
 
-  "backend": "texture",
-  "reference_dir": "documents/references/coral",
-  "aggregate": "mean",
-  "grayscale": false,
-  "seed": 0
+    "mutation_scale": 0.35,
+
+    "generations": 20,
+    "beam_width": 8,
+    "children_per_parent": 4,
+    "immigrants": 4,
+    "seed_configs": []
+  }
 }
 ```
+
+**`seed` and `crop_frac` are vision fields**, however much they read like
+search knobs. Both are in the embedding cache key. Moving `seed` into
+`search` silently defaults it to 0 and orphans every embedding made with
+another value — hours of GPU time lost to a field that looked misfiled.
+
+**Flat files still load.** Every key can equally sit at the top level, which is
+what the `search.json` inside every existing run folder does, and a top-level
+key overrides the same key inside a section. The sections are flattened on
+read; nothing downstream knows the difference.
+
+**A file with no `search` section is valid.** It has enough to create
+embeddings and to re-score, and the GUI greys out Run search rather than
+inventing a search from defaults. This is the file to write when the point is
+"embed this folder like so", not "run this search".
 
 For a **caption** objective instead of a reference folder:
 
@@ -342,11 +377,16 @@ pass over the folder and every run after that is cached. The old vectors are not
 discarded — flipping back to B32 finds them still there. Two full copies is the
 price; re-embedding thousands of captures each way is the alternative.
 
-In the pilot GUI the model is a radio button beside the caption box. Clicking it
-**overrides the config file** for as long as the window is open: every action
-re-reads `search.json` first, so without the override the button you pressed
-would reset the choice you made before acting on it. Until you click it, the
-radio follows the file.
+In the pilot GUI the model is not chosen directly — you pick an **embedding
+set**, and its model is one of the settings you get with it. Selecting a set
+**overrides the config file** for all six cache-key fields as long as the window
+is open: every action re-reads the config first, so without the override the
+button you pressed would undo the choice you made before acting on it.
+
+This replaced a three-way radio, which could not express what the cache is
+actually keyed by: it compared only the model name, so a set differing in
+`grayscale` or `crops` read as a match and then missed on every lookup — which
+looks exactly like a cold cache and costs a full re-embed.
 
 ### Why caption scoring calibrates, and why you should leave it on
 
@@ -522,6 +562,31 @@ The front end for everything the pilot does: load a folder, colour it by a
 caption, filter to the best or worst of it, write a report, re-score a finished
 run, or launch a search. Every control is labelled and tooltipped.
 
+**Loading a folder embeds nothing.** It reads the folder's `.embeddings.npz`
+and lists the embedding sets already in it — one row per set, with the model,
+crops, grayscale and seed spelled out, how many of the folder's images it
+covers, and how many rows are dead weight:
+
+```
+embedding sets                                        [Rescan]
+ (*) SO400M, 4 crops @0.40, seed 0, grayscale   25100/25100 complete
+ ( ) SO400M, 4 crops @0.40, seed 0               8960/25100 partial
+ ( ) B32, 4 crops @0.40, seed 0, grayscale      25100/25100 complete  +12583 stale
+```
+
+Selecting a set loads its vectors **and adopts its settings** — the config
+follows the choice, not the other way round. This is the whole point: a set is
+addressed by picking it, never by editing JSON until a forty-character cache
+key lines up. A 25,100-image set opens in ~7s with no model loaded at all.
+
+| Button | What it does |
+|---|---|
+| *Create embeddings* | **The only button that loads a model.** Embeds the folder under the current `vision` settings. A loud no-op if that set already exists and is complete. |
+| *Continue embedding* | The same button on a partial set: fills in only the images that set is missing, under its existing key. |
+| *Re-score run* | Scores the loaded set against the current `scoring` rules. Embeds no images — but *does* load the model, because the caption and the 30 calibration captions have to be encoded. |
+| *Run search* | Greyed out when the config has no `search` section. |
+| *Prune* | Drops rows no load will ever read — unreachable ones and duplicates. |
+
 **It opens empty and projects on demand.** A UMAP of a few thousand points
 costs ~25s, and much of what the GUI is for — trying captions, reading scores,
 launching a search — needs no map at all. So *Compute UMAP* is a button.
@@ -582,6 +647,27 @@ It runs in its own process and can sit open beside a search.
 `.embeddings.npz` inside the image folder, **keyed per file** by name, size,
 mtime and backend signature.
 
+**The mtime is whole seconds, matched with two seconds of slack**, and that
+detail is load-bearing. It was nanoseconds, on the sound reasoning that a
+search rewrites a folder in well under a second and a same-sized replacement
+would otherwise keep its key. It is also unusable: sub-second precision does
+not survive a copy, a sync or a zip. Measured on a real folder — all 25,100
+captures came back with `st_mtime_ns % 1e9 == 0` after one move, and 12,583 of
+them a further second off besides, because FAT and SMB round timestamps to a
+2-second boundary. All 84,261 cached vectors became unreachable at once, and
+the only symptom was `embedding 25,100 new` on a folder embedded the day
+before. A timestamp a file copy silently rewrites is not an identity.
+
+The size check still catches the ordinary rewrite. The residual gap — the same
+file rewritten to the same byte count inside two seconds — is far narrower than
+the one it closes.
+
+Two kinds of dead row accumulate, and they need different fixes. A file
+rewritten *outside* the slack orphans its old row: `prune` drops those. A file
+embedded once before a copy and once after leaves two rows that **both** match,
+so both are reachable and prune correctly keeps them — only the first is ever
+read. `compact` collapses those. The GUI's *Prune* button does both.
+
 **The search and the viewer share it.** A search embeds each generation as it
 goes; opening that folder afterwards used to re-embed all of it — same files,
 same model, ninety seconds of pure waste. Now it costs nothing: verified on a
@@ -607,7 +693,12 @@ so it is worth knowing exactly which edits pay it. **Re-scoring against a new
 caption embeds nothing**: measured, zero images re-embedded, 31 text encodes
 (the caption plus 30 calibration backgrounds) and a matrix multiply.
 
-Free — change these and re-score costs milliseconds:
+This is exactly the `scoring` / `vision` split: the free list below is the
+`scoring` section, and the costly one is `vision`. That is what the sections
+are for — the group a field is in tells you what editing it costs.
+
+Free — change these and re-score costs milliseconds (though re-scoring still
+loads the model, since the captions have to be encoded):
 
 | | |
 | --- | --- |
