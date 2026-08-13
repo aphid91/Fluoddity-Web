@@ -560,6 +560,29 @@ It works on any folder of images, not just a run — point it at `refim/` or a
 hand-assembled collection. A `manifest.jsonl` beside the folder just makes the
 tooltips richer.
 
+#### Mapping a folder of configs
+
+**Load configs** reads a folder of Fluoddity save files and maps them by what
+they *are* — no rendering, no embedding, so a library of hundreds opens in
+well under a second.
+
+```
+folder:  configs/custom          [Load captures] [Load configs]
+```
+
+Hover shows the filename; clicking loads that save into a running Fluoddity.
+Only the **Rule** and **Rule + sliders** sources apply, since there is no
+picture to embed — the viewer switches away from CLIP for you.
+
+This is the fast way to see the shape of a collection you have accumulated by
+hand: which saves are near-duplicates, which corner of rule space is crowded,
+and which of your favourites are unlike anything else.
+
+Both the current v8 format and the **legacy v7** format are read. That matters
+more than it sounds: measured on a real library, 188 of 192 files in
+`configs/custom` are v7, whose layout shares nothing with v8. Files the app
+itself cannot read are skipped and counted rather than stopping the load.
+
 #### Choosing captions with the map
 
 This is the fastest way to answer *"does this phrase mean what I think against

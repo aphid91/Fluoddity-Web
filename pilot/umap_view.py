@@ -346,6 +346,39 @@ class Viewer:
         if self._begin('loading', f"loading {folder.name}", work):
             self.status = f"loading {folder}..."
 
+    def load_config_folder(self, folder):
+        """Open a folder of Fluoddity save files. No images, no embedding.
+
+        Synchronous, unlike load_folder: reading a few thousand small JSONs
+        takes well under a second, and a background thread for that would be
+        machinery around nothing.
+        """
+        folder = Path(folder).expanduser()
+        if not folder.is_dir():
+            self.status = f"not a folder: {folder}"
+            return
+        try:
+            gallery = gallery_lib.build_configs(
+                folder, progress=lambda m: setattr(self, 'status', m.strip()))
+        except Exception as e:                                  # noqa: BLE001
+            self.status = f"{type(e).__name__}: {e}"
+            return
+
+        self.folder = str(folder)
+        self.gallery = gallery
+        self.backend = None
+        self.projection = None
+        self.caption_scores = None
+        self.caption_applied = ''
+        self.textures.forget()
+        self.colour_mode = COLOUR_PLAIN
+        # CLIP cannot map a folder with no pictures, so do not leave the
+        # dropdown pointing at a source that would only produce an error.
+        if self.source == gallery_lib.SOURCE_CLIP:
+            self.source = gallery_lib.SOURCE_RULE
+        self.status = (f"{len(gallery)} configs -- press Compute UMAP "
+                       f"(rule sources only)")
+
     def compute_projection(self):
         if self.gallery is None:
             self.status = "load a folder first"
@@ -490,10 +523,19 @@ class Viewer:
         imgui.set_next_item_width(520)
         _, self.folder = imgui.input_text("folder", self.folder)
         imgui.same_line()
-        if imgui.button("Load##folder"):
+        if imgui.button("Load captures"):
             self.load_folder(self.folder, self.config_path or None)
-        _tip("Embed every image in this folder. Uses the shared cache, so a "
+        _tip("Embed every IMAGE in this folder. Uses the shared cache, so a "
              "folder a search has already scored opens instantly.")
+
+        imgui.same_line()
+        if imgui.button("Load configs"):
+            self.load_config_folder(self.folder)
+        _tip("Read every Fluoddity save file in this folder and map them by "
+             "what they ARE -- no rendering, no embedding, so it is instant.\n"
+             "Hover shows the filename; clicking loads that save into a "
+             "running Fluoddity. Only the Rule sources apply, since there is "
+             "no picture.")
 
         imgui.set_next_item_width(520)
         _, self.config_path = imgui.input_text("config", self.config_path)
@@ -902,12 +944,15 @@ class Viewer:
         if self.caption_scores is not None:
             imgui.text_disabled(
                 f'"{self.caption_applied}"  {self.caption_scores[index]:+.3f}')
-        texture = self.textures.get(item.path)
-        if texture:
-            imgui.image(imgui.ImTextureRef(texture),
-                        imgui.ImVec2(THUMB, THUMB))
-        else:
-            imgui.text_disabled("(preview unavailable)")
+        # A config-only gallery has nothing to show but the name, which is
+        # why the name is the first line of every tooltip.
+        if item.has_image:
+            texture = self.textures.get(item.path)
+            if texture:
+                imgui.image(imgui.ImTextureRef(texture),
+                            imgui.ImVec2(THUMB, THUMB))
+            else:
+                imgui.text_disabled("(preview unavailable)")
         if item.config_path:
             imgui.text_disabled("click to load into Fluoddity")
         imgui.end_tooltip()

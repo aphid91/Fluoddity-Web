@@ -1101,6 +1101,143 @@ def test_umap_sources():
               float(np.abs(rows).max()) > 0.0, str(np.abs(rows).max()))
 
 
+def test_config_gallery():
+    """A gallery from a folder of save files: no images, no embedding."""
+    print("\nconfig-folder gallery")
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        for i in range(4):
+            _write_config(root / f"cfg{i}.json", rule=[float(i)] * 80)
+        # Things a real folder contains that are not configs.
+        (root / 'notes.txt').write_text('ignore me')
+        (root / 'search.json').write_text('{"generations": 3}')
+        (root / 'broken.json').write_text('{ not json')
+
+        found = gallery_lib.find_configs(root)
+        check("finds the json files", len(found) == 5, str(len(found)))
+        # search.json lives beside the configs in a run folder; including it
+        # would put one unreadable point on every map.
+        check("skips search.json",
+              not any(p.name == 'search.json' for p in found),
+              str([p.name for p in found]))
+
+        gallery = gallery_lib.build_configs(root, progress=lambda m: None)
+        check("builds a gallery of the readable ones", len(gallery) == 4,
+              str(len(gallery)))
+        check("marked as having no images", not gallery.has_images)
+        check("items know it too",
+              all(not i.has_image for i in gallery.items))
+        check("every item carries its config path",
+              all(i.config_path for i in gallery.items))
+        check("indices are contiguous after skipping the bad one",
+              [i.index for i in gallery.items] == [0, 1, 2, 3],
+              str([i.index for i in gallery.items]))
+        check("the tooltip is just the filename",
+              gallery.items[0].tooltip_lines() == ['cfg0'],
+              str(gallery.items[0].tooltip_lines()))
+
+        # CLIP cannot map a folder with no pictures; refusing beats producing
+        # a plausible map of nothing.
+        try:
+            gallery_lib.source_embeddings(gallery, gallery_lib.SOURCE_CLIP)
+            check("the clip source is refused", False, "no error raised")
+        except ValueError as e:
+            check("the clip source is refused", 'Rule' in str(e), str(e))
+
+        rule = gallery_lib.source_embeddings(gallery, gallery_lib.SOURCE_RULE)
+        check("the rule source works", rule.shape == (4, 80), str(rule.shape))
+        both = gallery_lib.source_embeddings(
+            gallery, gallery_lib.SOURCE_RULE_SLIDERS)
+        check("rule+sliders works too", both.shape[1] > 80, str(both.shape))
+
+        empty = root / 'empty'
+        empty.mkdir()
+        try:
+            gallery_lib.build_configs(empty, progress=lambda m: None)
+            check("an empty folder raises", False, "no error")
+        except FileNotFoundError:
+            check("an empty folder raises", True)
+
+    print("\n  viewer wiring")
+    from pilot.umap_view import COLOUR_PLAIN, Viewer
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        for i in range(3):
+            _write_config(root / f"c{i}.json", rule=[float(i)] * 80)
+
+        view = Viewer()
+        view.source = gallery_lib.SOURCE_CLIP
+        view.load_config_folder(root)
+        check("loads without a background task", view.gallery is not None)
+        # Leaving the dropdown on CLIP would mean the only thing the user can
+        # press next produces an error.
+        check("switches away from the clip source",
+              view.source == gallery_lib.SOURCE_RULE, view.source)
+        check("clears any previous projection", view.projection is None)
+        check("has no backend to caption with", view.backend is None)
+        check("colours plainly", view.colour_mode == COLOUR_PLAIN)
+        check("says what to do next",
+              'Compute UMAP' in view.status, view.status)
+
+        view.load_config_folder(root / 'nowhere')
+        check("a missing folder is reported, not raised",
+              'not a folder' in view.status, view.status)
+
+
+def test_legacy_configs():
+    """v7 files must map too -- they are most of a real library.
+
+    Measured on the live configs/custom: 188 of 192 files are the original
+    Fluoddity format, whose layout shares nothing with v8 (physics and rule at
+    the top level, no `configs` array at all). A reader that only understood
+    v8 mapped four of them and silently dropped the rest.
+    """
+    print("\nlegacy v7 configs")
+
+    custom = ROOT / 'configs' / 'custom'
+    if not custom.is_dir():
+        print("  (configs/custom missing; skipped)")
+        return
+
+    files = sorted(custom.glob('*.json'))
+    if not files:
+        print("  (no configs to read; skipped)")
+        return
+
+    readable = [p for p in files
+                if gallery_lib.config_features(p, include_sliders=False)
+                is not None]
+    ratio = len(readable) / len(files)
+    check(f"reads most of the library ({len(readable)}/{len(files)})",
+          ratio > 0.9, f"only {ratio:.0%} readable -- v7 support regressed?")
+
+    # The two readers must agree exactly, or which one ran would move points
+    # on the map.
+    import json as _json
+
+    v8 = [p for p in readable
+          if _json.loads(p.read_text(encoding='utf-8')).get('version') == 8]
+    if not v8:
+        print("  (no v8 files to cross-check)")
+        return
+
+    mismatched = []
+    for path in v8:
+        via_app = gallery_lib._features_via_persistence(path, True)
+        if via_app is None:
+            continue
+        direct = gallery_lib.config_features(path, True)
+        if direct is None or len(direct) != len(via_app):
+            mismatched.append(path.name)
+            continue
+        if float(np.abs(np.asarray(via_app) - np.asarray(direct)).max()) > 1e-6:
+            mismatched.append(path.name)
+    check("both reader paths agree on v8 files", not mismatched,
+          str(mismatched[:3]))
+
+
 def test_seed_folders():
     """seed_configs entries may be folders."""
     print("\nseed config folders")
@@ -1184,6 +1321,8 @@ def main():
     test_live_recolor()
     test_config_auto_reload()
     test_umap_sources()
+    test_config_gallery()
+    test_legacy_configs()
     test_seed_folders()
     test_default_paths()
 

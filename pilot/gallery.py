@@ -37,7 +37,13 @@ IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.webp'}
 
 @dataclass
 class Item:
-    """One image in the gallery, plus whatever the manifest knew about it."""
+    """One point in the gallery: an image, a config, or both.
+
+    A run's candidate has a capture AND a config. A config folder browsed on
+    its own has only the second -- there is no picture to embed or hover, and
+    `path` is the .json itself. Everything downstream reads `has_image` rather
+    than assuming.
+    """
 
     path: Path
     #: Index into the embedding matrix.
@@ -47,6 +53,8 @@ class Item:
     origin: str = ''
     parent_id: str = ''
     config_path: str = ''
+    #: False for a config with no capture beside it.
+    has_image: bool = True
 
     @property
     def name(self):
@@ -97,6 +105,15 @@ class Gallery:
     @property
     def has_scores(self):
         return any(i.score is not None for i in self.items)
+
+    @property
+    def has_images(self):
+        """False for a config-only gallery: nothing to embed, nothing to hover.
+
+        Read rather than assumed by everything that wants a picture -- the
+        CLIP source, the caption box, the thumbnail preview.
+        """
+        return any(i.has_image for i in self.items)
 
     def apply_scores(self, by_name):
         """Replace item scores from a {name: score} mapping. Returns the count.
@@ -192,10 +209,61 @@ def build(folder, cfg, recursive=True, refresh=False, progress=print):
     vectors = embed_cached(paths, backend, cache, aggregate=cfg.aggregate,
                            progress=progress)
 
-    items = [Item(path=p, index=i) for i, p in enumerate(paths)]
+    items = [Item(path=p, index=i, has_image=True)
+             for i, p in enumerate(paths)]
     _enrich(items, root, progress)
     return Gallery(items=items, embeddings=vectors, signature=signature,
                    root=root)
+
+
+def find_configs(folder, recursive=True):
+    """Config JSONs in `folder`, sorted."""
+    root = Path(folder)
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a folder: {root}")
+    walk = root.rglob('*.json') if recursive else root.glob('*.json')
+    # A run folder keeps its search.json beside the configs; including it
+    # would put one unreadable point on every map.
+    return sorted(p for p in walk if p.name not in ('search.json',
+                                                    'manifest.jsonl'))
+
+
+def build_configs(folder, recursive=True, progress=print):
+    """A gallery from a folder of Fluoddity save files. No images, no CLIP.
+
+    For browsing a config collection by what the configs ARE. Nothing is
+    rendered and nothing is embedded, so this is instant even on a folder of
+    thousands -- the whole cost is reading small JSONs.
+
+    Only the Rule sources can map such a gallery, since there is no picture to
+    embed. `embeddings` is left empty rather than zeroed so a caller reaching
+    for the CLIP source gets an obvious shape mismatch rather than a plausible
+    map of nothing.
+    """
+    root = Path(folder)
+    paths = find_configs(root, recursive=recursive)
+    if not paths:
+        raise FileNotFoundError(f"no config .json files in {root}")
+
+    items, unreadable = [], 0
+    for index, path in enumerate(paths):
+        if config_features(path, include_sliders=False) is None:
+            unreadable += 1
+            continue
+        items.append(Item(path=path, index=len(items),
+                          config_path=str(path), has_image=False))
+
+    if not items:
+        raise FileNotFoundError(
+            f"{len(paths)} .json file(s) in {root}, none readable as configs")
+    if unreadable:
+        progress(f"  skipped {unreadable} file(s) that are not readable "
+                 f"Fluoddity configs")
+    progress(f"  {len(items)} config(s)")
+
+    return Gallery(items=items,
+                   embeddings=np.zeros((len(items), 0), dtype=np.float32),
+                   signature='configs', root=root)
 
 
 def score_caption(gallery, caption, backend, calibrate=True, aggregate='mean'):
@@ -284,13 +352,66 @@ def _standardize(matrix):
     return (centred / np.maximum(norms, 1e-12)).astype(np.float32)
 
 
+#: Field names on the app's SimulationConfig, in the same order as
+#: SLIDER_FIELDS. Used only on the persistence path below.
+_SLIDER_ATTRS = (
+    'sensor_gain', 'sensor_angle', 'sensor_distance',
+    'global_force_mult', 'drag', 'strafe_power', 'axial_force',
+    'lateral_force', 'hazard_rate', 'cohorts',
+    'gravity_force', 'gravity_strafe', 'initial_conditions', 'cohort_fences',
+    'sensor_angle_jitter', 'sensor_distance_jitter', 'radial_gravity',
+)
+
+
+def _features_via_persistence(path, include_sliders):
+    """Read a config through the app's own loader, if it is importable.
+
+    MOST REAL CONFIGS ARE v7. Measured on a live library: 188 of 192 files in
+    configs/custom are the original Fluoddity format, whose layout is entirely
+    different -- physics and rule at the top level, no `configs` array at all.
+    particle_system.persistence already reads both and is the one place that
+    knows how; reimplementing its v7 branch here would be a second copy to
+    drift.
+
+    Returns None when the app is not importable, so the direct v8 reader below
+    still covers a pilot running on its own.
+    """
+    try:
+        from particle_system import persistence
+    except ImportError:
+        return None
+    try:
+        saved = persistence.load(path)
+        config = saved.configs[0]
+        values = [float(v) for v in config.rule]
+    except Exception:                                           # noqa: BLE001
+        return None
+    if len(values) != RULE_FLOATS:
+        return None
+    if include_sliders:
+        values.extend(float(getattr(config, name, 0.0) or 0.0)
+                      for name in _SLIDER_ATTRS)
+        values.extend(float(getattr(saved.world, name, 0.0) or 0.0)
+                      for name in WORLD_FIELDS)
+    return values
+
+
 def config_features(path, include_sliders):
     """The feature row for one saved config, or None if it cannot be read.
 
-    Reads the v8 JSON directly. A malformed or older file returns None rather
-    than raising: a folder assembled by hand may contain anything, and one bad
-    config should not stop a map of four thousand.
+    Prefers the app's loader, which understands both v8 and the legacy v7
+    format the bulk of a real library is in. Falls back to reading v8 JSON
+    directly so `pilot/` still works without the app importable -- the HTTP
+    API is meant to be the only hard dependency between them.
+
+    A malformed file returns None rather than raising: a folder assembled by
+    hand may contain anything, and one bad config should not stop a map of
+    four thousand.
     """
+    values = _features_via_persistence(path, include_sliders)
+    if values is not None:
+        return values
+
     try:
         data = json.loads(Path(path).read_text(encoding='utf-8'))
         config = data['configs'][0]
@@ -334,6 +455,10 @@ def rule_embeddings(items, include_sliders, progress=None):
 def source_embeddings(gallery, source, progress=None):
     """The matrix a UMAP should be built from, for the chosen source."""
     if source == SOURCE_CLIP:
+        if not gallery.has_images:
+            raise ValueError(
+                "this folder holds configs, not captures -- there is no image "
+                "to embed. Pick the Rule or Rule + sliders source.")
         return gallery.embeddings
     return rule_embeddings(gallery.items,
                            include_sliders=(source == SOURCE_RULE_SLIDERS),
