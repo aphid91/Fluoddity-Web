@@ -216,6 +216,50 @@ def build(folder, cfg, recursive=True, refresh=False, progress=print):
                    root=root)
 
 
+def build_cached(folder, signature, aggregate='mean', recursive=True,
+                 progress=print):
+    """A Gallery from vectors ALREADY in the archive. Never builds a backend.
+
+    THE POINT: `build` above loads the model on its very first line, which for
+    SO400M is 3.5GB before it has looked at anything. Opening a set that is
+    already embedded has no need of a model at all -- the vectors are on disk
+    -- and going through `build` to get them is what made "load my embeddings"
+    cost as much as making them.
+
+    Returns (gallery, missing) where `missing` is the images this signature
+    does NOT cover, so a caller can offer to finish the job rather than
+    quietly presenting a partial set as the whole folder.
+
+    The gallery holds ONLY the covered images, in sorted order, so item i and
+    embedding row i line up. A partial set is a smaller gallery, not a
+    full-sized one with holes.
+    """
+    root = Path(folder)
+    paths = find_images(root, recursive=recursive)
+    if not paths:
+        raise FileNotFoundError(f"no images in {root}")
+
+    cache = EmbeddingCache(root)
+    hits, misses = cache.lookup(paths, signature)
+    if not hits:
+        raise LookupError(f"no cached embeddings for {signature}")
+
+    covered = [p for p in paths if str(p) in hits]
+    stacked = np.stack([hits[str(p)] for p in covered]).astype(np.float32)
+    vectors = embedding.aggregate(stacked, aggregate)
+
+    progress(f"  {len(covered)} embeddings from cache [{signature}]")
+    if misses:
+        progress(f"  {len(misses)} image(s) not in this set -- "
+                 f"press Continue embedding to add them")
+
+    items = [Item(path=p, index=i, has_image=True)
+             for i, p in enumerate(covered)]
+    _enrich(items, root, progress)
+    return Gallery(items=items, embeddings=vectors, signature=signature,
+                   root=root), misses
+
+
 def find_configs(folder, recursive=True):
     """Config JSONs in `folder`, sorted."""
     root = Path(folder)

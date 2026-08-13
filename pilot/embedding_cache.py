@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -41,19 +42,117 @@ CACHE_NAME = '.embeddings.npz'
 FLUSH_EVERY = 64
 
 
+@dataclass(frozen=True)
+class SignatureInfo:
+    """One embedding set in an archive: what it is, and how much of it there is.
+
+    COVERAGE IS AN INTERSECTION, not a row count. The key carries size and
+    mtime, so a rewritten image leaves its old row behind and a set can hold
+    far more rows than the folder has images -- measured at exactly 2x on a
+    real B32 set. `entries` is what is stored, `covered` is what is usable,
+    and only the second one answers "can I load this".
+    """
+
+    signature: str
+    #: Raw rows under this signature, stale ones included.
+    entries: int
+    #: Distinct filenames, however many rows each has.
+    cached: int
+    #: Filenames that are cached AND still on disk. The real number.
+    covered: int
+    #: Images in the folder. 0 when the inventory was taken without a scan.
+    total: int
+    #: Rows that no live image can reach.
+    stale: int
+    settings: 'VisionSettings | None'
+    label: str
+
+    @property
+    def complete(self):
+        return self.total > 0 and self.covered >= self.total
+
+    @property
+    def partial(self):
+        return 0 < self.covered < self.total
+
+    @property
+    def missing(self):
+        return max(0, self.total - self.covered)
+
+
+#: Divisor taking st_mtime_ns down to whole seconds. See file_key.
+_MTIME_SCALE = 1_000_000_000
+
+#: How far two mtimes may differ and still mean the same file, in seconds.
+#: FAT and SMB keep mtimes to 2-second granularity, so a copy can land a
+#: whole second either side of the original. MEASURED: of 25,100 captures
+#: moved once, 12,583 came back exactly +1s and not one moved further.
+_MTIME_SLACK = 2
+
+
 def file_key(path, signature):
     """Identity of an embedding: which file, which settings.
 
     Size and mtime rather than a content hash -- hashing thousands of images
     costs more than it saves, and captures are written once.
 
-    NANOSECOND mtime. A search rewrites a folder in well under a second, so a
-    file replaced by another of the same size would keep its key at
-    whole-second resolution and be served vectors for an image that no longer
-    exists.
+    THE MTIME IS IN WHOLE SECONDS, and is matched with slack rather than for
+    equality -- see `entry_of`. It was nanoseconds, on the reasoning that a
+    search rewrites a folder in well under a second and a same-sized
+    replacement would otherwise keep its key. True, and it cost an entire
+    archive: sub-second precision does not survive a copy, a sync or a zip.
+    MEASURED on a real folder -- all 25,100 captures came back with
+    `st_mtime_ns % 1e9 == 0`, and half of them a further second off besides,
+    because FAT/SMB timestamps land on 2-second boundaries. All 84,261 cached
+    vectors became unreachable at once, and the only symptom was "embedding
+    25,100 new" on a folder embedded the day before.
+
+    Written to the key so the archive stays a flat npz of arrays with no
+    sidecar metadata, and read back out by `_parse_key` for the comparison.
     """
     stat = Path(path).stat()
-    return f"{Path(path).name}|{stat.st_size}|{stat.st_mtime_ns}|{signature}"
+    return (f"{Path(path).name}|{stat.st_size}"
+            f"|{stat.st_mtime_ns // _MTIME_SCALE}|{signature}")
+
+
+def _parse_key(key):
+    """(name, size, mtime, signature) from a key. mtime is None if absent."""
+    parts = key.split('|', 3)
+    if len(parts) != 4:
+        return None
+    name, size, mtime, signature = parts
+    return name, size, (int(mtime) if mtime.isdigit() else None), signature
+
+
+def mtime_matches(stored, current):
+    """Whether two whole-second mtimes describe the same unmodified file.
+
+    Within _MTIME_SLACK, because a copy moves them by up to a second either
+    way. The gap this leaves -- the same file rewritten to the same byte
+    count inside two seconds -- is far narrower than the one it closes, and
+    the size check still catches every rewrite that changes the content
+    length.
+    """
+    if stored is None or current is None:
+        return True
+    return abs(stored - current) <= _MTIME_SLACK
+
+
+def normalize_key(key):
+    """An old nanosecond-mtime key with its mtime in whole seconds.
+
+    Archives written before the change hold nanosecond keys, and re-embedding
+    them is the exact cost this avoids -- so they are converted on read.
+    A key already in seconds passes through unchanged, which makes this safe
+    to apply to every key without knowing which era wrote it.
+    """
+    parts = key.split('|', 3)
+    if len(parts) != 4:
+        return key
+    name, size, mtime, signature = parts
+    if mtime.isdigit() and len(mtime) > 10:
+        mtime = str(int(mtime) // _MTIME_SCALE)
+    return f"{name}|{size}|{mtime}|{signature}"
 
 
 class EmbeddingCache:
@@ -68,6 +167,10 @@ class EmbeddingCache:
         self.path = self.folder / CACHE_NAME
         self._entries = {}
         self._dirty = 0
+        #: (name, size, signature) -> [(mtime, key)]; see _index. Dropped
+        #: whenever _entries changes rather than kept in step, since a load or
+        #: a bulk delete rebuilds it far more cheaply than maintaining it.
+        self._by_identity = None
         self._lock = threading.Lock()
         self._load()
 
@@ -76,22 +179,66 @@ class EmbeddingCache:
             return
         try:
             with np.load(self.path, allow_pickle=False) as data:
-                self._entries = {k: data[k] for k in data.files}
+                # Normalized on the way in, so the rest of this module only
+                # ever sees one key format and an archive written before the
+                # whole-second change stays readable. Collisions collapse to
+                # the last writer, which for two rows of one image under one
+                # signature is the newer embedding either way.
+                self._entries = {normalize_key(k): data[k] for k in data.files}
+                self._by_identity = None
         except (OSError, ValueError, EOFError):
             # Corrupt or half-written: regenerable by definition, and a
             # traceback here would block a run for no reason.
             self._entries = {}
 
+    def _index(self):
+        """(name, size, signature) -> [(mtime, key)], built lazily.
+
+        The exact key is the fast path and stays a plain dict hit; this is
+        only consulted when that misses, which is when an mtime has drifted.
+        """
+        if self._by_identity is None:
+            index = {}
+            for key in self._entries:
+                parsed = _parse_key(key)
+                if parsed is None:
+                    continue
+                name, size, mtime, signature = parsed
+                index.setdefault((name, size, signature), []).append(
+                    (mtime, key))
+            self._by_identity = index
+        return self._by_identity
+
+    def _entry_of(self, path, signature):
+        """Vectors for `path` under `signature`, tolerating a shifted mtime.
+
+        Exact hit first. Failing that, look for the same name, size and
+        signature whose mtime is within the copy slack -- which is what makes
+        a folder that has been moved between filesystems load instead of
+        silently re-embedding.
+        """
+        found = self._entries.get(file_key(path, signature))
+        if found is not None:
+            return found
+        stat = Path(path).stat()
+        identity = (Path(path).name, str(stat.st_size), signature)
+        current = stat.st_mtime_ns // _MTIME_SCALE
+        for mtime, key in self._index().get(identity, ()):
+            if mtime_matches(mtime, current):
+                return self._entries.get(key)
+        return None
+
     def get(self, path, signature):
         """The (crops, dim) vectors for `path`, or None."""
         with self._lock:
-            return self._entries.get(file_key(path, signature))
+            return self._entry_of(path, signature)
 
     def put(self, path, signature, vectors):
         """Store one image's vectors. Flushes periodically, not per call."""
         with self._lock:
             self._entries[file_key(path, signature)] = np.asarray(
                 vectors, dtype=np.float32)
+            self._by_identity = None
             self._dirty += 1
             should_flush = self._dirty >= FLUSH_EVERY
         if should_flush:
@@ -106,7 +253,7 @@ class EmbeddingCache:
         hits, misses = {}, []
         with self._lock:
             for path in paths:
-                found = self._entries.get(file_key(path, signature))
+                found = self._entry_of(path, signature)
                 if found is None:
                     misses.append(path)
                 else:
@@ -174,10 +321,28 @@ class EmbeddingCache:
     def size_bytes(self):
         return self.path.stat().st_size if self.path.is_file() else 0
 
+    def _grouped(self):
+        """signature -> {filename -> entry count}, in one pass.
+
+        The one place a key is taken apart. Both halves matter and they are
+        at opposite ends: the signature is everything after the LAST '|', the
+        filename everything before the FIRST -- size and mtime sit between and
+        are what make two rows for one image possible.
+        """
+        groups = {}
+        with self._lock:
+            for key in self._entries:
+                parsed = _parse_key(key)
+                if parsed is None:
+                    continue
+                name, size, mtime, signature = parsed
+                rows = groups.setdefault(signature, {})
+                rows.setdefault((name, size), []).append(mtime)
+        return groups
+
     def signatures(self):
         """Which backend settings this folder has been embedded with."""
-        with self._lock:
-            return sorted({k.rsplit('|', 1)[-1] for k in self._entries})
+        return sorted(self._grouped())
 
     def rival_signatures(self, signature, minimum=1):
         """Other signatures this folder holds, biggest first.
@@ -192,14 +357,101 @@ class EmbeddingCache:
         Returns [(signature, count)] so a caller can say what else is here and
         let the reader spot the one word that differs.
         """
-        counts = {}
-        with self._lock:
-            for key in self._entries:
-                found = key.rsplit('|', 1)[-1]
-                if found != signature:
-                    counts[found] = counts.get(found, 0) + 1
+        counts = {found: sum(len(mtimes) for mtimes in rows.values())
+                  for found, rows in self._grouped().items()
+                  if found != signature}
         return sorted(((s, n) for s, n in counts.items() if n >= minimum),
                       key=lambda pair: -pair[1])
+
+    def inventory(self, paths=None):
+        """Every signature here, as SignatureInfo, most-covered first.
+
+        WHAT THE PICKER IS BUILT ON. Without this the only way to address a
+        set is to make a config match its key exactly, and a near-miss is
+        indistinguishable from a cold cache -- which is how a folder with
+        25,100 usable embeddings starts a multi-hour re-embed.
+
+        `paths` is the images actually on disk. Given, coverage is real; left
+        out, only the counts are filled in, so a caller with no folder scan
+        (a CLI listing, a test) still gets something useful.
+        """
+        # (name, size) -> mtimes on disk, so coverage uses the same tolerant
+        # comparison a lookup does. Counting distinct filenames instead would
+        # call a set "complete" that every actual load then misses.
+        on_disk = None
+        if paths is not None:
+            on_disk = {}
+            for path in paths:
+                path = Path(path)
+                if path.is_file():
+                    stat = path.stat()
+                    on_disk.setdefault(
+                        (path.name, str(stat.st_size)), []).append(
+                            stat.st_mtime_ns // _MTIME_SCALE)
+        total = len(on_disk) if on_disk is not None else 0
+
+        found = []
+        for signature, rows in self._grouped().items():
+            entries = sum(len(mtimes) for mtimes in rows.values())
+            covered = 0
+            if on_disk is not None:
+                covered = sum(
+                    1 for identity, mtimes in rows.items()
+                    if any(mtime_matches(m, current)
+                           for m in mtimes
+                           for current in on_disk.get(identity, ())))
+            found.append(SignatureInfo(
+                signature=signature, entries=entries, cached=len(rows),
+                covered=covered, total=total, stale=entries - covered,
+                settings=parse_signature(signature),
+                label=label_signature(signature)))
+        return sorted(found, key=lambda info: (-info.covered, -info.entries))
+
+    def prune(self, paths):
+        """Drop entries for files no longer on disk under that key. Returns how many.
+
+        WHY A SEPARATE ACTION FROM clear(). A signature can be complete and
+        still carry dead rows: the key holds size and mtime, so rewriting a
+        capture leaves the old row unreachable forever. Measured on a real
+        folder -- a B32 set of 50,200 rows over 25,100 images, every one
+        duplicated, about a third of a 1.07GB archive.
+
+        NEVER CALLED AUTOMATICALLY. Silently deleting cached vectors is the
+        failure this module exists to prevent; this is a button, not a policy.
+        """
+        # Compare on the identity part -- name|size|mtime -- rather than the
+        # whole key, so each file is stat'd ONCE rather than once per
+        # signature. On the measured archive that is 25,100 stats instead of
+        # 100,400 for the same answer.
+        # Keyed by (name, size) to the mtimes on disk, so each file is stat'd
+        # ONCE rather than once per signature. On the measured archive that is
+        # 25,100 stats instead of 100,400 for the same answer.
+        live = {}
+        for path in paths:
+            path = Path(path)
+            if path.is_file():
+                stat = path.stat()
+                live.setdefault((path.name, str(stat.st_size)), []).append(
+                    stat.st_mtime_ns // _MTIME_SCALE)
+
+        def reachable(key):
+            parsed = _parse_key(key)
+            if parsed is None:
+                return True             # not ours to judge; keep it
+            name, size, mtime, _signature = parsed
+            return any(mtime_matches(mtime, current)
+                       for current in live.get((name, size), ()))
+
+        with self._lock:
+            before = len(self._entries)
+            self._entries = {k: v for k, v in self._entries.items()
+                             if reachable(k)}
+            dropped = before - len(self._entries)
+            self._by_identity = None
+            self._dirty += dropped
+        if dropped:
+            self.flush()
+        return dropped
 
     def clear(self, signature=None):
         """Drop everything, or just one signature's entries."""
@@ -209,6 +461,7 @@ class EmbeddingCache:
             else:
                 self._entries = {k: v for k, v in self._entries.items()
                                  if not k.endswith('|' + signature)}
+            self._by_identity = None
             self._dirty = 1
         return self.flush()
 
@@ -218,6 +471,114 @@ class EmbeddingCache:
 #: its prefix rather than its index, and ':gray' is a flag whose ABSENCE is the
 #: other value.
 _FIELD_NAMES = (('c', 'crops'), ('f', 'crop_frac'), ('s', 'seed'))
+
+#: How a signature field parses back. Same order and prefixes as _FIELD_NAMES,
+#: with the type each value is written as -- so decoding stays the exact
+#: inverse of the encoding rather than a second, drifting spelling of it.
+_FIELD_TYPES = {'c': ('crops', int), 'f': ('crop_frac', float),
+                's': ('seed', int)}
+
+
+@dataclass(frozen=True)
+class VisionSettings:
+    """The cache-key half of a config, decoded from a signature.
+
+    WHY THIS EXISTS. A signature is the only durable record of how a set of
+    embeddings was made -- the config that produced them may have been edited
+    a dozen times since. Decoding it back into config fields is what lets the
+    viewer say "load THAT set" and have the settings follow the choice, rather
+    than making the reader retype six values until the key matches.
+    """
+
+    backend: str
+    #: Short key ('B32'), or '' when the architecture is not one of ours --
+    #: a set embedded by a newer version still lists, it just cannot be adopted.
+    clip_model: str = ''
+    crops: int = 1
+    crop_frac: float = 0.3
+    seed: int = 0
+    grayscale: bool = False
+    #: The raw open_clip pair, kept so an unrecognised model round-trips.
+    architecture: str = ''
+    pretrained: str = ''
+
+    def as_config_fields(self):
+        """The SearchConfig kwargs this set was embedded with.
+
+        Only the fields that are part of the cache key: adopting a set must
+        not disturb captions, or the beam, or anything else the reader has set.
+        """
+        fields = {'backend': self.backend, 'crops': self.crops,
+                  'crop_frac': self.crop_frac, 'seed': self.seed,
+                  'grayscale': self.grayscale}
+        if self.clip_model:
+            fields['clip_model'] = self.clip_model
+        return fields
+
+
+def parse_signature(signature):
+    """A signature decoded into VisionSettings, or None if it is not ours.
+
+    None rather than an exception: an archive can hold a signature written by
+    a newer version, and a picker that crashes on one unfamiliar row is worse
+    than one that shows it raw and refuses to adopt it.
+    """
+    from . import clip_models
+
+    if not signature:
+        return None
+    grayscale = signature.endswith(':gray')
+    parts = (signature[:-5] if grayscale else signature).split(':')
+    if parts[0] != 'clip' or len(parts) < 3:
+        # The texture backend has its own shape and no adoptable settings.
+        return None
+
+    architecture, pretrained = parts[1], parts[2]
+    values = {}
+    for field in parts[3:]:
+        for prefix, (name, cast) in _FIELD_TYPES.items():
+            if field.startswith(prefix):
+                try:
+                    values[name] = cast(field[len(prefix):])
+                except ValueError:
+                    return None
+                break
+    return VisionSettings(
+        backend='clip',
+        clip_model=clip_models.normalize(architecture) or '',
+        grayscale=grayscale, architecture=architecture, pretrained=pretrained,
+        **values)
+
+
+def signature_for(settings):
+    """The signature `settings` would embed under. Inverse of parse_signature.
+
+    MUST AGREE EXACTLY with ClipBackend.signature(), which is the encoder --
+    two functions spelling one string is a real drift risk, so a test asserts
+    they agree rather than trusting that they look alike.
+
+    The point is to answer "does this set already exist?" WITHOUT constructing
+    a backend, since constructing one is the multi-gigabyte model load the
+    whole picker exists to avoid.
+    """
+    return (f"clip:{settings.architecture}:{settings.pretrained}"
+            f":c{settings.crops}:f{settings.crop_frac}:s{settings.seed}"
+            f"{':gray' if settings.grayscale else ''}")
+
+
+def label_signature(signature):
+    """A signature as a menu row: 'SO400M, 4 crops @0.40, seed 0, grayscale'.
+
+    Falls back to the raw signature when it does not decode, so an unknown set
+    is still selectable-looking rather than blank.
+    """
+    settings = parse_signature(signature)
+    if settings is None:
+        return signature
+    model = settings.clip_model or settings.architecture
+    return (f"{model}, {settings.crops} crops @{settings.crop_frac:.2f}, "
+            f"seed {settings.seed}"
+            f"{', grayscale' if settings.grayscale else ''}")
 
 
 def describe_difference(have, want):

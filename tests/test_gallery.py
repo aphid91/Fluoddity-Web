@@ -15,8 +15,10 @@ is exercised is everything around it.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -24,9 +26,13 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / 'demos'))
 
 from pilot import gallery as gallery_lib                          # noqa: E402
 from pilot import projection as projection_lib                    # noqa: E402
+from pilot import embedding as embedding_lib                      # noqa: E402
+from pilot import embedding_cache as cache_lib                    # noqa: E402
+import tex_sim                                                    # noqa: E402
 
 _failures = []
 
@@ -1459,10 +1465,217 @@ def test_lazy_reconnect():
         client_lib.FluoddityClient = original
 
 
+def test_signature_decode():
+    print("\nsignature decoding")
+
+    # The four signatures found in a real 1.07GB archive.
+    real = [
+        'clip:ViT-B-32:laion2b_s34b_b79k:c4:f0.4:s0:gray',
+        'clip:ViT-SO400M-14-SigLIP-384:webli:c4:f0.4:s0:gray',
+        'clip:ViT-SO400M-14-SigLIP-384:webli:c4:f0.4:s0',
+        'clip:ViT-B-32:laion2b_s34b_b79k:c10:f0.3:s0:gray',
+    ]
+    for signature in real:
+        settings = cache_lib.parse_signature(signature)
+        check(f"decodes {signature[:38]}", settings is not None)
+        # The property that makes "adopt this set's settings" safe: a decoded
+        # set re-emits its own key byte for byte, so adopting it cannot
+        # silently point at a different set.
+        check("and round-trips exactly",
+              cache_lib.signature_for(settings) == signature,
+              cache_lib.signature_for(settings))
+
+    so400m = cache_lib.parse_signature(real[1])
+    check("architecture resolves to the short key",
+          so400m.clip_model == 'SO400M', so400m.clip_model)
+    check("grayscale is read off the flag", so400m.grayscale is True)
+    check("and its absence is read too",
+          cache_lib.parse_signature(real[2]).grayscale is False)
+    colour = cache_lib.parse_signature(real[3])
+    check("crops and crop_frac decode",
+          (colour.crops, colour.crop_frac) == (10, 0.3),
+          f"{colour.crops} {colour.crop_frac}")
+
+    # signature_for must agree with ClipBackend.signature(), which is the
+    # encoder. Two functions spelling one string drift unless something says
+    # so. ClipBackend's __init__ only stores fields, so this needs no torch.
+    for signature in real:
+        settings = cache_lib.parse_signature(signature)
+        backend = tex_sim.ClipBackend(
+            model_name=settings.architecture, pretrained=settings.pretrained,
+            crops=settings.crops, crop_frac=settings.crop_frac,
+            seed=settings.seed, grayscale=settings.grayscale)
+        check("agrees with ClipBackend.signature()",
+              backend.signature() == signature, backend.signature())
+
+    check("a label names the model and the settings",
+          cache_lib.label_signature(real[1])
+          == 'SO400M, 4 crops @0.40, seed 0, grayscale',
+          cache_lib.label_signature(real[1]))
+    for bad in ['texture:512:r8:a8:e8:h8', 'garbage', '', 'clip:X',
+                'clip:A:B:cZZ']:
+        check(f"not ours -> None ({bad[:20] or 'empty'})",
+              cache_lib.parse_signature(bad) is None)
+
+    fields = cache_lib.parse_signature(real[1]).as_config_fields()
+    check("adoptable fields are the cache-key ones only",
+          set(fields) == {'backend', 'clip_model', 'crops', 'crop_frac',
+                          'seed', 'grayscale'}, str(sorted(fields)))
+
+
+def test_cache_inventory():
+    print("\ncache inventory")
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        make_images(root, ['a', 'b', 'c'])
+        paths = gallery_lib.find_images(root)
+        cache = cache_lib.EmbeddingCache(root)
+
+        grey = CountingBackend(signature='clip:ViT-B-32:x:c4:f0.4:s0:gray')
+        colour = CountingBackend(signature='clip:ViT-B-32:x:c4:f0.4:s0')
+        cache_lib.embed_cached(paths, grey, cache)
+        cache_lib.embed_cached(paths[:1], colour, cache)
+
+        found = {i.signature: i for i in cache.inventory(paths)}
+        check("both sets are listed", len(found) == 2, str(list(found)))
+        full = found[grey.signature()]
+        part = found[colour.signature()]
+        check("a full set reads complete", full.complete and not full.partial,
+              f"{full.covered}/{full.total}")
+        check("a partial set reads partial", part.partial and not part.complete,
+              f"{part.covered}/{part.total}")
+        check("and reports what is missing", part.missing == 2,
+              str(part.missing))
+        check("most-covered comes first",
+              cache.inventory(paths)[0].signature == grey.signature())
+
+        # THE REAL BUG. A file rewritten well after its first embedding gets
+        # an mtime outside the copy slack, so the old row becomes unreachable
+        # and the set holds more rows than the folder has images. `entries`
+        # must show that while `covered` stays honest. Backdating the ORIGINAL
+        # rather than sleeping keeps the test instant and the gap unambiguous.
+        for path in gallery_lib.find_images(root):
+            old = (path.stat().st_mtime_ns // 1_000_000_000 - 600) * 10**9
+            os.utime(path, ns=(old, old))
+        aged = cache_lib.EmbeddingCache(root)
+        cache_lib.embed_cached(gallery_lib.find_images(root), grey, aged)
+        cache = aged
+        after = {i.signature: i for i in cache.inventory(
+            gallery_lib.find_images(root))}[grey.signature()]
+        check("an out-of-slack rewrite leaves stale rows",
+              after.entries > after.covered,
+              f"entries={after.entries} covered={after.covered}")
+        check("but coverage is still right", after.covered == 3,
+              str(after.covered))
+        check("and the set still reads complete", after.complete)
+
+        # Four: three orphaned grey rows, plus the one colour row, which was
+        # embedded before the backdating and is now unreachable too.
+        dropped = cache.prune(gallery_lib.find_images(root))
+        check("prune drops the stale rows", dropped == 4, str(dropped))
+        pruned = {i.signature: i for i in cache.inventory(
+            gallery_lib.find_images(root))}[grey.signature()]
+        check("and the live ones survive", pruned.covered == 3,
+              str(pruned.covered))
+        check("with no rows to spare", pruned.entries == pruned.cached,
+              f"{pruned.entries} {pruned.cached}")
+
+
+def test_copied_folder_still_hits():
+    print("\na copied folder still hits the cache")
+
+    # WHY. A copy, sync or unzip rewrites mtimes: sub-second precision is
+    # lost, and FAT/SMB rounds to a 2-second boundary besides. Measured on a
+    # real folder, all 25,100 captures came back with a whole-second mtime and
+    # half of those a further second off -- which orphaned all 84,261 cached
+    # vectors at once and re-embedded a folder embedded the day before.
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        make_images(root, ['a', 'b'])
+        paths = gallery_lib.find_images(root)
+        cache = cache_lib.EmbeddingCache(root)
+        backend = CountingBackend()
+        cache_lib.embed_cached(paths, backend, cache)
+        check("embedded once", backend.calls == 2, str(backend.calls))
+
+        for path in paths:                      # as a copy would
+            stat = path.stat()
+            shifted = ((stat.st_mtime_ns // 1_000_000_000) + 1) * 1_000_000_000
+            os.utime(path, ns=(shifted, shifted))
+
+        reopened = cache_lib.EmbeddingCache(root)
+        hits, misses = reopened.lookup(paths, backend.signature())
+        check("a shifted mtime still hits", len(hits) == 2 and not misses,
+              f"{len(hits)} hits, {len(misses)} misses")
+
+        cache_lib.embed_cached(paths, backend, reopened)
+        check("so nothing is re-embedded", backend.calls == 2,
+              str(backend.calls))
+
+        # The slack must not swallow a genuine rewrite: that is what the size
+        # and mtime were for in the first place.
+        time.sleep(1.1)
+        make_images(root, ['a'], size=64)
+        fresh = CountingBackend()
+        cache_lib.embed_cached(gallery_lib.find_images(root), fresh,
+                               cache_lib.EmbeddingCache(root))
+        check("but a real rewrite is re-embedded", fresh.calls == 1,
+              str(fresh.calls))
+
+
+def test_build_cached_loads_no_model():
+    print("\nloading cached vectors builds no backend")
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        make_images(root, ['a', 'b', 'c'])
+        paths = gallery_lib.find_images(root)
+        backend = CountingBackend()
+        cache_lib.embed_cached(paths, backend,
+                               cache_lib.EmbeddingCache(root))
+
+        # THE GUARANTEE THE PICKER RESTS ON. build() loads the model on its
+        # first line; for SO400M that is 3.5GB before it looks at anything.
+        # If anyone reintroduces a backend build on the load path, this fails
+        # loudly rather than costing the user ten minutes.
+        original = embedding_lib.build_backend
+        embedding_lib.build_backend = lambda cfg: (_ for _ in ()).throw(
+            AssertionError("build_backend was called"))
+        try:
+            gallery, missing = gallery_lib.build_cached(
+                root, backend.signature(), progress=lambda m: None)
+        finally:
+            embedding_lib.build_backend = original
+
+        check("a gallery loads with no backend", len(gallery) == 3,
+              str(len(gallery)))
+        check("nothing is missing", not missing, str(missing))
+        check("the crop axis is collapsed", gallery.embeddings.ndim == 2,
+              str(gallery.embeddings.shape))
+        check("and it records which set it is",
+              gallery.signature == backend.signature())
+
+        partial, left = gallery_lib.build_cached(
+            root, backend.signature(), progress=lambda m: None)
+        check("a second load is identical", len(partial) == 3)
+
+        try:
+            gallery_lib.build_cached(root, 'clip:nothing:here:c1:f0.3:s0',
+                                     progress=lambda m: None)
+            check("an absent set raises", False, "no error")
+        except LookupError:
+            check("an absent set raises", True)
+
+
 def main():
     print("Gallery and projection")
     test_find_images()
     test_embedding_cache()
+    test_signature_decode()
+    test_cache_inventory()
+    test_copied_folder_still_hits()
+    test_build_cached_loads_no_model()
     test_percentile_mask()
     test_manifest_enrichment()
     test_normalize()
