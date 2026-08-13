@@ -1586,6 +1586,34 @@ def test_cache_inventory():
         # embedded before the backdating and is now unreachable too.
         dropped = cache.prune(gallery_lib.find_images(root))
         check("prune drops the stale rows", dropped == 4, str(dropped))
+
+        # A DUPLICATE IS NOT AN ORPHAN. Shift the mtimes by one second -- a
+        # copy, not a rewrite -- and re-embed: the new rows match within the
+        # slack, so both are reachable and prune correctly leaves them. Only
+        # the first is ever read, so compact() is what reclaims the rest.
+        # Measured on a real archive: 12,583 such pairs that prune could not
+        # touch, and a third of a gigabyte.
+        for path in gallery_lib.find_images(root):
+            shifted = ((path.stat().st_mtime_ns // 1_000_000_000) + 1) * 10**9
+            os.utime(path, ns=(shifted, shifted))
+        doubled = cache_lib.EmbeddingCache(root)
+        for key in list(doubled._entries):
+            name, size, mtime, signature = cache_lib._parse_key(key)
+            doubled._entries[f"{name}|{size}|{mtime + 1}|{signature}"] = \
+                doubled._entries[key]
+        doubled._by_identity = None
+        live = gallery_lib.find_images(root)
+        check("both copies are reachable",
+              doubled.prune(live) == 0, "prune dropped reachable rows")
+        collapsed = doubled.compact()
+        check("compact drops the duplicates", collapsed == 3, str(collapsed))
+        after_compact = doubled.inventory(live)[0]
+        check("and leaves one row per image",
+              after_compact.entries == after_compact.covered,
+              f"{after_compact.entries} rows for {after_compact.covered}")
+        hits, misses = doubled.lookup(live, grey.signature())
+        check("the images still load", len(hits) == 3 and not misses,
+              f"{len(hits)} hits")
         pruned = {i.signature: i for i in cache.inventory(
             gallery_lib.find_images(root))}[grey.signature()]
         check("and the live ones survive", pruned.covered == 3,

@@ -843,12 +843,20 @@ class Viewer:
              "The images are untouched; only the embeddings go.")
 
     def _prune_stale(self):
-        """Drop unreachable rows from this folder's archive."""
+        """Drop rows no load will ever read: unreachable, then duplicated.
+
+        Both, because a reader looking at "+12,583 stale" does not care which
+        kind they are -- and the two arise from the same event. A copy that
+        shifts mtimes leaves duplicates; a rewrite that shifts them further
+        leaves orphans.
+        """
         folder = Path(self.folder)
         cache = embedding_cache.EmbeddingCache(folder)
-        dropped = cache.prune(gallery_lib.find_images(folder))
+        orphaned = cache.prune(gallery_lib.find_images(folder))
+        duplicated = cache.compact()
         self.inventory = self._scan_folder(folder)
-        self.status = f"pruned {dropped} unreachable row(s)"
+        self.status = (f"dropped {orphaned + duplicated} row(s) -- "
+                       f"{orphaned} unreachable, {duplicated} duplicated")
 
     def _delete_selected(self):
         """Drop the selected set. Reloads the list; loads nothing."""

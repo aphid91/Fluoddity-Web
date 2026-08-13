@@ -62,7 +62,12 @@ class SignatureInfo:
     covered: int
     #: Images in the folder. 0 when the inventory was taken without a scan.
     total: int
-    #: Rows that no live image can reach.
+    #: Rows beyond one per covered image: unreachable rows AND redundant
+    #: duplicates, which are different problems with the same symptom. A file
+    #: rewritten outside the mtime slack orphans its old row; one rewritten
+    #: INSIDE the slack leaves a second row that is still reachable but will
+    #: never be read, since the first match wins. `prune` drops the first kind
+    #: and `compact` the second.
     stale: int
     settings: 'VisionSettings | None'
     label: str
@@ -449,6 +454,45 @@ class EmbeddingCache:
             dropped = before - len(self._entries)
             self._by_identity = None
             self._dirty += dropped
+        if dropped:
+            self.flush()
+        return dropped
+
+    def compact(self):
+        """Drop rows that duplicate another row for the same image. Returns how many.
+
+        WHY THIS IS NOT prune(). A row is unreachable when no file on disk
+        matches it, and prune drops those. But a file rewritten INSIDE the
+        mtime slack -- or embedded once before a copy and once after, one
+        second apart -- leaves two rows that both match. Both are reachable,
+        so prune keeps them; only the first is ever read, so the second is
+        pure weight. Measured on a real archive: 12,583 such pairs, a third of
+        a gigabyte, and prune correctly reported nothing to do.
+
+        Keeps the row with the LATEST mtime, which is the most recent
+        embedding of that image.
+        """
+        with self._lock:
+            best = {}
+            for key in self._entries:
+                parsed = _parse_key(key)
+                if parsed is None:
+                    continue
+                name, size, mtime, signature = parsed
+                identity = (name, size, signature)
+                current = best.get(identity)
+                if current is None or (mtime or 0) > (current[0] or 0):
+                    best[identity] = (mtime, key)
+            keep = {key for _mtime, key in best.values()}
+            # Rows this cannot parse are kept: they are not ours to judge, and
+            # discarding what we do not understand is how a cache loses data.
+            keep |= {k for k in self._entries if _parse_key(k) is None}
+            dropped = len(self._entries) - len(keep)
+            if dropped:
+                self._entries = {k: v for k, v in self._entries.items()
+                                 if k in keep}
+                self._by_identity = None
+                self._dirty += dropped
         if dropped:
             self.flush()
         return dropped
