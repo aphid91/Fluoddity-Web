@@ -892,8 +892,87 @@ def test_clip_model_choice():
     check("the report records the model", 'L14' in body, body[:400])
 
 
+def test_nested_config():
+    print("\nnested config sections")
+
+    import json
+    import tempfile
+    from pilot.config import SECTIONS
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+
+        nested = root / 'nested.json'
+        nested.write_text(json.dumps({
+            'vision': {'backend': 'clip', 'clip_model': 'SO400M', 'crops': 4,
+                       'crop_frac': 0.4, 'grayscale': True, 'seed': 0},
+            'scoring': {'captions': ['a maze'], 'calibrate': True},
+            'search': {'generations': 3, 'beam_width': 12},
+        }), encoding='utf-8')
+        cfg = SearchConfig.load(nested)
+        check("a nested file loads", cfg.clip_model == 'SO400M',
+              cfg.clip_model)
+        check("vision fields arrive", cfg.crops == 4 and cfg.grayscale is True,
+              f"c{cfg.crops} gray={cfg.grayscale}")
+        check("scoring fields arrive", cfg.captions == ['a maze'],
+              str(cfg.captions))
+        check("search fields arrive", cfg.generations == 3,
+              str(cfg.generations))
+        check("and it knows it can search", cfg.has_search is True)
+
+        # The same settings written flat must produce the same config, or a
+        # config already on disk changes meaning when the format does.
+        flat = root / 'flat.json'
+        flat.write_text(json.dumps({
+            'backend': 'clip', 'clip_model': 'SO400M', 'crops': 4,
+            'crop_frac': 0.4, 'grayscale': True, 'seed': 0,
+            'captions': ['a maze'], 'calibrate': True,
+            'generations': 3, 'beam_width': 12,
+        }), encoding='utf-8')
+        check("a flat file still loads identically",
+              SearchConfig.load(flat) == cfg)
+        check("and a flat file can always search",
+              SearchConfig.load(flat).has_search is True)
+
+        # VISION-ONLY: enough to embed and to re-score, not to run a search.
+        vision = root / 'vision.json'
+        vision.write_text(json.dumps({
+            'vision': {'backend': 'clip', 'clip_model': 'B32'},
+            'scoring': {'captions': ['a river']},
+        }), encoding='utf-8')
+        only = SearchConfig.load(vision)
+        check("a vision-only config loads", only.clip_model == 'B32')
+        check("but reports it cannot search", only.has_search is False)
+        check("a config built in code can search",
+              SearchConfig().has_search is True)
+
+        # A top-level key overrides the same key inside a section, so an
+        # override on top of a preset still works.
+        mixed = root / 'mixed.json'
+        mixed.write_text(json.dumps({
+            'vision': {'clip_model': 'B32', 'crops': 1},
+            'crops': 9,
+        }), encoding='utf-8')
+        check("a top-level key wins over a section",
+              SearchConfig.load(mixed).crops == 9,
+              str(SearchConfig.load(mixed).crops))
+
+        # Round-trip through the nested writer.
+        out = root / 'out.json'
+        cfg.save(out)
+        written = json.loads(out.read_text(encoding='utf-8'))
+        check("save writes sections", set(written) == set(SECTIONS),
+              str(sorted(written)))
+        check("and not the provenance field", 'sections' not in written)
+        check("a saved config reloads to itself", SearchConfig.load(out) == cfg)
+        check("seed is a VISION field, not a search one",
+              'seed' in SECTIONS['vision'] and 'seed' not in SECTIONS['search'])
+        check("and so is crop_frac", 'crop_frac' in SECTIONS['vision'])
+
+
 def main():
     print("Beam search")
+    test_nested_config()
     test_generation_zero()
     test_proposal_shape()
     test_beam_never_regresses()

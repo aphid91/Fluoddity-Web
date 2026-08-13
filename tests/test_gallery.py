@@ -493,13 +493,19 @@ class FakeTextBackend:
     name = 'fake'
     supports_text = True
 
-    def __init__(self, vectors, dim=32):
+    def __init__(self, vectors, dim=32, signature='fake:v1'):
         self.vectors = vectors
         self.dim = dim
         self.grayscale = False
+        #: apply_caption refuses when this disagrees with the gallery's, so a
+        #: caption is never scored against vectors from another model.
+        self._signature = signature
         axis = np.zeros(dim, dtype=np.float32)
         axis[-1] = 1.0
         self._generic = axis
+
+    def signature(self):
+        return self._signature
 
     def embed_texts(self, texts):
         out = np.zeros((len(texts), self.dim), dtype=np.float32)
@@ -535,10 +541,13 @@ def test_caption_colouring():
         generic,                                                # generic
     ]).astype(np.float32)
 
+    # The signature must match the backend's: apply_caption refuses to score a
+    # caption against vectors from another model, and an unset signature is a
+    # mismatch like any other.
     gallery = gallery_lib.Gallery(
         items=[gallery_lib.Item(path=Path(f"{i}.png"), index=i)
                for i in range(3)],
-        embeddings=images, root=Path('.'))
+        embeddings=images, root=Path('.'), signature=backend.signature())
 
     scores = gallery_lib.score_caption(gallery, 'a maze', backend)
     check("returns one score per image", scores.shape == (3,), str(scores.shape))
@@ -630,8 +639,11 @@ def test_caption_colouring():
     plain_view = loaded_viewer(tex_sim.TextureBackend())
     plain_view.caption = 'a maze'
     plain_view.apply_caption()
+    # Names the BUTTON that fixes it, not the internal that failed: "needs the
+    # clip backend" told the reader nothing they could act on.
     check("the texture backend reports it cannot embed text",
-          plain_view.caption_scores is None and 'clip' in plain_view.status,
+          plain_view.caption_scores is None
+          and 'Create embeddings' in plain_view.status,
           plain_view.status)
 
 
@@ -1668,11 +1680,115 @@ def test_build_cached_loads_no_model():
             check("an absent set raises", True)
 
 
+def test_picker_adopts_settings():
+    print("\nselecting a set adopts its settings")
+
+    from pilot.umap_view import Viewer
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        make_images(root, ['a', 'b'])
+        paths = gallery_lib.find_images(root)
+        cache = cache_lib.EmbeddingCache(root)
+        so400m = 'clip:ViT-SO400M-14-SigLIP-384:webli:c4:f0.4:s0:gray'
+        cache_lib.embed_cached(paths, CountingBackend(signature=so400m), cache)
+
+        # A config that disagrees with the archive on every vision field --
+        # the situation that used to mean "re-embed everything".
+        config = root / 'search.json'
+        config.write_text(json.dumps({
+            'backend': 'clip', 'clip_model': 'B32', 'crops': 1,
+            'crop_frac': 0.3, 'grayscale': False, 'seed': 7,
+            'captions': ['a maze']}), encoding='utf-8')
+
+        view = Viewer()
+        view.folder = str(root)
+        view.config_path = str(config)
+        view._load_config(str(config))
+        check("the file's model is in force at first",
+              view.cfg.clip_model == 'B32', view.cfg.clip_model)
+
+        view.inventory = view._scan_folder(root)
+        check("the scan finds the set", len(view.inventory) == 1,
+              str(len(view.inventory)))
+
+        info = view.inventory[0]
+        view.selected_signature = info.signature
+        view._apply_model_choice()
+        check("selecting adopts the model", view.cfg.clip_model == 'SO400M',
+              view.cfg.clip_model)
+        check("and the crops", view.cfg.crops == 4, str(view.cfg.crops))
+        check("and grayscale", view.cfg.grayscale is True)
+        check("and the seed", view.cfg.seed == 0, str(view.cfg.seed))
+
+        # THE BUG THIS GUARDS. Every action re-reads the config file first, so
+        # without the selection winning, Re-score would silently act on the
+        # file's settings and re-embed the whole folder.
+        view._refresh_config()
+        check("a re-read does not revert the selection",
+              view.cfg.clip_model == 'SO400M' and view.cfg.crops == 4,
+              f"{view.cfg.clip_model} c{view.cfg.crops}")
+        check("scoring fields still come from the file",
+              view.cfg.captions == ['a maze'], str(view.cfg.captions))
+
+        view.selected_signature = ''
+        view._refresh_config()
+        check("with nothing selected the file is the truth again",
+              view.cfg.clip_model == 'B32', view.cfg.clip_model)
+
+
+def test_create_is_a_noop_when_complete():
+    print("\ncreating a set that already exists")
+
+    from pilot.umap_view import Viewer
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        make_images(root, ['a', 'b'])
+        paths = gallery_lib.find_images(root)
+        cache = cache_lib.EmbeddingCache(root)
+        signature = 'clip:ViT-B-32:laion2b_s34b_b79k:c1:f0.3:s0'
+        cache_lib.embed_cached(paths, CountingBackend(signature=signature),
+                               cache)
+
+        config = root / 'search.json'
+        config.write_text(json.dumps({
+            'backend': 'clip', 'clip_model': 'B32', 'crops': 1,
+            'crop_frac': 0.3, 'grayscale': False, 'seed': 0}),
+            encoding='utf-8')
+
+        view = Viewer()
+        view.folder = str(root)
+        view.config_path = str(config)
+        view._load_config(str(config))
+        view.inventory = view._scan_folder(root)
+
+        check("the config's own settings decode to the stored key",
+              cache_lib.signature_for(view._config_settings()) == signature,
+              cache_lib.signature_for(view._config_settings()))
+
+        original = embedding_lib.build_backend
+        embedding_lib.build_backend = lambda cfg: (_ for _ in ()).throw(
+            AssertionError("build_backend was called"))
+        try:
+            view._create_embeddings()
+        finally:
+            embedding_lib.build_backend = original
+
+        check("it says so rather than re-embedding",
+              'already' in view.status.lower(), view.status)
+        check("and names the count", '2' in view.status, view.status)
+        check("and selects the set instead",
+              view.selected_signature == signature, view.selected_signature)
+
+
 def main():
     print("Gallery and projection")
     test_find_images()
     test_embedding_cache()
     test_signature_decode()
+    test_picker_adopts_settings()
+    test_create_is_a_noop_when_complete()
     test_cache_inventory()
     test_copied_folder_still_hits()
     test_build_cached_loads_no_model()

@@ -34,6 +34,7 @@ from pathlib import Path
 import numpy as np
 
 from . import clip_models
+from . import embedding_cache
 from . import gallery as gallery_lib
 from . import projection as projection_lib
 from .config import SearchConfig
@@ -190,18 +191,27 @@ class Viewer:
         self.status = 'no folder loaded'
 
         #: Which CLIP model the buttons here act with, as a short name.
-        #:
-        #: OVERRIDES THE CONFIG FILE while the window is open. Every action
-        #: re-reads search.json first (see _refresh_config), so without an
-        #: override the radio would be reset by the very button it was set to
-        #: affect -- pressing Re-score would load clip_model from disk, discard
-        #: the selection, and score with the old model while the GUI still
-        #: showed the new one. It starts at whatever the config says and stops
-        #: following the file once the user touches it.
+        #: Follows the selected embedding set; falls back to the config.
         self.clip_model = clip_models.normalize(
             getattr(self.cfg, 'clip_model', None)) or clip_models.DEFAULT
-        #: True once the radio has been clicked, so the file stops winning.
-        self.clip_model_pinned = False
+
+        #: What the current folder's archive holds, as SignatureInfo. This is
+        #: what replaced guessing: the sets are read off disk and listed, so
+        #: loading one is a choice from a menu rather than an attempt to make
+        #: a config match a forty-character key by hand.
+        self.inventory = []
+        #: Which folder `inventory` describes, so a stale list is never shown
+        #: against the wrong folder.
+        self.inventory_folder = ''
+        #: The signature actually selected, '' when none is.
+        #:
+        #: OVERRIDES THE CONFIG FILE while the window is open, for all six
+        #: cache-key fields. Every action re-reads the config first (see
+        #: _refresh_config), so without this the file would undo the selection
+        #: before the button acted on it -- pressing Re-score after choosing
+        #: the SO400M set would score with whatever the file said and
+        #: re-embed 25,100 images. The selection is an explicit act and wins.
+        self.selected_signature = ''
 
         self.caption = ''
         self.caption_applied = ''
@@ -267,7 +277,9 @@ class Viewer:
         # disagree, but "normally" is doing a lot of work there: a mismatch
         # would assign a string to self.projection and every later frame would
         # die inside the draw loop, far from the cause.
-        if kind == 'loading' and isinstance(progress.result, tuple):
+        if kind == 'scanning' and isinstance(progress.result, list):
+            self._took_inventory(progress.result)
+        elif kind == 'loading' and isinstance(progress.result, tuple):
             self.gallery, self.backend = progress.result
             self.projection = None
             self.caption_scores = None
@@ -320,27 +332,105 @@ class Viewer:
         return True
 
     def _apply_model_choice(self):
-        """Reconcile the radio with the config just read.
+        """Reconcile the config just read with the selected embedding set.
 
-        Two directions, and which one wins is the whole point:
+        ONE DIRECTION, and that is the point. This used to arbitrate between a
+        radio button and the file, with a hidden "pinned" flag deciding which
+        won -- so the answer to "which model will this use" lived in a piece of
+        state nothing on screen showed.
 
-        UNPINNED -- the radio follows the file. Opening a config that says
-        "L14" moves the radio to L14, which is what makes the file the source
-        of truth until someone disagrees with it.
+        Now a set is selected from the archive, and the six fields that make up
+        its key are re-imposed over whatever the file says, every time the file
+        is read. Without that, the re-read before each action would undo the
+        selection and act on the file instead: choosing the SO400M set and
+        pressing Re-score would score with the file's model and re-embed the
+        whole folder. With no selection the file is simply the truth.
 
-        PINNED -- the file follows the radio. Once the radio has been clicked
-        it overrides clip_model on every config read, because every action
-        re-reads the file and would otherwise undo the click before acting on
-        it. SearchConfig is frozen, so this replaces it rather than mutating.
+        SearchConfig is frozen, so this replaces it rather than mutating.
         """
         from dataclasses import replace
 
-        if not self.clip_model_pinned:
+        settings = self._selected_settings()
+        if settings is None:
             self.clip_model = (clip_models.normalize(self.cfg.clip_model)
                                or clip_models.DEFAULT)
             return
-        if self.cfg.clip_model != self.clip_model:
-            self.cfg = replace(self.cfg, clip_model=self.clip_model)
+        fields = settings.as_config_fields()
+        if any(getattr(self.cfg, k) != v for k, v in fields.items()):
+            self.cfg = replace(self.cfg, **fields)
+        if settings.clip_model:
+            self.clip_model = settings.clip_model
+
+    def _took_inventory(self, inventory):
+        """Fold a finished scan in, and pick a set if the choice is obvious.
+
+        AUTO-SELECTS ONLY THE UNAMBIGUOUS CASE -- exactly one complete set,
+        which is the ordinary folder. With several, the best-covered one is
+        selected but NOT loaded, so the reader sees the list and decides;
+        quietly loading one of four would be the guessing this replaced.
+        """
+        self.inventory = inventory
+        self.inventory_folder = self.folder
+        self.gallery = None
+        self.backend = None
+        self.projection = None
+        self.selected_signature = ''
+
+        if not inventory:
+            self.status = ("no embeddings in this folder -- "
+                           "press Create embeddings")
+            return
+
+        complete = [info for info in inventory if info.complete]
+        if len(complete) == 1 and len(inventory) == 1:
+            self._select_set(complete[0])
+            return
+
+        best = complete[0] if complete else inventory[0]
+        self.selected_signature = best.signature
+        self._apply_model_choice()
+        self.status = (f"{len(inventory)} embedding set(s) here -- "
+                       f"{best.label} selected; press Load set")
+
+    def _selected_settings(self):
+        """VisionSettings for the selected set, or None if nothing is chosen."""
+        if not self.selected_signature:
+            return None
+        return embedding_cache.parse_signature(self.selected_signature)
+
+    def _selected_info(self):
+        """The SignatureInfo for the selected set, or None."""
+        for info in self.inventory:
+            if info.signature == self.selected_signature:
+                return info
+        return None
+
+    def _select_set(self, info):
+        """Adopt a set's settings and load its vectors. No model is loaded."""
+        self.selected_signature = info.signature
+        self._apply_model_choice()
+        self._load_selected()
+
+    def _load_selected(self):
+        """Load the selected set's vectors from the archive."""
+        info = self._selected_info()
+        if info is None or not self.folder:
+            return
+        folder, signature = Path(self.folder), info.signature
+        aggregate = self.cfg.aggregate
+
+        def work(report):
+            gallery, missing = gallery_lib.build_cached(
+                folder, signature, aggregate=aggregate, progress=report)
+            return gallery, None
+
+        if self._begin('loading', f"loading {info.label}", work):
+            self.status = f"loading {info.covered} embeddings [{info.label}]"
+
+    def _scan_folder(self, folder):
+        """Read what the folder's archive holds. Cheap, and loads no model."""
+        paths = gallery_lib.find_images(folder)
+        return embedding_cache.EmbeddingCache(folder).inventory(paths)
 
     def _refresh_config(self):
         """Re-read the config file before acting on it.
@@ -365,7 +455,15 @@ class Viewer:
         return False
 
     def load_folder(self, folder, config_path=None):
-        """Embed a folder on a background thread."""
+        """Read what a folder's archive holds. Embeds nothing, loads no model.
+
+        THIS USED TO EMBED. Opening a folder built a backend and embedded
+        whatever the config's key did not already cover -- so a config that
+        disagreed with the archive by one field turned "look at this folder"
+        into hours of GPU work, with a progress bar as the only clue. Loading
+        now scans, lists the sets that are there, and waits to be told which
+        one; making new ones is a button with its own name.
+        """
         folder = Path(folder).expanduser()
         if not folder.is_dir():
             self.status = f"not a folder: {folder}"
@@ -373,17 +471,14 @@ class Viewer:
         if config_path and not self._load_config(config_path):
             return
 
-        cfg = self.cfg
         self.folder = str(folder)
 
         def work(report):
-            from . import embedding
+            report(f"  scanning {folder.name}")
+            return self._scan_folder(folder)
 
-            gallery = gallery_lib.build(folder, cfg, progress=report)
-            return gallery, embedding.build_backend(cfg)
-
-        if self._begin('loading', f"loading {folder.name}", work):
-            self.status = f"loading {folder}..."
+        if self._begin('scanning', f"scanning {folder.name}", work):
+            self.status = f"scanning {folder}..."
 
     def load_config_folder(self, folder):
         """Open a folder of Fluoddity save files. No images, no embedding.
@@ -467,17 +562,25 @@ class Viewer:
             return
         if self.backend is None or not getattr(self.backend, 'supports_text',
                                                False):
-            self.status = "caption colouring needs the clip backend"
+            # A set loaded from the archive has no backend, because loading one
+            # would be the multi-gigabyte model load the picker exists to
+            # avoid. Say which button pays it rather than "needs the clip
+            # backend", which names an internal and no action.
+            self.status = ("captions need the model loaded -- press Create "
+                           "embeddings, or Re-score run, which loads it")
             return
         # Refused rather than silently scored with the wrong model. The
         # gallery's vectors and this backend's text vectors would be from two
         # different models, and their cosine is a plausible-looking number with
         # no meaning -- the one failure here that would not announce itself.
-        # Re-embedding is minutes, so it is a button (_reembed), not something
-        # a caption keystroke triggers.
-        if self._model_mismatch():
-            self.status = (f"loaded with a different model than {self.clip_model}"
-                           f" -- press Re-embed to re-encode this folder")
+        #
+        # Compared on the WHOLE signature, not just the architecture: crops and
+        # grayscale change the vectors as surely as the model does, and the
+        # old architecture-only check called those a match.
+        if self.gallery.signature != self.backend.signature():
+            self.status = (f"these vectors are {self.gallery.signature}, the "
+                           f"model is {self.backend.signature()} -- select "
+                           f"that set or create it")
             return
 
         try:
@@ -672,65 +775,93 @@ class Viewer:
         self._cutoff()
 
     def _model_picker(self):
-        """Which CLIP model the caption and re-score buttons use.
+        """The embedding sets this folder holds, as a menu.
+
+        WHAT THIS REPLACED. It was three radio buttons -- B32, L14, SO400M --
+        and they could not express what the cache is actually keyed by. A set
+        differing only in grayscale or crops read as a match, so the GUI said
+        "SO400M" while the vectors it wanted were under a key one field away,
+        and the miss looked exactly like a cold cache. The archive is the
+        record of what exists, so it is what gets listed.
 
         HERE rather than beside the UMAP settings because this is a property of
         the SCORING, not of the layout: it decides what the caption box and
-        Re-score mean. Changing it does not move a single point until something
-        re-embeds.
+        Re-score mean.
         """
         from imgui_bundle import imgui
 
-        imgui.text("clip model")
-        for model in clip_models.MODELS:
-            imgui.same_line()
-            if imgui.radio_button(model.key, self.clip_model == model.key):
-                self._pick_model(model.key)
-            _tip(f"{model.architecture} / {model.pretrained}\n"
-                 f"{model.dim}-d, {model.download} download\n\n"
-                 f"{model.blurb}\n\n"
-                 f"Applies to Re-score run and Recompute colour from caption. "
-                 f"Both re-embed if this folder has not been seen with this "
-                 f"model before -- the first time is a full pass over the "
-                 f"folder, and afterwards it is cached per model.")
+        imgui.text("embedding sets")
+        imgui.same_line()
+        if imgui.small_button("Rescan") and self.folder:
+            self.load_folder(self.folder)
+        _tip("Re-read this folder's archive. Embeds nothing.")
 
-        # The loaded gallery was embedded with ONE model, and a caption scored
-        # against a different one is a cosine between two unrelated vector
-        # spaces -- a number that looks fine and means nothing. Say so rather
-        # than letting the colours quietly lie.
-        if self._model_mismatch():
-            imgui.same_line()
-            imgui.text_disabled("* loaded with another model -- press Re-embed")
-
-    def _pick_model(self, key):
-        """Take the radio's word for it from now on."""
-        if key == self.clip_model:
+        if not self.inventory:
+            imgui.text_disabled("  none -- press Create embeddings")
             return
-        self.clip_model = key
-        # Pinned on the FIRST click and never unpinned: the click is the user
-        # disagreeing with the file, and every action re-reads that file.
-        self.clip_model_pinned = True
-        self._apply_model_choice()
-        self.status = (f"clip model {clip_models.describe(key)} -- "
-                       f"overrides the config until this window closes")
 
-    def _model_mismatch(self):
-        """True when what is on screen was embedded with a different model.
+        for info in self.inventory:
+            selected = info.signature == self.selected_signature
+            # The signature is the id, so two sets that decode to the same
+            # label (an unrecognised model, say) stay separately clickable.
+            if imgui.radio_button(f"{info.label}##{info.signature}", selected):
+                self._select_set(info)
+            _tip(f"{info.signature}\n\n"
+                 f"{info.covered} of {info.total} images"
+                 + (f"\n{info.entries} rows stored, {info.stale} unreachable"
+                    if info.stale else "")
+                 + "\n\nSelecting this loads its vectors and adopts its "
+                   "settings. No model is loaded.")
+            imgui.same_line()
+            if info.complete:
+                imgui.text_disabled(f"{info.covered}/{info.total} complete")
+            else:
+                imgui.text_disabled(
+                    f"{info.covered}/{info.total} partial")
+            if info.stale:
+                imgui.same_line()
+                imgui.text_disabled(f"+{info.stale} stale")
 
-        Read off the gallery's signature rather than a remembered field: the
-        signature is what the cache was keyed by, so it is the honest record of
-        which model produced these vectors even if the config has changed
-        several times since.
-        """
-        if self.gallery is None or not self.gallery.signature.startswith('clip:'):
-            return False
-        try:
-            architecture = clip_models.get(self.clip_model).architecture
-        except ValueError:
-            return False
-        # 'clip:ViT-B-32:laion2b_...' -- the architecture is the second field.
-        parts = self.gallery.signature.split(':')
-        return len(parts) > 1 and parts[1] != architecture
+    def _set_actions(self):
+        """Prune and delete for the selected set. Both touch the cache only."""
+        from imgui_bundle import imgui
+
+        info = self._selected_info()
+        if info is None or not self.folder:
+            return
+
+        if info.stale:
+            if imgui.small_button(f"Prune {info.stale} stale##prune"):
+                self._prune_stale()
+            _tip("Drop rows no file on disk can reach any more -- what a "
+                 "rewritten capture leaves behind. The usable vectors stay.")
+            imgui.same_line()
+
+        if imgui.small_button("Delete set##delete"):
+            self._delete_selected()
+        _tip(f"Remove all {info.entries} rows for {info.label}.\n"
+             "The images are untouched; only the embeddings go.")
+
+    def _prune_stale(self):
+        """Drop unreachable rows from this folder's archive."""
+        folder = Path(self.folder)
+        cache = embedding_cache.EmbeddingCache(folder)
+        dropped = cache.prune(gallery_lib.find_images(folder))
+        self.inventory = self._scan_folder(folder)
+        self.status = f"pruned {dropped} unreachable row(s)"
+
+    def _delete_selected(self):
+        """Drop the selected set. Reloads the list; loads nothing."""
+        info = self._selected_info()
+        if info is None:
+            return
+        folder = Path(self.folder)
+        embedding_cache.EmbeddingCache(folder).clear(info.signature)
+        self.gallery = None
+        self.projection = None
+        self.selected_signature = ''
+        self._took_inventory(self._scan_folder(folder))
+        self.status = f"deleted {info.entries} row(s) -- {info.label}"
 
     def _tick_live_recolor(self, pending, now=None):
         """Recolour once the caption has been still for a moment.
@@ -839,26 +970,42 @@ class Viewer:
             if imgui.button("Re-score run"):
                 self._rescore()
             _tip("Score every capture against the config's objective and "
-                 "update the map, the cutoff and report.txt. Embeds nothing "
-                 "-- only the text side is new.\n"
+                 "update the map, the cutoff and report.txt.\n"
+                 "Embeds no IMAGES -- the vectors are cached -- but it does "
+                 "load the model, because the caption and the 30 calibration "
+                 "captions have to be encoded.\n"
                  "RE-READS THE CONFIG FILE FIRST, so editing the JSON and "
                  "pressing this is the whole workflow.")
 
             imgui.same_line()
-            if imgui.button("Re-embed"
-                            + (" *" if self._model_mismatch() else "")):
-                self._reembed()
-            _tip("Re-encode the loaded folder with the selected clip model.\n"
-                 "The first time with a given model is a full pass over the "
-                 "folder -- minutes on thousands of captures. Cached per "
-                 "model afterwards, so switching back is instant.")
+            selected = self._selected_info()
+            partial = selected is not None and selected.partial
+            label = (f"Continue embedding ({selected.missing} left)"
+                     if partial else "Create embeddings")
+            if imgui.button(label):
+                self._create_embeddings()
+            _tip(("Embed the images this set does not cover yet, under its "
+                  "existing settings. The ones already done are not touched."
+                  if partial else
+                  "Embed this folder with the current config's vision "
+                  "settings.\nTHE ONLY BUTTON HERE THAT LOADS A MODEL -- the "
+                  "first time with a given model is a full pass over the "
+                  "folder, minutes on thousands of captures.")
+                 + "\nCached afterwards, so coming back to it is instant.")
 
             imgui.same_line()
-            if imgui.button("Run search"):
-                self._run_search()
+            with _disabled_if(not self.cfg.has_search):
+                if imgui.button("Run search"):
+                    self._run_search()
             _tip("Launch a search with the config on disk -- it is re-read "
                  "first. Runs on a background thread; Fluoddity must be "
-                 "running with --api-port.")
+                 "running with --api-port."
+                 if self.cfg.has_search else
+                 "This config has no search section -- it can create "
+                 "embeddings and re-score, but it does not describe a search.")
+
+            if self.inventory:
+                self._set_actions()
 
         # Loading and projecting report in the source panel, beside the
         # controls that start them; only this panel's own work reports here.
@@ -1220,31 +1367,88 @@ class Viewer:
         if self._begin('rescore', "rescore", work):
             self.status = "re-scoring..."
 
-    def _reembed(self):
-        """Re-encode the loaded folder with the currently selected model.
+    def _create_embeddings(self):
+        """Embed this folder. THE ONLY PLACE THE GUI LOADS A MODEL.
 
-        Deliberately just load_folder again. Loading already embeds through the
-        shared cache under the config's signature, and the selected model is
-        now part of that signature -- so "re-embed with L14" and "load this
-        folder" are the same operation with a different key. A second code path
-        that embedded without filling the cache would be the bug this exists to
-        avoid.
+        Two jobs behind one button, because they are the same job:
 
-        A model already used on this folder comes back from the cache in
-        seconds, which is what makes flipping between two models to compare
-        them practical rather than a ten-minute commitment.
+        CREATE -- embed the folder under the current config's vision settings.
+        CONTINUE -- when the selected set is partial, embed only what it does
+        not cover, under ITS settings rather than the config's. embed_cached
+        is misses-only already, so finishing a half-done set and starting a
+        fresh one are the same call with a different key.
+
+        A LOUD NO-OP when the set already exists and is complete. Silently
+        re-embedding 25,100 images that are already on disk is the failure
+        this whole panel was rebuilt to prevent, so it says so and selects the
+        set instead.
         """
-        if self.gallery is None or not self.folder:
+        if not self.folder:
             self.status = "load a folder first"
-            return
-        if not self.gallery.has_images:
-            self.status = "this is a config folder -- nothing to embed"
             return
         # Re-read so a config edited since the last load is honoured, exactly
         # as the other actions do; _apply_model_choice then re-imposes the
-        # radio on top of whatever the file said.
+        # selected set on top of whatever the file said.
         self._refresh_config()
-        self.load_folder(self.folder)
+
+        selected = self._selected_info()
+        if selected is not None and selected.partial:
+            signature, label = selected.signature, selected.label
+        else:
+            settings = self._config_settings()
+            if settings is None:
+                self.status = (f"the {self.cfg.backend} backend has no "
+                               f"embedding sets to create")
+                return
+            signature = embedding_cache.signature_for(settings)
+            label = embedding_cache.label_signature(signature)
+            match = next((i for i in self.inventory
+                          if i.signature == signature), None)
+            if match is not None and match.complete:
+                self.selected_signature = match.signature
+                self._load_selected()
+                # AFTER the load, which sets a status of its own. The no-op is
+                # the thing worth reading here: pressing Create and getting a
+                # progress bar for work already done is what made a full cache
+                # look like a cold one.
+                self.status = (f"that set already exists and is complete -- "
+                               f"{match.covered} images, same seed and "
+                               f"settings! Loading it instead.")
+                return
+
+        folder, cfg = Path(self.folder), self.cfg
+
+        def work(report):
+            from . import embedding
+
+            backend = embedding.build_backend(cfg)
+            cache = embedding_cache.EmbeddingCache(folder)
+            paths = gallery_lib.find_images(folder)
+            embedding_cache.embed_cached(paths, backend, cache,
+                                         progress=report)
+            return self._scan_folder(folder)
+
+        if self._begin('scanning', f"embedding {label}", work):
+            self.selected_signature = signature
+            self.status = f"embedding [{label}]..."
+
+    def _config_settings(self):
+        """VisionSettings the current config would embed under, or None.
+
+        Built WITHOUT constructing a backend -- constructing one is the model
+        load this exists to check before paying.
+        """
+        if self.cfg.backend != 'clip':
+            return None
+        try:
+            model = clip_models.get(self.cfg.clip_model)
+        except ValueError:
+            return None
+        return embedding_cache.VisionSettings(
+            backend='clip', clip_model=model.key,
+            crops=self.cfg.crops, crop_frac=self.cfg.crop_frac,
+            seed=self.cfg.seed, grayscale=self.cfg.grayscale,
+            architecture=model.architecture, pretrained=model.pretrained)
 
     def _run_search(self):
         from . import run as run_lib

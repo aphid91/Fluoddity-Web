@@ -21,6 +21,27 @@ from . import clip_models
 #: from elsewhere must not see a different filesystem.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
+#: How the fields group when a config is written nested. One source of truth:
+#: `_migrate` flattens by it, `save` nests by it, and the GUI asks it whether a
+#: file describes a search at all.
+#:
+#: SEED AND CROP_FRAC ARE VISION FIELDS, however much they read like search
+#: knobs. Both are in the embedding cache key, so moving `seed` into `search`
+#: would silently default it to 0 and orphan every set embedded with another
+#: value -- hours of GPU time lost to a field that looked like it belonged
+#: somewhere else.
+SECTIONS = {
+    'vision': ('backend', 'clip_model', 'crops', 'crop_frac', 'grayscale',
+               'seed'),
+    'scoring': ('captions', 'negative_captions', 'caption_aggregate',
+                'reference_dir', 'calibrate', 'aggregate'),
+    'search': ('run_dir', 'resume', 'port', 'world_size', 'cohorts',
+               'physics_steps', 'warmup_steps', 'capture_size',
+               'mutation_scale', 'generations', 'beam_width',
+               'children_per_parent', 'immigrants', 'seed_configs',
+               'sample_size'),
+}
+
 
 @dataclass(frozen=True)
 class SearchConfig:
@@ -174,26 +195,67 @@ class SearchConfig:
     #: Seeds the strategy's own RNG, so a whole run replays from search.json.
     seed: int = 0
 
+    #: Which top-level sections the FILE this came from actually had. Empty
+    #: for a flat file -- which by definition supplied everything -- and for a
+    #: config built in code. Describes the file, not the run, so `save` leaves
+    #: it out.
+    #:
+    #: OUT OF EQUALITY (compare=False) for the same reason. Saving nests, so a
+    #: config would otherwise never equal its own round-trip -- two objects
+    #: agreeing on every setting that affects a run, called different because
+    #: of how one of them was punctuated on disk.
+    sections: tuple = field(default=(), compare=False)
+
     # ------------------------------------------------------------------
+
+    @property
+    def has_search(self):
+        """Whether this config describes a search, not just how to embed.
+
+        False ONLY for a nested file that omitted the `search` section. A flat
+        file has every field and a config built in code takes the defaults, so
+        both can search; it is the deliberate omission that cannot.
+        """
+        return not self.sections or 'search' in self.sections
 
     @classmethod
     def load(cls, path):
-        """Read a run config, ignoring unknown keys.
+        """Read a run config, nested or flat, ignoring unknown keys.
 
         Unknown keys are skipped rather than rejected so a config written by a
         newer version still opens, and so a user can leave notes in the file.
         """
         data = json.loads(Path(path).read_text(encoding='utf-8'))
+        # Which sections the FILE had, read before the migration flattens
+        # them away. This is the only way to tell "omitted the search section"
+        # from "wrote every field at its default", and it is what lets a
+        # vision-only config embed and re-score without pretending to describe
+        # a search.
+        present = tuple(name for name in SECTIONS
+                        if isinstance(data.get(name), dict))
         data = cls._migrate(data)
         known = {f.name for f in fields(cls)}
-        unknown = sorted(set(data) - known)
+        # Keys starting with '_' are comments -- JSON has none, the shipped
+        # configs are full of them, and warning about them every load trains
+        # the reader to ignore the warning that matters.
+        unknown = sorted(k for k in set(data) - known if not k.startswith('_'))
         if unknown:
             print(f"search config: ignoring unknown keys {unknown}")
-        return cls(**{k: v for k, v in data.items() if k in known})
+        values = {k: v for k, v in data.items() if k in known}
+        values['sections'] = present
+        return cls(**values)
 
     @staticmethod
     def _migrate(data):
         """Accept older and looser spellings, so a config never just breaks.
+
+        NESTED OR FLAT. A config may group its fields under `vision`,
+        `scoring` and `search`, which is what makes "these are the settings
+        that made those embeddings" a thing you can see at a glance rather
+        than reconstruct from a flat list of thirty keys. The sections are
+        flattened here, so the dataclass stays flat and nothing downstream
+        needs to know which shape the file was in. A top-level key wins over
+        the same key inside a section, so an override still works.
 
         `caption` (a single string) predates `captions`. Rather than carry two
         fields meaning almost the same thing -- which every future reader would
@@ -203,6 +265,11 @@ class SearchConfig:
         pedantry.
         """
         data = dict(data)
+        for name in SECTIONS:
+            block = data.pop(name, None)
+            if isinstance(block, dict):
+                for key, value in block.items():
+                    data.setdefault(key, value)
         single = data.pop('caption', None)
         if single and not data.get('captions'):
             data['captions'] = [single]
@@ -223,17 +290,48 @@ class SearchConfig:
             data['clip_model'] = clip_models.normalize(model) or model
         return data
 
+    @classmethod
+    def _check_sections(cls):
+        """Every field belongs to exactly one section. Raises if not.
+
+        Checked at import rather than trusted: a field added without a section
+        would be dropped silently by `save`, and the loss would only surface
+        as a run that behaved unlike the config that produced it.
+        """
+        known = {f.name for f in fields(cls)} - {'sections'}
+        mapped = [key for keys in SECTIONS.values() for key in keys]
+        missing = known - set(mapped)
+        if missing:
+            raise RuntimeError(
+                f"config fields in no SECTIONS group: {sorted(missing)}")
+        extra = set(mapped) - known
+        if extra:
+            raise RuntimeError(f"SECTIONS names non-fields: {sorted(extra)}")
+        if len(mapped) != len(set(mapped)):
+            raise RuntimeError("SECTIONS lists a field in two groups")
+
     @property
     def caption(self):
         """The first positive caption, or ''. For callers that want one."""
         return self.captions[0] if self.captions else ''
 
-    def save(self, path):
+    def save(self, path, nested=True):
         """Write the config actually used. Called by the runner into the run
-        folder, so a result is never separated from its settings."""
+        folder, so a result is never separated from its settings.
+
+        NESTED by default, which is also the shape the reader is invited to
+        write. `sections` is left out: it describes the file this was read
+        from, not the run, and writing it would make a saved config claim its
+        own provenance.
+        """
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(asdict(self), indent=2), encoding='utf-8')
+        data = asdict(self)
+        data.pop('sections', None)
+        if nested:
+            data = {name: {key: data[key] for key in keys}
+                    for name, keys in SECTIONS.items()}
+        target.write_text(json.dumps(data, indent=2), encoding='utf-8')
         return target
 
     def validate(self):
@@ -373,3 +471,7 @@ class SearchConfig:
             return f"evaluate {first}"
         return (f"{first}, then {self.generations - 1} generation(s) of "
                 f"{self.candidates_per_generation} candidates")
+
+
+#: Checked once, at import: a field with no section would be dropped by save.
+SearchConfig._check_sections()
