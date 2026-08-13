@@ -1092,17 +1092,63 @@ class Viewer:
             self.status = f"no config recorded; copied {item.path.name}"
             return
 
-        if self.client is not None:
-            try:
-                self.client.load_config(target)
-                self.status = f"loaded {Path(target).name} into Fluoddity"
-                return
-            except Exception as e:                              # noqa: BLE001
-                self.status = f"could not load ({type(e).__name__}); copied path"
-
+        if self._send_config(target):
+            return
         imgui.set_clipboard_text(str(target))
-        if self.client is None:
-            self.status = f"no app connected; copied {Path(target).name}"
+
+    def _send_config(self, target):
+        """Load `target` into a running app. True if it went.
+
+        SPLIT OUT OF _activate so it can be tested: the fallback path there
+        calls imgui.set_clipboard_text, which segfaults the interpreter when no
+        imgui context exists, taking any headless test of this logic with it.
+        Everything that decides whether the app is reachable lives here and
+        touches no imgui; _activate is left with the clipboard consolation and
+        nothing else.
+        """
+        client = self._connected()
+        if client is None:
+            self.status = (f"no Fluoddity on port {self.port}; copied "
+                           f"{Path(target).name}")
+            return False
+        try:
+            client.load_config(target)
+            self.status = f"loaded {Path(target).name} into Fluoddity"
+            return True
+        except Exception as e:                                  # noqa: BLE001
+            # It answered /health a moment ago and has now failed, so it has
+            # probably gone away since. Drop the client rather than keeping a
+            # dead one: the next click re-probes and picks the app back up if
+            # it returns, which is the whole point of connecting lazily.
+            self.client = None
+            self.status = f"could not load ({type(e).__name__}); copied path"
+            return False
+
+    def _connected(self):
+        """A live client, connecting on demand. None if the app is not up.
+
+        LAZY AND RETRIED, because the alternative was a one-shot probe at
+        startup that never ran again: a pilot opened before Fluoddity -- or
+        while it was still compiling shaders, which is most of a cold start --
+        kept `client = None` for the rest of the session and reported "no app
+        connected" on every click, however long the app had been running by
+        then. Nothing short of restarting the pilot could fix it.
+
+        The probe is a /health call, which the app answers off the frame loop
+        and so stays fast even while it is parked. Cached once it succeeds, so
+        a click is one request rather than two.
+        """
+        if self.client is not None:
+            return self.client
+        from .client import FluoddityClient
+
+        client = FluoddityClient(port=self.port)
+        try:
+            client.health()
+        except Exception:                                       # noqa: BLE001
+            return None
+        self.client = client
+        return client
 
     # ------------------------------------------------------------------
     # Actions
@@ -1259,7 +1305,12 @@ def _disabled_if(condition):
 
 
 def connect(port):
-    """A client for a running app, or None. Never raises."""
+    """A client for a running app, or None. Never raises.
+
+    Only a courtesy at startup, so the console says whether the app was up.
+    NOT the last word: the viewer re-probes on demand (see _connected), so
+    starting Fluoddity after the pilot works without restarting anything.
+    """
     from .client import FluoddityClient
 
     client = FluoddityClient(port=port)
@@ -1268,7 +1319,8 @@ def connect(port):
         print(f"  connected to Fluoddity on port {port}")
         return client
     except Exception:                                           # noqa: BLE001
-        print(f"  no Fluoddity on port {port}; click-to-load will copy paths")
+        print(f"  no Fluoddity on port {port} yet; click-to-load will connect "
+              f"when one appears")
         return None
 
 

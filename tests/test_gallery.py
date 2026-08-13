@@ -1303,6 +1303,106 @@ def test_default_paths():
           and 'could not read' in view.status, view.status)
 
 
+def test_lazy_reconnect():
+    """A viewer opened before the app must still find it later.
+
+    THE BUG: the client was probed once, in main(), and never again. Opening
+    the pilot before Fluoddity -- or during its shader compile, which is most
+    of a cold start -- left client=None for the whole session, so every click
+    said "no app connected" however long the app had been up by then. Only
+    restarting the pilot fixed it.
+
+    Faked rather than run against a live app: the test suite must pass with
+    nothing listening, which is exactly the state the bug was invisible in.
+    """
+    print("\nlazy reconnect")
+
+    from pilot import client as client_lib
+    from pilot.umap_view import Viewer
+
+    calls = {'built': 0, 'health': 0, 'loaded': []}
+
+    class FakeClient:
+        """Stands in for a running app, or a missing one."""
+
+        up = True
+
+        def __init__(self, port=8765, **kw):
+            calls['built'] += 1
+            self.port = port
+
+        def health(self):
+            calls['health'] += 1
+            if not FakeClient.up:
+                raise OSError("nothing listening")
+            return {'ok': True}
+
+        def load_config(self, path):
+            if not FakeClient.up:
+                raise OSError("gone away")
+            calls['loaded'].append(str(path))
+            return {'ok': True}
+
+    original = client_lib.FluoddityClient
+    client_lib.FluoddityClient = FakeClient
+    try:
+        # The broken state: constructed with no client, app already running.
+        FakeClient.up = True
+        view = Viewer(client=None, port=8765)
+        check("starts with no client", view.client is None)
+        check("re-probes and finds the app", view._connected() is not None)
+        check("the probe is a health call", calls['health'] == 1)
+
+        # Cached: a click should cost one request, not two.
+        before = calls['built']
+        view._connected()
+        check("a live client is reused, not rebuilt", calls['built'] == before)
+
+        # A missing app must stay None and must not raise into the frame loop.
+        FakeClient.up = False
+        absent = Viewer(client=None, port=8765)
+        check("an absent app returns None", absent._connected() is None)
+        check("and caches nothing, so it retries next click",
+              absent.client is None)
+
+        # ...and is picked up as soon as it appears, with no restart.
+        FakeClient.up = True
+        check("the same viewer connects once the app starts",
+              absent._connected() is not None)
+
+        # The real click path, through _send_config rather than _activate: the
+        # latter's fallback calls imgui.set_clipboard_text, which segfaults the
+        # interpreter outright when no imgui context exists (measured: exit
+        # 0xC0000005), and would take this whole suite down with it.
+        FakeClient.up = True
+        live = Viewer(client=None, port=8765)
+        check("a click reaches a running app",
+              live._send_config('configs/x.json') is True)
+        check("and sends the config", calls['loaded'] == ['configs/x.json'],
+              str(calls['loaded']))
+        check("the status says so", 'loaded' in live.status, live.status)
+
+        # A client that dies mid-session is dropped rather than kept dead, so
+        # the next click re-probes instead of failing against a corpse forever.
+        FakeClient.up = False
+        check("a failed send reports failure",
+              live._send_config('configs/y.json') is False)
+        check("and drops the dead client", live.client is None)
+        FakeClient.up = True
+        check("so the next click reconnects",
+              live._send_config('configs/z.json') is True)
+
+        # With nothing listening at all, the message must name the port rather
+        # than claim the app is missing forever.
+        FakeClient.up = False
+        cold = Viewer(client=None, port=8765)
+        check("no app is a status line, not an exception",
+              cold._send_config('configs/x.json') is False)
+        check("and it names the port", '8765' in cold.status, cold.status)
+    finally:
+        client_lib.FluoddityClient = original
+
+
 def main():
     print("Gallery and projection")
     test_find_images()
@@ -1325,6 +1425,7 @@ def main():
     test_legacy_configs()
     test_seed_folders()
     test_default_paths()
+    test_lazy_reconnect()
 
     print()
     if _failures:
