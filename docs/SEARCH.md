@@ -600,6 +600,41 @@ It works on any folder of images, not just a run — point it at `refim/` or a
 hand-assembled collection. A `manifest.jsonl` beside the folder just makes the
 tooltips richer.
 
+#### What costs a re-embed, and what is free
+
+Embedding is the expensive half of everything here — hours on a large folder —
+so it is worth knowing exactly which edits pay it. **Re-scoring against a new
+caption embeds nothing**: measured, zero images re-embedded, 31 text encodes
+(the caption plus 30 calibration backgrounds) and a matrix multiply.
+
+Free — change these and re-score costs milliseconds:
+
+| | |
+| --- | --- |
+| `caption` / `captions` | The whole point of re-scoring. |
+| `negative_captions` | Subtracted from an already-computed similarity. |
+| `calibrate` | 30 extra text encodes, no images. |
+| `caption_aggregate` | Combines scores that already exist. |
+| `aggregate` | Crops are cached *uncollapsed*, so this is a mean over an axis. |
+| `reference_dir` | Embeds the references only, not your captures. |
+
+Pays a **full re-embed of the folder** — these are all part of the cache key
+(`clip:ViT-B-32:laion2b_s34b_b79k:c4:f0.4:s0:gray`), so changing one makes every
+stored vector unreachable:
+
+| | |
+| --- | --- |
+| `clip_model` | Different model, different vector space. |
+| `crops` | Different number of views per image. |
+| `crop_frac` | Different crop size. |
+| `grayscale` | Different pixels reach the model. |
+| `seed` | Moves where the crops are taken from. |
+| `backend` | `texture` and `clip` share nothing. |
+
+The old vectors are not deleted — signatures coexist in one `.npz`, so setting a
+knob back finds them still there and costs nothing. That makes A/B comparison
+practical: the second direction is free, only the first crossing is paid.
+
 #### Mapping a folder of configs
 
 **Load configs** reads a folder of Fluoddity save files and maps them by what

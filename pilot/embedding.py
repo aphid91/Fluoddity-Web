@@ -35,6 +35,68 @@ if str(_DEMOS) not in sys.path:
 import tex_sim                                                      # noqa: E402
 
 
+def prefer_cached_models():
+    """Load CLIP weights from the local cache without phoning home.
+
+    WHY. open_clip resolves its checkpoints through huggingface_hub, which on
+    every load makes an unauthenticated HEAD request to see whether the cached
+    file is stale -- and prints
+
+        WARNING ... You are sending unauthenticated requests to the HF Hub.
+        Please set a HF_TOKEN to enable higher rate limits ...
+
+    every time. Nothing is downloading; the weights have been cached since the
+    first run. But the check is a real network round trip on a path that does
+    not need one: these checkpoints are immutable release artifacts, so a
+    revalidation can only ever confirm what is already on disk. It also makes
+    a cold start slower than it needs to be and fails outright with no network.
+
+    HF_HUB_OFFLINE tells the hub to serve from cache and skip the request. The
+    tradeoff is that a model NOT yet cached can no longer be fetched, which is
+    why this is not set blindly -- build_backend clears it for a first download
+    and restores it afterwards.
+
+    NEVER OVERRIDES AN EXISTING SETTING. If the environment already says
+    something about offline mode, that is a deliberate choice and this defers
+    to it. Returns whether it changed anything, so the caller can put it back.
+
+    SETS THE ENV VAR *AND* THE LIBRARY CONSTANT. huggingface_hub evaluates
+    HF_HUB_OFFLINE once, at import, into huggingface_hub.constants -- so the
+    environment variable alone only works when it is set before the first
+    import, and unsetting it later does nothing at all. Measured: a fallback
+    that only popped the env var still failed offline. Both are written here,
+    and set_offline() below is the matching undo.
+    """
+    import os
+
+    if os.environ.get('HF_HUB_OFFLINE') is not None:
+        return False
+    os.environ['HF_HUB_OFFLINE'] = '1'
+    _set_hub_offline(True)
+    return True
+
+
+def _set_hub_offline(offline):
+    """Tell huggingface_hub to work from cache, or not.
+
+    Best-effort: the constant is an implementation detail of a third-party
+    library and could move. If it does, the env var still covers the common
+    case (set before import) and the worst outcome is the warning coming back
+    -- so a missing attribute is not worth failing a run over.
+    """
+    import os
+
+    if offline:
+        os.environ['HF_HUB_OFFLINE'] = '1'
+    else:
+        os.environ.pop('HF_HUB_OFFLINE', None)
+    try:
+        import huggingface_hub.constants as constants
+        constants.HF_HUB_OFFLINE = bool(offline)
+    except (ImportError, AttributeError):
+        pass
+
+
 def check_dependencies(backend_name, clip_model=None):
     """What is missing for `backend_name`, as install advice. Empty if ready.
 
@@ -81,6 +143,41 @@ def check_dependencies(backend_name, clip_model=None):
     return problems
 
 
+def _load_preferring_cache(backend):
+    """Load the model offline if possible, falling back to a download.
+
+    OFFLINE FIRST, ONLINE ON FAILURE, rather than deciding up front whether the
+    weights are cached. Working that out honestly would mean reproducing
+    huggingface_hub's cache layout and its notion of which files a given
+    checkpoint needs -- a copy of someone else's internals that would rot, and
+    would be wrong in exactly the case that matters (a half-finished download).
+    Asking the hub to serve from cache and catching the refusal delegates the
+    question to the code that owns the answer.
+
+    The retry is not a silent fallback: a first download of SO400M is 3.5GB and
+    several minutes, so it says so rather than appearing to hang.
+    """
+    changed = prefer_cached_models()
+    try:
+        backend._load()
+        return
+    except Exception:                                           # noqa: BLE001
+        if not changed:
+            # The offline setting was the caller's, not ours. Respect it and
+            # let the real failure surface.
+            raise
+        _set_hub_offline(False)
+        print("  not in the local cache -- downloading (this is a one-time "
+              "cost; later runs load from cache and stay offline)")
+    try:
+        backend._load()
+    finally:
+        # Back to cache-first for any later load in this process. The download
+        # has populated the cache, so the next model does not need the network
+        # and should not go looking for it.
+        _set_hub_offline(True)
+
+
 def build_backend(cfg):
     """The backend a run's config asks for.
 
@@ -118,7 +215,7 @@ def build_backend(cfg):
         # SO400M is 3.5GB -- so say which model is being loaded BEFORE the
         # call, or a several-minute silence looks like a hang.
         print(f"  CLIP model {clip_models.describe(cfg.clip_model)}")
-        backend._load()
+        _load_preferring_cache(backend)
         if backend._device == 'cpu':
             print("  WARNING: CLIP is running on the CPU. For GPU, see "
                   "requirements.txt -- torch must come from the CUDA index.")

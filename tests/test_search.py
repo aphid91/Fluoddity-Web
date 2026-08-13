@@ -857,6 +857,33 @@ def test_clip_model_choice():
     check("check_dependencies still takes a backend alone",
           isinstance(embedding.check_dependencies('texture'), list))
 
+    # Cached weights should load without a network round trip. huggingface_hub
+    # re-validates on every load otherwise, which prints an unauthenticated-
+    # requests warning each time and fails outright with no network.
+    import os
+
+    had = os.environ.get('HF_HUB_OFFLINE')
+    os.environ.pop('HF_HUB_OFFLINE', None)
+    try:
+        check("cache-first mode is set when nothing says otherwise",
+              embedding.prefer_cached_models() is True
+              and os.environ.get('HF_HUB_OFFLINE') == '1')
+        # The env var alone is not enough: huggingface_hub reads it once at
+        # import into a module constant, so the constant must move too.
+        try:
+            import huggingface_hub.constants as _hub
+            check("and the library constant follows it",
+                  _hub.HF_HUB_OFFLINE is True)
+        except ImportError:
+            pass    # hub not installed; the env var is all there is to check
+        check("an explicit setting is never overridden",
+              embedding.prefer_cached_models() is False)
+    finally:
+        os.environ.pop('HF_HUB_OFFLINE', None)
+        embedding._set_hub_offline(False)
+        if had is not None:
+            os.environ['HF_HUB_OFFLINE'] = had
+
     # The report is the only record of which vector space a ranking lives in.
     lines = report_lib.build([], cfg=SearchConfig(backend='clip',
                                                   clip_model='L14',
