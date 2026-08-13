@@ -35,13 +35,13 @@
   "crops": 4,
   "crop_frac": 0.4,
   "aggregate": "mean",
-  "grayscale": false,
+  "grayscale": "true",
   "seed": 0,
 
   "_objective": "PICK ONE: reference_dir OR caption. Setting both is a config error. Keys starting with _ are ignored by the loader (JSON has no comments).",
   "reference_dir": "",
   "_caption": "Crisp edges, Meandering rivers, Lightning, Crystals, Loops",
-  "caption": "Microscopic life",
+  "caption": "Crisp edges, Meandering rivers, Lightning, Crystals, Loops, microscopic life",
   "negative_captions": [
     "A thin bright line",
     "an empty black image",
