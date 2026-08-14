@@ -544,22 +544,56 @@ def percentile_mask(values, percentile, bottom=False):
     return finite & (values >= threshold)
 
 
+def find_configs_dir(folder):
+    """The run's configs/ directory, if one is nearby.
+
+    Same two places as find_manifest and for the same reason: the folder a
+    reader opens is usually <run>/captures, while configs/ is its sibling.
+    """
+    root = Path(folder)
+    for candidate in (root / 'configs', root.parent / 'configs'):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def _enrich(items, root, progress=print):
-    """Attach manifest metadata to items whose name matches a candidate id."""
+    """Attach manifest metadata to items whose name matches a candidate id.
+
+    THE MANIFEST IS NOT THE ONLY SOURCE. A run writes
+    `<run_dir>/configs/<id>.json` per candidate and names its capture after the
+    same id, so an image whose row is missing can still be paired with its
+    config by name. That matters because the manifest is a single append-only
+    file: a run that was interrupted, or whose captures were re-made under new
+    names, leaves configs on disk with nothing pointing at them. Measured on a
+    real folder -- 25,100 captures, 25,099 configs, and a manifest holding one
+    stale row -- where every click reported "no config recorded" and the
+    configs were sitting right there.
+
+    The manifest still wins where it exists: only it carries score, lineage and
+    origin, which no filename can supply.
+    """
     manifest = find_manifest(root)
-    if manifest is None:
-        return
-    rows = read_manifest(manifest)
-    matched = 0
+    rows = read_manifest(manifest) if manifest is not None else {}
+    configs = find_configs_dir(root)
+
+    matched = paired = 0
     for item in items:
         row = rows.get(item.name)
-        if row is None:
-            continue
-        matched += 1
-        item.score = row.get('score')
-        item.generation = row.get('generation')
-        item.origin = row.get('origin') or ''
-        item.parent_id = row.get('parent_id') or ''
-        item.config_path = row.get('config_path') or ''
+        if row is not None:
+            matched += 1
+            item.score = row.get('score')
+            item.generation = row.get('generation')
+            item.origin = row.get('origin') or ''
+            item.parent_id = row.get('parent_id') or ''
+            item.config_path = row.get('config_path') or ''
+        if not item.config_path and configs is not None:
+            beside = configs / f"{item.name}.json"
+            if beside.is_file():
+                item.config_path = str(beside)
+                paired += 1
+
     if matched:
         progress(f"  matched {matched}/{len(items)} to {manifest.name}")
+    if paired:
+        progress(f"  paired {paired}/{len(items)} with {configs.name}/ by name")

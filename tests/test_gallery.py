@@ -1708,6 +1708,67 @@ def test_build_cached_loads_no_model():
             check("an absent set raises", True)
 
 
+def test_configs_pair_by_name():
+    print("\npairing captures with configs by name")
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        captures = root / 'captures'
+        configs = root / 'configs'
+        make_images(captures, ['gen000_000', 'gen000_001', 'gen000_002'])
+        configs.mkdir()
+        for name in ['gen000_000', 'gen000_001']:
+            (configs / f"{name}.json").write_text('{}', encoding='utf-8')
+
+        # A manifest describing only the FIRST capture, which is the real
+        # case: 25,100 captures and a manifest holding one stale row, with
+        # every config sitting on disk unreferenced.
+        (root / 'manifest.jsonl').write_text(json.dumps({
+            'id': 'gen000_000', 'score': 0.5, 'generation': 0,
+            'config_path': str(configs / 'gen000_000.json')}) + '\n',
+            encoding='utf-8')
+
+        items = [gallery_lib.Item(path=p, index=i, has_image=True)
+                 for i, p in enumerate(gallery_lib.find_images(captures))]
+        gallery_lib._enrich(items, captures, progress=lambda m: None)
+        by_name = {item.name: item for item in items}
+
+        check("the manifest row still wins",
+              by_name['gen000_000'].score == 0.5,
+              str(by_name['gen000_000'].score))
+        check("a capture with no row finds its config anyway",
+              by_name['gen000_001'].config_path.endswith('gen000_001.json'),
+              by_name['gen000_001'].config_path)
+        check("but no config on disk stays empty",
+              by_name['gen000_002'].config_path == '',
+              by_name['gen000_002'].config_path)
+        # Only the manifest carries these, so a paired item must not pretend.
+        check("pairing invents no score",
+              by_name['gen000_001'].score is None,
+              str(by_name['gen000_001'].score))
+
+        check("configs/ is found beside the captures folder",
+              gallery_lib.find_configs_dir(captures) == configs)
+        check("and inside it when that is what was opened",
+              gallery_lib.find_configs_dir(root) == configs)
+        # A folder with no configs/ beside it AND none within. Note the sibling
+        # lookup means any path under the run root finds the run's configs/,
+        # which is the intended reach -- so this has to be somewhere else.
+        with tempfile.TemporaryDirectory() as elsewhere:
+            check("absent when there is none",
+                  gallery_lib.find_configs_dir(
+                      Path(elsewhere) / 'sub') is None)
+
+        # No manifest at all is the other half of the same case.
+        (root / 'manifest.jsonl').unlink()
+        fresh = [gallery_lib.Item(path=p, index=i, has_image=True)
+                 for i, p in enumerate(gallery_lib.find_images(captures))]
+        gallery_lib._enrich(fresh, captures, progress=lambda m: None)
+        check("pairing works with no manifest at all",
+              sum(1 for i in fresh if i.config_path) == 2,
+              str(sum(1 for i in fresh if i.config_path)))
+
+
 def test_picker_adopts_settings():
     print("\nselecting a set adopts its settings")
 
@@ -1815,6 +1876,7 @@ def main():
     test_find_images()
     test_embedding_cache()
     test_signature_decode()
+    test_configs_pair_by_name()
     test_picker_adopts_settings()
     test_create_is_a_noop_when_complete()
     test_cache_inventory()
