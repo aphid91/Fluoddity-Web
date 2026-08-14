@@ -1406,6 +1406,23 @@ class Viewer:
         self._refresh_config()
         cfg = self.cfg
 
+        # THE LOADED SET IS WHAT GETS SCORED, not the manifest.
+        #
+        # A manifest is one append-only file and the captures are 25,100
+        # separate ones, so the two drift: a run interrupted before the
+        # manifest caught up, or captures re-made under new names, leaves a
+        # folder full of images that the manifest does not mention. Scoring
+        # from the manifest then re-scored ONE capture out of 25,100, said
+        # "re-scoring 1", and left the map blank -- every other point had no
+        # score to colour by, and any cutoff hid the lot.
+        #
+        # The images on screen are the honest subject. The manifest is still
+        # the fallback when nothing is loaded, and still the only source of
+        # lineage for the report.
+        gallery = self.gallery
+        captures = ([Path(item.path) for item in gallery.items]
+                    if gallery is not None and gallery.has_images else None)
+
         def work(report):
             from . import report as report_lib
 
@@ -1414,6 +1431,8 @@ class Viewer:
             # written before ids carried a session tag, only the last row for
             # an id describes the capture actually on disk.
             kept, _ = report_lib.dedupe(folder.read())
+            if captures is not None:
+                kept = run_lib.candidates_for(captures, kept)
             report(f"re-scoring {len(kept)} captures")
             rescored = run_lib._rescore(kept, cfg, folder, progress=report)
             path = report_lib.write(

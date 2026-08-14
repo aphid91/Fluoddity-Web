@@ -1845,6 +1845,60 @@ def test_caption_loads_the_model_on_demand():
               view.colour_mode == COLOUR_CAPTION, view.colour_mode)
 
 
+def test_rescore_covers_the_loaded_set():
+    print("\nre-scoring covers what is loaded, not what the manifest lists")
+
+    from pilot import run as run_lib
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        captures = root / 'captures'
+        make_images(captures, ['b01_gen000_000', 'b01_gen000_001',
+                               'b01_gen000_002'])
+        paths = gallery_lib.find_images(captures)
+
+        # A manifest naming ONE capture, and a stale one at that -- the real
+        # shape of the folder that re-scored 1 of 25,100.
+        known = [run_lib.Candidate(id='b01_gen000_000', generation=4,
+                                   origin='mutant', parent_id='gen003_001',
+                                   capture_path='/gone/old.png')]
+
+        full = run_lib.candidates_for(paths, known)
+        check("one candidate per capture, not per manifest row",
+              len(full) == 3, str(len(full)))
+        check("ids are the capture names",
+              [c.id for c in full] == [p.stem for p in paths],
+              str([c.id for c in full]))
+
+        by_id = {c.id: c for c in full}
+        kept = by_id['b01_gen000_000']
+        check("a capture with a row keeps its lineage",
+              kept.generation == 4 and kept.parent_id == 'gen003_001',
+              f"gen={kept.generation} parent={kept.parent_id}")
+        check("but is pointed at the capture on disk",
+              Path(kept.capture_path).name == 'b01_gen000_000.png',
+              kept.capture_path)
+        fresh = by_id['b01_gen000_002']
+        check("one without a row still gets a candidate",
+              fresh.capture_path is not None and fresh.score is None,
+              str(fresh))
+
+        # The ids must match what the gallery calls its items, or the scores
+        # come back and coloured nothing -- the visible half of the same bug.
+        items = [gallery_lib.Item(path=p, index=i, has_image=True)
+                 for i, p in enumerate(paths)]
+        gallery = gallery_lib.Gallery(items=items,
+                                      embeddings=np.zeros((3, 4), np.float32),
+                                      root=captures)
+        applied = gallery.apply_scores({c.id: float(i)
+                                        for i, c in enumerate(full)})
+        check("so every point takes a score", applied == 3, str(applied))
+        check("and the map can colour by it", gallery.has_scores)
+
+        check("no captures means no candidates",
+              run_lib.candidates_for([], known) == [])
+
+
 def test_picker_adopts_settings():
     print("\nselecting a set adopts its settings")
 
@@ -1954,6 +2008,7 @@ def main():
     test_signature_decode()
     test_configs_pair_by_name()
     test_caption_loads_the_model_on_demand()
+    test_rescore_covers_the_loaded_set()
     test_picker_adopts_settings()
     test_create_is_a_noop_when_complete()
     test_cache_inventory()

@@ -548,6 +548,35 @@ def _report(args):
     return 0
 
 
+def candidates_for(captures, known=()):
+    """One Candidate per capture, reusing manifest rows where they exist.
+
+    WHY THE CAPTURES WIN. A manifest is one append-only file; the captures are
+    thousands of separate ones. They drift -- a run interrupted before the
+    manifest caught up, or captures re-made under new names, leaves images on
+    disk the manifest never mentions. Re-scoring from the manifest then scores
+    a handful of a folder full, which looks like the button doing nothing.
+
+    A capture with a row keeps it, so lineage, generation and the rule survive
+    into the report. One without gets a bare Candidate carrying the id its
+    filename already is (Candidate.id doubles as the capture name), which is
+    all scoring needs -- the score is computed from the picture, not the row.
+    """
+    rows = {c.id: c for c in known}
+    out = []
+    for path in captures:
+        path = Path(path)
+        found = rows.get(path.stem)
+        if found is not None:
+            # Point it at the capture actually on screen: a stale row can name
+            # a file that a later session overwrote or renamed.
+            out.append(dataclasses.replace(found, capture_path=str(path)))
+        else:
+            out.append(Candidate(id=path.stem, generation=0, origin='capture',
+                                 capture_path=str(path)))
+    return out
+
+
 def _rescore(candidates, cfg, folder, progress=print):
     """Re-score each capture against `cfg`'s objective. Returns new Candidates.
 
