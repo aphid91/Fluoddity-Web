@@ -143,6 +143,84 @@ def check_dependencies(backend_name, clip_model=None):
     return problems
 
 
+#: Files AutoTokenizer actually needs. `config.json` is deliberately absent --
+#: see _cached_tokenizer_dir.
+_TOKENIZER_FILES = ('tokenizer.json', 'tokenizer_config.json')
+
+
+def _cached_tokenizer_dir(repo):
+    """A local snapshot dir holding `repo`'s tokenizer, or None.
+
+    WHY THIS EXISTS. SigLIP's text side is a SentencePiece tokenizer that
+    open_clip loads through `transformers`, and open_clip points EVERY SigLIP
+    variant at one shared repo -- ViT-SO400M-14-SigLIP-384's tokenizer lives in
+    timm/ViT-B-16-SigLIP, not beside its own weights. So a machine can hold the
+    full 3.3GB SO400M checkpoint and still reach the network on every load.
+
+    Worse, it reaches for a file that DOES NOT EXIST. AutoTokenizer asks for
+    config.json first, and the timm tokenizer repos do not publish one -- so
+    offline the request is a hard failure and online it is a wasted round trip,
+    every single load. The three files that matter (tokenizer.json,
+    tokenizer_config.json, special_tokens_map.json) are cached and sufficient.
+
+    Handing AutoTokenizer a DIRECTORY instead of a repo id stops it resolving
+    anything through the hub, so the missing config.json is never asked for.
+    Returns None when the files are not cached, which leaves the normal
+    download path to fetch them.
+    """
+    from pathlib import Path
+
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        root = Path(HF_HUB_CACHE)
+    except Exception:                                           # noqa: BLE001
+        root = Path.home() / '.cache' / 'huggingface' / 'hub'
+
+    repo_dir = root / f"models--{repo.replace('/', '--')}"
+    snapshots = repo_dir / 'snapshots'
+    if not snapshots.is_dir():
+        return None
+    # Newest snapshot first: a repo can hold several revisions, and the most
+    # recently fetched is the one a fresh download just populated.
+    for snapshot in sorted(snapshots.iterdir(),
+                           key=lambda p: p.stat().st_mtime, reverse=True):
+        if all((snapshot / name).is_file() for name in _TOKENIZER_FILES):
+            return snapshot
+    return None
+
+
+def use_cached_tokenizers():
+    """Make open_clip load SigLIP tokenizers from disk, not the hub.
+
+    Patches open_clip's HFTokenizer to swap a repo id for a cached directory
+    when we have one. Narrow on purpose: only the SigLIP repos this project
+    can select, only when the files are actually present, and it falls through
+    to normal behaviour otherwise.
+
+    Idempotent -- the patch marks itself, so repeated calls are free.
+    """
+    try:
+        from open_clip import tokenizer as oc_tokenizer
+    except ImportError:
+        return False
+
+    original = getattr(oc_tokenizer.HFTokenizer, '__init__', None)
+    if original is None or getattr(original, '_prefers_cache', False):
+        return False
+
+    def __init__(self, tokenizer_name, *args, **kwargs):
+        local = (_cached_tokenizer_dir(tokenizer_name)
+                 if isinstance(tokenizer_name, str) and '/' in tokenizer_name
+                 else None)
+        if local is not None:
+            tokenizer_name = str(local)
+        return original(self, tokenizer_name, *args, **kwargs)
+
+    __init__._prefers_cache = True
+    oc_tokenizer.HFTokenizer.__init__ = __init__
+    return True
+
+
 def _load_preferring_cache(backend):
     """Load the model offline if possible, falling back to a download.
 
@@ -158,6 +236,9 @@ def _load_preferring_cache(backend):
     several minutes, so it says so rather than appearing to hang.
     """
     changed = prefer_cached_models()
+    # Before the first attempt, so the offline pass can actually succeed on a
+    # SigLIP model whose tokenizer is cached under another repo's name.
+    use_cached_tokenizers()
     try:
         backend._load()
         return
@@ -167,8 +248,13 @@ def _load_preferring_cache(backend):
             # let the real failure surface.
             raise
         _set_hub_offline(False)
-        print("  not in the local cache -- downloading (this is a one-time "
-              "cost; later runs load from cache and stay offline)")
+        # DELIBERATELY VAGUE ABOUT WHAT IS FETCHED. The commonest reason to
+        # land here is not a missing 3.5GB checkpoint but a few hundred KB of
+        # tokenizer metadata -- see _cached_tokenizer_dir. Saying "downloading
+        # the model" for that taught the reader their cache was broken when it
+        # was fine.
+        print("  something this model needs is not in the local cache -- "
+              "fetching it (one-time; later loads stay offline)")
     try:
         backend._load()
     finally:

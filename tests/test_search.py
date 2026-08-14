@@ -884,6 +884,56 @@ def test_clip_model_choice():
         if had is not None:
             os.environ['HF_HUB_OFFLINE'] = had
 
+    # SigLIP's tokenizer is not in SigLIP's repo. open_clip points every SigLIP
+    # variant at timm/ViT-B-16-SigLIP, so a machine can hold the whole 3.3GB
+    # SO400M checkpoint and still hit the network on every load -- for a file
+    # (config.json) those repos do not even publish, which offline is a hard
+    # failure rather than a slow one.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as raw:
+        fake_root = Path(raw)
+        snapshot = (fake_root / 'models--timm--ViT-B-16-SigLIP'
+                    / 'snapshots' / 'abc123')
+        snapshot.mkdir(parents=True)
+        original_dir = embedding._cached_tokenizer_dir
+
+        def fake_dir(repo, _root=fake_root):
+            base = _root / f"models--{repo.replace('/', '--')}" / 'snapshots'
+            if not base.is_dir():
+                return None
+            for snap in base.iterdir():
+                if all((snap / n).is_file()
+                       for n in embedding._TOKENIZER_FILES):
+                    return snap
+            return None
+
+        check("an incomplete snapshot is not offered",
+              fake_dir('timm/ViT-B-16-SigLIP') is None)
+        for name in embedding._TOKENIZER_FILES:
+            (snapshot / name).write_text('{}', encoding='utf-8')
+        check("a complete one is",
+              fake_dir('timm/ViT-B-16-SigLIP') == snapshot)
+        # config.json is NOT required: the timm repos have none, and demanding
+        # it is exactly the bug -- a cache that is complete looks empty.
+        check("config.json is not among the required files",
+              'config.json' not in embedding._TOKENIZER_FILES)
+        check("an unknown repo is None", fake_dir('timm/nope') is None)
+
+    # The patch swaps a repo id for a directory only when one is cached, and
+    # marks itself so repeated calls are free.
+    try:
+        from open_clip import tokenizer as oc_tokenizer
+
+        embedding.use_cached_tokenizers()
+        check("the tokenizer patch is applied",
+              getattr(oc_tokenizer.HFTokenizer.__init__, '_prefers_cache',
+                      False) is True)
+        check("and applying it twice is a no-op",
+              embedding.use_cached_tokenizers() is False)
+    except ImportError:
+        pass        # open_clip not installed; nothing to patch
+
     # The report is the only record of which vector space a ranking lives in.
     lines = report_lib.build([], cfg=SearchConfig(backend='clip',
                                                   clip_model='L14',

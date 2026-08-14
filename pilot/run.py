@@ -562,7 +562,10 @@ def _rescore(candidates, cfg, folder, progress=print):
     """
     from . import embedding
 
-    problems = embedding.check_dependencies(cfg.backend)
+    # WITH the model, not just the backend. SO400M needs transformers for its
+    # tokenizer, and checking the backend alone let that surface minutes later
+    # as an ImportError from inside open_clip, after the weights had loaded.
+    problems = embedding.check_dependencies(cfg.backend, cfg.clip_model)
     if problems:
         for problem in problems:
             progress(f"  {problem}")
