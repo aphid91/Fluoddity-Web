@@ -19,6 +19,7 @@ import os
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -643,7 +644,7 @@ def test_caption_colouring():
     # clip backend" told the reader nothing they could act on.
     check("the texture backend reports it cannot embed text",
           plain_view.caption_scores is None
-          and 'Create embeddings' in plain_view.status,
+          and 'Recompute' in plain_view.status,
           plain_view.status)
 
 
@@ -1769,6 +1770,81 @@ def test_configs_pair_by_name():
               str(sum(1 for i in fresh if i.config_path)))
 
 
+def test_caption_loads_the_model_on_demand():
+    print("\na caption loads the model, typing does not")
+
+    from pilot.umap_view import Viewer
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        make_images(root, ['a', 'b'])
+        signature = 'clip:ViT-B-32:laion2b_s34b_b79k:c1:f0.3:s0'
+        cache_lib.embed_cached(gallery_lib.find_images(root),
+                               CountingBackend(signature=signature),
+                               cache_lib.EmbeddingCache(root))
+
+        view = Viewer()
+        view.folder = str(root)
+        view.gallery, _ = gallery_lib.build_cached(
+            root, signature, progress=lambda m: None)
+        view.backend = None
+        view.caption = 'a maze'
+
+        # A PAUSE IN TYPING IS NOT A REQUEST TO LOAD 3.5GB. Live recolour
+        # calls this on the frame thread every time typing stops, so the
+        # default has to stay passive.
+        view.apply_caption()
+        check("typing alone does not load a model", view.task is None)
+        check("and says which button would",
+              'Recompute' in view.status, view.status)
+
+        # The button may. Assert the model it asks for comes from the loaded
+        # VECTORS, not the config -- the config can say anything by now, and
+        # a caption scored against another model's text is a meaningless
+        # cosine that looks entirely plausible.
+        asked = {}
+
+        def fake_build(cfg):
+            asked['clip_model'] = cfg.clip_model
+            asked['crops'] = cfg.crops
+            # dim must match the cached vectors (CountingBackend's 8), or the
+            # cosine is a shape error the caller reports as a status line.
+            return FakeTextBackend({'a maze': np.ones(8, np.float32)},
+                                   dim=8, signature=signature)
+
+        original = embedding_lib.build_backend
+        embedding_lib.build_backend = fake_build
+        try:
+            view.cfg = replace(view.cfg, clip_model='SO400M', crops=9)
+            view.apply_caption(may_load=True)
+            check("the button starts a load", view.task_kind == 'textmodel',
+                  view.task_kind)
+            while view.busy:
+                time.sleep(0.01)
+            view._collect()
+        finally:
+            embedding_lib.build_backend = original
+
+        check("it loads the model that made these vectors",
+              asked.get('clip_model') == 'B32', str(asked))
+        check("with their crops, not the config's",
+              asked.get('crops') == 1, str(asked))
+        # The point is that the load flows straight back into the caption --
+        # the reader waited once and got their colours, rather than being
+        # returned to a loaded model and an unchanged map. (Every cached
+        # vector here is identical, so the SCORES are uniform; that is the
+        # fixture, not the feature.)
+        check("and the caption is applied without pressing twice",
+              view.caption_applied == 'a maze', view.caption_applied)
+        check("so the map is coloured",
+              view.caption_scores is not None
+              and len(view.caption_scores) == 2,
+              str(view.caption_scores))
+        from pilot.umap_view import COLOUR_CAPTION
+        check("and the colour mode switched to it",
+              view.colour_mode == COLOUR_CAPTION, view.colour_mode)
+
+
 def test_picker_adopts_settings():
     print("\nselecting a set adopts its settings")
 
@@ -1877,6 +1953,7 @@ def main():
     test_embedding_cache()
     test_signature_decode()
     test_configs_pair_by_name()
+    test_caption_loads_the_model_on_demand()
     test_picker_adopts_settings()
     test_create_is_a_noop_when_complete()
     test_cache_inventory()

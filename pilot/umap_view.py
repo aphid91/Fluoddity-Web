@@ -279,6 +279,12 @@ class Viewer:
         # die inside the draw loop, far from the cause.
         if kind == 'scanning' and isinstance(progress.result, list):
             self._took_inventory(progress.result)
+        elif kind == 'textmodel':
+            self.backend = progress.result
+            # Straight back into the caption the load was started for. Asking
+            # the reader to press the button a second time, for a model they
+            # just waited on, would be the machinery showing through.
+            self.apply_caption()
         elif kind == 'loading' and isinstance(progress.result, tuple):
             self.gallery, self.backend = progress.result
             self.projection = None
@@ -545,13 +551,19 @@ class Viewer:
                 or self.seed != self.projection.seed
                 or self.source != self.projected_source)
 
-    def apply_caption(self):
+    def apply_caption(self, may_load=False):
         """Colour the map by similarity to the typed caption.
 
         Cheap by design: the image embeddings are already in memory, so this
         is one text encode plus a matrix multiply -- measured at ~40ms across
         4,292 images. Trying twenty phrasings costs seconds, which is what
         makes this the right place to choose the negatives for a search.
+
+        `may_load` is the button's privilege, not the typist's. A set opened
+        from the archive has no backend -- that is the point of the picker --
+        and the text side needs one. Pressing the button is a request to pay
+        for it; a pause in typing is not, so live recolour never triggers a
+        multi-gigabyte load from a keystroke.
         """
         caption = self.caption.strip()
         if self.gallery is None:
@@ -562,12 +574,12 @@ class Viewer:
             return
         if self.backend is None or not getattr(self.backend, 'supports_text',
                                                False):
-            # A set loaded from the archive has no backend, because loading one
-            # would be the multi-gigabyte model load the picker exists to
-            # avoid. Say which button pays it rather than "needs the clip
-            # backend", which names an internal and no action.
-            self.status = ("captions need the model loaded -- press Create "
-                           "embeddings, or Re-score run, which loads it")
+            if may_load and self._load_text_model():
+                # The load runs in the background; _collect calls back here
+                # once the model is in hand.
+                return
+            self.status = ("captions need the model loaded -- press "
+                           "Recompute colour from caption")
             return
         # Refused rather than silently scored with the wrong model. The
         # gallery's vectors and this backend's text vectors would be from two
@@ -741,16 +753,20 @@ class Viewer:
         # per-keystroke edits live recolor waits on have to be spotted by
         # comparing against what is on screen.
         if changed:
-            self.apply_caption()
+            # Enter is as deliberate as the button, so it may pay for the
+            # model too -- the two are the same gesture.
+            self.apply_caption(may_load=True)
             self._caption_touched = None
         _tip("Colour the points by similarity to this phrase. Enter applies "
-             "it. Costs one text encode -- try a dozen.")
+             "it. Costs one text encode -- try a dozen.\n"
+             "Loads the model first if it is not in memory, which the picker "
+             "does not do; no images are re-embedded either way.")
 
         imgui.same_line()
         pending = self.caption.strip() != self.caption_applied
         if imgui.button("Recompute colour from caption"
                         + (" *" if pending and self.caption.strip() else "")):
-            self.apply_caption()
+            self.apply_caption(may_load=True)
 
         imgui.same_line()
         _, self.caption_calibrate = imgui.checkbox("calibrate",
@@ -870,6 +886,44 @@ class Viewer:
         self.selected_signature = ''
         self._took_inventory(self._scan_folder(folder))
         self.status = f"deleted {info.entries} row(s) -- {info.label}"
+
+    def _load_text_model(self):
+        """Load the model that made the LOADED vectors, for the text side.
+
+        Started here, finished in _collect, which re-applies the caption. True
+        if a load began.
+
+        THE GALLERY'S SIGNATURE DECIDES, not the config's. A caption is scored
+        by the cosine between its text vector and the image vectors on screen,
+        so the model has to be the one that produced those -- and the config
+        may say something else entirely by now. Taking the model from the
+        gallery makes the mismatch impossible rather than merely detected.
+
+        No images are embedded. The vectors are already in memory; this is the
+        text tower's weights and nothing else.
+        """
+        from dataclasses import replace
+
+        settings = embedding_cache.parse_signature(self.gallery.signature)
+        if settings is None or not settings.clip_model:
+            self.status = (f"cannot tell which model made "
+                           f"{self.gallery.signature}")
+            return False
+
+        cfg = replace(self.cfg, **settings.as_config_fields())
+        label = settings.clip_model
+
+        def work(report):
+            from . import embedding
+
+            report(f"  loading {label} for the text side")
+            return embedding.build_backend(cfg)
+
+        if not self._begin('textmodel', f"loading {label}", work):
+            return False
+        self.status = (f"loading {label} to encode the caption "
+                       f"(no images are embedded)...")
+        return True
 
     def _tick_live_recolor(self, pending, now=None):
         """Recolour once the caption has been still for a moment.

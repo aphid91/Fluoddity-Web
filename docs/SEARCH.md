@@ -581,11 +581,20 @@ key lines up. A 25,100-image set opens in ~7s with no model loaded at all.
 
 | Button | What it does |
 |---|---|
-| *Create embeddings* | **The only button that loads a model.** Embeds the folder under the current `vision` settings. A loud no-op if that set already exists and is complete. |
+| *Create embeddings* | Embeds the folder under the current `vision` settings — the only button that embeds **images**. A loud no-op if that set already exists and is complete. |
 | *Continue embedding* | The same button on a partial set: fills in only the images that set is missing, under its existing key. |
+| *Recompute colour from caption* | Colours the map by a phrase. Loads the model first if it is not in memory, then applies the caption — no images are re-embedded. |
 | *Re-score run* | Scores the loaded set against the current `scoring` rules. Embeds no images — but *does* load the model, because the caption and the 30 calibration captions have to be encoded. |
 | *Run search* | Greyed out when the config has no `search` section. |
 | *Prune* | Drops rows no load will ever read — unreachable ones and duplicates. |
+
+**A caption loads the model on demand, typing never does.** Pressing the button
+(or Enter) is a request to pay for the weights; a pause in typing is not, so
+live recolour stays passive rather than firing a multi-gigabyte load from a
+keystroke. The model loaded is the one that made the **vectors on screen**, read
+off the set's signature rather than the config — so the text and image vectors
+are always from the same model, and the mismatch is impossible rather than
+merely detected.
 
 **It opens empty and projects on demand.** A UMAP of a few thousand points
 costs ~25s, and much of what the GUI is for — trying captions, reading scores,
