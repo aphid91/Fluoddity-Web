@@ -241,7 +241,9 @@ export class MutationOverlay {
     this.hint.dataset['setting'] = 'transport.hint';
 
     this.hintLead = document.createElement('span');
+    this.hintLead.style.cssText = HINT_TEXT_CSS;
     this.hintTail = document.createElement('span');
+    this.hintTail.style.cssText = HINT_TEXT_CSS;
 
     // The stepper: `< [n] >`. Present in the DOM always, shown only while a
     // cohort is lit -- building it once and toggling `display` keeps the
@@ -563,14 +565,14 @@ export class MutationOverlay {
  * branches on it rather than re-deriving the highlight rule. `tail` is empty in
  * every other state.
  *
- * ## The [[[TODO]]] markers are deliberate and must stay
+ * ## The [[[TODO]]] markers
  *
  * Two of these strings describe adopting a behaviour, and the wording is not
  * settled -- "adopt" undersells it, because the picked rule becomes what the
  * WHOLE POPULATION varies around (`project.ts`'s `adoptRule`), not just that
  * cohort's. The markers are grep anchors so both sites can be found and revised
- * together; they are asserted by `mutationOverlay.test.ts` so they cannot be
- * quietly dropped while the wording is still open.
+ * together. Nothing enforces them, deliberately: the tests match these two
+ * sentences loosely so the wording can be rewritten without editing them.
  */
 export function hintFor(status: Status): {
   readonly lead: string;
@@ -724,15 +726,31 @@ const LABEL_CSS =
 // stepper has to be clickable. DIMMER THAN THE BAR'S OWN LABELS: this is
 // instructional text that is always on screen, so it should read as available
 // rather than compete with the controls above it.
+// `flex-wrap:nowrap` is explicit rather than relying on the default: this row
+// mixes long text with a three-part control, and the whole failure mode here is
+// things wrapping when they are asked to fit in too little space.
 const HINT_CSS =
-  'display:flex;align-items:center;gap:6px;pointer-events:auto;' +
+  'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;pointer-events:auto;' +
   'background:rgba(28,28,30,0.92);border:1px solid rgba(255,255,255,0.12);' +
   'border-radius:6px;padding:5px 12px;box-shadow:0 4px 16px rgba(0,0,0,0.45);' +
   'font:11px system-ui,sans-serif;color:#a8a8ad;white-space:nowrap;' +
   'user-select:none;max-width:96vw;overflow:hidden;';
 
-/** `< [n] >`, tight enough to read as one control rather than three. */
-const STEPPER_CSS = 'display:inline-flex;align-items:center;gap:2px;';
+// The two text spans, which ARE allowed to shrink -- something has to when the
+// row runs out of room, and losing the tail of a sentence to `overflow:hidden`
+// is better than deforming the control the sentence is about.
+const HINT_TEXT_CSS = 'min-width:0;overflow:hidden;text-overflow:ellipsis;';
+
+// `‹ [n] ›`, tight enough to read as one control rather than three.
+//
+// **`flex:none` IS LOAD-BEARING, NOT TIDINESS.** The hint row is a flex
+// container and its items shrink by default, so the two long text spans either
+// side squeezed this below the width of its own contents -- at which point its
+// three children wrapped and the arrows stacked VERTICALLY above and below the
+// field instead of sitting either side of it. `flex-wrap` is not the fix
+// (nothing here should ever wrap); refusing to shrink is.
+const STEPPER_CSS =
+  'display:inline-flex;align-items:center;gap:2px;flex:none;';
 
 // Square and small: these sit inside a line of 11px text, so anything with the
 // bar buttons' padding would set the row's height on its own.

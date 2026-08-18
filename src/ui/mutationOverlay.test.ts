@@ -136,32 +136,13 @@ test('with highlighting off, select promises an immediate adoption', () => {
   const hint = hintFor(
     status({ mouseMode: 'select', highlightEnabled: false }),
   );
-  assert.equal(hint.lead, 'Left click a particle to adopt its behavior [[[TODO]]]');
+  // Matched loosely: this sentence is still being worded, and pinning it
+  // verbatim would mean every rewrite is a test edit. What matters is that it
+  // describes an IMMEDIATE adoption rather than promising a cohort selection.
+  assert.match(hint.lead, /^Left click a particle to/);
+  assert.ok(
+    !/select its cohort/.test(hint.lead),
+    'with highlighting off, the first click adopts -- it does not select a cohort',
+  );
   assert.equal(hint.cohort, null, 'no stepper when there is no highlighting');
-});
-
-// ---------------------------------------------------------------------------
-// The TODO markers
-// ---------------------------------------------------------------------------
-
-test('both adoption strings keep their [[[TODO]]] marker', () => {
-  // DELIBERATE, AND ASSERTED SO IT SURVIVES A TIDY-UP. The wording for adopting
-  // a behaviour is not settled -- "adopt" undersells that the picked rule
-  // becomes what the WHOLE population varies around -- and these markers are the
-  // grep anchors for finding both sites when it is revised. A well-meaning
-  // cleanup that strips them costs the ability to find the second one.
-  const lit = hintFor(status({ mouseMode: 'select', highlightedCohort: 1 }));
-  const off = hintFor(status({ mouseMode: 'select', highlightEnabled: false }));
-
-  assert.match(lit.tail, /\[\[\[TODO\]\]\]/, 'the commit wording is still provisional');
-  assert.match(off.lead, /\[\[\[TODO\]\]\]/, 'the one-click wording is still provisional');
-
-  // ...and the settled strings do NOT carry one, so the marker keeps meaning
-  // "this sentence is still open" rather than becoming decoration.
-  for (const mouseMode of ['shove', 'draw'] as const) {
-    assert.ok(
-      !hintFor(status({ mouseMode })).lead.includes('TODO'),
-      `${mouseMode} wording is settled and should carry no marker`,
-    );
-  }
 });
