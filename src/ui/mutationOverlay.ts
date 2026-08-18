@@ -486,8 +486,20 @@ export class MutationOverlay {
     this.hintTail.textContent = tail;
 
     const stepping = cohort !== null;
-    this.stepper.style.display = stepping ? '' : 'none';
-    this.hintTail.style.display = stepping ? '' : 'none';
+    // `inline-flex` RESTATED, NOT `''`. Both of these elements carry their
+    // layout in an inline `style` (set from `cssText` at construction), and
+    // assigning `''` REMOVES the property rather than reverting it to what the
+    // stylesheet said -- there is no stylesheet here, so the stepper fell back
+    // to a `<span>`'s default `display:inline`. Its three children then laid
+    // out as inline boxes and wrapped, which is what put the arrows above and
+    // below the field instead of either side of it.
+    //
+    // The tail is a plain text span whose default IS `inline`, so `''` happens
+    // to be right for it -- stated explicitly anyway, because the difference
+    // between these two lines is otherwise invisible and the next person to
+    // copy one onto the other reintroduces the bug.
+    this.stepper.style.display = stepping ? 'inline-flex' : 'none';
+    this.hintTail.style.display = stepping ? 'inline' : 'none';
   }
 
   /** One of the stepper's two arrows. */

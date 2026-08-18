@@ -146,3 +146,59 @@ test('panel.ts refreshes the overlay above its hidden early-out', () => {
       'whenever the panels are hidden',
   );
 });
+
+/**
+ * Toggling `display` must not erase a `display` that came from `cssText`.
+ *
+ * THE BUG. `style.display = ''` REMOVES the property rather than reverting it to
+ * a stylesheet value -- and this project styles everything through inline
+ * `cssText`, so there is no stylesheet to revert to. An element whose layout
+ * came from its own `cssText` therefore falls back to the tag's default.
+ *
+ * The cohort stepper is a `<span>` carrying `display:inline-flex`. Showing it
+ * with `''` dropped that to a span's default `inline`, its three children laid
+ * out as inline boxes, and the two arrows wrapped ABOVE AND BELOW the number
+ * instead of sitting either side of it. It looks like a CSS mistake in the
+ * stepper, which is where two attempts to fix it went first; the fault is in the
+ * line that shows it.
+ *
+ * Checked at the source level because there is no DOM under `node --test` -- the
+ * same seam `overlayPayload`'s other tests use, and the reason this lives here
+ * rather than in `mutationOverlay.test.ts` with the pure `hintFor` cases.
+ */
+test('elements whose cssText sets display are re-shown with that display', () => {
+  const overlay = read('mutationOverlay.ts');
+
+  // Which style constants declare a `display`, and are therefore unsafe to
+  // re-show with `''`. Parsed rather than listed, so a constant that GAINS a
+  // display later is covered without anyone remembering to update this.
+  const declaresDisplay = new Set<string>();
+  for (const m of overlay.matchAll(/^const (\w+_CSS) =([\s\S]*?);$/gm)) {
+    if (/display:/.test(m[2]!)) declaresDisplay.add(m[1]!);
+  }
+  assert.ok(
+    declaresDisplay.has('STEPPER_CSS'),
+    'STEPPER_CSS is expected to set display -- if it stopped, re-check this test',
+  );
+
+  // Which elements were styled from one of those constants.
+  const unsafe = new Set<string>();
+  for (const m of overlay.matchAll(/this\.(\w+)\.style\.cssText = (\w+_CSS)/g)) {
+    if (declaresDisplay.has(m[2]!)) unsafe.add(m[1]!);
+  }
+  assert.ok(unsafe.has('stepper'), 'the stepper should be styled from STEPPER_CSS');
+
+  // None of them may be re-shown with the empty string.
+  for (const m of overlay.matchAll(
+    /this\.(\w+)\.style\.display = ([^;]+);/g,
+  )) {
+    const [, name, expression] = m;
+    if (!unsafe.has(name!)) continue;
+    assert.ok(
+      !/(^|[^'"\w])''/.test(expression!),
+      `this.${name!}.style.display is set to '' somewhere, which REMOVES the ` +
+        'display its cssText declared and drops it to the tag default -- state ' +
+        'the intended display explicitly instead',
+    );
+  }
+});
