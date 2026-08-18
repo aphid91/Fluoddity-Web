@@ -71,7 +71,7 @@ export const NO_HIT = 0xffffffff;
  * radius would shrink on screen as you zoom out, making distant particles
  * progressively harder to hit.
  */
-export const DEFAULT_PICK_RADIUS_PX = 40.0;
+export const DEFAULT_PICK_RADIUS_PX = 15.0;
 
 // ---------------------------------------------------------------------------
 // The result buffer layout
