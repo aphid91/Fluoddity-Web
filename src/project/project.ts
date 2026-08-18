@@ -197,6 +197,46 @@ export function adoptRule(project: Project, rule: readonly number[]): Project {
 }
 
 /**
+ * Whether moving between these two projects changes what particles are TRYING
+ * TO DO -- any config's rule or mutation seed.
+ *
+ * Exists for undo/redo. Every other behavior-change path knows what it did, but
+ * undo is one code path replaying steps of every kind, so the only way to tell a
+ * rule adoption from a brightness tweak is to look. See
+ * `Orchestrator.resetIfRuleChanged`, its only caller.
+ *
+ * **THE SEED COUNTS AS MUCH AS THE RULE.** Reroll Mutations moves ONLY
+ * `mutationSeed` (`randomizeSeed`), and the GPU derives every particle's actual
+ * rule from `rule` and the seed together (`rule.wgsl`'s `derive_entity_rule`).
+ * A rule-only comparison would report "nothing changed" for a reroll, which is
+ * one of the three cases this was built for.
+ *
+ * **EVERY CONFIG, NOT THE SELECTED ONE.** An undo can move `selected` as well as
+ * edit a config, so comparing `selectedConfig(before)` against
+ * `selectedConfig(after)` compares two DIFFERENT slots and reports a change
+ * whenever the selection moved -- resetting on an undo that merely switched
+ * which config was on screen. Comparing slot for slot asks the question actually
+ * meant: did any behaviour in this project change?
+ *
+ * A LENGTH CHANGE COUNTS. Nothing in the app adds or removes a slot today (see
+ * the note at the bottom of this file), but a project of a different shape is
+ * not one whose behaviours can be said to be unchanged, and answering `false`
+ * there would be a claim this function cannot support.
+ */
+export function ruleChanged(before: Project, after: Project): boolean {
+  if (before === after) return false;
+  if (before.configs.length !== after.configs.length) return true;
+
+  return before.configs.some((a, i) => {
+    const b = after.configs[i]!;
+    if (a === b) return false; // the common case: untouched slots share identity
+    if (a.mutationSeed !== b.mutationSeed) return true;
+    if (a.rule.length !== b.rule.length) return true;
+    return a.rule.some((v, j) => v !== b.rule[j]);
+  });
+}
+
+/**
  * Change one world setting.
  *
  * A real edit of the project's single `WorldSettings` -- not, as it once was on

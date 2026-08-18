@@ -104,6 +104,32 @@ export interface Preferences {
    */
   readonly showReticle: boolean;
 
+  // --- behaviour ------------------------------------------------------------
+  /**
+   * Restart the simulation whenever the particles receive a NEW TARGET RULE.
+   *
+   * A rule change is not like a slider: it replaces what every particle is
+   * trying to do, and the structure on screen was built by the OLD rule. Without
+   * a restart the new behaviour has to fight its way out of the previous one's
+   * settled state, so what you see is neither rule -- and the difference between
+   * "this rule is uninteresting" and "this rule has not escaped the last one
+   * yet" is invisible.
+   *
+   * Covers every path that adopts a rule: click-to-select, Reroll Mutations,
+   * Reroll All Behavior, and undo/redo of any of them. `Orchestrator`'s
+   * `resetForBehavior` is the single call site, and the undo/redo half compares
+   * the rule across the step rather than resetting on every undo -- see
+   * `ruleChanged`.
+   *
+   * A PREFERENCE AND NOT A FEATURE FLAG, unlike `RESET_ON_CONFIG_LOAD` next to
+   * it in `featureFlags.ts`: this is a genuine working preference (watching a
+   * rule evolve from where the last one left off is a legitimate thing to want),
+   * not an open question awaiting an answer. Advanced tier, because the default
+   * is right for almost everyone and the control only matters once you have
+   * noticed the behaviour it governs.
+   */
+  readonly resetOnBehaviorChange: boolean;
+
   // --- disruptive: changing these reallocates and resets the simulation ---
   /** Scales entity count and canvas resolution together. */
   readonly worldSize: number;
@@ -180,6 +206,7 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   fieldOpacity: 0.10,
   fieldAlwaysShow: false,
   showReticle: true,
+  resetOnBehaviorChange: true,
   worldSize: .50,
   canvasAspect: 1.0,
   // Basic for a first-run user. Persisted thereafter -- see the interface.
@@ -222,6 +249,7 @@ export const PREFERENCE_KINDS = {
   fieldOpacity: 'float',
   fieldAlwaysShow: 'bool',
   showReticle: 'bool',
+  resetOnBehaviorChange: 'bool',
   worldSize: 'float',
   canvasAspect: 'float',
   advancedProject: 'bool',

@@ -78,6 +78,19 @@ export interface CameraFrame {
    */
   readonly colorSensitivity: number;
   readonly colorByCohort: boolean;
+  /**
+   * The cohort under the mouse, or negative when none is highlighted.
+   *
+   * PARTICLES MODE ONLY, and not because it was scoped that way to save work:
+   * TRAIL renders the canvas texture, which is a velocity flow field
+   * (`brush.wgsl`'s fragment stage writes `vel`, and the target is rg16float) --
+   * cohort is not in it and cannot be recovered from it. A per-cohort dim is
+   * therefore not expressible in that mode at all.
+   *
+   * Optional so callers that do not highlight -- and the tests -- need not
+   * thread it through.
+   */
+  readonly highlightedCohort?: number;
 }
 
 export class Camera {
@@ -403,7 +416,12 @@ export class Camera {
     queue.writeBuffer(
       this.camBrushUniforms,
       0,
-      packCamBrushUniforms(view, frame.colorSensitivity, frame.colorByCohort),
+      packCamBrushUniforms(
+        view,
+        frame.colorSensitivity,
+        frame.colorByCohort,
+        frame.highlightedCohort ?? -1,
+      ),
     );
     queue.writeBuffer(this.accumUniforms, 0, packAccumulateUniforms(samples));
   }

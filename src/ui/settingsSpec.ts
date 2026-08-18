@@ -775,6 +775,26 @@ export const SETTINGS: readonly Setting[] = [
     group: 'Display',
     revealsOn: 'bloomEnabled',
   }),
+
+  // ================= PREFERENCES: Behavior =================
+  // DECLARED LAST ON PURPOSE. `grouped()` emits groups in the order their first
+  // member is declared, so being last here is what puts this group at the BOTTOM
+  // of the Preferences panel. Moving this block up moves the control.
+  setting({
+    field: 'resetOnBehaviorChange',
+    label: 'Reset on Behavior Change',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'Restart the simulation whenever the particles are given a new target ' +
+      'behavior -- selecting a particle, Reroll Mutations, Reroll All Behavior, ' +
+      'and undoing or redoing any of those.\n\nOn, a new behavior starts from ' +
+      'fresh initial conditions, so what you see is that behavior alone. Off, it ' +
+      'has to take over the structure the previous behavior already built, which ' +
+      'is worth watching but makes the two hard to tell apart.',
+    group: 'Behavior',
+  }),
 ];
 
 /**

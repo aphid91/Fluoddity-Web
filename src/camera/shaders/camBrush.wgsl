@@ -21,7 +21,8 @@ struct CamBrushUniforms {
     camera     : vec4f,   // xy: pan   z: zoom   w: reserved
     // x: sprite_size   y: particle_alpha   z: color_sensitivity   w: reserved
     sprite     : vec4f,
-    flags      : vec4f,   // x: color_by_cohort(i)   yzw: reserved
+    // x: color_by_cohort(i)   y: highlighted cohort (< 0 = none)   zw: reserved
+    flags      : vec4f,
 }
 
 @group(0) @binding(0) var<uniform> u : CamBrushUniforms;
@@ -31,10 +32,22 @@ struct CamBrushUniforms {
 
 fn color_by_cohort() -> bool { return bitcast<i32>(u.flags.x) != 0; }
 
+// The cohort the mouse is resting on, or negative when none is. A PLAIN FLOAT
+// AND NOT A SEPARATE BOOLEAN LANE: cohorts are non-negative (`get_cohort` is a
+// non-negative ramp), so "no highlight" has a spare value of its own and a
+// second lane could only ever disagree with this one.
+fn highlighted_cohort() -> f32 { return u.flags.y; }
+
 // How far apart consecutive cohorts land on the hue wheel. Three quarters of a
 // turn separates neighbours without the arbitrary jumble a hash gives, and hue
 // is periodic so it wraps on its own -- no normalizing by the cohort count.
 const COHORT_COLOR_CONSTANT: f32 = 0.75;
+
+// What a particle OUTSIDE the highlighted cohort keeps of its brightness.
+// 0.4 is the 60% reduction the highlight asks for. TWEAK THIS, not the
+// arithmetic below -- lower dims the rest of the field harder, 1.0 disables the
+// dimming without disabling the highlight.
+const COHORT_DIM: f32 = 0.14;
 
 struct VsOut {
     @builtin(position) clip : vec4f,
@@ -168,5 +181,21 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
                         color_by_cohort());
     let hue = u.sprite.z * signal;
 
-    return vec4f(hsv2rgb(vec3f(hue, 0.8, 1.0)) * kernel * u.sprite.y, 1.0);
+    // THE COHORT HIGHLIGHT. `col_params.y` is floor(cohort)
+    // (entityUpdate.wgsl:531) and the highlighted cohort arrives already
+    // floored by entityPick.wgsl's derive pass, so both sides of this
+    // comparison are integers-in-a-float and `==` is exact. Comparing a floored
+    // value against a raw one would match nothing and dim the entire field.
+    //
+    // INDEPENDENT OF color_by_cohort(). The highlight answers "which particles
+    // am I about to select", the toggle answers "how is hue assigned" -- a user
+    // colouring by the black-box signal still needs to see what a click will
+    // take. Applied to the returned COLOUR rather than to alpha, so it dims what
+    // the particle contributes without changing the additive blend's shape.
+    var dim = 1.0;
+    if (highlighted_cohort() >= 0.0 && in.col_params.y != highlighted_cohort()) {
+        dim = COHORT_DIM;
+    }
+
+    return vec4f(hsv2rgb(vec3f(hue, 0.8, 1.0)) * kernel * u.sprite.y * dim, 1.0);
 }

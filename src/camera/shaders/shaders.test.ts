@@ -242,3 +242,42 @@ test('camera.wgsl reads the canvas from the SWAPPING bind group', () => {
     'canvas sampler must be group 1 binding 1',
   );
 });
+
+test('camBrush.wgsl dims by cohort against a FLOORED value', () => {
+  // THE COMPARISON THAT MAKES THE HIGHLIGHT WORK. `col_params.y` is
+  // floor(cohort) (entityUpdate.wgsl) and the highlighted cohort arrives
+  // already floored by entityPick.wgsl's derive pass, so `==` between them is
+  // exact. If either side ever stopped being floored, `get_cohort`'s continuous
+  // ramp would make the comparison match nothing and the shader would dim
+  // EVERY particle -- a uniformly darker screen, which reads as a brightness
+  // bug rather than as a broken highlight.
+  const source = stripComments(expand('camBrush.wgsl'));
+
+  assert.match(
+    source,
+    /const\s+COHORT_DIM\s*:\s*f32\s*=/,
+    'the dim factor must stay a single named constant, tweakable in one place',
+  );
+  assert.match(
+    source,
+    /highlighted_cohort\(\)\s*>=\s*0\.0/,
+    'a negative highlighted cohort is the "no highlight" sentinel',
+  );
+  assert.match(
+    source,
+    /col_params\.y\s*!=\s*highlighted_cohort\(\)/,
+    'the dim must apply to particles OUTSIDE the highlighted cohort',
+  );
+});
+
+test('camBrush.wgsl reads the highlighted cohort from a float lane', () => {
+  // Not `bitcast<i32>` like color_by_cohort: cohorts are non-negative floats and
+  // the sentinel is a negative one, so the lane carries both facts without a
+  // second lane that could disagree with it. cameraUniforms.ts writes f32[13].
+  const source = stripComments(expand('camBrush.wgsl'));
+  assert.match(
+    source,
+    /fn\s+highlighted_cohort\(\)\s*->\s*f32\s*\{\s*return\s+u\.flags\.y;/,
+    'highlighted_cohort must read flags.y as a plain f32',
+  );
+});

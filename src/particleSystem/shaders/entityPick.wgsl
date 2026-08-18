@@ -84,17 +84,25 @@
 //   rule  : Rule         offset 16
 //
 // POSITION IS TWO f32s, NOT A vec2f, AND THAT IS THE WHOLE POINT. `vec2f` has
-// ALIGNMENT 8, so it cannot start at offset 4 -- WGSL would push it to 8, _pad
-// to 16 and `rule` to 32, making the struct 352 bytes and the position cost a
-// full 16-byte lane after all. Two f32s align to 4 and genuinely fit in the
-// hole. (Measured: the driver rejected the 336-byte buffer as "too small, the
-// pipeline requires 352" when this was a vec2f.)
+// ALIGNMENT 8, so it cannot start at offset 4 -- WGSL would push it to 8, the
+// cohort to 16 and `rule` to 32, making the struct 352 bytes and the position
+// cost a full 16-byte lane after all. Two f32s align to 4 and genuinely fit in
+// the hole. (Measured: the driver rejected the 336-byte buffer as "too small,
+// the pipeline requires 352" when this was a vec2f.)
+//
+// `cohort` FILLS WHAT WAS PADDING, at no cost. Offset 12 was `_pad : u32` --
+// dead space Rule's 16-byte alignment forces to exist whether or not anything
+// is written there. The cohort highlight needs to compare which COHORT two
+// successive picks landed on, and the host cannot recompute it: get_cohort
+// divides by arrayLength(&entities), and reproducing that host-side is the same
+// class of mistake as reproducing the rule (see the header). So the shader
+// reports it, and the struct is still 336 bytes.
 struct PickResult {
-    key   : atomic<u32>,
-    pos_x : f32,
-    pos_y : f32,
-    _pad  : u32,
-    rule  : Rule,
+    key    : atomic<u32>,
+    pos_x  : f32,
+    pos_y  : f32,
+    cohort : f32,
+    rule   : Rule,
 }
 @group(0) @binding(2) var<storage, read_write> result : PickResult;
 
@@ -205,4 +213,14 @@ fn derive() {
     // THE SAME FUNCTION entityUpdate.wgsl calls, from rule.wgsl. Not a copy.
     let cohort = get_cohort(index, config, arrayLength(&entities));
     result.rule = derive_entity_rule(config.rule, cohort, config);
+
+    // FLOORED, because that is what cohort IDENTITY is. get_cohort returns a
+    // CONTINUOUS ramp (rule.wgsl:120-122) -- two entities in the same cohort
+    // have different raw values, so comparing them raw would say every pick
+    // disagrees with every other and no cohort would ever highlight.
+    // rule.wgsl:104 says floor() is the equality test, entityUpdate.wgsl:531
+    // stores floor(cohort) into col_params.y for the same reason, and the
+    // highlight compares this against THAT. All three must floor or the shader
+    // dims a different set of particles than the host thinks it highlighted.
+    result.cohort = floor(cohort);
 }

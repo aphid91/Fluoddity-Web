@@ -66,6 +66,7 @@ export const CAMERA_VIEW_UNIFORM_SIZE = 48;
  *   camera     : vec4f  (16)  offset 16
  *   sprite     : vec4f  (16)  offset 32   x size  y alpha  z color_sensitivity
  *   flags      : vec4f  (16)  offset 48   x color_by_cohort(i)
+ *                                         y highlighted cohort (f32, <0 = none)
  */
 export const CAM_BRUSH_UNIFORM_SIZE = 64;
 
@@ -116,11 +117,23 @@ export function packCameraViewUniforms(view: CameraView): ArrayBuffer {
  * from the selected config. They ride this buffer rather than being read from
  * the config buffer, which belongs to ParticleSystem -- so with several configs
  * loaded, the selected one sets the palette for all. See `cam_brush.frag:26-30`.
+ *
+ * `highlightedCohort` is the cohort the mouse is resting on, or negative for
+ * none -- `selection/hoverPick.ts` decides it and `NO_COHORT` is its spelling
+ * of "none". It is a DISPLAY input like the two above and arrives the same way:
+ * the highlight must appear and clear immediately, including while paused, and
+ * anything routed through the config buffer would wait for a physics step.
+ *
+ * A PLAIN FLOAT LANE, not an int and not a bool-plus-value pair. Cohorts are
+ * non-negative, so the sentinel fits in the same lane, and a second lane could
+ * only ever disagree with this one. Defaulted so the callers that have no
+ * highlight to report -- and the tests -- need not thread it through.
  */
 export function packCamBrushUniforms(
   view: CameraView,
   colorSensitivity: number,
   colorByCohort: boolean,
+  highlightedCohort = -1,
 ): ArrayBuffer {
   const buffer = new ArrayBuffer(CAM_BRUSH_UNIFORM_SIZE);
   const f32 = new Float32Array(buffer);
@@ -133,8 +146,9 @@ export function packCamBrushUniforms(
   f32[9] = PARTICLE_ALPHA;
   f32[10] = colorSensitivity;
 
-  // flags: x color_by_cohort(i), yzw reserved
+  // flags: x color_by_cohort(i), y highlighted_cohort(f32), zw reserved
   i32[12] = colorByCohort ? 1 : 0;
+  f32[13] = highlightedCohort;
 
   return buffer;
 }

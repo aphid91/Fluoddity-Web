@@ -427,3 +427,31 @@ test('canvas.wgsl takes no sampler as a function parameter', () => {
     'canvas.wgsl passes a sampler as a function parameter, which WGSL forbids',
   );
 });
+
+test('entityPick.wgsl reports the cohort, FLOORED, from the derive pass', () => {
+  // The host cannot recompute this. `get_cohort` divides by
+  // arrayLength(&entities), and reproducing that host-side is the same class of
+  // mistake as reproducing the rule -- so the shader reports it.
+  //
+  // FLOORED HERE, because floor() is what cohort identity means (rule.wgsl:104)
+  // and entityUpdate.wgsl stores floor(cohort) into col_params.y. camBrush.wgsl
+  // compares the two directly. If this stopped flooring, the raw ramp would
+  // differ for every entity in a cohort: two picks on the SAME cohort would
+  // report different values, never agree, and the highlight would simply never
+  // appear -- a feature that silently does nothing.
+  const source = stripComments(expand('entityPick.wgsl'));
+
+  assert.match(
+    source,
+    /result\.cohort\s*=\s*floor\(\s*cohort\s*\)/,
+    'derive must write floor(cohort) into the result',
+  );
+  // In the struct at the offset pick.ts reads, replacing what was _pad. The
+  // field order IS the byte layout, so `cohort` must sit after the two position
+  // floats and before the rule.
+  assert.match(
+    source,
+    /struct\s+PickResult\s*\{[^}]*pos_x\s*:\s*f32\s*,\s*pos_y\s*:\s*f32\s*,\s*cohort\s*:\s*f32\s*,\s*rule\s*:\s*Rule/,
+    'cohort must occupy the padding lane between pos_y and rule',
+  );
+});

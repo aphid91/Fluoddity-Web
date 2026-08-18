@@ -106,9 +106,30 @@ test('every setting names a real field on its source', () => {
   }
 });
 
-test('the registry has the same 35 entries the desktop does', () => {
+test('the registry has the same 35 entries the desktop does, plus the web-only ones', () => {
   // A count rather than a list: the point is that porting dropped none of them.
-  assert.equal(SETTINGS.length, 35);
+  //
+  // WEB-ONLY ENTRIES ARE SUBTRACTED RATHER THAN FOLDED INTO THE TOTAL, so this
+  // keeps asserting what it was written to assert -- that the port carried all
+  // 35 desktop settings across. Bumping the literal to 36 instead would have
+  // quietly converted it into "the registry has however many it has", which
+  // catches nothing. A setting with no desktop counterpart goes in the list.
+  const WEB_ONLY = [
+    // No desktop equivalent: the desktop has no cohort highlight and no
+    // click-to-select reset to govern.
+    'resetOnBehaviorChange',
+  ];
+  const ported = SETTINGS.filter((s) => !WEB_ONLY.includes(s.field));
+  assert.equal(ported.length, 35);
+
+  // The names in WEB_ONLY must actually be in the registry, or a rename would
+  // silently subtract nothing and the count above would drift.
+  for (const field of WEB_ONLY) {
+    assert.ok(
+      SETTINGS.some((s) => s.field === field),
+      `${field} is listed as web-only but is not in the registry`,
+    );
+  }
 });
 
 test('labels are unique', () => {
@@ -286,10 +307,13 @@ test('grouped preserves declaration order and omits empty groups', () => {
   // 'Mutation' is absent, and that is the point: both its members are
   // `panel: false`, so the group empties itself through `visible()` and is
   // omitted for exactly the same reason an all-Advanced group is in Basic.
+  // 'Behavior' is LAST because its one member is declared last, which is how
+  // "Reset on Behavior Change" ends up at the bottom of the Preferences panel.
+  // That placement is the reason it is a group of its own, so it is pinned here.
   assert.deepEqual(
     advanced.map(([name]) => name),
     ['Population', 'Sensors', 'Forces', 'Trails', 'Appearance',
-     'Advanced', 'Simulation', 'Display'],
+     'Advanced', 'Simulation', 'Display', 'Behavior'],
   );
   // 'Trails' holds one ADVANCED entry, so Basic must not render it.
   const basic = grouped(false, [CONFIG, WORLD, PREFS]);

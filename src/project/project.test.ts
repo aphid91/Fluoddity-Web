@@ -35,6 +35,7 @@ import {
   edited,
   makeProject,
   renamed,
+  ruleChanged,
   selectedConfig,
   withConfigs,
 } from './project.ts';
@@ -198,4 +199,86 @@ test('withConfigs replaces name and world when given', () => {
   const after = withConfigs(project(), [config(1)], { name: '9leafv8', world });
   assert.equal(after.name, '9leafv8');
   assert.equal(after.world.boundaryConditions, BC.BOUNCE);
+});
+
+// ---------------------------------------------------------------------------
+// ruleChanged -- what makes an undo a BEHAVIOR change
+// ---------------------------------------------------------------------------
+//
+// Undo and redo are one code path replaying steps of every kind, so this is the
+// only thing standing between "reset when the particles get a new target rule"
+// and "reset on every undo". Both failure directions are user-visible and
+// neither raises anything: too eager restarts the simulation when someone steps
+// back over a brightness tweak, too lax silently drops the feature on the reroll
+// path. See `Orchestrator.resetIfRuleChanged`.
+
+test('ruleChanged is false for a project against itself', () => {
+  const p = project();
+  assert.equal(ruleChanged(p, p), false);
+});
+
+test('ruleChanged sees an adopted rule', () => {
+  const before = project();
+  const after = adoptRule(before, new Array<number>(80).fill(0.75));
+  assert.equal(ruleChanged(before, after), true);
+});
+
+test('ruleChanged sees a moved mutation seed', () => {
+  // THE REROLL CASE. `randomizeSeed` moves ONLY the seed, so a rule-only
+  // comparison would report "nothing changed" and Reroll Mutations would
+  // silently stop resetting -- one of the three cases the feature was asked for.
+  const before = project();
+  const after = editSelected(before, 'mutationSeed', 0.875);
+  assert.equal(ruleChanged(before, after), true);
+});
+
+test('ruleChanged ignores edits that are not behaviour', () => {
+  // A slider drag is not a new target rule, and undoing one must not restart
+  // the simulation.
+  const before = project();
+  assert.equal(ruleChanged(before, editSelected(before, 'sensorGain', 9.5)), false);
+  assert.equal(ruleChanged(before, renamed(before, 'Starcrossedv8')), false);
+  assert.equal(
+    ruleChanged(before, editWorld(before, 'boundaryConditions', BC.BOUNCE)),
+    false,
+  );
+});
+
+test('ruleChanged ignores a moved selection', () => {
+  // THE REASON IT COMPARES SLOT FOR SLOT rather than `selectedConfig` against
+  // `selectedConfig`. An undo can move `selected`, and the two slots hold
+  // different rules -- so comparing the SELECTED config would call this a
+  // behaviour change and restart the simulation because the user stepped back
+  // over a config switch. Here both projects hold the same two configs.
+  const before = makeProject({ configs: [config(0), config(1)], selected: 0 });
+  const after = makeProject({ configs: before.configs, selected: 1 });
+  assert.equal(ruleChanged(before, after), false);
+});
+
+test('ruleChanged sees a rule change in an UNSELECTED config', () => {
+  // The other half of comparing every slot: those particles are on screen and
+  // obeying that rule too, whether or not the panel is pointed at it.
+  const before = makeProject({ configs: [config(0), config(1)], selected: 0 });
+  const after = edited(before, 1, 'rule', new Array<number>(80).fill(0.75));
+  assert.equal(ruleChanged(before, after), true);
+});
+
+test('ruleChanged treats a different config count as a change', () => {
+  const before = makeProject({ configs: [config(0), config(1)] });
+  const after = makeProject({ configs: [config(0)] });
+  assert.equal(ruleChanged(before, after), true);
+});
+
+test('ruleChanged compares rules by VALUE, not identity', () => {
+  // `adoptRule` copies the array (see the test above), and history hands back
+  // whole prior projects, so two states can hold equal rules in different
+  // arrays. Comparing by identity would report a change on every undo.
+  const before = project();
+  const same = adoptRule(before, selectedConfig(before).rule.slice());
+  assert.equal(ruleChanged(before, same), false);
+
+  // ...and one differing element is still a change.
+  const rule = selectedConfig(before).rule.slice();
+  rule[79] = 0.99;
+  assert.equal(ruleChanged(before, adoptRule(before, rule)), true);
 });

@@ -25,6 +25,7 @@ import {
   INDEX_MASK,
   MISS,
   NO_HIT,
+  PICK_COHORT_OFFSET,
   PICK_KEY_OFFSET,
   PICK_POS_OFFSET,
   PICK_RESULT_SIZE,
@@ -42,10 +43,12 @@ function encodeResult(
   key: number,
   pos: readonly [number, number] = [0, 0],
   rule: readonly number[] = new Array(RULE_FLOATS).fill(0),
+  cohort = 0,
 ): ArrayBuffer {
   const buffer = new ArrayBuffer(PICK_RESULT_SIZE);
   new Uint32Array(buffer, PICK_KEY_OFFSET, 1)[0] = key;
   new Float32Array(buffer, PICK_POS_OFFSET, 2).set(pos);
+  new Float32Array(buffer, PICK_COHORT_OFFSET, 1)[0] = cohort;
   new Float32Array(buffer, PICK_RULE_OFFSET, RULE_FLOATS).set(rule);
   return buffer;
 }
@@ -117,6 +120,13 @@ test('the result buffer is 336 bytes with the rule 16-byte aligned', () => {
   assert.equal(layoutOf('Rule').size, RULE_FLOATS * 4);
   // pos sits in the padding between the key and the rule -- it costs nothing.
   assert.ok(PICK_POS_OFFSET + 8 <= PICK_RULE_OFFSET, 'pos must fit before the rule');
+  // ...and the cohort takes the last 4 bytes of that same padding, which is why
+  // adding it did not move the rule or grow the buffer. It must not overlap the
+  // position: both are read out of the one hole, and an offset collision would
+  // decode a coordinate as a cohort and highlight an arbitrary population.
+  assert.equal(PICK_COHORT_OFFSET, 12);
+  assert.ok(PICK_COHORT_OFFSET >= PICK_POS_OFFSET + 8, 'cohort must not overlap pos');
+  assert.ok(PICK_COHORT_OFFSET + 4 <= PICK_RULE_OFFSET, 'cohort must fit before the rule');
 });
 
 // ---------------------------------------------------------------------------
@@ -133,7 +143,7 @@ test('the NO_HIT sentinel decodes to a miss', () => {
 
 test('a key round-trips through index, distance and position', () => {
   const rule = Array.from({ length: RULE_FLOATS }, (_, i) => i * 0.25);
-  const bytes = encodeResult(packKey(128, 12345), [0.125, -0.5], rule);
+  const bytes = encodeResult(packKey(128, 12345), [0.125, -0.5], rule, 6);
 
   const result = decodePickResult(bytes, 0.08);
   assert.equal(result.index, 12345);
@@ -142,6 +152,28 @@ test('a key round-trips through index, distance and position', () => {
   assert.ok(Math.abs(result.distance - (128 / 255) * 0.08) < 1e-9);
   assert.deepEqual(result.pos, [0.125, -0.5]);
   assert.deepEqual(result.rule, rule);
+  // The cohort the highlight compares. Already floored by the derive pass, so
+  // it arrives as an integer and needs no rounding here.
+  assert.equal(result.cohort, 6);
+});
+
+test('a miss reports no cohort, whatever the buffer holds', () => {
+  // THE STALE-COHORT HAZARD. `derive` returns early on NO_HIT without writing
+  // anything, so on a miss these bytes are the PREVIOUS pick's -- here a
+  // plausible-looking cohort 4. Reading it would highlight a cohort the mouse is
+  // nowhere near, and it would look like a working feature pointed at the wrong
+  // particles. The early return for MISS is what makes it unobservable.
+  const bytes = encodeResult(NO_HIT, [9.0, 9.0], new Array(RULE_FLOATS).fill(1), 4);
+  const result = decodePickResult(bytes, 0.08);
+  assert.equal(result.cohort, -1);
+  assert.deepEqual(result, MISS);
+});
+
+test('the miss cohort cannot collide with a real one', () => {
+  // `get_cohort` is a non-negative ramp and the shader floors it, so every real
+  // cohort is >= 0. `hoverPick.ts` relies on this to tell "no cohort" apart from
+  // cohort 0, and so does camBrush.wgsl's `highlighted_cohort() >= 0.0`.
+  assert.ok(MISS.cohort < 0);
 });
 
 test('the top bit of the key does not make the index negative', () => {

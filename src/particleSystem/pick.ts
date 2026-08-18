@@ -83,14 +83,16 @@ export const DEFAULT_PICK_RADIUS_PX = 40.0;
  *   key    : atomic<u32>  (4)    offset 0
  *   pos_x  : f32          (4)    offset 4
  *   pos_y  : f32          (4)    offset 8
- *   _pad   : u32          (4)    offset 12
+ *   cohort : f32          (4)    offset 12
  *   rule   : Rule         (320)  offset 16
  *
  * `Rule` is 16-byte aligned (it is built from `vec4f`), so `rule` cannot start
  * at offset 4 -- WGSL inserts 12 bytes of padding after the key whether or not
- * anything is written there. **THE POSITION RIDES IN THAT PADDING AND IS
- * THEREFORE FREE.** That is why the scalars come BEFORE the rule: appended
- * after it, they would claim a whole new 16-byte lane.
+ * anything is written there. **THE POSITION AND THE COHORT RIDE IN THAT PADDING
+ * AND ARE THEREFORE FREE.** That is why the scalars come BEFORE the rule:
+ * appended after it, they would claim a whole new 16-byte lane. The cohort was
+ * the last 4 bytes of that padding, added for the cohort highlight at no cost
+ * to the buffer's size.
  *
  * THE POSITION IS TWO f32s AND NOT A vec2f. `vec2f` has ALIGNMENT 8, so WGSL
  * cannot place one at offset 4: it would move to 8, push `_pad` to 16 and the
@@ -104,6 +106,7 @@ export const DEFAULT_PICK_RADIUS_PX = 40.0;
  */
 export const PICK_KEY_OFFSET = 0;
 export const PICK_POS_OFFSET = 4;
+export const PICK_COHORT_OFFSET = 12;
 export const PICK_RULE_OFFSET = 16;
 
 /** Floats in a `Rule`: 10 FourierCenters x (4 frequency + 4 amplitude). */
@@ -152,6 +155,20 @@ export interface PickResult {
    * selection adopts, and the whole reason the result buffer is 336 bytes.
    */
   readonly rule: readonly number[] | null;
+  /**
+   * The winner's cohort, ALREADY FLOORED by the shader.
+   *
+   * Cohort identity, not the raw ramp: `get_cohort` is continuous, so two
+   * entities in one cohort differ in the raw value and only `floor` makes "same
+   * cohort" a comparison. The highlight compares this between successive picks,
+   * and `camBrush.wgsl` compares it against `col_params.y` -- which
+   * `entityUpdate.wgsl:531` also floors. See `hoverPick.ts`.
+   *
+   * `-1` on a miss, mirroring `index`: no entity, no cohort. That is not a
+   * cohort any entity can have (`get_cohort` is non-negative), so it can never
+   * collide with a real one.
+   */
+  readonly cohort: number;
 }
 
 /** Returned when nothing was in range. */
@@ -160,6 +177,7 @@ export const MISS: PickResult = {
   pos: [0.0, 0.0],
   distance: Infinity,
   rule: null,
+  cohort: -1,
 };
 
 export function isHit(result: PickResult): boolean {
@@ -192,6 +210,7 @@ export function decodePickResult(bytes: ArrayBuffer, radiusWorld: number): PickR
   const distance = (distQ / DIST_MAX) * radiusWorld;
 
   const pos = new Float32Array(bytes, PICK_POS_OFFSET, 2);
+  const cohort = new Float32Array(bytes, PICK_COHORT_OFFSET, 1)[0]!;
   const rule = new Float32Array(bytes, PICK_RULE_OFFSET, RULE_FLOATS);
 
   return {
@@ -201,6 +220,12 @@ export function decodePickResult(bytes: ArrayBuffer, radiusWorld: number): PickR
     // A plain array, not the Float32Array view: the view aliases a buffer the
     // caller is about to unmap, and reading a detached ArrayBuffer throws.
     rule: Array.from(rule),
+    // Read only on THIS side of the NO_HIT check above. The derive pass returns
+    // early on a miss without writing anything, so on a miss these bytes are
+    // whatever the previous pick left -- and a stale cohort read as a live one
+    // would highlight a cohort the mouse is nowhere near. The early return for
+    // `MISS` is what makes that unobservable; do not hoist this read above it.
+    cohort,
   };
 }
 
