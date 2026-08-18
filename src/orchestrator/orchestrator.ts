@@ -93,7 +93,7 @@ import {
 } from '../project/project.ts';
 import { History } from '../project/history.ts';
 import { SelectionController, type SelectionHost } from '../selection/selection.ts';
-import { CohortHighlight, hoverPickDue } from '../selection/hoverPick.ts';
+import { CohortHighlight, NO_COHORT } from '../selection/cohortHighlight.ts';
 import { type InputState, EMPTY_INPUT } from '../ui/inputState.ts';
 import {
   type Command,
@@ -278,27 +278,39 @@ export class Orchestrator implements CommandBus {
 
   // --- the cohort highlight -------------------------------------------------
   //
-  // A read-only pick fires every `HOVER_PICK_INTERVAL_MS` while Select is the
-  // active tool, and two agreeing results highlight their cohort. See
-  // `selection/hoverPick.ts` for why two, and `runHoverPick` for how it shares
-  // the one pick slot with click-to-select.
+  // TWO-STAGE SELECTION. A Select-tool click picks as it always did, but what
+  // the result MEANS now depends on what is highlighted: a hit on a new cohort
+  // lights it up, a hit inside the lit cohort adopts its rule, a miss puts it
+  // out. See `selection/cohortHighlight.ts` for the three outcomes, and
+  // `frame()` for where the transition is applied.
 
-  /** The last two hover picks and the cohort they agree on. */
-  private readonly highlight = new CohortHighlight<PickResult>();
-
-  /** When the last hover pick was dispatched, on the wall clock. */
-  private lastHoverPickMs = 0;
+  /** Which cohort is lit, and what each landed pick does to it. */
+  private readonly highlight = new CohortHighlight();
 
   /**
-   * Whether the pick currently in flight is a HOVER pick rather than a click's.
+   * Whether the pick being resolved RIGHT NOW is a commit.
    *
-   * The two share one result slot and one `retrievePick()`, so without this the
-   * resolve at the top of the frame cannot tell whose answer it is holding --
-   * and a hover result would be adopted as a selection, silently retargeting
-   * every particle because the mouse passed over one. `SelectionController` is
-   * only allowed to consume a result when this is false.
+   * Set by `frame()` from `applyPickToHighlight` immediately before
+   * `selection.resolve()` reads it back through the host's `adoptRule`, and
+   * false at every other moment. It exists because `SelectionHost` is a
+   * value-in, value-out seam -- `adoptRule` receives the pick result but not the
+   * verdict about it, and widening that interface would push the two-stage rule
+   * into `selection.ts`, which is deliberately generic over both the project and
+   * the result types and has no business knowing what a cohort is.
    */
-  private hoverPickInFlight = false;
+  private pickCommits = false;
+
+  /**
+   * This frame's landed pick, held between the classify and the resolve.
+   *
+   * `ParticleSystem.retrievePick` is DESTRUCTIVE -- it unmaps the staging buffer
+   * and returns the phase machine to `idle`, so the second caller in a frame
+   * gets `null`. The highlight has to see the result before `resolve()` decides
+   * what to do with it, so `frame()` reads it once into here and the host's
+   * `retrievePick` replays it. Null at every other moment, which is what makes
+   * "still in flight" and "already consumed this frame" stay distinguishable.
+   */
+  private landedPick: PickResult | null = null;
 
   /** This frame's input. Replaced once per frame by `frame()`. */
   private input: InputState = EMPTY_INPUT;
@@ -494,34 +506,47 @@ export class Orchestrator implements CommandBus {
     // which is precisely when a user wants to inspect a particle
     // (`orchestrator.py:262-270`).
     //
-    // THE HOVER RESOLVE COMES FIRST, and the order is load-bearing: both read
-    // the same single result slot, so whichever runs first consumes whatever is
-    // there. `resolveHoverPick` returns immediately unless the in-flight pick is
-    // actually a hover one, which is what keeps the two from stealing each
-    // other's answers -- see `hoverPickInFlight`.
-    this.resolveHoverPick();
-    // The ORDINARY click path -- the one that had no highlight to reuse and so
-    // dispatched its own pick. `resolve()` returns the result it consumed, and a
-    // HIT is the moment the adopted rule actually lands, so it is where the
-    // behavior reset belongs. (The highlighted path resets in `selectAt`, which
-    // never gets here: it adopts synchronously and dispatches nothing.)
+    // THE TWO-STAGE GATE, resolved BEFORE `resolve()` runs: that call adopts the
+    // rule through the host's `adoptRule`, which asks `pickCommits` whether this
+    // pick is the confirming one.
     //
-    // Not hooked onto the host's `setProject` instead, though that is where the
-    // project changes: hover-preview, undo and every load flow through there
-    // too, and none of them is a behavior change.
+    // THE RESULT IS RETRIEVED HERE, ONCE, AND REPLAYED. `retrievePick` is
+    // destructive -- it unmaps the staging buffer and drops the phase machine
+    // back to `idle`, so calling it twice returns `null` the second time and the
+    // selection would be silently lost. So this consumes it, classifies it, and
+    // parks it in `landedPick` for the host's `retrievePick` to hand straight to
+    // `resolve()`. One GPU read, two readers.
+    //
+    // GUARDED ON `isPending`, WHICH IS `resolve()`'S OWN FIRST CHECK, and it has
+    // to be: this read happens ABOVE that check, so without the same guard it
+    // would consume -- and CLASSIFY -- results belonging to no pending click at
+    // all. Those exist: `requestPick` abandons an older dispatch when a second
+    // click lands inside its readback window, and the mapAsync continuation for
+    // the abandoned one still settles. Classifying it would move the highlight
+    // for a click the user has already superseded, so a stale pick could aim,
+    // or commit, on its own.
+    if (this.selection.isPending) {
+      const landed = this.system.retrievePick();
+      if (landed !== null) {
+        this.landedPick = landed;
+        this.pickCommits = this.applyPickToHighlight(landed);
+      }
+    }
+
     const selected = this.selection.resolve();
-    if (selected !== null && isHit(selected)) this.resetForBehavior();
+    this.landedPick = null;
+    // ONLY A COMMIT RESETS. `isHit` is not enough any more -- an aiming click is
+    // a hit too, and it changed no rule, so restarting the simulation for it
+    // would throw away the state the user is still deciding about.
+    if (selected !== null && isHit(selected) && this.pickCommits) {
+      this.resetForBehavior();
+    }
+    // One pick, one verdict. Left true, the NEXT pick to land would be adopted
+    // without ever being classified.
+    this.pickCommits = false;
 
     // 2. Translate this frame's input into whatever the ACTIVE TOOL means.
     this.applyCanvasInput(input);
-
-    // The hover pick that feeds the cohort highlight. AFTER `applyCanvasInput`,
-    // so a click this frame has already taken the slot and this yields to it
-    // (hover always loses -- a late highlight costs nothing, a dropped click
-    // loses the user's intent). Above the paused branch for the same reason the
-    // resolve is: hovering to see which cohort you are about to select has to
-    // work while paused, which is exactly when people inspect particles.
-    this.runHoverPick(input);
 
     // PICKING IS DELIBERATELY NOT RUN PER FRAME. A pick dispatches over every
     // entity, which measured in the tens of milliseconds per frame at large
@@ -571,7 +596,13 @@ export class Orchestrator implements CommandBus {
       // PARTICLES mode only -- TRAIL renders the canvas texture, which holds
       // velocity rather than cohort and cannot express a per-cohort dim at all.
       // See `CameraFrame.highlightedCohort`.
-      highlightedCohort: this.highlight.cohort,
+      //
+      // GATED ON THE SAME PREDICATE THE CLICKS ARE, so the picture can never
+      // show a highlight the clicks would not honour. Both exemptions can turn
+      // on while a cohort is lit -- ticking `oneClickSelection`, or loading a
+      // config with one cohort -- and reading the lit value regardless would
+      // leave most of the screen dimmed for a stage that no longer exists.
+      highlightedCohort: this.highlightEnabled ? this.highlight.cohort : NO_COHORT,
     };
 
     // Uniforms are written BEFORE the encoder opens -- `queue.writeBuffer`
@@ -705,9 +736,30 @@ export class Orchestrator implements CommandBus {
     this.applyCameraKeys(state, canvasSize);
 
     if (this.mouseMode === 'select') {
-      if (state.leftPressed) this.selectAt(state.mousePos);
-      // Right-click undoes, mirroring the desktop's binding.
-      if (state.rightPressed) this.dispatch({ kind: 'undo' });
+      // ONE CLICK, ONE PICK, unconditionally. What the pick MEANS -- aim,
+      // re-aim, or commit -- is decided when the result lands, not here: the
+      // cohort it hit is not known yet, and the whole two-stage rule is a
+      // question about that cohort. See `frame()`.
+      if (state.leftPressed) this.selection.select(state.mousePos);
+      // Right-click CANCELS AN AIM FIRST, and undoes only when there is no aim
+      // to cancel. Right-click is "back out of what I just did", and while a
+      // cohort is lit the thing the user just did is light it -- undoing a
+      // completed edit from further back instead would be a bigger, more
+      // surprising step than the one they asked to take back. With nothing lit
+      // it is the desktop's plain undo binding, unchanged.
+      //
+      // THE `Z` HOTKEY IS DELIBERATELY NOT ROUTED THROUGH THIS. It dispatches
+      // `undo` straight to the command bus (`ui/hotkeys.ts`), so the keyboard
+      // always means undo no matter what is lit -- there is no cancelling
+      // gesture to confuse it with, and a modifier-free key that sometimes
+      // undoes and sometimes does not would be worse than either behaviour.
+      if (state.rightPressed) {
+        if (this.highlightEnabled && this.highlight.isHighlighted) {
+          this.clearHighlight();
+        } else {
+          this.dispatch({ kind: 'undo' });
+        }
+      }
     } else if (this.mouseMode === 'draw') {
       // RECORDS INTENT, DOES NOT PAINT. Painting needs an encoder, and this runs
       // above the one `frame()` opens -- deliberately, because that is what
@@ -841,148 +893,64 @@ export class Orchestrator implements CommandBus {
   // =========================================================================
 
   /**
-   * Dispatch a read-only pick, if one is due and the slot is free.
+   * Whether clicks go through the two-stage highlight at all.
    *
-   * READ-ONLY MEANS THE RESULT IS NEVER ADOPTED. It feeds `CohortHighlight` and
-   * nothing else: no rule changes, no history entry, no project state. The name
-   * is the contract -- `resolveHoverPick` is the only consumer, and it sets no
-   * project.
+   * **THE ONE PLACE THE TWO EXEMPTIONS LIVE**, so a click, the uniform the
+   * shader reads, and anything added later cannot disagree about whether the
+   * highlight is running:
    *
-   * **HOVER YIELDS TO CLICK, ALWAYS.** There is one pick slot in
-   * `ParticleSystem` (one result buffer, one staging buffer, one phase machine),
-   * so a hover pick fired while a click is waiting would abandon the click's
-   * dispatch -- `requestPick` explicitly overwrites, last request wins. The two
-   * guards below are what stop that: nothing is dispatched unless the slot is
-   * idle AND no click is pending. A skipped hover tick just means the highlight
-   * updates an interval later, which is invisible.
+   *   - the `oneClickSelection` preference, which is the explicit opt-out; and
+   *   - A SINGLE COHORT, where the feature is not merely unnecessary but
+   *     actively wrong. With one cohort every particle is in it, so the first
+   *     click would light the entire screen (dimming nothing, since there is no
+   *     "outside") and the user would see no feedback at all -- then need a
+   *     second click for a selection that could never have gone anywhere else.
+   *     A confirmation step with one possible answer is pure cost.
+   *
+   * Reads the SELECTED config's cohort count, matching what `camBrush.wgsl`
+   * colours by and what the Cohorts control edits. With several configs loaded
+   * the selected one already sets the palette for all (`frame()`), so this
+   * follows the same rule rather than inventing a second one.
    */
-  private runHoverPick(input: InputState): void {
-    // The highlight is a Select-tool affordance: it exists to show what a click
-    // would take, and in Draw or Shove a click takes nothing. Clearing rather
-    // than merely not dispatching, so leaving the tool puts the highlight out
-    // now instead of freezing the last one on screen.
-    if (this.mouseMode !== 'select') {
-      this.clearHighlight();
-      return;
-    }
-
-    // Yield to click-to-select, and to a hover pick already in the air.
-    if (this.system.pickPending) return;
-    if (this.selection.isPending) return;
-
-    const now = performance.now();
-    if (!hoverPickDue(now, this.lastHoverPickMs)) return;
-    this.lastHoverPickMs = now;
-
-    // The SAME dispatch path a click takes, through the selection host -- so the
-    // two cannot disagree about where the pick was aimed or how wide it
-    // searched. That agreement is what makes reusing a hover result for a click
-    // legitimate in the first place (see `selectAt`).
-    this.selectionHost().requestPick(input.mousePos);
-
-    // CLAIMED ONLY IF THE DISPATCH ACTUALLY HAPPENED, and this is not
-    // defensive bookkeeping -- `requestPick` returns silently when the pick
-    // pipeline or bind group is still null, which is every frame between
-    // startup and the end of async shader compilation. Setting the flag
-    // unconditionally would leave it true with nothing in flight, and
-    // `resolveHoverPick` would then never clear it (there is no result to
-    // retrieve), so `selection.resolve()` would be blocked from consuming
-    // anything FOR THE REST OF THE SESSION: clicking to select would look
-    // dead, with no error anywhere. The phase machine is the authority on
-    // whether a dispatch exists, so ask it rather than assume.
-    this.hoverPickInFlight = this.system.pickPending;
+  private get highlightEnabled(): boolean {
+    if (this.prefs.oneClickSelection) return false;
+    return selectedConfig(this.project).cohorts > 1;
   }
 
   /**
-   * Read back a hover pick, if the one in flight is a hover pick.
+   * Apply a landed pick to the highlight, and say whether it COMMITS.
    *
-   * Returns without touching the slot when a CLICK's pick is in flight --
-   * otherwise this would consume the click's answer at the top of the frame and
-   * `SelectionController.resolve()` would find `null`, dropping the selection
-   * silently. `hoverPickInFlight` is the only thing that distinguishes them,
-   * because both go through the same buffer.
+   * The single decision point of the two-stage selection. `CohortHighlight`
+   * classifies the pick against what is lit; this turns that verdict into the
+   * one bit the caller needs -- whether the rule should be adopted.
+   *
+   * **THE FIRST CLICK OF A SELECTION MUST NOT CHANGE THE PROJECT**, and this is
+   * what enforces it: `false` here means `adoptRule` hands the project back
+   * untouched, so `SelectionController.resolve()` finds nothing changed, records
+   * no history entry (its guard is reference identity), and the click costs
+   * exactly one highlight transition.
+   *
+   * With the highlight disabled every hit commits immediately, which IS the
+   * old one-click behaviour -- and a miss still commits nothing, because there
+   * is no rule to adopt. Note this deliberately does not consult
+   * `CohortHighlight` at all in that case: feeding it picks it cannot act on
+   * would leave a cohort lit behind a disabled feature, ready to change the
+   * meaning of the first click after the preference is turned back off.
    */
-  private resolveHoverPick(): void {
-    if (!this.hoverPickInFlight) return;
-
-    const result = this.system.retrievePick();
-    // Still in flight. `null` is not a miss -- the readback simply has not
-    // landed, and consuming it as "no hit" would clear the highlight every frame
-    // the GPU had not finished, making it flicker at the frame rate rather than
-    // hold for its interval.
-    if (result === null) return;
-
-    this.hoverPickInFlight = false;
-    // A MISS IS RECORDED, not dropped: moving off the particles has to clear the
-    // highlight, and that only happens if the miss reaches the debounce.
-    this.highlight.observe(result);
+  private applyPickToHighlight(result: PickResult): boolean {
+    if (!this.highlightEnabled) return isHit(result);
+    return this.highlight.apply(result) === 'commit';
   }
 
-  /** Put the highlight out and forget both samples. */
+  /**
+   * Put the highlight out.
+   *
+   * Called wherever the lit cohort stops naming something true: leaving the
+   * Select tool, a rebuild that renumbers cohorts, and every rule change that
+   * did not come from a commit (the rerolls, and undo/redo of any of them).
+   */
   private clearHighlight(): void {
     this.highlight.clear();
-  }
-
-  /**
-   * A Select-tool click: adopt the highlighted cohort, or pick afresh.
-   *
-   * **WHILE A COHORT IS HIGHLIGHTED, THE CLICK TAKES IT -- it does not pick
-   * again.** The highlight is a promise: the user has been shown, for at least
-   * one full interval, exactly which particles a click will retarget. Firing a
-   * fresh pick could break that promise in two ways, and both are worse than
-   * anything this costs:
-   *
-   *   - it could MISS, if the mouse drifted a pixel off the particle between the
-   *     hover pick and the click, leaving the user with nothing after being
-   *     shown something; and
-   *   - it could HIT A NEIGHBOUR in a different cohort, selecting particles the
-   *     user was never shown.
-   *
-   * Reusing the hover result cannot do either: it is the exact pick whose
-   * agreement lit the highlight up. Both paths went through
-   * `selectionHost().requestPick`, so they aimed identically -- that is what
-   * makes the substitution sound rather than merely convenient.
-   *
-   * With NO highlight there is nothing to promise, so this is the ordinary
-   * two-phase click and a miss is an honest miss.
-   */
-  private selectAt(pixel: readonly [number, number]): void {
-    const promised = this.highlight.isHighlighted ? this.highlight.lastResult : null;
-
-    if (promised === null) {
-      // THE CLICK TAKES THE SLOT. `requestPick` abandons whatever was in flight
-      // (last request wins), so a hover pick dispatched moments ago is now dead
-      // -- and if the flag stayed true, `resolveHoverPick` would consume THIS
-      // CLICK'S result at the top of a later frame and feed it to the highlight,
-      // leaving `SelectionController.resolve()` with `null`. The click would
-      // then never adopt anything: a click that silently does nothing, and only
-      // when it lands within a hover's readback window, which is the kind of
-      // intermittent that is very hard to see on purpose.
-      this.hoverPickInFlight = false;
-      this.selection.select(pixel);
-      return;
-    }
-
-    // ADOPT DIRECTLY, bypassing the pick entirely -- there is no dispatch and so
-    // nothing to wait for, which is why this does not go through
-    // `SelectionController` (its whole job is bridging the two-phase gap that
-    // this path does not have). The steps below are `resolve()`'s, in its order
-    // and for its reasons: `selection.ts:177-190`.
-    const before = this.project;
-    this.selected = promised;
-
-    const adopted = this.selectionHost().adoptRule(this.project, promised);
-    this.setProject(adopted);
-    // No coalesce key, exactly as `resolve()` records it: a selection must never
-    // merge into a neighbouring slider drag, or undoing the drag would also undo
-    // the selection.
-    this.recordHistory(before, this.selectionHost().describe(promised));
-    // The particles have a NEW RULE now, so the cohort that was highlighted is
-    // no longer the thing under the mouse -- keeping the samples would dim the
-    // field against a historical answer until two fresh picks disagreed.
-    this.clearHighlight();
-    // Part of the act: adopting a rule is a behavior change like any other.
-    this.resetForBehavior();
   }
 
   // =========================================================================
@@ -1018,10 +986,34 @@ export class Orchestrator implements CommandBus {
         );
         this.system.requestPick(target, radius);
       },
-      retrievePick: () => this.system.retrievePick(),
+      // THE REPLAY, not a fresh read. `frame()` has already consumed this
+      // frame's result from the phase machine so the highlight could classify it
+      // before `resolve()` acts on it; going to `this.system` again here would
+      // find `idle` and answer `null`, and the pending click would wait forever
+      // for a result that had already arrived and been thrown away.
+      retrievePick: () => this.landedPick,
       isHit,
       currentProject: () => this.project,
-      adoptRule: (p, result) => (result.rule === null ? p : adoptRule(p, result.rule)),
+      /**
+       * THE TWO-STAGE GATE. A pick only becomes a rule change when it lands on
+       * the cohort the user was already shown; the first click of a selection
+       * merely lights that cohort up.
+       *
+       * Returning the project UNCHANGED is how "no adoption" is expressed, and
+       * it is load-bearing rather than merely tidy: `SelectionController.resolve`
+       * calls this and then `recordHistory`, whose guard is reference identity
+       * (`before !== this.project`). An unchanged project therefore records no
+       * undo entry by itself -- so an aiming click cannot litter the timeline
+       * with steps that undo to the state they came from.
+       *
+       * The highlight TRANSITION is not made here. This runs inside `resolve()`,
+       * which may call it once per landed pick, and a getter that also mutates
+       * would make the outcome depend on how many times it happened to be
+       * consulted. `frame()` applies the transition, once, and passes the verdict
+       * in -- see `applyPickToHighlight`.
+       */
+      adoptRule: (p, result) =>
+        result.rule === null || !this.pickCommits ? p : adoptRule(p, result.rule),
       setProject: (p) => {
         this.setProject(p);
       },
@@ -1107,8 +1099,21 @@ export class Orchestrator implements CommandBus {
    * config, so it resets nothing and merely closes the menu. Resetting there
    * would restart a simulation the user had been watching settle since they
    * hovered the row they then chose. See `RESET_ON_CONFIG_LOAD`.
+   *
+   * **THE HIGHLIGHT GOES OUT HERE TOO, AND IT IS NOT GATED ON THE FLAG.** A
+   * config swap replaces every rule on screen, so a cohort lit against the old
+   * one names a behaviour nothing is running -- and the cohort COUNT may have
+   * changed with it, in which case the lit index does not even refer to the same
+   * particles. That is true whether or not the simulation restarts, which is why
+   * the clear sits above the flag rather than inside it.
+   *
+   * Putting it here rather than at the individual call sites is what makes it
+   * cover the whole set for free: browsing the Load menu (the hover IS the
+   * load), the mouse-out restore, Revert to Saved, the preset cycle, checkpoint
+   * apply and a shared link opened mid-session all reach this one method.
    */
   private resetForConfig(): void {
+    this.clearHighlight();
     if (RESET_ON_CONFIG_LOAD) this.system.reset();
   }
 
@@ -1144,16 +1149,36 @@ export class Orchestrator implements CommandBus {
    * the next `advance()` reads, so the configs the GPU regenerates from must
    * already be the new ones.
    *
-   * The callers are click-to-select (both the highlighted and the ordinary
-   * path), Reroll Mutations, Reroll All Behavior, and the undo/redo of any of
-   * them. Undo/redo goes through `resetIfRuleChanged` instead, because there the
-   * step being replayed is not necessarily a rule change at all.
+   * The callers are a committing click, Reroll Mutations, Reroll All Behavior,
+   * and the undo/redo of any of them. Undo/redo goes through
+   * `resetIfRuleChanged` instead, because there the step being replayed is not
+   * necessarily a rule change at all.
    *
    * See `Preferences.resetOnBehaviorChange` for why this is a preference rather
    * than a feature flag.
    */
   private resetForBehavior(): void {
     if (this.prefs.resetOnBehaviorChange) this.system.reset();
+  }
+
+  /**
+   * A rule change arrived from somewhere OTHER than a committing click.
+   *
+   * The rerolls and undo/redo, which retarget the particles without going
+   * anywhere near the pick path. Both halves happen unconditionally-then-gated:
+   * the highlight ALWAYS goes out (a lit cohort names a behaviour that is no
+   * longer running, whatever the preference says), while the restart is the
+   * preference's business.
+   *
+   * Separate from `resetForBehavior` because the committing click must NOT use
+   * this: `CohortHighlight.apply` has already cleared the highlight as part of
+   * classifying that very pick, so calling it there would be a second clear of
+   * something already dark -- harmless, but it would suggest the commit path
+   * needs an external clear when the state machine handles its own.
+   */
+  private behaviorChangedElsewhere(): void {
+    this.clearHighlight();
+    this.resetForBehavior();
   }
 
   /**
@@ -1172,8 +1197,12 @@ export class Orchestrator implements CommandBus {
    * reroll case, which is one of the three the feature was asked for.
    */
   private resetIfRuleChanged(before: Project, after: Project): void {
-    if (!this.prefs.resetOnBehaviorChange) return;
-    if (ruleChanged(before, after)) this.system.reset();
+    if (!ruleChanged(before, after)) return;
+    // THE CLEAR IS NOT GATED ON THE PREFERENCE. Undoing a rule change puts a
+    // different behaviour on the particles whether or not the simulation
+    // restarts, so a cohort lit against the old one is stale either way. Only
+    // the restart is the preference's decision.
+    this.behaviorChangedElsewhere();
   }
 
   /**
@@ -1232,6 +1261,11 @@ export class Orchestrator implements CommandBus {
         // Switching tools abandons any stroke in progress (Step 9), so
         // releasing the button over a different tool cannot resume painting.
         this.mouseMode = command.mode;
+        // And it abandons a half-finished selection. The lit cohort is an aim
+        // waiting for its confirming click, and only the Select tool can give it
+        // one -- leaving it lit would dim the field indefinitely while drawing,
+        // and would arm a commit for whenever the user came back.
+        this.clearHighlight();
         return;
 
       case 'undo': {
@@ -1378,6 +1412,18 @@ export class Orchestrator implements CommandBus {
         if (!this.previewOrigins.has(command.surface)) {
           this.previewOrigins.set(command.surface, this.project);
         }
+        // OPENING THE MENU ENDS ANY AIM, before a single row has been hovered.
+        // `resetForConfig` covers every path that actually swaps a config, but
+        // that first fires when the pointer reaches a row -- and a cohort lit
+        // behind an open Load menu is already meaningless: the user has left the
+        // canvas to go somewhere else, and whatever they pick will replace the
+        // rules the aim was pointing at. Clearing on open rather than on the
+        // first hover also means abandoning the menu without touching anything
+        // leaves the highlight off, which matches "entering the menu cancels".
+        //
+        // Deliberately NOT restored by `restoreConfigs`: an aim is a gesture in
+        // progress, not part of the config state a snapshot puts back.
+        this.clearHighlight();
         return;
 
       case 'restoreConfigs': {
@@ -1430,8 +1476,10 @@ export class Orchestrator implements CommandBus {
         // merge, so three presses give three undo steps.
         this.recordHistory(before, 'randomize mutation seed');
         // Every cohort re-mutates around a new seed, so every particle is now
-        // chasing a different target. AFTER `setProject`, per `resetForBehavior`.
-        this.resetForBehavior();
+        // chasing a different target -- and a cohort lit against the old seed
+        // names a behaviour nothing is running. AFTER `setProject`, per
+        // `resetForBehavior`.
+        this.behaviorChangedElsewhere();
         return;
       }
 
@@ -1445,7 +1493,7 @@ export class Orchestrator implements CommandBus {
         // visibly reorganizes), which is why this path never reset before; but
         // it does not clear the trails or the positions the old rule built, and
         // "reset on behavior change" is a promise about all three.
-        this.resetForBehavior();
+        this.behaviorChangedElsewhere();
         return;
       }
 
@@ -1798,6 +1846,16 @@ export class Orchestrator implements CommandBus {
   private adoptPreferences(updated: Preferences, allowRebuild = true): Promise<void> {
     if (updated === this.prefs) return Promise.resolve();
     const needsRebuild = allowRebuild && requiresRestart(this.prefs, updated);
+    // Switching to one-click selection abandons any aim in progress. The
+    // `highlightEnabled` gate already makes a lit cohort inert -- it stops
+    // reaching the shader and stops changing what a click means -- so this is
+    // about the STATE rather than the behaviour: leaving it lit would mean
+    // turning the preference back off silently re-armed a confirming click
+    // from before, and the first click after that would commit something the
+    // user aimed at minutes ago.
+    if (updated.oneClickSelection && !this.prefs.oneClickSelection) {
+      this.clearHighlight();
+    }
     this.prefs = updated;
     savePreferences(this.prefs);
     return needsRebuild ? this.rebuildSystem() : Promise.resolve();
@@ -1857,14 +1915,10 @@ export class Orchestrator implements CommandBus {
     this.strokePrevUv = null;
     this.pendingStroke = null;
 
-    // AND THE PICK IN FLIGHT, for the same class of reason. The replacement has
-    // its own phase machine, sitting at `idle` -- so a hover pick dispatched
-    // against the OUTGOING system will never produce a result, and the flag
-    // would stay true forever, blocking `selection.resolve()` from ever
-    // consuming a click again. Clearing the highlight goes with it: the entity
-    // count changed, so `get_cohort` divides by a different number and the
-    // cohort those samples named is not the cohort that index means now.
-    this.hoverPickInFlight = false;
+    // AND THE HIGHLIGHT. The entity count changed, so `get_cohort` divides by a
+    // different number -- the cohort index that was lit does not name the same
+    // particles any more, and a confirming click against it would commit
+    // something the user never aimed at.
     this.clearHighlight();
 
     // DROPPING THE REFERENCES IS NOT ENOUGH -- GPU memory is not GC'd. ~19 MB of

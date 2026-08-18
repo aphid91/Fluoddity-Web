@@ -260,6 +260,11 @@ test('camBrush.wgsl dims by cohort against a FLOORED value', () => {
   );
   assert.match(
     source,
+    /const\s+COHORT_WASH\s*:\s*f32\s*=/,
+    'the saturation wash must stay a named constant beside the dim',
+  );
+  assert.match(
+    source,
     /highlighted_cohort\(\)\s*>=\s*0\.0/,
     'a negative highlighted cohort is the "no highlight" sentinel',
   );
@@ -279,5 +284,31 @@ test('camBrush.wgsl reads the highlighted cohort from a float lane', () => {
     source,
     /fn\s+highlighted_cohort\(\)\s*->\s*f32\s*\{\s*return\s+u\.flags\.y;/,
     'highlighted_cohort must read flags.y as a plain f32',
+  );
+});
+
+test('camBrush.wgsl washes saturation on the SAME particles it dims', () => {
+  // Two knobs, one condition. Brightness alone reads as "further away"; pulling
+  // the colour toward grey as well reads as "not the thing you are looking at".
+  // They must be driven by one branch -- a second, independently written
+  // condition could drift and desaturate a different set than it darkens, which
+  // looks like a palette bug rather than like a broken highlight.
+  const source = stripComments(expand('camBrush.wgsl'));
+
+  // Both assignments inside one if-body, in the order the fragment writes them.
+  assert.match(
+    source,
+    /dim\s*=\s*COHORT_DIM\s*;\s*wash\s*=\s*COHORT_WASH\s*;/,
+    'the dim and the wash must be set together, under one condition',
+  );
+  // MULTIPLIED INTO THE SATURATION, not replacing it: the base saturation is
+  // the 0.8 below, so a COHORT_WASH of 1.0 has to leave the colour untouched --
+  // the same "1.0 means off" contract COHORT_DIM has. Assigning saturation
+  // outright would make 1.0 a full-saturation BOOST on the unhighlighted
+  // particles, which is the opposite of what the constant says it does.
+  assert.match(
+    source,
+    /hsv2rgb\(vec3f\(hue,\s*0\.8\s*\*\s*wash,/,
+    'the wash must scale the base saturation rather than replace it',
   );
 });

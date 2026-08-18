@@ -130,6 +130,25 @@ export interface Preferences {
    */
   readonly resetOnBehaviorChange: boolean;
 
+  /**
+   * Adopt a picked particle's rule on the FIRST click, with no highlight step.
+   *
+   * The two-stage selection (click to light a cohort, click again inside it to
+   * commit) exists so a rule change is never a surprise: you see which particles
+   * you are about to retarget before you take them. That is worth an extra click
+   * when you are choosing deliberately, and a nuisance when you are sweeping
+   * through particles looking for something interesting. This is the escape
+   * hatch for the second case, and the behaviour the editor had before the
+   * highlight existed.
+   *
+   * **WHILE THIS IS ON, HIGHLIGHTING IS OFF ENTIRELY** -- not merely bypassed.
+   * A lit cohort whose confirming click no longer does anything would dim most
+   * of the screen for a stage that cannot be completed, so `Orchestrator.
+   * highlightEnabled` is false here and the highlight is cleared when the
+   * preference is turned on. See `applyPickToHighlight`.
+   */
+  readonly oneClickSelection: boolean;
+
   // --- disruptive: changing these reallocates and resets the simulation ---
   /** Scales entity count and canvas resolution together. */
   readonly worldSize: number;
@@ -207,6 +226,7 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   fieldAlwaysShow: false,
   showReticle: true,
   resetOnBehaviorChange: true,
+  oneClickSelection: false,
   worldSize: .50,
   canvasAspect: 1.0,
   // Basic for a first-run user. Persisted thereafter -- see the interface.
@@ -250,6 +270,7 @@ export const PREFERENCE_KINDS = {
   fieldAlwaysShow: 'bool',
   showReticle: 'bool',
   resetOnBehaviorChange: 'bool',
+  oneClickSelection: 'bool',
   worldSize: 'float',
   canvasAspect: 'float',
   advancedProject: 'bool',

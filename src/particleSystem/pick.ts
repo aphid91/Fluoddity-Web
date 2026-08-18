@@ -162,7 +162,7 @@ export interface PickResult {
    * entities in one cohort differ in the raw value and only `floor` makes "same
    * cohort" a comparison. The highlight compares this between successive picks,
    * and `camBrush.wgsl` compares it against `col_params.y` -- which
-   * `entityUpdate.wgsl:531` also floors. See `hoverPick.ts`.
+   * `entityUpdate.wgsl:531` also floors. See `selection/cohortHighlight.ts`.
    *
    * `-1` on a miss, mirroring `index`: no entity, no cohort. That is not a
    * cohort any entity can have (`get_cohort` is non-negative), so it can never

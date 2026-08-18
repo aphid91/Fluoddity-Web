@@ -43,11 +43,14 @@ fn highlighted_cohort() -> f32 { return u.flags.y; }
 // is periodic so it wraps on its own -- no normalizing by the cohort count.
 const COHORT_COLOR_CONSTANT: f32 = 0.75;
 
-// What a particle OUTSIDE the highlighted cohort keeps of its brightness.
-// 0.4 is the 60% reduction the highlight asks for. TWEAK THIS, not the
-// arithmetic below -- lower dims the rest of the field harder, 1.0 disables the
-// dimming without disabling the highlight.
-const COHORT_DIM: f32 = 0.14;
+// THE TWO HIGHLIGHT KNOBS. Both describe what a particle OUTSIDE the
+// highlighted cohort KEEPS, so both run 0..1 and 1.0 is "no effect" -- setting
+// both to 1.0 disables the visual highlight without disabling the two-stage
+// selection that depends on it.
+//
+// Tweak these; do not tweak the arithmetic at the bottom of the fragment stage.
+const COHORT_DIM: f32 = 0.14;    // ...of its brightness
+const COHORT_WASH: f32 = 0.5;    // ...of its saturation
 
 struct VsOut {
     @builtin(position) clip : vec4f,
@@ -192,10 +195,19 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // colouring by the black-box signal still needs to see what a click will
     // take. Applied to the returned COLOUR rather than to alpha, so it dims what
     // the particle contributes without changing the additive blend's shape.
+    // TWO KNOBS, BOTH APPLIED TO THE SAME PARTICLES. Brightness alone reads as
+    // "further away"; pulling the colour toward grey as well reads as "not the
+    // thing you are looking at", which is what the highlight actually means. The
+    // saturation is the one below, so the wash multiplies it rather than
+    // replacing it -- COHORT_WASH of 1.0 leaves the hue exactly as it was and
+    // turns this half off, the same way COHORT_DIM of 1.0 turns the other half
+    // off.
     var dim = 1.0;
+    var wash = 1.0;
     if (highlighted_cohort() >= 0.0 && in.col_params.y != highlighted_cohort()) {
         dim = COHORT_DIM;
+        wash = COHORT_WASH;
     }
 
-    return vec4f(hsv2rgb(vec3f(hue, 0.8, 1.0)) * kernel * u.sprite.y * dim, 1.0);
+    return vec4f(hsv2rgb(vec3f(hue, 0.8 * wash, 1.0)) * kernel * u.sprite.y * dim, 1.0);
 }

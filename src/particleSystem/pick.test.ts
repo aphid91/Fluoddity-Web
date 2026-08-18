@@ -171,7 +171,7 @@ test('a miss reports no cohort, whatever the buffer holds', () => {
 
 test('the miss cohort cannot collide with a real one', () => {
   // `get_cohort` is a non-negative ramp and the shader floors it, so every real
-  // cohort is >= 0. `hoverPick.ts` relies on this to tell "no cohort" apart from
+  // cohort is >= 0. `cohortHighlight.ts` relies on this to tell "no cohort" from
   // cohort 0, and so does camBrush.wgsl's `highlighted_cohort() >= 0.0`.
   assert.ok(MISS.cohort < 0);
 });

@@ -119,7 +119,7 @@ export function packCameraViewUniforms(view: CameraView): ArrayBuffer {
  * loaded, the selected one sets the palette for all. See `cam_brush.frag:26-30`.
  *
  * `highlightedCohort` is the cohort the mouse is resting on, or negative for
- * none -- `selection/hoverPick.ts` decides it and `NO_COHORT` is its spelling
+ * none -- `selection/cohortHighlight.ts` decides it and `NO_COHORT` is its spelling
  * of "none". It is a DISPLAY input like the two above and arrives the same way:
  * the highlight must appear and clear immediately, including while paused, and
  * anything routed through the config buffer would wait for a physics step.

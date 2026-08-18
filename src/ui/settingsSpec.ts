@@ -795,6 +795,22 @@ export const SETTINGS: readonly Setting[] = [
       'is worth watching but makes the two hard to tell apart.',
     group: 'Behavior',
   }),
+  setting({
+    field: 'oneClickSelection',
+    label: '1-Click Selection',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'Adopt a particle behavior on the first click, with no confirmation ' +
+      'step.\n\nNormally clicking a particle highlights its cohort and a second ' +
+      'click inside that cohort adopts it, so you always see which particles ' +
+      'you are about to retarget. With this on, the first click adopts ' +
+      'immediately and cohort highlighting is switched off.\n\nHighlighting is ' +
+      'also off automatically whenever there is only one cohort, since there is ' +
+      'nothing to choose between.',
+    group: 'Behavior',
+  }),
 ];
 
 /**
