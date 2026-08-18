@@ -187,13 +187,23 @@ export function packPickUniforms(
   world: WorldConfig,
   target: readonly [number, number],
   maxDist: number,
+  highlightedCohort = -1,
 ): ArrayBuffer {
   const { buffer, f32 } = withWorld(world, PICK_UNIFORM_SIZE);
 
-  // params: xy target (world space), z max_dist, w reserved
+  // params: xy target (world space), z max_dist, w highlighted cohort
   f32[AFTER_WORLD + 0] = target[0];
   f32[AFTER_WORLD + 1] = target[1];
   f32[AFTER_WORLD + 2] = maxDist;
+  // ALREADY FLOORED by the caller, because the shader compares it against
+  // `floor(get_cohort(...))` with `==`. A raw cohort would match nothing and the
+  // confirmation snap would silently never fire.
+  //
+  // Negative means "nothing highlighted", the same sentinel `NO_COHORT` and
+  // `camBrush.wgsl` use -- cohorts are non-negative, so one lane carries both
+  // facts and there is no second flag to disagree with it. Defaulted so callers
+  // with no highlight, and the tests, need not thread it through.
+  f32[AFTER_WORLD + 3] = highlightedCohort;
 
   return buffer;
 }

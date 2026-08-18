@@ -230,7 +230,7 @@ async function start(): Promise<void> {
         // these back.
         startHidden: true,
         // Follows every route that hides the panels, not just `X`: the Editor
-        // menu item and the overlay's gear go through `setHidden` too, and
+        // menu item and the corner gear go through `setHidden` too, and
         // before this the menu route left `panelOpen` true and the Orchestrator
         // building settings payloads for an invisible panel.
         onHiddenChange: () => {
@@ -293,7 +293,7 @@ async function start(): Promise<void> {
   // business, so it is handled here rather than sent through the command bus
   // (`ui.py:471-473`). `panelOpen` follows it through the `onHiddenChange`
   // above, where every route -- this key, the Editor menu item and the
-  // overlay's gear -- converges, so this handler no longer sets it itself.
+  // corner gear -- converges, so this handler no longer sets it itself.
   const input = bindInput({
     surface,
     dispatch: (command) => orchestrator.dispatch(command),

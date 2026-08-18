@@ -898,7 +898,11 @@ export class ParticleSystem {
    * there is one result slot -- so honouring the older click would adopt a rule
    * from a pick aimed somewhere else.
    */
-  requestPick(targetWorld: readonly [number, number], radiusWorld: number): void {
+  requestPick(
+    targetWorld: readonly [number, number],
+    radiusWorld: number,
+    highlightedCohort = -1,
+  ): void {
     if (this.pickReducePipeline === null || this.pickGroup === null) return;
 
     // Abandon whatever was in flight. A buffer that is mapping or mapped cannot
@@ -927,7 +931,7 @@ export class ParticleSystem {
     queue.writeBuffer(
       this.pickUniforms,
       0,
-      packPickUniforms(this.worldConfig(), targetWorld, radiusWorld),
+      packPickUniforms(this.worldConfig(), targetWorld, radiusWorld, highlightedCohort),
     );
 
     this.pickRadius = radiusWorld;

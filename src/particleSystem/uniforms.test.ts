@@ -22,6 +22,7 @@ import {
   packBrushUniforms,
   packCanvasUniforms,
   packEntityUpdateUniforms,
+  packPickUniforms,
 } from './uniforms.ts';
 
 const WORLD: WorldConfig = forUpload(
@@ -145,4 +146,33 @@ test('alignTo rounds up to the next multiple, and leaves exact fits alone', () =
   assert.equal(alignTo(257, 256), 512);
   assert.equal(alignTo(48, 16), 48);
   assert.equal(alignTo(0, 256), 0);
+});
+
+// ---------------------------------------------------------------------------
+// The pick uniforms
+// ---------------------------------------------------------------------------
+
+test('packPickUniforms lays out target, radius and the highlighted cohort', () => {
+  // BINARY FRACTIONS, so the assertions can be exact: the buffer is f32 and a
+  // value like 0.08 does not survive the narrowing (it comes back as
+  // 0.07999999821186066). Using representable values keeps this a test of the
+  // LANE ORDER, which is what it is for, rather than of float precision.
+  const f32 = new Float32Array(packPickUniforms(WORLD, [0.25, -0.5], 0.0625, 6));
+  const base = WORLD_DATA_SIZE / 4;
+  assert.equal(f32[base + 0], 0.25, 'params.x is the target x');
+  assert.equal(f32[base + 1], -0.5, 'params.y is the target y');
+  assert.equal(f32[base + 2], 0.0625, 'params.z is the search radius');
+  // params.w WAS RESERVED and now carries the highlight. The reduce pass reads
+  // it to give the lit cohort priority near the cursor, so a lane that stayed
+  // zero would silently mean "cohort 0 is highlighted" -- which is a real
+  // cohort, and would bias every pick in an unhighlighted session toward it.
+  assert.equal(f32[base + 3], 6, 'params.w is the highlighted cohort');
+});
+
+test('packPickUniforms defaults the highlight to the negative sentinel', () => {
+  // Not zero, which is a real cohort. Callers that have no highlight -- and the
+  // shader's own `highlighted_cohort() >= 0.0` guard -- depend on this being
+  // out of range rather than merely unset.
+  const f32 = new Float32Array(packPickUniforms(WORLD, [0, 0], 0.05));
+  assert.ok(f32[WORLD_DATA_SIZE / 4 + 3]! < 0, 'no highlight must pack as negative');
 });

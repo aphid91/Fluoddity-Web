@@ -455,3 +455,68 @@ test('entityPick.wgsl reports the cohort, FLOORED, from the derive pass', () => 
     'cohort must occupy the padding lane between pos_y and rule',
   );
 });
+
+test('the reduce pass snaps a highlighted-cohort hit to distance zero', () => {
+  // THE CONFIRMATION SNAP. Confirming a cohort means clicking any of its
+  // members a second time, but they are scattered among everything else -- so a
+  // click aimed at one often lands with an unrelated particle a few pixels
+  // nearer, and a plain nearest-wins reduce hands the pick to that interloper.
+  // The confirmation then silently RE-AIMS at a cohort the user was not
+  // pointing at, which is the worst way this feature can fail.
+  const source = stripComments(expand('entityPick.wgsl'));
+  const reduce = source.slice(
+    source.indexOf('fn reduce('),
+    source.indexOf('fn derive('),
+  );
+
+  assert.match(
+    reduce,
+    /const\s+CONFIRM_SNAP_FRACTION\s*:\s*f32\s*=|CONFIRM_SNAP_FRACTION/,
+    'the snap radius must stay a named constant',
+  );
+  assert.match(
+    reduce,
+    /dist_norm\s*=\s*0\.0/,
+    'a confirming hit must be treated as distance zero, so it wins the atomicMin',
+  );
+  // GATED ON BOTH HALVES. Without the radius test the highlighted cohort would
+  // win every pick anywhere on screen and the highlight could never be moved by
+  // clicking; without the sentinel test an unhighlighted session would compare
+  // against -1 and snap nothing, which is harmless but means the guard is not
+  // saying what it means.
+  assert.match(
+    reduce,
+    /highlighted_cohort\(\)\s*>=\s*0\.0/,
+    'the snap must not apply when no cohort is highlighted',
+  );
+  assert.match(
+    reduce,
+    /dist_norm\s*<=\s*CONFIRM_SNAP_FRACTION/,
+    'the snap must be limited to a radius around the cursor',
+  );
+});
+
+test('the reduce pass derives the cohort exactly as derive and entityUpdate do', () => {
+  // The snap compares against `col_params.y`, which entityUpdate floors, and
+  // against the host's floored uniform. All THREE must agree: a raw cohort here
+  // would match nothing (the ramp is continuous), and a different config clamp
+  // could select a different ConfigData than the physics used and put a particle
+  // in the wrong cohort. Either way the shader snaps to a different set of
+  // particles than it is drawing bright, and both halves look self-consistent.
+  const source = stripComments(expand('entityPick.wgsl'));
+  const reduce = source.slice(
+    source.indexOf('fn reduce('),
+    source.indexOf('fn derive('),
+  );
+
+  assert.match(
+    reduce,
+    /floor\(\s*get_cohort\(index,\s*config,\s*arrayLength\(&entities\)\)\s*\)/,
+    'reduce must floor get_cohort, with the entity count from arrayLength',
+  );
+  assert.match(
+    reduce,
+    /configs\[clamp\(config_index,\s*0,\s*world_config_count\(u\.world\)\s*-\s*1\)\]/,
+    'reduce must select the config with the same clamp bound the others use',
+  );
+});

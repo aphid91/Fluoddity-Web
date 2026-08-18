@@ -63,6 +63,7 @@ import { GateState } from './gateState.ts';
 import { showsSlider } from './gatedControl.ts';
 import { MenuBar } from './menuBar.ts';
 import { MutationOverlay } from './mutationOverlay.ts';
+import { PanelToggle } from './panelToggle.ts';
 import { Splash } from './splash.ts';
 import { isGated } from './gating.ts';
 import { type InputState, EMPTY_INPUT } from './inputState.ts';
@@ -142,7 +143,7 @@ export interface PanelOptions {
    * `main.ts` uses it to follow `Orchestrator.panelOpen`, which gates whether
    * the settings payloads are built at all. It is a callback rather than
    * something the caller does at the `X` key because there are THREE routes now
-   * -- the key, the Editor menu item, and the overlay's gear -- and only
+   * -- the key, the Editor menu item, and the corner gear -- and only
    * `setHidden` sees all of them.
    */
   readonly onHiddenChange?: (hidden: boolean) => void;
@@ -207,7 +208,7 @@ export class Panel {
   /** See the file header. Read through `isRefreshing`, never captured. */
   private refreshing = false;
 
-  /** Set by `X`, the Editor menu item and the overlay's gear, via `setHidden`. */
+  /** Set by `X`, the Editor menu item and the corner gear, via `setHidden`. */
   private hiddenFlag = false;
 
   /** Told whenever `hiddenFlag` moves. See `PanelOptions.onHiddenChange`. */
@@ -262,6 +263,7 @@ export class Panel {
    * for why it is not a control in a pane.
    */
   private readonly overlay: MutationOverlay;
+  private readonly panelToggle: PanelToggle;
 
   /**
    * The welcome splash, shown once at startup and again from Help.
@@ -334,11 +336,12 @@ export class Panel {
         this.copyShareLink();
       },
     });
-    this.overlay = new MutationOverlay({
-      send,
-      // The gear. Goes through `setHidden` exactly as `X` and the menu item do,
-      // so all three routes share one notification and one flag.
-      onToggleUi: () => {
+    this.overlay = new MutationOverlay({ send });
+    // The gear, in its own corner rather than on the mutation bar -- see
+    // `panelToggle.ts`. Goes through `setHidden` exactly as `X` and the Editor
+    // menu item do, so all three routes share one flag and one notification.
+    this.panelToggle = new PanelToggle({
+      onToggle: () => {
         this.setHidden(!this.hiddenFlag);
       },
     });
@@ -750,7 +753,7 @@ export class Panel {
   setHidden(hidden: boolean): void {
     this.applyHidden(hidden);
     // EVERY PATH THAT HIDES THE PANELS COMES THROUGH HERE -- the `X` key, the
-    // Editor menu item, and now the gear in the overlay -- so this is the one
+    // Editor menu item, and the corner gear -- so this is the one
     // place that can tell the Orchestrator to stop building settings payloads
     // nobody can see. It used to be `main.ts`'s job at the `X` call site alone,
     // which meant hiding from the MENU left `panelOpen` true and the payloads
@@ -777,6 +780,10 @@ export class Panel {
     // there and says why -- called anyway, so this stays a complete list of
     // what the key governs rather than a list with a silent omission.
     this.overlay.setHidden(hidden);
+    // Nor does the gear, and for a stronger reason: it is the way BACK. Hiding
+    // it with the panels would leave only `X` and a menu that is inside what
+    // just disappeared. A no-op that says so, like the overlay's.
+    this.panelToggle.setHidden(hidden);
   }
 
   /**
@@ -955,6 +962,7 @@ export class Panel {
     this.menuBar.dispose();
     this.dialogs.dispose();
     this.overlay.dispose();
+    this.panelToggle.dispose();
     this.splash.dispose();
     this.left.container.remove();
     this.right.container.remove();

@@ -1005,7 +1005,19 @@ export class Orchestrator implements CommandBus {
           cam.pan,
           cam.zoom,
         );
-        this.system.requestPick(target, radius);
+        // THE HIGHLIGHT GOES WITH THE PICK, so the reduce pass can give the lit
+        // cohort priority within a small radius of the cursor -- otherwise a
+        // click meant to CONFIRM a cohort gets handed to whatever unrelated
+        // particle happens to be a few pixels nearer, and the confirmation
+        // silently re-aims instead. See `CONFIRM_SNAP_FRACTION`.
+        //
+        // Through the same `highlightEnabled` gate everything else uses, so a
+        // stale cohort cannot bias picks after highlighting is switched off.
+        this.system.requestPick(
+          target,
+          radius,
+          this.highlightEnabled ? this.highlight.cohort : NO_COHORT,
+        );
       },
       // THE REPLAY, not a fresh read. `frame()` has already consumed this
       // frame's result from the phase machine so the highlight could classify it

@@ -170,25 +170,15 @@ test('at scale 0 the hint says what to do instead of promising an adoption', () 
   assert.match(hint.tail, /Right click to cancel selection/, 'cancelling still works');
 });
 
-test('at scale 0 with nothing lit, the hint still offers to highlight', () => {
-  // Aiming is not blocked -- only committing is -- so the first click still does
-  // something and the hint has to keep offering it.
-  const hint = hintFor(status({ mouseMode: 'select', selectionIsNoOp: true }));
-  assert.match(hint.lead, /Left click a particle to select its cohort/);
-  assert.match(hint.lead, /Mutation Scale is 0/);
-});
-
-test('the no-op wording wins over the highlighting-off wording', () => {
-  // Both can be true at once -- one cohort AND scale 0 -- and the no-op is the
-  // more specific fact: "click to adopt" would be wrong, because that click is
-  // exactly what is refused.
-  const hint = hintFor(
-    status({ mouseMode: 'select', highlightEnabled: false, selectionIsNoOp: true }),
-  );
-  assert.ok(
-    !/adopt its behavior/.test(hint.lead),
-    'with the commit refused, the hint must not promise an adoption',
-  );
+test('at scale 0 with nothing lit, the hint is the ORDINARY one', () => {
+  // The no-op only changes the commit clause, and there is no commit clause
+  // here: aiming is not blocked, so this sentence was already accurate. Saying
+  // more would put a caveat on the state a user spends most of their time in,
+  // about a click that still works.
+  const noOp = hintFor(status({ mouseMode: 'select', selectionIsNoOp: true }));
+  const plain = hintFor(status({ mouseMode: 'select' }));
+  assert.equal(noOp.lead, plain.lead);
+  assert.match(noOp.lead, /Right click to undo any action/);
 });
 
 test('the no-op state does not change the shove or draw wording', () => {

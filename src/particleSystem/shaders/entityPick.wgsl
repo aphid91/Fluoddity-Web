@@ -120,6 +120,51 @@ struct PickUniforms {
 fn pick_target() -> vec2f { return u.params.xy; }
 fn max_dist() -> f32 { return u.params.z; }
 
+// The cohort the user is currently aiming at, or negative when none is. Rides
+// the lane the GLSL left reserved. Floored host-side, matching `col_params.y`
+// and the derive pass below, so `==` between them is exact.
+fn highlighted_cohort() -> f32 { return u.params.w; }
+
+// How close a member of the highlighted cohort has to be, as a FRACTION OF THE
+// PICK RADIUS, before the reduce pass treats it as a direct hit.
+//
+// ---------------------------------------------------------------------------
+// WHY THIS EXISTS
+// ---------------------------------------------------------------------------
+// Confirming a cohort means clicking any of its members a second time. But the
+// members are scattered among everything else, so a click aimed at one of them
+// often lands with some unrelated particle a few pixels nearer -- and a plain
+// nearest-wins reduce hands the pick to that interloper. What the user sees is
+// their confirmation silently re-aiming the highlight at a cohort they were not
+// pointing at, which is the single most annoying way this feature can fail.
+//
+// So a highlighted-cohort particle inside this radius gets its distance clamped
+// to zero: it enters the atomicMin at the very bottom of the key space and wins
+// against anything that is merely closer. Ties among several such particles fall
+// through to the index tie-break, which is deterministic (see the header).
+//
+// ---------------------------------------------------------------------------
+// WHY 0.5 AND NOT SOMETHING ELSE
+// ---------------------------------------------------------------------------
+// The pick radius is 40 screen pixels (DEFAULT_PICK_RADIUS_PX), so this is 20px
+// -- roughly a fingertip's worth of aim, and about the distance at which a user
+// would say they were "clicking that particle" rather than near it.
+//
+// The trade is symmetric and worth stating in both directions. Too LARGE and a
+// deliberate re-aim at a neighbouring cohort gets swallowed: you click a
+// different particle, and a highlighted one half a radius away wins anyway, so
+// the highlight appears stuck. Too SMALL and the feature does nothing, because
+// the interloper cases it exists for are exactly the ones where a rival is
+// within a few pixels. Half the radius keeps a re-aim working everywhere in the
+// outer half of the pick circle while covering the near-miss case completely.
+//
+// PRIORITY IS NOT UNCONDITIONAL, and that is the point of having a radius at
+// all: outside it a highlighted particle competes on its true distance like
+// everything else, so clicking well away from the cohort still re-aims. A
+// version without the radius would make the highlighted cohort win every pick
+// anywhere on screen, and the highlight could never be moved by clicking.
+const CONFIRM_SNAP_FRACTION: f32 = 0.5;
+
 // --- the key ---------------------------------------------------------------
 // Mirrored in pick.ts; pick.test.ts parses THIS FILE for the two bit counts and
 // asserts they match, as tests/test_async_pick.py:65 does against the GLSL.
@@ -156,7 +201,24 @@ fn reduce(@builtin(global_invocation_id) gid: vec3u) {
 
     // Quantize distance into the high bits. Using the actual distance (not the
     // square) spreads the buckets evenly in the units the user perceives.
-    let dist_norm = sqrt(dist_sq) / limit;               // [0,1]
+    var dist_norm = sqrt(dist_sq) / limit;               // [0,1]
+
+    // THE CONFIRMATION SNAP. A member of the highlighted cohort, close enough
+    // that the click plausibly meant it, is treated as a direct hit so no merely
+    // nearer interloper can steal the confirmation. See CONFIRM_SNAP_FRACTION.
+    //
+    // The cohort is derived EXACTLY as the derive pass and entityUpdate do --
+    // same `get_cohort`, same config selection, same clamp bound, same floor.
+    // Any divergence here would snap to a different set of particles than the
+    // one the shader is drawing bright, and the two would disagree about which
+    // cohort is highlighted while both looked internally consistent.
+    if (highlighted_cohort() >= 0.0 && dist_norm <= CONFIRM_SNAP_FRACTION) {
+        let config_index = e_config_index(e);
+        let config = configs[clamp(config_index, 0, world_config_count(u.world) - 1)];
+        let cohort = floor(get_cohort(index, config, arrayLength(&entities)));
+        if (cohort == highlighted_cohort()) { dist_norm = 0.0; }
+    }
+
     let dist_q = u32(clamp(dist_norm, 0.0, 1.0) * f32(DIST_MAX));
 
     let key = (dist_q << INDEX_BITS) | index;
