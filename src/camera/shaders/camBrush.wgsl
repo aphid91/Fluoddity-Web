@@ -49,8 +49,8 @@ const COHORT_COLOR_CONSTANT: f32 = 0.75;
 // selection that depends on it.
 //
 // Tweak these; do not tweak the arithmetic at the bottom of the fragment stage.
-const COHORT_DIM: f32 = 0.14;    // ...of its brightness
-const COHORT_WASH: f32 = 0.5;    // ...of its saturation
+const COHORT_DIM: f32 = 0.25;    // ...of its brightness
+const COHORT_WASH: f32 = 0.25;    // ...of its saturation
 
 struct VsOut {
     @builtin(position) clip : vec4f,

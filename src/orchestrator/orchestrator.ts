@@ -2028,10 +2028,39 @@ export class Orchestrator implements CommandBus {
    * for a closed panel is pure garbage; with the panel shut this returns a
    * shared empty payload instead, exactly as `_settings_dicts` does
    * (`orchestrator.py:590-604`).
+   *
+   * **`X` DOES NOT HIDE EVERYTHING, AND THAT IS WHY THE EARLY-OUT IS NOT
+   * UNCONDITIONAL.** The mutation overlay deliberately opts out of the hide
+   * (`mutationOverlay.setHidden` is a no-op: it is the picture's own controls,
+   * and pressing `X` for a clean view must not also take away the one slider
+   * worth reaching for while watching). It reads `mutationScale` out of
+   * `editConfig` every frame, so returning the empty payload while it is still
+   * on screen freezes it: `refresh` finds no number, keeps whatever the slider
+   * last showed, and the bar then disagrees with the config until something
+   * opens the panel again.
+   *
+   * That looked like an intermittent bug -- the slider goes stale after a load,
+   * but only if the panels happened to be hidden at the time -- which is a much
+   * harder thing to notice than a slider that is always wrong. `panel.ts`
+   * already refreshes the overlay ABOVE its own hidden check for exactly this
+   * reason; this is the other half, on the data side.
+   *
+   * So the early-out now skips only the EXPENSIVE part. `editConfig` still
+   * costs a shallow copy per frame, which is what the overlay needs and is not
+   * what the comment above was worried about -- the 80-float `rule` is excluded
+   * either way.
    */
   private settingsSources(): Pick<Status, 'editConfig' | 'editWorld' | 'editPrefs'> {
-    if (!this.panelOpen) return NO_SETTINGS;
     const config = selectedConfig(this.project);
+    if (!this.panelOpen) {
+      return {
+        // The overlay's slice, and only it. `editWorld` and `editPrefs` have no
+        // reader outside the panel, so they stay empty.
+        editConfig: asRecord(config, ['rule']),
+        editWorld: NO_SETTINGS.editWorld,
+        editPrefs: NO_SETTINGS.editPrefs,
+      };
+    }
     return {
       // `rule` is excluded: it is 80 floats no control reads, and it is the
       // whole reason the closed-panel early-out above exists.
@@ -2214,11 +2243,20 @@ export class Orchestrator implements CommandBus {
 }
 
 /**
- * Empty payload reused when no panel is open, so the common case allocates
- * nothing at all. `orchestrator.py:588`'s `_NO_SETTINGS`.
+ * Empty payloads reused when no panel is open, so the closed case allocates
+ * nothing for the sources nobody is reading. `orchestrator.py:588`'s
+ * `_NO_SETTINGS`.
+ *
+ * **`editConfig` IS NOT AMONG THEM ANY MORE**, and that is not an oversight to
+ * tidy up: the mutation overlay stays on screen when `X` hides the panels, and
+ * it reads `mutationScale` out of `editConfig` every frame. Handing it an empty
+ * record freezes the slider at whatever it last showed, so it disagrees with
+ * the config until the panel is reopened -- an intermittent-looking staleness
+ * that depends on whether the panels happened to be hidden. See
+ * `settingsSources`, which still skips the two payloads that genuinely have no
+ * reader outside the panel.
  */
-const NO_SETTINGS: Pick<Status, 'editConfig' | 'editWorld' | 'editPrefs'> = Object.freeze({
-  editConfig: Object.freeze({}),
+const NO_SETTINGS: Pick<Status, 'editWorld' | 'editPrefs'> = Object.freeze({
   editWorld: Object.freeze({}),
   editPrefs: Object.freeze({}),
 });
