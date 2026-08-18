@@ -18,6 +18,7 @@ import {
   CohortHighlight,
   NO_COHORT,
   type PickSample,
+  wrapCohort,
 } from './cohortHighlight.ts';
 
 /** A hit on `cohort`. The index only has to be non-negative to count as one. */
@@ -221,4 +222,53 @@ test('NO_COHORT is negative, so it cannot collide with a real cohort', () => {
   // cohort is >= 0. The shader reads this same sentinel out of a float uniform
   // lane (`highlighted_cohort() >= 0.0`), which is only sound while this holds.
   assert.ok(NO_COHORT < 0);
+});
+
+// ---------------------------------------------------------------------------
+// wrapCohort -- the stepper's arithmetic
+// ---------------------------------------------------------------------------
+
+test('wrapCohort wraps UPWARD past the last cohort', () => {
+  assert.equal(wrapCohort(8, 8), 0);
+  assert.equal(wrapCohort(9, 8), 1);
+  assert.equal(wrapCohort(16, 8), 0, 'more than one lap still lands in range');
+});
+
+test('wrapCohort wraps DOWNWARD past zero, rather than going negative', () => {
+  // THE BUG THIS FUNCTION EXISTS FOR. JavaScript's `%` keeps the sign of the
+  // dividend, so a bare `cohort % count` gives -1 here -- which is NO_COHORT, so
+  // clicking the down arrow on cohort 0 would put the highlight OUT instead of
+  // wrapping to the last cohort. It reads as a broken button, and the correct
+  // and incorrect versions differ by a few characters.
+  assert.equal(wrapCohort(-1, 8), 7);
+  assert.equal(wrapCohort(-9, 8), 7, 'more than one lap downward');
+  assert.equal(wrapCohort(-8, 8), 0, 'exactly one lap downward is 0, not -0');
+  // `-0` is `=== 0` in JS, so assert the sign explicitly: it would render as
+  // "-0" in the stepper's text field.
+  assert.ok(!Object.is(wrapCohort(-8, 8), -0), 'must not produce negative zero');
+});
+
+test('wrapCohort leaves an in-range cohort alone', () => {
+  for (const cohort of [0, 1, 7]) {
+    assert.equal(wrapCohort(cohort, 8), cohort);
+  }
+});
+
+test('wrapCohort collapses to 0 with a single cohort', () => {
+  // Highlighting is disabled at one cohort, so this should be unreachable --
+  // but "unreachable" is not "returns something sensible", and a stepper that
+  // could produce anything but 0 here would light a cohort that does not exist.
+  for (const cohort of [-1, 0, 1, 99]) {
+    assert.equal(wrapCohort(cohort, 1), 0);
+  }
+});
+
+test('wrapCohort refuses a non-positive count or a non-finite cohort', () => {
+  // No cohort to land on, and no answer but "none". Returning 0 would light
+  // cohort 0 of a population that has none.
+  assert.equal(wrapCohort(3, 0), NO_COHORT);
+  assert.equal(wrapCohort(3, -4), NO_COHORT);
+  // A field the user typed garbage into reaches this as NaN.
+  assert.equal(wrapCohort(Number.NaN, 8), NO_COHORT);
+  assert.equal(wrapCohort(Number.POSITIVE_INFINITY, 8), NO_COHORT);
 });

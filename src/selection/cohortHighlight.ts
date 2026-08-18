@@ -61,6 +61,28 @@ export interface PickSample {
 export const NO_COHORT = -1;
 
 /**
+ * `cohort` brought into `0..count-1` by wrapping.
+ *
+ * For the stepper under the mutation slider, whose arrows cycle: stopping dead
+ * at either end would make the last cohort feel like a wall when the point of
+ * the control is to walk through them.
+ *
+ * **A BARE `%` IS NOT ENOUGH, and that is the whole reason this is a named
+ * function with a test.** JavaScript's `%` keeps the sign of the dividend, so
+ * stepping down from cohort 0 gives `-1` -- which is `NO_COHORT`, so the arrow
+ * would silently put the highlight OUT instead of wrapping to the last cohort.
+ * That reads as the button being broken, and it is one character away from
+ * looking correct.
+ *
+ * Returns `NO_COHORT` for a non-positive count, which is the only sensible
+ * answer when there are no cohorts to land on.
+ */
+export function wrapCohort(cohort: number, count: number): number {
+  if (!Number.isFinite(cohort) || count <= 0) return NO_COHORT;
+  return ((Math.trunc(cohort) % count) + count) % count;
+}
+
+/**
  * What a click means, given what is currently highlighted.
  *
  * `'commit'` is the ONLY outcome that changes the project. The other two are
@@ -121,6 +143,26 @@ export class CohortHighlight {
     const outcome = this.classify(sample);
     this.highlighted = outcome === 'highlight' ? sample.cohort : NO_COHORT;
     return outcome;
+  }
+
+  /**
+   * Light `cohort` directly, bypassing the pick.
+   *
+   * For the stepper under the mutation slider: with a cohort already lit, its
+   * arrows and text field are an alternative way to move the highlight to a
+   * neighbour you may not be able to click -- the members of a cohort are
+   * scattered, and some of them are off screen.
+   *
+   * **RE-AIMS ONLY.** Nothing here adopts a rule, and nothing can: a cohort's
+   * rule is derived on the GPU and has no host mirror. So this leaves the state
+   * machine exactly where a `'highlight'` outcome would, and the next click
+   * inside the cohort still commits through the ordinary pick path.
+   *
+   * The caller is responsible for the range; `NO_COHORT` is accepted and means
+   * the same as `clear()`.
+   */
+  set(cohort: number): void {
+    this.highlighted = cohort;
   }
 
   /**

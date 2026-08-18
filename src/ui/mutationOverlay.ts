@@ -38,6 +38,7 @@ import {
   MOUSE_MODES,
   mouseModeFromValue,
 } from '../orchestrator/commands.ts';
+import { NO_COHORT } from '../selection/cohortHighlight.ts';
 import { bindFocusRelease } from './focusRelease.ts';
 import { hotkeyLabel } from './hotkeys.ts';
 import { CONFIG, settingFor } from './settingsSpec.ts';
@@ -69,6 +70,41 @@ export class MutationOverlay {
   private readonly reroll: HTMLButtonElement;
   private readonly rerollAll: HTMLButtonElement;
   private readonly tool: HTMLSelectElement;
+
+  // --- the context hint row ------------------------------------------------
+  //
+  // A second row inside the SAME container as the bar, so it moves with it and
+  // does not add a second floating element over the canvas. What it says is
+  // decided entirely by `hintFor` -- a pure function of Status, which is what
+  // makes the wording testable without a DOM.
+
+  /** The hint row. Holds the three spans and the stepper, in reading order. */
+  private readonly hint: HTMLElement;
+  /** Text before the cohort stepper, and the whole hint when there is no stepper. */
+  private readonly hintLead: HTMLElement;
+  /** Text after the stepper. Empty and hidden when there is no stepper. */
+  private readonly hintTail: HTMLElement;
+  /** The stepper: `< [n] >`, shown only while a cohort is highlighted. */
+  private readonly stepper: HTMLElement;
+  private readonly stepDown: HTMLButtonElement;
+  private readonly stepUp: HTMLButtonElement;
+  private readonly cohortInput: HTMLInputElement;
+
+  /**
+   * Last hint written to the DOM, so `refresh` can skip the common case.
+   *
+   * Keyed on the RENDERED STRINGS plus the cohort, not on the Status fields
+   * they came from: two different states that produce the same words should not
+   * cause a write, and `hintFor` is the only thing that knows which those are.
+   * `null` before the first frame, so it always writes once.
+   */
+  private hintShown: string | null = null;
+
+  /**
+   * The live cohort as a string, for restoring the field after unparseable
+   * input. Kept because the field's own value is what the user just broke.
+   */
+  private lastCohort = '';
 
   /** True between pointerdown and pointerup on the slider. See the header. */
   private dragging = false;
@@ -194,7 +230,42 @@ export class MutationOverlay {
       this.reroll,
       this.tool,
     );
-    this.root.append(bar);
+    // --- the context hint row ----------------------------------------------
+    //
+    // Inside the same rounded container as the bar, as a second row: it is about
+    // the tool the bar's own dropdown selects, and a separate floating strip
+    // would be a second thing to position against the menu bar and the panels.
+
+    this.hint = document.createElement('div');
+    this.hint.style.cssText = HINT_CSS;
+    this.hint.dataset['setting'] = 'transport.hint';
+
+    this.hintLead = document.createElement('span');
+    this.hintTail = document.createElement('span');
+
+    // The stepper: `< [n] >`. Present in the DOM always, shown only while a
+    // cohort is lit -- building it once and toggling `display` keeps the
+    // listeners attached and avoids re-creating nodes sixty times a second.
+    this.stepper = document.createElement('span');
+    this.stepper.style.cssText = STEPPER_CSS;
+
+    this.stepDown = this.stepButton('‹', 'Previous cohort');
+    this.stepUp = this.stepButton('›', 'Next cohort');
+
+    this.cohortInput = document.createElement('input');
+    this.cohortInput.type = 'text';
+    // `text`, not `number`: a spinner would duplicate the arrows either side of
+    // it, and the arrows are the affordance being asked for here. `inputMode`
+    // still brings up a numeric keypad on a touch device.
+    this.cohortInput.inputMode = 'numeric';
+    this.cohortInput.style.cssText = COHORT_INPUT_CSS;
+    this.cohortInput.dataset['setting'] = 'transport.cohort';
+    this.cohortInput.setAttribute('aria-label', 'Highlighted cohort');
+
+    this.stepper.append(this.stepDown, this.cohortInput, this.stepUp);
+    this.hint.append(this.hintLead, this.stepper, this.hintTail);
+
+    this.root.append(bar, this.hint);
     (opts.container ?? document.body).append(this.root);
     this.releaseFocus = bindFocusRelease(this.root);
 
@@ -227,6 +298,50 @@ export class MutationOverlay {
     // A keyboard drag has no pointer events at all, and arrow keys on a focused
     // range fire `input` -- so blur is what ends that gesture.
     this.slider.addEventListener('blur', release);
+
+    // --- the stepper -------------------------------------------------------
+    //
+    // Both arrows and the field send the same command; the Orchestrator wraps,
+    // so nothing here has to know the cohort count. `shown` is the value on
+    // screen, which is the authority for a relative step -- reading it back
+    // rather than tracking a second copy is what stops the two disagreeing when
+    // a refresh lands between clicks.
+    const step = (delta: number): void => {
+      const current = Number.parseInt(this.cohortInput.value, 10);
+      if (!Number.isFinite(current)) return;
+      opts.send({ kind: 'setHighlightedCohort', cohort: current + delta });
+    };
+    this.stepDown.addEventListener('click', () => {
+      step(-1);
+    });
+    this.stepUp.addEventListener('click', () => {
+      step(1);
+    });
+
+    // `change`, not `input`: typing "12" passes through "1", and committing on
+    // every keystroke would light cohort 1 on the way to 12. Enter and blur both
+    // fire `change`, which is exactly the two moments the user has finished.
+    this.cohortInput.addEventListener('change', () => {
+      const typed = Number.parseInt(this.cohortInput.value, 10);
+      if (!Number.isFinite(typed)) {
+        // Unparseable: put the live value back rather than sending nothing and
+        // leaving the field showing text that is not the state.
+        this.cohortInput.value = this.lastCohort;
+        return;
+      }
+      opts.send({ kind: 'setHighlightedCohort', cohort: typed });
+    });
+
+    // The arrow keys, so the field steps without reaching for the buttons. Sent
+    // as a relative step from what is SHOWN, matching the arrows exactly.
+    this.cohortInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      // The field is a `text` input, so these would otherwise move the caret to
+      // either end -- and on a one- or two-character value that reads as the key
+      // doing nothing at all.
+      event.preventDefault();
+      step(event.key === 'ArrowUp' ? 1 : -1);
+    });
 
     this.reroll.addEventListener('click', () => {
       opts.send({ kind: 'randomizeSeed' });
@@ -322,6 +437,68 @@ export class MutationOverlay {
     if (this.tool.value !== status.mouseMode && document.activeElement !== this.tool) {
       this.tool.value = status.mouseMode;
     }
+
+    this.refreshHint(status);
+  }
+
+  /**
+   * The context hint and its stepper.
+   *
+   * Guarded on the RENDERED result rather than on the Status fields behind it:
+   * `hintFor` is the only thing that knows which state changes actually change
+   * the words, and re-writing four nodes every frame to say what they already
+   * say is the same waste `generatedShown` guards against above.
+   */
+  private refreshHint(status: Status): void {
+    const { lead, cohort, tail } = hintFor(status);
+
+    // THE FIELD IS RECONCILED ABOVE THE GUARD, because it can disagree with the
+    // state without the STATE having changed. Type "99" over cohort 7 with 8
+    // cohorts and press Enter: the command wraps back to 7, the hint is
+    // character-for-character identical, the guard below short-circuits -- and
+    // the field sits there reading "99" for a cohort that is not lit. Same for
+    // anything unparseable that `change` rejected, and for any value that
+    // wrapped to where it started. A readout showing something the app does not
+    // believe is exactly what this row exists to avoid.
+    //
+    // NOT WHILE THE FIELD HAS FOCUS. Writing `value` under a caret moves it to
+    // the end and would fight someone mid-type -- the same argument the tool
+    // `<select>` above makes, and the slider's `dragging` guard makes for a
+    // drag. Blur fires `change` first, so a committed value is already on its
+    // way back through the Orchestrator by the time this can write.
+    if (cohort !== null) {
+      this.lastCohort = String(cohort);
+      if (
+        document.activeElement !== this.cohortInput &&
+        this.cohortInput.value !== this.lastCohort
+      ) {
+        this.cohortInput.value = this.lastCohort;
+      }
+    }
+
+    const key = `${lead} ${String(cohort)} ${tail}`;
+    if (this.hintShown === key) return;
+    this.hintShown = key;
+
+    this.hintLead.textContent = lead;
+    this.hintTail.textContent = tail;
+
+    const stepping = cohort !== null;
+    this.stepper.style.display = stepping ? '' : 'none';
+    this.hintTail.style.display = stepping ? '' : 'none';
+  }
+
+  /** One of the stepper's two arrows. */
+  private stepButton(glyph: string, label: string): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = glyph;
+    button.style.cssText = STEP_BUTTON_CSS;
+    // The glyph is a chevron, which a screen reader reads as punctuation or not
+    // at all -- so the name has to be stated.
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    return button;
   }
 
   /**
@@ -372,6 +549,69 @@ export class MutationOverlay {
     this.releaseFocus();
     this.root.remove();
   }
+}
+
+/**
+ * What the context hint says, given this frame's state.
+ *
+ * PURE, AND EXPORTED, so the wording is testable under `node --test` -- the
+ * overlay itself needs a DOM and cannot be constructed there. The four states
+ * are what the tool means for the two mouse buttons, which is the one thing a
+ * modal cursor has to tell you and the app previously told you nowhere.
+ *
+ * `cohort` is non-null exactly when the stepper should be shown, so the caller
+ * branches on it rather than re-deriving the highlight rule. `tail` is empty in
+ * every other state.
+ *
+ * ## The [[[TODO]]] markers are deliberate and must stay
+ *
+ * Two of these strings describe adopting a behaviour, and the wording is not
+ * settled -- "adopt" undersells it, because the picked rule becomes what the
+ * WHOLE POPULATION varies around (`project.ts`'s `adoptRule`), not just that
+ * cohort's. The markers are grep anchors so both sites can be found and revised
+ * together; they are asserted by `mutationOverlay.test.ts` so they cannot be
+ * quietly dropped while the wording is still open.
+ */
+export function hintFor(status: Status): {
+  readonly lead: string;
+  readonly cohort: number | null;
+  readonly tail: string;
+} {
+  const none = (lead: string) => ({ lead, cohort: null, tail: '' });
+
+  if (status.mouseMode === 'shove') {
+    return none('Left click to push particles away | Right click to pull them in');
+  }
+  if (status.mouseMode === 'draw') {
+    return none('Left click to add barriers | Right click to erase them');
+  }
+
+  // Select. `highlightedCohort` arrives ALREADY GATED by the Orchestrator, so
+  // `NO_COHORT` covers "nothing lit" and "highlighting is switched off" alike --
+  // the two want different wording, which is why the one-cohort and
+  // one-click-selection cases are distinguished below rather than here.
+  if (status.highlightedCohort !== NO_COHORT) {
+    return {
+      lead: 'Currently selected: Cohort',
+      cohort: status.highlightedCohort,
+      tail:
+        ' | Left click it to apply its behavior to all particles [[[TODO]]] | ' +
+        'Right click to cancel selection',
+    };
+  }
+
+  // Highlighting off entirely: one click adopts, so promising a cohort
+  // selection that will never appear would be a lie about the next click. The
+  // two exemptions -- the `oneClickSelection` preference and a single-cohort
+  // config -- are already collapsed into this one flag by the Orchestrator, and
+  // they produce identical behaviour, so they share a sentence.
+  if (!status.highlightEnabled) {
+    return none('Left click a particle to adopt its behavior [[[TODO]]]');
+  }
+
+  return none(
+    'Left click a particle to select its cohort | Right click to undo any action',
+  );
 }
 
 /** Two decimals: enough to read, few enough not to jitter under a drag. */
@@ -477,6 +717,37 @@ const BAR_CSS =
 const LABEL_CSS =
   'font:12px system-ui,sans-serif;color:#e8e8ea;white-space:nowrap;' +
   'user-select:none;';
+
+// The context hint, as a second row in the same container.
+//
+// `pointer-events:auto` because the root turns them off (see ROOT_CSS) and the
+// stepper has to be clickable. DIMMER THAN THE BAR'S OWN LABELS: this is
+// instructional text that is always on screen, so it should read as available
+// rather than compete with the controls above it.
+const HINT_CSS =
+  'display:flex;align-items:center;gap:6px;pointer-events:auto;' +
+  'background:rgba(28,28,30,0.92);border:1px solid rgba(255,255,255,0.12);' +
+  'border-radius:6px;padding:5px 12px;box-shadow:0 4px 16px rgba(0,0,0,0.45);' +
+  'font:11px system-ui,sans-serif;color:#a8a8ad;white-space:nowrap;' +
+  'user-select:none;max-width:96vw;overflow:hidden;';
+
+/** `< [n] >`, tight enough to read as one control rather than three. */
+const STEPPER_CSS = 'display:inline-flex;align-items:center;gap:2px;';
+
+// Square and small: these sit inside a line of 11px text, so anything with the
+// bar buttons' padding would set the row's height on its own.
+const STEP_BUTTON_CSS =
+  'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
+  'border-radius:3px;color:#e8e8ea;font:12px system-ui,sans-serif;line-height:1;' +
+  'padding:0;width:16px;height:16px;cursor:pointer;display:flex;' +
+  'align-items:center;justify-content:center;flex:none;';
+
+// Wide enough for the two digits a 64-cohort maximum needs, and centred so the
+// number does not shift as it gains one.
+const COHORT_INPUT_CSS =
+  'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
+  'border-radius:3px;color:#e8e8ea;font:11px ui-monospace,monospace;' +
+  'width:2.6em;height:16px;padding:0 2px;text-align:center;box-sizing:border-box;';
 
 // Wide enough to be worth having left the pane for, capped so it does not run
 // under either panel on a narrow window.

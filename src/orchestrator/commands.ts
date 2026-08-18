@@ -203,6 +203,21 @@ export type Command =
   | { readonly kind: 'toggleCameraMode' }
   | { readonly kind: 'resetCamera' }
   | { readonly kind: 'setMouseMode'; readonly mode: MouseMode }
+  /**
+   * Move the highlight to `cohort` directly, without a pick.
+   *
+   * **RE-AIMS AN EXISTING HIGHLIGHT; IT DOES NOT ADOPT ANYTHING.** The rule a
+   * cohort obeys is derived on the GPU (`rule.wgsl`'s `mutate_rule`) and
+   * deliberately has no host mirror -- `pick.ts` explains why, and calls a
+   * wrongly-adopted rule the worst failure mode available. So this changes what
+   * is LIT and nothing else; committing still goes through a real pick.
+   *
+   * Out-of-range values WRAP rather than clamp, because the stepper's arrows are
+   * for cycling and stopping dead at either end would make the last cohort feel
+   * like a wall. The Orchestrator wraps, not the UI, so typing and clicking an
+   * arrow cannot disagree about what 64 means with 64 cohorts.
+   */
+  | { readonly kind: 'setHighlightedCohort'; readonly cohort: number }
   | { readonly kind: 'undo' }
   | { readonly kind: 'redo' }
   // --- presets: the LEFT/RIGHT cycle over the whole catalog ---
@@ -367,6 +382,47 @@ export interface Status {
    * (`panel.ts`), where those payloads are empty.
    */
   readonly ruleIsGenerated: boolean;
+
+  /**
+   * The highlighted cohort, or `NO_COHORT` when none is.
+   *
+   * Drives the context hint under the mutation slider and the cohort stepper in
+   * it. Lives HERE rather than in `settingsSources` for the reason
+   * `ruleIsGenerated` does: the overlay reads it, and the overlay refreshes even
+   * while the panel is shut, where those payloads are empty.
+   *
+   * ALREADY GATED by `highlightEnabled`, so this is `NO_COHORT` whenever
+   * highlighting is off (the `oneClickSelection` preference, or a single-cohort
+   * config) as well as when nothing is lit. The UI therefore branches on this
+   * one value instead of re-deriving the two exemptions and risking a hint that
+   * disagrees with what the clicks actually do.
+   */
+  readonly highlightedCohort: number;
+
+  /**
+   * Whether the two-stage cohort highlight is running at all.
+   *
+   * SEPARATE FROM `highlightedCohort`, because "nothing is lit yet" and
+   * "highlighting is switched off" want different words under the slider: the
+   * first promises a cohort selection on the next click, the second promises an
+   * immediate adoption. Collapsing them would make the hint lie about what the
+   * next click does in one of the two cases.
+   *
+   * False for the `oneClickSelection` preference and for a single-cohort config
+   * alike -- the UI has no business re-deriving those two exemptions, and a
+   * second copy of that rule is exactly how a hint drifts from the behaviour it
+   * describes.
+   */
+  readonly highlightEnabled: boolean;
+
+  /**
+   * How many cohorts the selected config has, for the stepper's range.
+   *
+   * The stepper wraps within `0..cohorts-1`, and the UI cannot read this from
+   * `editConfig` -- that payload is empty while the panel is shut, which is
+   * exactly when the overlay is still on screen.
+   */
+  readonly cohortCount: number;
 
   // --- history ---
   readonly canUndo: boolean;

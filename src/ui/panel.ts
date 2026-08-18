@@ -995,5 +995,12 @@ function sideContainer(which: Side): HTMLElement {
  * these two numbers are related by intent only, so moving one without the other
  * is what makes them overlap. Raised from 78 because at some window sizes the
  * panels still clipped the mutation slider's bottom edge.
+ *
+ * **THE OVERLAY IS TWO ROWS NOW**, and this had to move again for it. The
+ * context hint added beneath the bar is 11px text in a 5px-padded, 1px-bordered
+ * box (~26px) plus the root's 4px column gap -- so ~30px, and 83 became 113.
+ * Adding a third row, or changing the hint's padding or font size, means
+ * revisiting this number: nothing enforces it, which is exactly what the
+ * paragraph above is warning about.
  */
-const PANEL_TOP_PX = 83;
+const PANEL_TOP_PX = 113;

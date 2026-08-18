@@ -93,7 +93,7 @@ import {
 } from '../project/project.ts';
 import { History } from '../project/history.ts';
 import { SelectionController, type SelectionHost } from '../selection/selection.ts';
-import { CohortHighlight, NO_COHORT } from '../selection/cohortHighlight.ts';
+import { CohortHighlight, NO_COHORT, wrapCohort } from '../selection/cohortHighlight.ts';
 import { type InputState, EMPTY_INPUT } from '../ui/inputState.ts';
 import {
   type Command,
@@ -1257,6 +1257,26 @@ export class Orchestrator implements CommandBus {
         this.camera.state.reset();
         return;
 
+      case 'setHighlightedCohort': {
+        // Only ever RE-AIMS an existing highlight. Refusing while nothing is lit
+        // is what keeps the stepper honest about being an alternative to
+        // clicking a neighbour rather than a second way to start a selection:
+        // the arrows and the field only exist in the UI once a cohort is lit,
+        // and a command that could light one from nothing would let a stray
+        // dispatch put the app in a state the user never aimed at. Also refused
+        // when highlighting is off at all, for the same reason the status field
+        // is gated.
+        if (!this.highlightEnabled || !this.highlight.isHighlighted) return;
+
+        // WRAPPED HERE, NOT IN THE UI. Both the arrows and the text field go
+        // through this, so there is one answer to "what is 64 with 64 cohorts"
+        // and they cannot drift. `wrapCohort` says why a bare `%` is wrong.
+        const wrapped = wrapCohort(command.cohort, selectedConfig(this.project).cohorts);
+        if (wrapped === NO_COHORT) return;
+        this.highlight.set(wrapped);
+        return;
+      }
+
       case 'setMouseMode':
         // Switching tools abandons any stroke in progress (Step 9), so
         // releasing the button over a different tool cannot resume painting.
@@ -1971,6 +1991,13 @@ export class Orchestrator implements CommandBus {
       // `.every()` over 80 floats is nothing next to the deep copy the
       // closed-panel early-out exists to avoid.
       ruleIsGenerated: ruleIsSentinel(this.project),
+      // THROUGH THE SAME GATE THE CLICKS AND THE SHADER USE, so the hint under
+      // the slider can never advertise a highlight the clicks would not honour
+      // -- with `oneClickSelection` on, or a single-cohort config, this reads
+      // `NO_COHORT` and the UI shows the one-click wording instead.
+      highlightedCohort: this.highlightEnabled ? this.highlight.cohort : NO_COHORT,
+      highlightEnabled: this.highlightEnabled,
+      cohortCount: selectedConfig(this.project).cohorts,
 
       canUndo: this.history.canUndo,
       canRedo: this.history.canRedo,
