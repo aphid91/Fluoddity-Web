@@ -424,6 +424,17 @@ export interface Status {
    */
   readonly cohortCount: number;
 
+  /**
+   * Whether adopting a picked rule would change nothing, so clicks decline it.
+   *
+   * True at mutation scale 0 with an authored rule: every cohort obeys the same
+   * rule there, so a selection would reset the simulation and push an undo entry
+   * for a picture that did not move. The hint under the slider says so, because
+   * a click that is deliberately refused and a click that is broken look
+   * identical otherwise.
+   */
+  readonly selectionIsNoOp: boolean;
+
   // --- history ---
   readonly canUndo: boolean;
   readonly canRedo: boolean;

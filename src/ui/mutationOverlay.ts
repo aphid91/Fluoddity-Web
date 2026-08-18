@@ -47,6 +47,18 @@ export interface MutationOverlayOptions {
   readonly send: (command: Command) => void;
   /** Where to mount. Defaults to `document.body`. */
   readonly container?: HTMLElement;
+  /**
+   * Show or hide the side panels -- the gear icon, and exactly what `X` does.
+   *
+   * A CALLBACK RATHER THAN A COMMAND, because hiding the panels is the panel's
+   * own business and deliberately does not go through the command bus
+   * (`main.ts` routes `X` the same way, citing `ui.py:471-473`). Routing the
+   * gear differently would give the app two answers to "is the UI hidden".
+   *
+   * Optional so `?nopanel` -- which has no panels to toggle -- simply does not
+   * render the gear, rather than rendering one that does nothing.
+   */
+  readonly onToggleUi?: () => void;
 }
 
 /** Human-readable tool names. Keyed so a new MOUSE_MODES member fails to compile. */
@@ -69,6 +81,7 @@ export class MutationOverlay {
   private readonly readout: HTMLElement;
   private readonly reroll: HTMLButtonElement;
   private readonly rerollAll: HTMLButtonElement;
+  private readonly reset: HTMLButtonElement;
   private readonly tool: HTMLSelectElement;
 
   // --- the context hint row ------------------------------------------------
@@ -208,6 +221,16 @@ export class MutationOverlay {
       this.tool.append(option);
     }
 
+    // Reset, between Reroll and the tool selector. `R` is named the way every
+    // other label here names its key -- from the hotkey table, so a rebind moves
+    // it. Deliberately OUTSIDE the sentinel swap: restarting the simulation
+    // means the same thing whether the rule is authored or generated.
+    this.reset = document.createElement('button');
+    this.reset.type = 'button';
+    this.reset.textContent = `Reset${keySuffix([hotkeyLabel({ kind: 'reset' })])}`;
+    this.reset.style.cssText = BUTTON_CSS;
+    this.reset.dataset['setting'] = 'transport.reset';
+
     // The population presets, leftmost. Deliberately OUTSIDE the sentinel swap
     // below: how many cohorts there are and how they are arranged is orthogonal
     // to whether the rule is authored or generated, so these stay live in both
@@ -216,6 +239,26 @@ export class MutationOverlay {
     presets.style.cssText = PRESETS_CSS;
     for (const count of LAYOUT_PRESETS) {
       presets.append(this.layoutButton(count, opts.send));
+    }
+
+    // The gear joins the presets group rather than standing alone, so the
+    // leftmost cluster reads as "things that are icons" and the bar keeps one
+    // gap rhythm. Only when there is something to toggle -- see `onToggleUi`.
+    if (opts.onToggleUi !== undefined) {
+      const toggle = opts.onToggleUi;
+      const gear = document.createElement('button');
+      gear.type = 'button';
+      gear.style.cssText = LAYOUT_BUTTON_CSS;
+      gear.title = 'Show/Hide control panels';
+      // The icon is the only content, so without this the button is unnamed to
+      // a screen reader -- same argument as the preset buttons below.
+      gear.setAttribute('aria-label', 'Show/Hide control panels');
+      gear.dataset['setting'] = 'transport.toggleUi';
+      gear.append(gearIcon());
+      gear.addEventListener('click', () => {
+        toggle();
+      });
+      presets.append(gear);
     }
 
     // The tool control goes INSIDE the bar, not below it. Floating on its own
@@ -228,6 +271,7 @@ export class MutationOverlay {
       this.readout,
       this.rerollAll,
       this.reroll,
+      this.reset,
       this.tool,
     );
     // --- the context hint row ----------------------------------------------
@@ -351,6 +395,10 @@ export class MutationOverlay {
 
     this.rerollAll.addEventListener('click', () => {
       opts.send({ kind: 'randomizeBehavior' });
+    });
+
+    this.reset.addEventListener('click', () => {
+      opts.send({ kind: 'reset' });
     });
 
     this.tool.addEventListener('change', () => {
@@ -604,6 +652,28 @@ export function hintFor(status: Status): {
   // `NO_COHORT` covers "nothing lit" and "highlighting is switched off" alike --
   // the two want different wording, which is why the one-cohort and
   // one-click-selection cases are distinguished below rather than here.
+  // NO-OP FIRST, because it overrides what the buttons do rather than adding to
+  // it: with mutation at zero every cohort obeys the same rule, so the commit is
+  // declined. Saying "left click it to apply its behavior" there would promise
+  // an action that is deliberately refused, and a refused click is
+  // indistinguishable from a broken one unless the UI says which it is.
+  // Highlighting still works, so the stepper stays.
+  if (status.selectionIsNoOp) {
+    if (status.highlightedCohort !== NO_COHORT) {
+      return {
+        lead: 'Currently selected: Cohort',
+        cohort: status.highlightedCohort,
+        tail:
+          ' | Raise Mutation Scale above 0 to adopt a behavior | ' +
+          'Right click to cancel selection',
+      };
+    }
+    return none(
+      'Left click a particle to select its cohort | ' +
+        'Mutation Scale is 0, so every cohort behaves identically',
+    );
+  }
+
   if (status.highlightedCohort !== NO_COHORT) {
     return {
       lead: 'Currently selected: Cohort',
@@ -687,6 +757,58 @@ function dotsIcon(count: number): SVGSVGElement {
       svg.append(dot);
     }
   }
+  return svg;
+}
+
+/**
+ * A gear, for the show/hide-panels button.
+ *
+ * Eight teeth as radial spokes plus a hub, rather than a `<path>` traced from a
+ * design tool: at 16px the silhouette is all that survives, and generating it
+ * keeps the file free of an opaque coordinate blob nobody can adjust.
+ *
+ * `fill:currentColor` for the same reason `dotsIcon` uses it -- the icon follows
+ * the button's `color`, so a hover or disabled state recolours it without this
+ * function knowing either exists.
+ */
+function gearIcon(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${String(ICON_BOX)} ${String(ICON_BOX)}`);
+  svg.setAttribute('width', String(ICON_BOX));
+  svg.setAttribute('height', String(ICON_BOX));
+  svg.style.display = 'block';
+
+  const c = ICON_BOX / 2;
+  const teeth = 8;
+  for (let i = 0; i < teeth; i++) {
+    const tooth = document.createElementNS(SVG_NS, 'rect');
+    tooth.setAttribute('x', String(c - 1.1));
+    tooth.setAttribute('y', String(c - 7.2));
+    tooth.setAttribute('width', '2.2');
+    tooth.setAttribute('height', '4.2');
+    tooth.setAttribute('rx', '0.7');
+    tooth.setAttribute('fill', 'currentColor');
+    // Rotated about the centre rather than positioned by trigonometry here:
+    // the transform is what makes "eight evenly spaced" obvious at a glance.
+    tooth.setAttribute(
+      'transform',
+      `rotate(${String((360 / teeth) * i)} ${String(c)} ${String(c)})`,
+    );
+    svg.append(tooth);
+  }
+
+  // The body, and the hole. Drawn as a ring with `stroke` rather than as two
+  // filled circles, so the hole stays transparent over any button background
+  // instead of being painted in a colour that has to match one.
+  const ring = document.createElementNS(SVG_NS, 'circle');
+  ring.setAttribute('cx', String(c));
+  ring.setAttribute('cy', String(c));
+  ring.setAttribute('r', '3.4');
+  ring.setAttribute('fill', 'none');
+  ring.setAttribute('stroke', 'currentColor');
+  ring.setAttribute('stroke-width', '2.6');
+  svg.append(ring);
+
   return svg;
 }
 
@@ -781,7 +903,18 @@ const COHORT_INPUT_CSS =
 
 // Wide enough to be worth having left the pane for, capped so it does not run
 // under either panel on a narrow window.
-const SLIDER_CSS = 'width:min(46vw,420px);accent-color:#8ab4f8;cursor:pointer;';
+// The slider's width, as ONE expression used by both the slider and the
+// sentinel-state button that replaces its group. Written down once because
+// `REROLL_ALL_CSS` adds a measured constant to it -- two copies of the term
+// would let the two states' bar widths drift apart silently, which is the jump
+// `LABEL_EXTRA_PX` exists to cancel.
+//
+// 20% narrower than the original `min(46vw,420px)`, to make room for the Reset
+// button and the gear. Both terms scale together, so the cap and the viewport
+// fraction still describe the same slider at every window width.
+const SLIDER_WIDTH = 'min(36.8vw,336px)';
+
+const SLIDER_CSS = `width:${SLIDER_WIDTH};accent-color:#8ab4f8;cursor:pointer;`;
 
 // Tabular numerals and a fixed width, so the bar does not reflow as digits
 // change under a drag.
@@ -810,13 +943,16 @@ const BUTTON_CSS =
 //
 // `LABEL_EXTRA_PX` was MEASURED, not derived: the two states' bar widths, at
 // viewports 1280 and 900, adjusted until the delta reached 0. Only the fixed
-// part needs measuring -- the `min(46vw,420px)` term is common to both states
-// and cancels, which is why one constant holds at both widths. A font change or
-// a relabelled Mutation Scale is what would invalidate it.
+// part needs measuring -- the slider's own width term is common to both states
+// and CANCELS, which is why one constant holds at both widths, and why
+// narrowing the slider did not require re-measuring it. A font change or a
+// relabelled Mutation Scale is what would invalidate it.
 const LABEL_EXTRA_PX = 141;
 
+// `SLIDER_WIDTH`, not a second copy of the expression: the cancellation above
+// only holds while the two states agree about the slider's width to the pixel.
 const REROLL_ALL_CSS =
-  `${BUTTON_CSS}width:calc(min(46vw,420px) + ${String(LABEL_EXTRA_PX)}px);` +
+  `${BUTTON_CSS}width:calc(${SLIDER_WIDTH} + ${String(LABEL_EXTRA_PX)}px);` +
   'text-align:center;';
 
 // The three population presets, grouped so the gap between them is tighter than

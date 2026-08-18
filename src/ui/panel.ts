@@ -136,6 +136,23 @@ export interface PanelOptions {
    * the reset path simply skips it.
    */
   readonly runCalibration?: () => Promise<void>;
+  /**
+   * Called whenever the panels are shown or hidden, by any route.
+   *
+   * `main.ts` uses it to follow `Orchestrator.panelOpen`, which gates whether
+   * the settings payloads are built at all. It is a callback rather than
+   * something the caller does at the `X` key because there are THREE routes now
+   * -- the key, the Editor menu item, and the overlay's gear -- and only
+   * `setHidden` sees all of them.
+   */
+  readonly onHiddenChange?: (hidden: boolean) => void;
+  /**
+   * Whether the panels start hidden. Defaults to false.
+   *
+   * `main.ts` passes true: the app opens on the picture, with the mutation bar
+   * and its gear as the way back to the controls.
+   */
+  readonly startHidden?: boolean;
 }
 
 /** Which side of the screen, and therefore which tier flag governs it. */
@@ -190,8 +207,11 @@ export class Panel {
   /** See the file header. Read through `isRefreshing`, never captured. */
   private refreshing = false;
 
-  /** Set by `X`, through `setHidden`. */
+  /** Set by `X`, the Editor menu item and the overlay's gear, via `setHidden`. */
   private hiddenFlag = false;
+
+  /** Told whenever `hiddenFlag` moves. See `PanelOptions.onHiddenChange`. */
+  private readonly onHiddenChange: ((hidden: boolean) => void) | null = null;
 
   /**
    * The shared help tooltip.
@@ -288,6 +308,7 @@ export class Panel {
     this.bus = opts.bus;
     this.lastMouseMode = this.bus.status().mouseMode;
     this.runCalibration = opts.runCalibration ?? null;
+    this.onHiddenChange = opts.onHiddenChange ?? null;
 
     // **RESETTING PREFERENCES RE-CALIBRATES.** A reset puts World Size and
     // Physics Rate back to compiled-in defaults the user never chose and their
@@ -313,7 +334,14 @@ export class Panel {
         this.copyShareLink();
       },
     });
-    this.overlay = new MutationOverlay({ send });
+    this.overlay = new MutationOverlay({
+      send,
+      // The gear. Goes through `setHidden` exactly as `X` and the menu item do,
+      // so all three routes share one notification and one flag.
+      onToggleUi: () => {
+        this.setHidden(!this.hiddenFlag);
+      },
+    });
     // Built before the menu bar, since the bar's Help item closes over it.
     //
     // The splash pauses the simulation while it is up, and resumes it on
@@ -396,6 +424,13 @@ export class Panel {
     ];
 
     this.buildBoth();
+
+    // LAST, and after `buildBoth`. The panes must exist before their containers
+    // are hidden, or the first reveal would show two empty columns; and
+    // `applyHidden` rather than `setHidden` because there is nothing to notify
+    // yet -- `main.ts` seeds `panelOpen` from `isOpen` immediately after this
+    // returns.
+    if (opts.startHidden === true) this.applyHidden(true);
   }
 
   /**
@@ -713,6 +748,26 @@ export class Panel {
    * table's editable-target gate cannot be tripped by an input nobody can see.
    */
   setHidden(hidden: boolean): void {
+    this.applyHidden(hidden);
+    // EVERY PATH THAT HIDES THE PANELS COMES THROUGH HERE -- the `X` key, the
+    // Editor menu item, and now the gear in the overlay -- so this is the one
+    // place that can tell the Orchestrator to stop building settings payloads
+    // nobody can see. It used to be `main.ts`'s job at the `X` call site alone,
+    // which meant hiding from the MENU left `panelOpen` true and the payloads
+    // being built for an invisible panel: wasted work every frame, and silent.
+    this.onHiddenChange?.(hidden);
+  }
+
+  /**
+   * The DOM half of `setHidden`, without the notification.
+   *
+   * Split out for the constructor's `startHidden`, which must not fire
+   * `onHiddenChange`: the caller is still inside `new Panel(...)` and has not
+   * bound anything yet, and `main.ts` sets `panelOpen` explicitly right after.
+   * Sharing the body is what keeps the initial state and every later toggle
+   * from drifting apart.
+   */
+  private applyHidden(hidden: boolean): void {
     this.hiddenFlag = hidden;
     const display = hidden ? 'none' : '';
     this.left.container.style.display = display;

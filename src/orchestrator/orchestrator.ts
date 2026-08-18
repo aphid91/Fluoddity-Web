@@ -111,6 +111,7 @@ import {
   randomizeBehavior,
   randomizeSeed,
   ruleIsSentinel,
+  selectionIsNoOp,
   setPopulationLayout,
 } from './settingsCommands.ts';
 import { type PresetCatalog, loadSavedInto, switchPreset } from './projectCommands.ts';
@@ -936,9 +937,29 @@ export class Orchestrator implements CommandBus {
    * `CohortHighlight` at all in that case: feeding it picks it cannot act on
    * would leave a cohort lit behind a disabled feature, ready to change the
    * meaning of the first click after the preference is turned back off.
+   *
+   * **A NO-OP SELECTION IS REFUSED, BUT THE HIGHLIGHT STILL MOVES.** At mutation
+   * scale 0 with an authored rule every cohort obeys the same rule, so adopting
+   * one installs what the project already has: the simulation would reset and an
+   * undo entry would be pushed for a picture that did not change. Aiming stays
+   * live because it costs nothing and still shows which particles share a
+   * cohort -- it is only the commit that has nothing to do. `selectionIsNoOp`
+   * says why this asks the shader's generate-test rather than `ruleIsSentinel`.
    */
   private applyPickToHighlight(result: PickResult): boolean {
-    if (!this.highlightEnabled) return isHit(result);
+    const noOp = selectionIsNoOp(this.project);
+
+    if (!this.highlightEnabled) return isHit(result) && !noOp;
+
+    // ASKED BEFORE THE TRANSITION, not after. `apply` CLEARS the highlight on a
+    // 'commit' verdict -- so letting it run and then refusing the adoption would
+    // put the cohort out while changing nothing: the lit cohort would go dark on
+    // click, which reads as the feature being broken rather than as the
+    // selection being declined. Classifying first lets a refused commit leave
+    // the highlight exactly where it was, so the user can raise the mutation
+    // scale and click again.
+    if (noOp && this.highlight.classify(result) === 'commit') return false;
+
     return this.highlight.apply(result) === 'commit';
   }
 
@@ -1998,6 +2019,7 @@ export class Orchestrator implements CommandBus {
       highlightedCohort: this.highlightEnabled ? this.highlight.cohort : NO_COHORT,
       highlightEnabled: this.highlightEnabled,
       cohortCount: selectedConfig(this.project).cohorts,
+      selectionIsNoOp: selectionIsNoOp(this.project),
 
       canUndo: this.history.canUndo,
       canRedo: this.history.canRedo,

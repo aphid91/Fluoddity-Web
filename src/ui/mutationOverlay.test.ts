@@ -34,10 +34,12 @@ function status(over: {
   mouseMode: Status['mouseMode'];
   highlightedCohort?: number;
   highlightEnabled?: boolean;
+  selectionIsNoOp?: boolean;
 }): Status {
   return {
     highlightedCohort: NO_COHORT,
     highlightEnabled: true,
+    selectionIsNoOp: false,
     ...over,
   } as Status;
 }
@@ -145,4 +147,56 @@ test('with highlighting off, select promises an immediate adoption', () => {
     'with highlighting off, the first click adopts -- it does not select a cohort',
   );
   assert.equal(hint.cohort, null, 'no stepper when there is no highlighting');
+});
+
+// ---------------------------------------------------------------------------
+// Mutation scale 0: the selection is declined
+// ---------------------------------------------------------------------------
+
+test('at scale 0 the hint says what to do instead of promising an adoption', () => {
+  // A REFUSED CLICK AND A BROKEN CLICK LOOK IDENTICAL unless the UI says which
+  // it is. At mutation scale 0 with an authored rule every cohort obeys the same
+  // rule, so the commit is declined -- and the ordinary wording would promise an
+  // action that deliberately does not happen.
+  const hint = hintFor(
+    status({ mouseMode: 'select', highlightedCohort: 3, selectionIsNoOp: true }),
+  );
+  assert.equal(hint.cohort, 3, 'highlighting still works, so the stepper stays');
+  assert.ok(
+    !/apply its behavior/.test(hint.tail),
+    'the hint must not promise an adoption that is refused',
+  );
+  assert.match(hint.tail, /Mutation Scale/, 'it should say what would enable it');
+  assert.match(hint.tail, /Right click to cancel selection/, 'cancelling still works');
+});
+
+test('at scale 0 with nothing lit, the hint still offers to highlight', () => {
+  // Aiming is not blocked -- only committing is -- so the first click still does
+  // something and the hint has to keep offering it.
+  const hint = hintFor(status({ mouseMode: 'select', selectionIsNoOp: true }));
+  assert.match(hint.lead, /Left click a particle to select its cohort/);
+  assert.match(hint.lead, /Mutation Scale is 0/);
+});
+
+test('the no-op wording wins over the highlighting-off wording', () => {
+  // Both can be true at once -- one cohort AND scale 0 -- and the no-op is the
+  // more specific fact: "click to adopt" would be wrong, because that click is
+  // exactly what is refused.
+  const hint = hintFor(
+    status({ mouseMode: 'select', highlightEnabled: false, selectionIsNoOp: true }),
+  );
+  assert.ok(
+    !/adopt its behavior/.test(hint.lead),
+    'with the commit refused, the hint must not promise an adoption',
+  );
+});
+
+test('the no-op state does not change the shove or draw wording', () => {
+  // Mutation scale has nothing to do with either tool, and a hint about
+  // selection appearing under the Draw tool would be noise.
+  for (const mouseMode of ['shove', 'draw'] as const) {
+    const plain = hintFor(status({ mouseMode }));
+    const noOp = hintFor(status({ mouseMode, selectionIsNoOp: true }));
+    assert.equal(noOp.lead, plain.lead, `${mouseMode} wording must not change`);
+  }
 });

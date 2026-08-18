@@ -347,7 +347,10 @@ export class MenuBar {
         this.opts.onResetPreferences(),
       );
       this.addSeparator(body);
-      this.addItem(body, 'Hide Panel', () => this.opts.onToggleUi(), 'X', () =>
+      // "Toggle UI Panels", not "Hide Panel": the panels start hidden now, so
+      // for most of a session this item SHOWS them and the old label named the
+      // wrong half of what it does. The checkmark still reports hidden-ness.
+      this.addItem(body, 'Toggle UI Panels', () => this.opts.onToggleUi(), 'X', () =>
         this.opts.isUiHidden(),
       );
     });

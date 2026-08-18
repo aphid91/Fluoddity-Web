@@ -223,6 +223,19 @@ async function start(): Promise<void> {
     : new Panel({
         bus: orchestrator,
         showSplash: firstVisit && !params.has('nosplash'),
+        // THE APP OPENS ON THE PICTURE. The panels are two 320px columns of
+        // controls over a piece whose whole point is being looked at, and the
+        // mutation bar -- which `X` never hid -- already carries the controls
+        // worth reaching for while watching, including the gear that brings
+        // these back.
+        startHidden: true,
+        // Follows every route that hides the panels, not just `X`: the Editor
+        // menu item and the overlay's gear go through `setHidden` too, and
+        // before this the menu route left `panelOpen` true and the Orchestrator
+        // building settings payloads for an invisible panel.
+        onHiddenChange: () => {
+          orchestrator.panelOpen = panel?.isOpen ?? false;
+        },
         // Omitted under `?nocalibrate`, which leaves `Panel.calibrate()` inert
         // and so also disables the re-run on Reset Editor Preferences.
         ...(params.has('nocalibrate')
@@ -258,7 +271,10 @@ async function start(): Promise<void> {
               },
             }),
       });
-  orchestrator.panelOpen = panel !== null;
+  // FROM `isOpen`, not from `panel !== null`: the panels now start hidden, so
+  // "a panel exists" and "a panel is visible" are different facts and only the
+  // second one decides whether the settings payloads are worth building.
+  orchestrator.panelOpen = panel?.isOpen ?? false;
 
   // Reported HERE rather than where it was caught, because until now there was
   // nothing on screen to report it with. Actionable text only -- the raw error
@@ -275,15 +291,15 @@ async function start(): Promise<void> {
   // Every listener lives in `ui/inputBinding.ts`; what comes back is a tracker
   // to freeze once per frame. `toggleUi` is the `X` key: the panel's own
   // business, so it is handled here rather than sent through the command bus
-  // (`ui.py:471-473`). `panelOpen` follows it, so the Orchestrator stops
-  // building settings payloads for a panel nobody can see.
+  // (`ui.py:471-473`). `panelOpen` follows it through the `onHiddenChange`
+  // above, where every route -- this key, the Editor menu item and the
+  // overlay's gear -- converges, so this handler no longer sets it itself.
   const input = bindInput({
     surface,
     dispatch: (command) => orchestrator.dispatch(command),
     toggleUi: () => {
       if (panel === null) return; // `?nopanel`: nothing to toggle.
       panel.setHidden(!panel.hidden);
-      orchestrator.panelOpen = panel.isOpen;
     },
     // `?nopanel` takes the toast with the panel, so there would be nowhere to
     // report the result. Copying silently is worse than not copying.
