@@ -64,6 +64,7 @@ import { showsSlider } from './gatedControl.ts';
 import { MenuBar } from './menuBar.ts';
 import { MutationOverlay } from './mutationOverlay.ts';
 import { PanelToggle } from './panelToggle.ts';
+import { RecordingBar } from './recordingBar.ts';
 import { Splash } from './splash.ts';
 import { isGated } from './gating.ts';
 import { type InputState, EMPTY_INPUT } from './inputState.ts';
@@ -109,7 +110,7 @@ import type { RecordingSectionOptions } from './sections/recordingSection.ts';
 // TYPE-ONLY on both: the recorder module pulls in mediabunny, and the panel is
 // built for every session. `main.ts` supplies the constructed object through
 // `PanelOptions.recording`, so nothing here ever imports the value side.
-import type { VideoRecorder } from '../recorder/recorder.ts';
+import type { RecordingResult, VideoRecorder } from '../recorder/recorder.ts';
 import type { RecordingSettings } from '../recorder/recordingSettings.ts';
 
 export interface PanelOptions {
@@ -179,10 +180,25 @@ export interface PanelOptions {
    * Export Video is then absent rather than present and broken.
    */
   readonly recording?: {
+    /**
+     * Ask where to save, or null to buffer in memory.
+     *
+     * **Injected rather than imported at the call site, and that is
+     * load-bearing.** It must be callable with NO preceding await, because
+     * `showSaveFilePicker` needs the click's user activation and a dynamic
+     * `import()` spends it on the first export. `main.ts` supplies this from a
+     * module it has already loaded. See `startExport`.
+     */
+    readonly chooseFile: (
+      suggestedName: string,
+    ) => Promise<FileSystemWritableFileStream | null>;
     /** Build and attach a recorder. Resolves once frames can be rendered. */
-    readonly start: (settings: RecordingSettings) => Promise<VideoRecorder>;
-    /** Detach the recorder, finalize, and hand back the file. */
-    readonly finish: (recorder: VideoRecorder) => Promise<Blob | null>;
+    readonly start: (
+      settings: RecordingSettings,
+      file: FileSystemWritableFileStream | null,
+    ) => Promise<VideoRecorder>;
+    /** Detach the recorder, finalize, and report what became of the file. */
+    readonly finish: (recorder: VideoRecorder) => Promise<RecordingResult>;
   };
 }
 
@@ -294,6 +310,16 @@ export class Panel {
    */
   private readonly overlay: MutationOverlay;
   private readonly panelToggle: PanelToggle;
+
+  /**
+   * The export progress strip.
+   *
+   * Owned here for the toast's reasons -- attached to `document.body`, so a pane
+   * rebuild cannot orphan it -- and NOT hidden by `X`, like the toast and unlike
+   * the panels. An export outlives any particular panel state, and the state it
+   * most needs to be visible in is precisely the one where the panels are gone.
+   */
+  private readonly recordingBar: RecordingBar;
 
   /**
    * The welcome splash, shown once at startup and again from Help.
@@ -408,6 +434,11 @@ export class Panel {
       },
     });
     this.overlay = new MutationOverlay({ send });
+    // Cancel through the same path the tab's button uses, so there is one
+    // meaning of cancelling however it is reached.
+    this.recordingBar = new RecordingBar(() => {
+      this.recorder?.cancel();
+    });
     // The gear, in its own corner rather than on the mutation bar -- see
     // `panelToggle.ts`. Goes through `setHidden` exactly as `X` and the Editor
     // menu item do, so all three routes share one flag and one notification.
@@ -684,6 +715,16 @@ export class Panel {
     // track the tool and the mutation value. Below the early return it froze
     // whenever the panels were hidden, and showed stale values afterwards.
     this.overlay.refresh(status);
+    // ALSO above the hidden check, and this is the case that most needs to be:
+    // the panels start hidden, so an export begun and then hidden -- or begun
+    // from a tab the user has since switched away from -- would otherwise run
+    // for twenty minutes with no visible sign of what is making the app slow.
+    // The bar exists precisely for the states below this line.
+    this.recordingBar.update(
+      this.recorder === null
+        ? null
+        : { ...this.recorder.progress, paused: status.paused },
+    );
 
     // A hidden panel refreshes nothing else: `pane.refresh()` walks every
     // binding and re-reads every proxy, which is real per-frame work to update
@@ -1068,10 +1109,42 @@ export class Panel {
 
     this.exportStarting = true;
     try {
-      this.recorder = await this.recording.start(settings);
+      // THE PICKER GOES FIRST, BEFORE ANY OTHER AWAIT, while the click's user
+      // activation is still live. `showSaveFilePicker` requires that gesture and
+      // any await spends it -- including a dynamic `import()`, which on the
+      // FIRST export is a real network fetch of the mediabunny chunk. Calling
+      // the picker after it would lose the gesture exactly once per session: on
+      // the first export, silently, falling back to buffering with no
+      // indication why. That is why `chooseRecordingFile` is reached through
+      // the injected `chooseFile` rather than through an import here.
+      //
+      // Streaming gives flat memory and no practical size ceiling. A null answer
+      // -- no API (Firefox, Safari), or the user dismissed the picker -- falls
+      // back to buffering in memory, which is fine for an ordinary short export.
+      const safe = sanitizeName(this.bus.status().projectName) || 'fluoddity';
+      const file = await this.recording.chooseFile(`${safe}.mp4`);
+
+      this.recorder = await this.recording.start(settings, file);
+
+      // **UNPAUSE, IF PAUSED.** A recording started against a paused simulation
+      // would encode nothing at all -- the driver skips paused frames, so the
+      // export would sit at 0% looking broken until the user worked out why.
+      // Pressing Export is an unambiguous statement that motion is wanted.
+      //
+      // AFTER the recorder exists, not before: if `start()` throws (no encoder
+      // for the size, a resolution past the device limit) the simulation should
+      // be left exactly as it was found rather than resumed for an export that
+      // never happened.
+      //
+      // The bus offers `togglePause` and no absolute setter, so this reads the
+      // state first and only toggles when it actually needs to move -- a blind
+      // toggle would pause a running simulation, which is the precise inverse of
+      // what is wanted. Same shape as the splash's pause handling above.
+      if (this.bus.status().paused) this.bus.dispatch({ kind: 'togglePause' });
+
       this.toast.show(
         `Recording ${settings.duration}s at ${settings.resolution.label}. ` +
-          'The editor will be slow while this runs.',
+          'The editor will be slow while this runs. Pausing pauses the recording.',
       );
     } catch (err: unknown) {
       // The likely causes are all things the user can act on -- no encoder for
@@ -1099,21 +1172,46 @@ export class Panel {
     // finalize an output that is already closing.
     this.recorder = null;
 
+    // **PAUSE ON FINISH.** The export is done, and what the user wants next is
+    // to look at the result rather than to watch the simulation carry on past
+    // the end of what they just captured -- which, at the recording's physics
+    // rate, would run away from the final frame within seconds and make the clip
+    // hard to compare against what is on screen.
+    //
+    // BEFORE the await, so the simulation stops at the frame the video ends on.
+    // Finalizing a large MP4 takes real time; pausing afterwards would let the
+    // simulation run on through all of it, and the still left on screen would
+    // not be the last frame of the file.
+    //
+    // Reads the state first, like `startExport` -- see the note there.
+    if (!this.bus.status().paused) this.bus.dispatch({ kind: 'togglePause' });
+
     try {
-      const blob = await this.recording.finish(recorder);
-      if (blob === null) {
+      const result = await this.recording.finish(recorder);
+
+      // The three outcomes are genuinely different messages. "Streamed" is a
+      // completed multi-gigabyte export the user already chose a home for;
+      // "empty" is a recording that captured nothing. Reporting either as the
+      // other is the failure `RecordingResult` exists to prevent.
+      if (result.kind === 'empty') {
         this.toast.show('Recording stopped before any frames were captured.', 'error');
         return;
       }
-      const { downloadRecording } = await import('../recorder/recorder.ts');
+      if (result.kind === 'streamed') {
+        // No download link: the bytes went straight to the file the user picked.
+        this.toast.show('Export complete — saved to the file you chose.');
+        return;
+      }
+
+      const { downloadRecording } = await import('../recorder/saveFile.ts');
       // `sanitizeName` rather than a new helper: it exists precisely to make a
       // user-typed name safe to use as a filename, and it CAN return empty (a
       // name of "..." has nothing usable left), which is what the fallback is
       // for -- an export called ".mp4" would be a puzzle in a downloads folder.
       const safe = sanitizeName(this.bus.status().projectName) || 'fluoddity';
       const name = `${safe}.mp4`;
-      downloadRecording(blob, name);
-      this.toast.show(`Exported ${name} — ${(blob.size / 1e6).toFixed(1)} MB.`);
+      downloadRecording(result.blob, name);
+      this.toast.show(`Exported ${name} — ${(result.blob.size / 1e6).toFixed(1)} MB.`);
     } catch (err: unknown) {
       this.toast.show(`Could not finish the export: ${String(err)}`, 'error');
       console.warn('Recording failed to finalize:', err);
@@ -1167,6 +1265,7 @@ export class Panel {
     this.dialogs.dispose();
     this.overlay.dispose();
     this.panelToggle.dispose();
+    this.recordingBar.dispose();
     this.splash.dispose();
     this.left.container.remove();
     this.right.container.remove();

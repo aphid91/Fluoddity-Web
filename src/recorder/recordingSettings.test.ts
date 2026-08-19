@@ -16,6 +16,7 @@ import {
   MAX_PHYSICS_STEPS,
   RECORDING_FPS,
   RESOLUTIONS,
+  driverAction,
   frameCount,
   rescaleSamples,
   withDuration,
@@ -145,6 +146,58 @@ test('duration and resolution are clamped and looked up by label', () => {
 test('frameCount is duration times the output rate', () => {
   assert.equal(frameCount(DEFAULT_RECORDING_SETTINGS), 5 * RECORDING_FPS);
   assert.equal(frameCount(withDuration(DEFAULT_RECORDING_SETTINGS, 1)), RECORDING_FPS);
+});
+
+test('pausing suspends the recording rather than encoding a still', () => {
+  // THE PAUSE RULE. A paused frame is a still -- `orchestrator.frame()` skips
+  // `runFrame` and re-renders the frozen state -- so encoding it would append a
+  // duplicate. Doing that for the length of the pause is the "dead space in the
+  // middle of the video" the feature must not produce.
+  assert.equal(driverAction({ finished: false, paused: true }), 'suspend');
+  assert.equal(driverAction({ finished: false, paused: false }), 'encode');
+});
+
+test('finishing OUTRANKS pausing, so a paused export can still complete', () => {
+  // The precedence that is invisible from reading either condition alone, and
+  // the reason this is a named function rather than an `if` in a callback.
+  //
+  // Both reachable in practice: the final frame can land on the very frame the
+  // user pauses, and Cancel is clickable while paused. If `suspend` won, either
+  // would strand the export -- no file written, and the only way out would be to
+  // unpause a recording the user had already ended.
+  assert.equal(driverAction({ finished: true, paused: true }), 'finalize');
+  assert.equal(driverAction({ finished: true, paused: false }), 'finalize');
+});
+
+test('only encoding advances progress, so the frame count is pause-invariant', () => {
+  // The property the pause rule exists to guarantee, stated as the specification
+  // states it: however many times the user pauses, the finished clip holds
+  // exactly `duration * fps` frames of real motion.
+  //
+  // Simulated over a run that pauses repeatedly. `encode` is the ONLY action
+  // that advances the counter, so the total is invariant under any pause
+  // pattern -- which is what makes pausing safe to use as an inspection tool
+  // mid-export.
+  const total = frameCount(DEFAULT_RECORDING_SETTINGS);
+  for (const pausePattern of [3, 5, 7, 11]) {
+    let encoded = 0;
+    let tick = 0;
+    // Generous bound: every tick either encodes or is a pause, and the pause
+    // pattern never blocks forever, so this terminates well inside it.
+    while (encoded < total && tick < total * 10) {
+      const action = driverAction({
+        finished: encoded >= total,
+        paused: tick % pausePattern === 0,
+      });
+      if (action === 'encode') encoded++;
+      tick++;
+    }
+    assert.equal(
+      encoded,
+      total,
+      `pausing every ${pausePattern} ticks changed the frame count`,
+    );
+  }
 });
 
 test('every offered resolution is even-dimensioned', () => {

@@ -25,7 +25,11 @@ import { CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
 import { type SavedConfig, fromDocument } from './config/persistence.ts';
 import { SHARED_LINK_NAME, decodeShareLink } from './config/shareLink.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
-import { RECORDING_FPS } from './recorder/recordingSettings.ts';
+import { RECORDING_FPS, driverAction } from './recorder/recordingSettings.ts';
+// Static, and deliberately so: the file picker must run before any await in the
+// export click handler. Both this and `recordingSettings.ts` are leaves that
+// pull in neither mediabunny nor the GPU. See `recorder/saveFile.ts`.
+import { chooseRecordingFile } from './recorder/saveFile.ts';
 import { calibrate } from './calibration/calibrate.ts';
 import { ALWAYS_CALIBRATE } from './orchestrator/featureFlags.ts';
 import { bindInput } from './ui/inputBinding.ts';
@@ -246,9 +250,14 @@ async function start(): Promise<void> {
         // bundle: this closure body does not run until someone presses Export,
         // so a session that never records never fetches the encoder.
         recording: {
-          start: async (settings) => {
+          // STATICALLY imported, unlike the two below, and that is the whole
+          // reason `saveFile.ts` is a module of its own: this must be callable
+          // with no preceding await or the click's user activation is gone and
+          // `showSaveFilePicker` refuses. See that file's header.
+          chooseFile: chooseRecordingFile,
+          start: async (settings, file) => {
             const { VideoRecorder } = await import('./recorder/recorder.ts');
-            const recorder = await VideoRecorder.start(device, settings);
+            const recorder = await VideoRecorder.start(device, settings, file);
             orchestrator.setRecorder(recorder);
             return recorder;
           },
@@ -476,12 +485,41 @@ async function start(): Promise<void> {
     // pass onto this frame's encoder AND submitted it. The capture canvas holds
     // the finished frame by the time this runs, which is the ordering
     // `addFrame()` depends on -- it reads that canvas.
+    //
+    // **PAUSING PAUSES THE RECORDING.** A paused frame is a STILL:
+    // `orchestrator.frame()` takes the branch that skips `runFrame` entirely and
+    // re-renders the frozen state, so encoding it would append a duplicate of
+    // the previous frame to the file. Doing that for as long as the pause lasts
+    // is exactly the "dead space in the middle of the video" this must not
+    // produce.
+    //
+    // Because the frame COUNTER only advances on frames that are actually
+    // encoded, the finished clip holds precisely `duration * fps` frames of real
+    // motion however many times the user paused along the way. The physics frame
+    // count is invariant under pausing, which is what makes the pause safe to
+    // use as an inspection tool mid-export.
+    //
+    // **COMPLETION IS CHECKED OUTSIDE THE PAUSE GATE**, and it has to be. The
+    // last frame can land on the very frame the user pauses -- or they may pause
+    // and then press Cancel, which sets `finished` without any frame being
+    // encoded. Gating the finalize on `!paused` would strand both: the file
+    // would never be written, and the only way out would be to unpause a
+    // recording the user had already ended.
+    //
+    // The three-way choice itself lives in `driverAction`, in the leaf, so the
+    // precedence between "finished" and "paused" is stated once and tested --
+    // see its docstring. This callback is where it is ACTED on, not where it is
+    // decided.
     if (recorder !== null) {
-      if (recorder.finished) {
+      const action = driverAction({
+        finished: recorder.finished,
+        paused: orchestrator.status().paused,
+      });
+      if (action === 'finalize') {
         // Finalize and download. `finishExport` detaches the recorder first, so
         // the next frame renders normally rather than into a freed target.
         void panel?.finishExport();
-      } else {
+      } else if (action === 'encode') {
         // **THE AWAIT IS THE BACKPRESSURE.** `addFrame()` resolves when the
         // encoder is ready for another, so this is what stops a fast stretch of
         // simulation from queueing unbounded VideoFrames and killing the tab.

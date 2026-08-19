@@ -44,6 +44,8 @@ import type {
   CanvasSource,
   Mp4OutputFormat,
   Output,
+  StreamTarget,
+  StreamTargetChunk,
   VideoCodec,
 } from 'mediabunny';
 
@@ -60,6 +62,18 @@ export interface RecordingProgress {
   readonly framesDone: number;
   readonly framesTotal: number;
 }
+
+/**
+ * What `finish()` produced. See its docstring for why this is three cases.
+ *
+ *   buffered  The whole file, in memory, for a download link.
+ *   streamed  Already written to the user's chosen file. Nothing to hand back.
+ *   empty     No frames were captured. Not an error, but not a file either.
+ */
+export type RecordingResult =
+  | { readonly kind: 'buffered'; readonly blob: Blob }
+  | { readonly kind: 'streamed' }
+  | { readonly kind: 'empty' };
 
 /**
  * The codecs to try, best first.
@@ -80,13 +94,32 @@ export class VideoRecorder {
   /**
    * The muxer, and the source frames are pushed into.
    *
-   * Both generic parameters are pinned -- `Output<Format, Target>` -- so
-   * `finish()` can read `.target.buffer` without a cast. The TARGET half is what
-   * carries the knowledge that this output writes to memory rather than to a
-   * stream; a bare `Output` erases it and `.buffer` stops existing.
+   * The TARGET half of the generic is the union, because which one is in play is
+   * decided at `open()` time from whether the browser gave us a file handle --
+   * see `openOutput`. `finish()` discriminates on `this.fileWritable` rather
+   * than by inspecting the target, since that is the same fact stated once.
    */
-  private output: Output<Mp4OutputFormat, BufferTarget> | null = null;
+  private output: Output<Mp4OutputFormat, BufferTarget | StreamTarget> | null = null;
   private source: CanvasSource | null = null;
+
+  /**
+   * The open file, when the export is streaming straight to disk.
+   *
+   * Null means the in-memory path: `BufferTarget` holds the whole MP4 and
+   * `finish()` returns it as a Blob for a download link. Non-null means the
+   * bytes have been going to the user's chosen file all along and there is no
+   * Blob to return -- `finish()` closes this and returns null, which is a
+   * SUCCESS on that path rather than the failure it means on the other.
+   *
+   * WHY BOTH EXIST. `BufferTarget` is documented as unsuitable past ~100 MB, and
+   * a minute of 1080p60 clears that comfortably -- a long 4K export would put a
+   * multi-gigabyte ArrayBuffer in the tab and be killed for it. Streaming has
+   * flat memory and no size ceiling worth naming. But `showSaveFilePicker` is
+   * Chromium-only and needs a user gesture, so the buffered path cannot simply
+   * be deleted: it is the fallback for Firefox and Safari, where the size limit
+   * is real and the alternative is no export at all.
+   */
+  private fileWritable: FileSystemWritableFileStream | null = null;
 
   private framesDone = 0;
   private readonly framesTotal: number;
@@ -110,8 +143,19 @@ export class VideoRecorder {
   static async start(
     device: GPUDevice,
     settings: RecordingSettings,
+    /**
+     * An already-open file to stream into, or null to buffer in memory.
+     *
+     * Opened by the CALLER, not here, and that is forced rather than chosen:
+     * `showSaveFilePicker` requires a user gesture, and by the time this async
+     * method runs the gesture that started the export has been consumed by the
+     * awaits above it. The picker has to be raised from the click handler
+     * itself. See `chooseRecordingFile`.
+     */
+    fileWritable: FileSystemWritableFileStream | null = null,
   ): Promise<VideoRecorder> {
     const recorder = new VideoRecorder(device, settings);
+    recorder.fileWritable = fileWritable;
     await recorder.open();
     return recorder;
   }
@@ -148,6 +192,7 @@ export class VideoRecorder {
       Output,
       Mp4OutputFormat,
       BufferTarget,
+      StreamTarget,
       CanvasSource,
       Quality,
       canEncodeVideo,
@@ -172,15 +217,44 @@ export class VideoRecorder {
       );
     }
 
-    // `fastStart: 'in-memory'` puts the moov atom at the FRONT, so the finished
-    // file seeks immediately in a player and streams without range requests. It
-    // costs holding the chunks until finalize, which `BufferTarget` is doing
-    // anyway -- so for a buffered export it is free, and skipping it would
-    // produce a file that has to be fully downloaded before it can be scrubbed.
-    const output = new Output({
-      format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
-      target: new BufferTarget(),
-    });
+    // THE TARGET, and the `fastStart` that goes with it. The two are chosen
+    // together because the right answer for one depends on the other.
+    //
+    //   STREAMING (a file handle was granted): `fastStart: false`. Metadata goes
+    //   at the END, which is the only option that keeps memory flat -- the whole
+    //   point of streaming. 'in-memory' would hold every chunk until finalize
+    //   and reintroduce exactly the ceiling this path exists to remove.
+    //
+    //   BUFFERED (no handle -- Firefox, Safari, or the user declined):
+    //   `fastStart: 'in-memory'`. It puts the moov atom at the FRONT so the file
+    //   seeks immediately in a player, and it costs holding the chunks until
+    //   finalize -- which `BufferTarget` is doing anyway. Free here, and skipping
+    //   it would produce a file that must be fully downloaded before scrubbing.
+    //
+    // A file written with metadata at the end still plays and still seeks once
+    // it is on disk; what it cannot do is stream progressively over HTTP. That
+    // is the right trade for a local export the user is about to open.
+    // THE CAST IS A TYPE BRIDGE, NOT A LIE, and it is worth saying why since a
+    // bare `as unknown as` normally is one. mediabunny writes
+    // `{ type: 'write', data, position }` chunks; that is precisely the
+    // `WriteParams` shape `FileSystemWritableFileStream.write` accepts, and a
+    // `FileSystemWritableFileStream` IS a `WritableStream` of them. The two
+    // types are declared in different packages (`mediabunny` and the DOM lib)
+    // and so are nominally unrelated, but structurally identical -- which is
+    // exactly the situation a cast is for. The `position` field is what makes
+    // this path support seeking, and therefore what lets the muxer go back and
+    // patch its headers on a stream.
+    const output = this.fileWritable !== null
+      ? new Output({
+          format: new Mp4OutputFormat({ fastStart: false }),
+          target: new StreamTarget(
+            this.fileWritable as unknown as WritableStream<StreamTargetChunk>,
+          ),
+        })
+      : new Output({
+          format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
+          target: new BufferTarget(),
+        });
 
     const source = new CanvasSource(this.target.canvas, {
       codec,
@@ -225,24 +299,45 @@ export class VideoRecorder {
   }
 
   /**
-   * Finalize the file and hand back its bytes.
+   * Finalize the file.
    *
-   * Returns null if there is nothing to finalize (cancelled before the first
-   * frame), which the caller reports rather than treating as an error -- the
-   * user asked for the recording to end, and it did.
+   * THREE OUTCOMES, not two, which is why this returns a tagged result rather
+   * than `Blob | null`. "Streamed to disk" and "nothing was captured" both have
+   * no Blob to hand back, and they are opposites -- one is the successful
+   * completion of a multi-gigabyte export, the other is a recording that
+   * produced no frames. A nullable Blob collapses them, and the caller would
+   * report the wrong one roughly half the time.
    */
-  async finish(): Promise<Blob | null> {
+  async finish(): Promise<RecordingResult> {
     const output = this.output;
     const source = this.source;
+    const writable = this.fileWritable;
     this.output = null;
     this.source = null;
+    this.fileWritable = null;
 
     try {
-      if (output === null || this.framesDone === 0) return null;
+      if (output === null || this.framesDone === 0) {
+        // Nothing to finalize. The file, if one was opened, is closed and left
+        // empty rather than abandoned with a lock on it.
+        await writable?.close().catch(() => {});
+        return { kind: 'empty' };
+      }
       source?.close();
       await output.finalize();
-      const buffer = output.target.buffer;
-      return buffer === null ? null : new Blob([buffer], { type: 'video/mp4' });
+
+      if (writable !== null) {
+        // `finalize()` has written every byte through the stream; closing is
+        // what commits the file to disk. Nothing to return -- it is already
+        // where the user asked for it.
+        await writable.close();
+        return { kind: 'streamed' };
+      }
+
+      const buffer = (output.target as BufferTarget).buffer;
+      return buffer === null
+        ? { kind: 'empty' }
+        : { kind: 'buffered', blob: new Blob([buffer], { type: 'video/mp4' }) };
     } finally {
       // ALWAYS, including on a failed finalize: the capture target holds a
       // configured swap chain at up to 4K, and leaking it on the error path
@@ -266,28 +361,10 @@ export class VideoRecorder {
     this.source?.close();
     this.source = null;
     this.output = null;
+    // Released, not finalized: this path produces no file. Leaving it open would
+    // hold a lock on a partial file the user cannot overwrite from the picker.
+    void this.fileWritable?.close().catch(() => {});
+    this.fileWritable = null;
     this.releaseTarget();
   }
-}
-
-/**
- * Hand `blob` to the browser as a download.
- *
- * Here rather than in the UI because it is the last step of the export and has
- * one correct implementation. The object URL is revoked on a timer rather than
- * immediately: Safari begins the download asynchronously and a URL revoked in
- * the same tick is occasionally dead before it is read.
- */
-export function downloadRecording(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.style.display = 'none';
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 60_000);
 }

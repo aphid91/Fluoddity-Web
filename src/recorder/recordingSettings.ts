@@ -116,6 +116,47 @@ export function frameCount(settings: RecordingSettings): number {
   return Math.max(1, Math.round(settings.duration * RECORDING_FPS));
 }
 
+/** What the driver loop knows about the recording when it decides what to do. */
+export interface DriverState {
+  /** True once every frame is submitted, or the user cancelled. */
+  readonly finished: boolean;
+  /** True while the simulation is paused, by any route. */
+  readonly paused: boolean;
+}
+
+/**
+ * What the frame loop should do with the recorder this frame.
+ *
+ * A PURE FUNCTION IN THE LEAF, rather than two conditions inline in `main.ts`'s
+ * rAF callback, because the rule it encodes is the specified pause behaviour and
+ * is exactly the kind of thing that looks obviously right and is not:
+ *
+ *   `encode`    A real frame of motion. The only outcome that advances the
+ *               counter, which is what makes the physics frame count INVARIANT
+ *               under pausing -- pause as often as you like and the finished
+ *               clip still holds `duration * fps` frames of motion, with no dead
+ *               space where the pauses were.
+ *
+ *   `suspend`   Paused mid-export. `orchestrator.frame()` renders a STILL when
+ *               paused, so encoding it would append a duplicate of the previous
+ *               frame; doing that for the length of the pause is precisely the
+ *               dead space this must not produce.
+ *
+ *   `finalize`  Done, or cancelled. **Outranks `suspend`, and must**: the last
+ *               frame can land on the very frame the user pauses, and Cancel is
+ *               reachable while paused. If suspension won, either would strand
+ *               the export -- the file never written, and the only way out being
+ *               to unpause a recording the user had already ended.
+ *
+ * The precedence is the whole content of this function, and it is not visible
+ * from reading either condition alone. That is what makes it worth a name and a
+ * test rather than an `if` in a callback.
+ */
+export function driverAction(state: DriverState): 'encode' | 'suspend' | 'finalize' {
+  if (state.finished) return 'finalize';
+  return state.paused ? 'suspend' : 'encode';
+}
+
 /**
  * Clamp `value` into `[min, max]`, truncating to a whole number.
  *

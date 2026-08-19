@@ -219,7 +219,7 @@ export function buildRecordingSection(
   return {
     bindings: [],
     settings: () => settings,
-    refresh: () => {
+    refresh: (s) => {
       // The button doubles as Cancel while an export runs. One control rather
       // than two, because "start" and "stop" are never both available and a
       // permanently greyed second button is worse than a label that changes.
@@ -232,8 +232,13 @@ export function buildRecordingSection(
       const percent = progress.framesTotal === 0
         ? 0
         : Math.floor((progress.framesDone / progress.framesTotal) * 100);
+      // SAYS SO WHEN PAUSED. Pausing suspends the recording by design -- no
+      // frames are encoded, so the counter stops -- and a progress readout that
+      // simply froze would be indistinguishable from a hung export. Naming the
+      // pause is what turns "it stopped" into "you stopped it".
+      const suspended = s.paused ? ' — PAUSED' : '';
       title.title =
-        `Cancel  (${percent}% — ${progress.framesDone}/${progress.framesTotal})`;
+        `Cancel  (${percent}% — ${progress.framesDone}/${progress.framesTotal})${suspended}`;
     },
   };
 }
