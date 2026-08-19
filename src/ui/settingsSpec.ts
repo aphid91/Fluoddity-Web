@@ -145,6 +145,30 @@ export interface Setting {
    * because something else already renders it better.
    */
   readonly panel: boolean;
+  /**
+   * A live precondition: while it is false the control renders GREYED OUT.
+   *
+   * `[field, value]` on the same source -- "enabled only while `field` equals
+   * `value`". Cohort Fences is the one entry that uses it: its radius is derived
+   * from the Grid cell size, so it means nothing under the other Initial
+   * Conditions modes and must not look adjustable there.
+   *
+   * ## Greyed, not hidden -- the opposite of `revealsOn`, on purpose
+   *
+   * The file header on `reveal.ts` argues for hiding: a bloom parameter that
+   * cannot apply is noise, and a panel full of noise is a wall. That reasoning
+   * turns around here. Those parameters are meaningless when their EFFECT is
+   * off, and the checkbox that turns it off is right above them, so the way back
+   * is obvious. This one is meaningful, the user asked for it, and it is
+   * unavailable because of a DIFFERENT control in the same group. Hiding it
+   * would answer "where did Cohort Fences go?" with silence; greying it out
+   * leaves the label on screen, and the tooltip beside it says Grid is required.
+   *
+   * Evaluated every frame in the control's `refresh`, like the Randomize
+   * button's dependence on Mutation Scale -- it is a live condition, not a
+   * property of the registry entry.
+   */
+  readonly requires: readonly [field: string, value: number | boolean] | null;
 }
 
 /** Defaults for everything a declaration does not state. */
@@ -164,6 +188,7 @@ const SETTING_DEFAULTS = {
   gateEpsilon: 1e-4,
   gates: [] as readonly string[],
   panel: true,
+  requires: null as Setting['requires'],
 } as const;
 
 /** The four fields every entry must state, plus whatever it overrides. */
@@ -302,15 +327,24 @@ export const SETTINGS: readonly Setting[] = [
     label: 'Cohort Fences',
     tier: BASIC,
     source: CONFIG,
-    kind: GATED,
-    lo: 0.0,
-    hi: 1.0,
+    kind: BOOL,
+    lo: 0,
+    hi: 1,
     help:
       'Holds each particle near where it started, so cohorts stay distinct ' +
-      'instead of mixing. 0 is off; higher values pull harder. Follows Initial ' +
-      "Conditions -- the fence is around a particle's own starting point, " +
-      'wherever that mode put it.',
+      'instead of mixing.\n\nThe fence RADIUS is derived, not dialled: it is ' +
+      'always half a grid cell, so neighbouring cohorts just barely touch no ' +
+      'matter how many Cohorts there are. Raising the cohort count tightens ' +
+      'every fence to match.\n\nREQUIRES Initial Conditions: Grid. The radius ' +
+      'is measured from the grid cell, and the other modes have no cell to ' +
+      'measure -- Random scatters cohorts, Center stacks them all in one place, ' +
+      'and Ring spaces them round a circle. The checkbox greys out there.',
     group: 'Population',
+    // Grid is IC_GRID, i.e. index 0 of `DROPDOWN_MODES.initialConditions` --
+    // spelled as the index because this file imports nothing (see the note on
+    // DROPDOWN_MODES). `settingsSpec.test.ts` pins that tuple against the real
+    // `IC` constants, so this cannot drift without a test failing.
+    requires: ['initialConditions', 0],
   }),
   setting({
     field: 'hazardRate',

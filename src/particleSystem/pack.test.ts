@@ -58,7 +58,7 @@ function distinctConfig(overrides: Partial<SimulationConfig> = {}): SimulationCo
       gravityForce: 11.25,
       gravityStrafe: 12.25,
       initialConditions: IC.RING,
-      cohortFences: 13.25,
+      cohortFences: true,
       colorSensitivity: 14.25,
       colorByCohort: true,
       sensorAngleJitter: 15.25,
@@ -155,7 +155,6 @@ test('every float lane holds the field the lane table names', () => {
 
   assert.equal(f32[LANE.force2 + 0], config.gravityForce);
   assert.equal(f32[LANE.force2 + 1], config.gravityStrafe);
-  assert.equal(f32[LANE.force2 + 3], config.cohortFences);
 
   assert.equal(f32[LANE.misc2 + 0], config.colorSensitivity);
   assert.equal(f32[LANE.misc2 + 2], config.sensorAngleJitter);
@@ -172,6 +171,7 @@ test('int lanes hold raw ints readable by bitcast<i32>', () => {
   const config = distinctConfig({
     cohorts: 12,
     initialConditions: IC.RANDOM,
+    cohortFences: true,
     colorByCohort: true,
     radialGravity: false,
   });
@@ -179,16 +179,27 @@ test('int lanes hold raw ints readable by bitcast<i32>', () => {
 
   assert.equal(i32[LANE.misc + 2], 12, 'misc.z = cohorts');
   assert.equal(i32[LANE.force2 + 2], IC.RANDOM, 'force2.z = initial_conditions');
+  assert.equal(i32[LANE.force2 + 3], 1, 'force2.w = cohort_fences');
   assert.equal(i32[LANE.misc2 + 1], 1, 'misc2.y = color_by_cohort');
   assert.equal(i32[LANE.misc3 + 0], 0, 'misc3.x = radial_gravity');
 });
 
 test('booleans pack as 0 and 1', () => {
-  const on = views(packConfigs([distinctConfig({ colorByCohort: true, radialGravity: true })])).i32;
+  const on = views(
+    packConfigs([
+      distinctConfig({ cohortFences: true, colorByCohort: true, radialGravity: true }),
+    ]),
+  ).i32;
+  assert.equal(on[LANE.force2 + 3], 1);
   assert.equal(on[LANE.misc2 + 1], 1);
   assert.equal(on[LANE.misc3 + 0], 1);
 
-  const off = views(packConfigs([distinctConfig({ colorByCohort: false, radialGravity: false })])).i32;
+  const off = views(
+    packConfigs([
+      distinctConfig({ cohortFences: false, colorByCohort: false, radialGravity: false }),
+    ]),
+  ).i32;
+  assert.equal(off[LANE.force2 + 3], 0);
   assert.equal(off[LANE.misc2 + 1], 0);
   assert.equal(off[LANE.misc3 + 0], 0);
 });
@@ -301,7 +312,10 @@ function parityConfig(): SimulationConfig {
     gravityForce: r.gravityForce,
     gravityStrafe: r.gravityStrafe,
     initialConditions: r.initialConditions as SimulationConfig['initialConditions'],
-    cohortFences: r.cohortFences,
+    // The reference stored a STRENGTH here (0.7071); this port stores a FLAG.
+    // `> 0` is the same reading `persistence.ts`'s `fencesOr` gives an old save
+    // file, so this is the reference config as today's app would load it.
+    cohortFences: r.cohortFences > 0,
     colorSensitivity: r.colorSensitivity,
     colorByCohort: r.colorByCohort,
     sensorAngleJitter: r.sensorAngleJitter,
@@ -317,16 +331,67 @@ function toHex(buffer: ArrayBuffer): string {
     .join('');
 }
 
+/**
+ * The one lane this port DELIBERATELY no longer packs like the Python.
+ *
+ * `force2.w` held a fence STRENGTH there and holds a fence FLAG here, so its
+ * four bytes are 0.7071-as-float32 in the golden and 1-as-int32 in ours. That
+ * is the intended difference, not a regression -- but it must not be allowed to
+ * excuse a SECOND, accidental difference somewhere else in the record, so the
+ * byte comparison below blanks this lane in both operands and keeps comparing
+ * every other byte exactly.
+ *
+ * Blanking rather than dropping keeps the offsets of everything after it
+ * unchanged, so a lane that shifted would still fail.
+ *
+ * @see `parity.ts` -- the fixture is a fossil and is never regenerated.
+ */
+const FENCE_LANE = LANE.force2 + 3;
+
+/** `toHex`, with the diverged lane zeroed in every config record. */
+function toHexMasked(buffer: ArrayBuffer): string {
+  const words = new Int32Array(buffer.slice(0));
+  for (let base = 0; base < words.length; base += CONFIG_DATA_STRIDE / 4) {
+    words[base + FENCE_LANE] = 0;
+  }
+  return toHex(words.buffer);
+}
+
+/** The golden hex, with the same lane zeroed at the same offsets. */
+function maskGolden(hex: string): string {
+  const buffer = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < buffer.length; i++) {
+    buffer[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return toHexMasked(buffer.buffer);
+}
+
 // THE assertion of this file. Compared exactly, not approximately: both
 // np.float32 assignment and Float32Array assignment round to nearest-even, so
-// a faithful port is bit-identical to the desktop's bytes.
+// a faithful port is bit-identical to the desktop's bytes -- everywhere except
+// the one lane whose MEANING changed. See `FENCE_LANE_BYTES`.
 test('parity: a packed config record is byte-identical to the Python', () => {
-  assert.equal(toHex(packConfigs([parityConfig()])), PARITY.packing.configRecordHex);
+  assert.equal(
+    toHexMasked(packConfigs([parityConfig()])),
+    maskGolden(PARITY.packing.configRecordHex),
+  );
 });
 
 test('parity: two packed configs are byte-identical to the Python', () => {
   const config = parityConfig();
-  assert.equal(toHex(packConfigs([config, config])), PARITY.packing.twoConfigHex);
+  assert.equal(
+    toHexMasked(packConfigs([config, config])),
+    maskGolden(PARITY.packing.twoConfigHex),
+  );
+});
+
+// The diverged lane itself, asserted directly so it is covered rather than
+// merely excused: the flag packs as an int 1 where the golden held 0.7071.
+test('the fence lane packs as a flag, not the reference strength', () => {
+  const { i32, f32 } = views(packConfigs([parityConfig()]));
+  assert.equal(i32[LANE.force2 + 3], 1);
+  assert.ok(PARITY.packing.referenceConfig.cohortFences > 0);
+  assert.notEqual(f32[LANE.force2 + 3], PARITY.packing.referenceConfig.cohortFences);
 });
 
 test('parity: a packed WorldData record is byte-identical to the Python', () => {

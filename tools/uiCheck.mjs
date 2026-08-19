@@ -348,9 +348,17 @@ console.log('\nPASS 1: the gated latch (press, drag to base, hold, release)\n');
 await resetViewState();
 await goAdvanced();
 
-// Cohort Fences: GATED, base 0.0, plain (no curve, no inversion), and CONFIG so
-// its value is readable straight out of `editConfig`.
-const FENCES = 'config.cohortFences';
+// Sensor Angle Jitter: GATED, base 0.0, plain (no curve, no inversion), 0..1,
+// and CONFIG so its value is readable straight out of `editConfig`.
+//
+// This was Cohort Fences until that became a plain checkbox -- its radius is
+// derived from the cohort count now, so there is no slider left to gate. Sensor
+// Angle Jitter is the like-for-like replacement, matching on every property this
+// pass depends on. **Hazard Rate is the trap here**: it is also GATED and also
+// base 0, but it is CURVED and its range is 0..0.01, so `nudged()` puts it at
+// 8e-14 -- a value that is correctly "not off" but is far too small to reason
+// about from a printed readout when this pass fails.
+const GATED = 'config.sensorAngleJitter';
 
 // Open it first, so there is a slider to drag at all.
 //
@@ -361,25 +369,25 @@ const FENCES = 'config.cohortFences';
 // that swap and reported "the checkbox did not reveal the slider" -- a timing
 // artifact that reads exactly like a product bug.
 await evaluate(
-  `document.querySelector('[data-setting="${FENCES}.gate"] input[type=checkbox]')?.click()`,
+  `document.querySelector('[data-setting="${GATED}.gate"] input[type=checkbox]')?.click()`,
 );
 await sleep(1200);
 
-if ((await visible(FENCES)) !== 'shown') {
+if ((await visible(GATED)) !== 'shown') {
   fail('ticking the checkbox did not reveal the slider');
 } else {
   pass('ticking the checkbox revealed the slider');
 }
 
-const nudgedValue = await statusOf('editConfig.cohortFences');
+const nudgedValue = await statusOf('editConfig.sensorAngleJitter');
 if (nudgedValue > 0) {
   pass(`ticking nudged the value off base (${nudgedValue.toExponential(2)})`);
 } else {
   fail(`ticking left the value at base (${nudgedValue})`);
 }
 
-const track = await trackOf(FENCES);
-if (track === null) die('Could not find the Cohort Fences slider track.');
+const track = await trackOf(GATED);
+if (track === null) die('Could not find the Sensor Angle Jitter slider track.');
 
 // Press at the middle of the track, then drag to its far LEFT -- which is the
 // base value -- and HOLD.
@@ -393,8 +401,8 @@ await sleep(120);
 await mouse('mouseMoved', track.x - 20, midY);
 await sleep(400);
 
-const heldValue = await statusOf('editConfig.cohortFences');
-const heldVisible = await visible(FENCES);
+const heldValue = await statusOf('editConfig.sensorAngleJitter');
+const heldVisible = await visible(GATED);
 
 if (heldVisible === 'shown') {
   pass(`the slider stayed visible at base while held (value ${heldValue})`);
@@ -409,9 +417,9 @@ if (heldVisible === 'shown') {
 await mouse('mouseReleased', track.x - 20, midY, 0);
 await sleep(700);
 
-const releasedValue = await statusOf('editConfig.cohortFences');
-const releasedVisible = await visible(FENCES);
-const gateVisible = await visible(`${FENCES}.gate`);
+const releasedValue = await statusOf('editConfig.sensorAngleJitter');
+const releasedVisible = await visible(GATED);
+const gateVisible = await visible(`${GATED}.gate`);
 
 if (releasedVisible === 'hidden' && gateVisible === 'shown') {
   pass('releasing at base folded the slider back to a checkbox');

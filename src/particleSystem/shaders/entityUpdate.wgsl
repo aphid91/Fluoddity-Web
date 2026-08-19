@@ -254,6 +254,24 @@ fn assign_config_index(index: u32) -> i32 {
 // Entity to store it. Because both the fence and reset() call this, they can
 // never disagree about where home is.
 //
+// How IC_GRID divides the world: the number of cells across and down.
+//
+// Split out of initial_position so COHORT FENCES can size itself from the same
+// numbers the layout uses. The fence radius is half a cell (see the fence block
+// in entity_update), and "half a cell" is only the right answer if it is half of
+// THE cell this function laid out -- so the two must read from one place. Duplicating
+// the cols/rows expression would let a future change to the layout silently
+// stop the fences from touching.
+//
+// One cell per cohort, laid out so the cells come out roughly SQUARE: for n
+// cohorts in a box of aspect a, that wants sqrt(n*a) columns. (Using n*a rather
+// than sqrt(n)*a is the difference between a grid and a single wide strip on a
+// wide canvas.)
+fn grid_cells(cohorts: i32, extent: vec2f) -> vec2f {
+    let cols = max(1.0, round(sqrt(f32(cohorts) * extent.x / extent.y)));
+    return vec2f(cols, ceil(f32(cohorts) / cols));
+}
+
 // Every mode starts from the same small per-cohort jitter, then places it.
 // Grid and Ring are expressed in world extent rather than the reference's
 // inline aspect fudge, so they stay correct on a non-square canvas.
@@ -270,12 +288,8 @@ fn initial_position(index: u32, config: ConfigData) -> vec2f {
     let cohorts = max(1, cfg_cohorts(config));
 
     if (mode == IC_GRID) {
-        // One cell per cohort, laid out so the cells come out roughly SQUARE:
-        // for n cohorts in a box of aspect a, that wants sqrt(n*a) columns.
-        // (Using n*a rather than sqrt(n)*a is the difference between a grid and
-        // a single wide strip on a wide canvas.)
-        let cols = max(1.0, round(sqrt(f32(cohorts) * extent.x / extent.y)));
-        let cells = vec2f(cols, ceil(f32(cohorts) / cols));
+        let cells = grid_cells(cohorts, extent);
+        let cols = cells.x;
         // GLSL's mod() is floored and WGSL's `%` is truncated, so they are NOT
         // interchangeable in general. They agree here because floor(cohort_val)
         // is non-negative BY CONSTRUCTION -- cohort_val is cohorts*index/N, a
@@ -594,10 +608,29 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // stay legible instead of dispersing into each other. A soft wall -- it
     // pushes back in both motion channels rather than hard-clamping, so a
     // particle can still lean on the fence and be shaped by it.
-    // Slider is 0=off .. 1=tightest; the radius mapping is here, not in the UI.
+    //
+    // ON/OFF ONLY -- the radius is DERIVED, not dialled. It is half of the
+    // smaller side of an IC_GRID cell, which is exactly the radius at which
+    // neighbouring cohorts' fences just barely touch: cells are 2*extent/cells
+    // apart centre to centre, so half of that is the largest circle that does
+    // not overlap the next one. The tightness therefore tracks the cohort count
+    // on its own -- more cohorts means smaller cells means smaller fences, and
+    // they stay touching the whole way. A user-facing radius could only get
+    // this wrong (overlapping blobs, or gaps the layout did not intend), which
+    // is why the slider became a checkbox.
+    //
+    // GRID ONLY. The derivation needs a known distance to the next cohort, and
+    // only IC_GRID has one: IC_RANDOM scatters cohort centres by hash, IC_CENTER
+    // stacks every cohort on the same point (spacing zero), and IC_RING spaces
+    // them along a circle rather than in cells. Rather than invent a radius for
+    // those, the feature switches off -- and the UI greys the checkbox out in
+    // those modes so the reason is visible rather than mysterious.
     let fences = cfg_cohort_fences(config);
-    if (fences > 0.0) {
-        let radius = mix(0.5, 0.02, fences);
+    if (fences && cfg_initial_conditions(config) == IC_GRID) {
+        let extent = world_half_extent_from_res(canvas_resolution);
+        let cells = grid_cells(max(1, cfg_cohorts(config)), extent);
+        let cell_size = 2.0 * extent / cells;
+        let radius = 0.5 * min(cell_size.x, cell_size.y);
         let to_home = initial_position(index, config) - pos;
         let excess = length(to_home) - radius;
         if (excess > 0.0) {

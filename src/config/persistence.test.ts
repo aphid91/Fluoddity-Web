@@ -121,7 +121,7 @@ test('a config round-trips through toDocument and back', () => {
       gravityForce: 0.3,
       gravityStrafe: -0.2,
       initialConditions: IC.RING,
-      cohortFences: 0.113,
+      cohortFences: true,
       colorSensitivity: 0.75,
       colorByCohort: true,
       sensorAngleJitter: 0.05,
@@ -235,7 +235,37 @@ test('an absent force2 block defaults to no gravity and IC_CENTER', () => {
   assert.equal(parsed.gravityForce, 0.0);
   assert.equal(parsed.gravityStrafe, 0.0);
   assert.equal(parsed.initialConditions, IC.CENTER);
-  assert.equal(parsed.cohortFences, 0.0);
+  assert.equal(parsed.cohortFences, false);
+});
+
+// Cohort Fences was a 0..1 STRENGTH before it became a flag, so every config on
+// disk holds a float in that key. Reading them is not a legacy nicety -- it is
+// every saved config in the repo, including `validDocument`'s own 0.11 above.
+test('a legacy float cohort_fences reads as on when it was above zero', () => {
+  const doc = validDocument();
+  const force2 = (doc['configs'] as Record<string, unknown>[])[0]!['force2'] as Record<
+    string,
+    unknown
+  >;
+
+  assert.equal(fromDocument(doc).configs[0]!.cohortFences, true, '0.11 was fences on');
+
+  force2['cohort_fences'] = 0.0;
+  assert.equal(fromDocument(doc).configs[0]!.cohortFences, false, '0.0 was fences off');
+
+  // And the shape this app writes today survives its own reader.
+  force2['cohort_fences'] = true;
+  assert.equal(fromDocument(doc).configs[0]!.cohortFences, true);
+});
+
+test('a cohort_fences that is neither a number nor a boolean is rejected', () => {
+  const doc = validDocument();
+  const force2 = (doc['configs'] as Record<string, unknown>[])[0]!['force2'] as Record<
+    string,
+    unknown
+  >;
+  force2['cohort_fences'] = 'yes';
+  assert.throws(() => fromDocument(doc), ConfigFormatError);
 });
 
 test('an absent misc2 block defaults colour sensitivity to the slider middle', () => {
@@ -406,9 +436,15 @@ test('parses the real shipped presets to the values the reference reader produce
 
     for (const [key, value] of Object.entries(expected.config)) {
       if (key === 'rule') continue; // compared below, as an array
+      // Cohort Fences was a STRENGTH when the reference read these files and is
+      // a FLAG now, so the fixture's number is compared against this reader's
+      // boolean by the same `> 0` rule that loads the files themselves. The
+      // fixture is not rewritten: it records what the reference produced, and
+      // that is still exactly what it produced.
+      const expectedValue = key === 'cohortFences' ? (value as number) > 0 : value;
       assert.equal(
         (config as unknown as Record<string, number | boolean>)[key],
-        value,
+        expectedValue,
         `${name}.${key}`,
       );
     }

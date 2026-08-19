@@ -173,12 +173,13 @@ test('the handle sits at zero when an inverted setting is at its gate base', () 
 
 const GATED_SETTINGS = SETTINGS.filter((s) => isGated(s));
 
-test('there are exactly six gated controls', () => {
-  assert.equal(GATED_SETTINGS.length, 6);
+// Cohort Fences was the sixth. It is a plain BOOL now: its radius is derived
+// from the cohort count rather than dialled, so there is no slider left to gate.
+test('there are exactly five gated controls', () => {
+  assert.equal(GATED_SETTINGS.length, 5);
   assert.deepEqual(
     GATED_SETTINGS.map((s) => s.field).sort(),
     [
-      'cohortFences',
       'hazardRate',
       'motionBlurSamples',
       'sensorAngleJitter',

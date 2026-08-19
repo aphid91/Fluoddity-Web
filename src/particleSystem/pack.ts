@@ -108,11 +108,11 @@ export function writeConfigRecord(
   i32[base + LANE.misc + 2] = config.cohorts; // read by cfg_cohorts()
   f32[base + LANE.misc + 3] = config.mutationSeed;
 
-  // force2: gravity_force, gravity_strafe, initial_conditions(i), cohort_fences
+  // force2: gravity_force, gravity_strafe, initial_conditions(i), cohort_fences(i)
   f32[base + LANE.force2 + 0] = config.gravityForce;
   f32[base + LANE.force2 + 1] = config.gravityStrafe;
   i32[base + LANE.force2 + 2] = config.initialConditions; // cfg_initial_conditions()
-  f32[base + LANE.force2 + 3] = config.cohortFences;
+  i32[base + LANE.force2 + 3] = config.cohortFences ? 1 : 0; // cfg_cohort_fences()
 
   // misc2: color_sensitivity, color_by_cohort(i), sensor jitters
   f32[base + LANE.misc2 + 0] = config.colorSensitivity;

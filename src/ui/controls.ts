@@ -295,10 +295,29 @@ function addDirect(
     setting,
     blades: [blade],
     refresh: (s) => {
-      const authoritative = currentValues(s, setting.source)[setting.field];
+      const values = currentValues(s, setting.source);
+      const authoritative = values[setting.field];
       if (authoritative !== undefined) proxy.value = authoritative;
+      // A live precondition, re-read every frame -- the same shape as the
+      // Randomize button's dependence on Mutation Scale. Only Cohort Fences
+      // declares one today; `requires: null` leaves the blade alone, so this
+      // costs the other entries nothing.
+      if (setting.requires !== null) blade.disabled = !meetsRequirement(setting, values);
     },
   };
+}
+
+/** Whether a `requires` precondition currently holds. @see `Setting.requires` */
+export function meetsRequirement(
+  setting: Setting,
+  values: Readonly<Record<string, number | boolean>>,
+): boolean {
+  if (setting.requires === null) return true;
+  const [field, expected] = setting.requires;
+  // Compared through `asNumber` so a boolean precondition and a 0/1 payload
+  // agree: the settings payload carries CHOICE values as numbers and BOOL
+  // values as booleans, and `requires` may name either kind of field.
+  return asNumber(values[field]) === asNumber(expected);
 }
 
 /**

@@ -66,7 +66,7 @@ export const LANE = {
   sensor: 80, //  x: gain          y: angle          z: distance    w: mutation_scale
   force: 84, //   x: global_mult   y: drag           z: strafe      w: axial
   misc: 88, //    x: lateral       y: hazard_rate    z: cohorts(i)  w: mutation_seed
-  force2: 92, //  x: gravity_force y: gravity_strafe z: initial_conditions(i) w: cohort_fences
+  force2: 92, //  x: gravity_force y: gravity_strafe z: initial_conditions(i) w: cohort_fences(i)
   misc2: 96, //   x: color_sensitivity   y: color_by_cohort(i)
   //              z: sensor_angle_jitter w: sensor_distance_jitter
   misc3: 100, //  x: radial_gravity(i)   yzw: reserved
@@ -127,8 +127,16 @@ export interface SimulationConfig {
   readonly gravityStrafe: number;
   /** How particles are arranged on reset. Indexes the IC_* modes. */
   readonly initialConditions: InitialConditions;
-  /** How tightly each particle is held near its own spawn point. 0 is off. */
-  readonly cohortFences: number;
+  /**
+   * Whether each particle is held near its own spawn point, so cohorts stay
+   * distinct instead of mixing.
+   *
+   * ON/OFF ONLY -- there is no radius here to store. The shader derives it from
+   * the grid cell size, which is the radius at which neighbouring cohorts just
+   * barely touch at any cohort count. Only applies under IC_GRID; see the fence
+   * block in `entityUpdate.wgsl`.
+   */
+  readonly cohortFences: boolean;
   /**
    * How strongly the particle's colour signal swings its hue, in PARTICLES
    * view. A RENDERING setting that happens to be per-config: it never touches
@@ -203,7 +211,7 @@ export const SIMULATION_CONFIG_DEFAULTS = {
   gravityForce: 0.0,
   gravityStrafe: 0.0,
   initialConditions: IC.CENTER,
-  cohortFences: 0.0,
+  cohortFences: false,
   colorSensitivity: 0.5,
   colorByCohort: false,
   sensorAngleJitter: 0.0,

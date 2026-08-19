@@ -160,7 +160,7 @@ struct ConfigData {
     // The first four vec4s filled up (misc.w went to mutation_seed), so this is
     // the "add a whole new vec4" case rule 2 describes rather than a reclaimed
     // lane. Two spares here for the next additions.
-    force2: vec4f,   // x: gravity_force y: gravity_strafe z: initial_conditions(i) w: cohort_fences
+    force2: vec4f,   // x: gravity_force y: gravity_strafe z: initial_conditions(i) w: cohort_fences(i)
     // force2 filled up the same way misc did, so this is another whole new
     // vec4 rather than a reclaimed lane. This one's zw were the last two spares
     // in the struct, and the sensor jitters claimed them -- rule 2's "claim a
@@ -207,9 +207,11 @@ fn cfg_gravity_strafe(c: ConfigData) -> f32 { return c.force2.y; }
 
 // How this population is arranged on reset -- one of the IC_* modes above.
 fn cfg_initial_conditions(c: ConfigData) -> i32 { return bitcast<i32>(c.force2.z); }
-// How tightly each particle is held near its own spawn point. 0 is off, 1 is
-// tightest -- see the fence block in entity_update for the mapping.
-fn cfg_cohort_fences(c: ConfigData) -> f32 { return c.force2.w; }
+// Whether each particle is held near its own spawn point. ON/OFF ONLY: the
+// fence RADIUS is derived from the grid cell size rather than stored, so
+// cohorts just barely touch at any cohort count -- see the fence block in
+// entity_update, which also explains why it applies to IC_GRID alone.
+fn cfg_cohort_fences(c: ConfigData) -> bool { return bitcast<i32>(c.force2.w) != 0; }
 
 // How strongly the brain's colour signal swings the hue. Read by the PARTICLE
 // CAMERA, not by the physics -- entity_update only decides what raw signal to

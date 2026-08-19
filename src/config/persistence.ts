@@ -119,6 +119,34 @@ function boolOr(raw: Record<string, unknown>, key: string, fallback: boolean, wh
 }
 
 /**
+ * Read `cohort_fences`, which was a STRENGTH and is now a FLAG.
+ *
+ * **Every config on disk predates the change and holds a float**, so this
+ * accepts both forms rather than either alone:
+ *
+ *   missing   -> false. Same as `numOr`'s 0.0 did: those files had no fences.
+ *   number    -> `> 0`. The old slider was 0=off, anything above it on -- so a
+ *                file that had fences at 0.7071 keeps having fences, and one
+ *                sitting at 0 keeps not having them. The exact strength is
+ *                dropped because there is no longer anywhere to put it: the
+ *                radius is derived from the cohort count now.
+ *   boolean   -> itself. What this writes today.
+ *
+ * A `boolOr` here would have thrown `"cohort_fences" is not a boolean` on every
+ * saved config in the repo, which is the loud-but-wrong failure: nothing about
+ * those files is malformed, the field simply changed shape underneath them.
+ */
+function fencesOr(raw: Record<string, unknown>, key: string, where: string): boolean {
+  const value = raw[key];
+  if (value === undefined) return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value > 0;
+  throw new ConfigFormatError(
+    `${where}: "${key}" is not a boolean or a number (${String(value)})`,
+  );
+}
+
+/**
  * Narrow a saved number to a `BoundaryCondition`.
  *
  * Validated rather than cast: per invariant 9 a wrong boundary mode looks like a
@@ -198,7 +226,7 @@ function configFromDocument(raw: Record<string, unknown>, where: string): Simula
         numOr(force2, 'initial_conditions', IC.CENTER, where),
         where,
       ),
-      cohortFences: numOr(force2, 'cohort_fences', 0.0, where),
+      cohortFences: fencesOr(force2, 'cohort_fences', where),
       // Also additive. A file with neither block predates particle colouring
       // entirely, and 0.5 is the middle of the slider -- the same default the
       // reference shipped, so those configs look like it intended.
@@ -305,6 +333,12 @@ function configToDocument(config: SimulationConfig): unknown {
       gravity_force: config.gravityForce,
       gravity_strafe: config.gravityStrafe,
       initial_conditions: config.initialConditions,
+      // Written as a BOOLEAN, where every file before this held a float. Safe
+      // at version 8 for the same reason the dropped `camera` block was: the
+      // reader tolerates both shapes (see `fencesOr`), so old files load here
+      // and files written here are only ever read by this reader. A version
+      // bump would reject every existing preset to record a change that costs
+      // those presets nothing.
       cohort_fences: config.cohortFences,
     },
     misc2: {
