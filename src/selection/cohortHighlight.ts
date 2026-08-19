@@ -169,10 +169,18 @@ export class CohortHighlight {
    * Put the highlight out.
    *
    * Called when the premise changes rather than when a click decides something:
-   * leaving the Select tool, a rebuild that renumbers the cohorts, and every
-   * path that changes the rule from somewhere other than a commit -- the
-   * rerolls, and undo or redo of any behaviour change. After any of those the
-   * lit cohort names a behaviour that is no longer running.
+   * leaving the Select tool, a rebuild that renumbers the cohorts, A CHANGE TO
+   * THE COHORT COUNT, and every path that changes the rule from somewhere other
+   * than a commit -- the rerolls, and undo or redo of any behaviour change.
+   * After any of those the lit cohort names a behaviour that is no longer
+   * running.
+   *
+   * The cohort-count case is worth naming separately because the index does not
+   * merely go stale, it can go out of range: dropping from 8 cohorts to 4 leaves
+   * a lit cohort 6 that names nothing at all. `Orchestrator.setProject` is where
+   * that comparison lives, so every route into it -- the mutation bar's grid
+   * buttons, the panel's Cohorts control, a preset load, an undo -- is covered
+   * by one check rather than by each handler remembering.
    */
   clear(): void {
     this.highlighted = NO_COHORT;

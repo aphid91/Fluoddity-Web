@@ -1321,8 +1321,35 @@ export class Orchestrator implements CommandBus {
    * `recordHistory`.
    */
   private setProject(project: Project): void {
+    // **A CHANGED COHORT COUNT PUTS THE HIGHLIGHT OUT.** Read BEFORE the
+    // assignment, since the comparison is across the change.
+    //
+    // A lit cohort is an index into a population that no longer exists. Going
+    // from 8 cohorts to 4, cohort 6 names nothing at all; going from 4 to 8, the
+    // particles that were cohort 2 are redistributed and the lit index now
+    // covers a different set. Either way the highlight stops naming what the
+    // user aimed at, and the confirming click would commit a rule from a
+    // population that has been rebuilt underneath it.
+    //
+    // HERE RATHER THAN AT THE COMMAND HANDLERS, because there are several and
+    // they kept diverging: the mutation bar's cohort/grid buttons go through
+    // `setPopulationLayout`, the panel's Cohorts control through `editSetting`,
+    // and a preset load or an undo through `applyProject` -- all of which
+    // change the count and none of which cleared the highlight. This is the one
+    // place project state changes, which is the same reason `setWrap` is called
+    // from here: a single choke point is what stops a new caller reintroducing
+    // the bug by forgetting.
+    //
+    // COMPARES THE COUNT, not the config identity. Every slider drag calls this
+    // method, and clearing on any project change at all would put the highlight
+    // out whenever the user nudged an unrelated value -- which is the opposite
+    // failure and just as confusing.
+    const cohortsBefore = selectedConfig(this.project).cohorts;
+
     this.project = project;
     this.system.applyProject(project.configs, project.world);
+
+    if (selectedConfig(project).cohorts !== cohortsBefore) this.clearHighlight();
     // The field samples the world the same way the canvas does, so its wrap mode
     // follows the boundary condition -- and it belongs in THIS method because
     // this being the single place project state changes is exactly what stops a
