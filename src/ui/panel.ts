@@ -111,6 +111,7 @@ import type { RecordingSectionOptions } from './sections/recordingSection.ts';
 // built for every session. `main.ts` supplies the constructed object through
 // `PanelOptions.recording`, so nothing here ever imports the value side.
 import type { RecordingResult, VideoRecorder } from '../recorder/recorder.ts';
+import type { SaveChoice } from '../recorder/saveFile.ts';
 import type { RecordingSettings, Resolution } from '../recorder/recordingSettings.ts';
 
 export interface PanelOptions {
@@ -189,9 +190,7 @@ export interface PanelOptions {
      * `import()` spends it on the first export. `main.ts` supplies this from a
      * module it has already loaded. See `startExport`.
      */
-    readonly chooseFile: (
-      suggestedName: string,
-    ) => Promise<FileSystemWritableFileStream | null>;
+    readonly chooseFile: (suggestedName: string) => Promise<SaveChoice>;
     /** The window in device pixels: the recording sliders' ceiling. */
     readonly windowSize: () => readonly [number, number];
     /** Show the crop box for a size being chosen, or null to hide it. */
@@ -1155,9 +1154,24 @@ export class Panel {
       // -- no API (Firefox, Safari), or the user dismissed the picker -- falls
       // back to buffering in memory, which is fine for an ordinary short export.
       const safe = sanitizeName(this.bus.status().projectName) || 'fluoddity';
-      const file = await this.recording.chooseFile(`${safe}.mp4`);
+      const choice = await this.recording.chooseFile(`${safe}.mp4`);
 
-      this.recorder = await this.recording.start(settings, file);
+      // CANCEL MEANS CANCEL. Dismissing the file picker is the user changing
+      // their mind about exporting, not a request to export somewhere else --
+      // and starting a recording anyway is especially bad here, because the
+      // export unpauses the simulation and runs it at the recording's physics
+      // rate. Backing out of a dialog should not restart your simulation.
+      //
+      // Silent: the user just closed a dialog, which is its own feedback. A
+      // toast explaining that nothing happened is noise.
+      if (choice.kind === 'cancelled') return;
+
+      this.recorder = await this.recording.start(
+        settings,
+        // `unavailable` means no picker on this browser, which is a fallback to
+        // buffering rather than a refusal -- see `SaveChoice`.
+        choice.kind === 'file' ? choice.writable : null,
+      );
 
       // **UNPAUSE, IF PAUSED.** A recording started against a paused simulation
       // would encode nothing at all -- the driver skips paused frames, so the

@@ -318,8 +318,10 @@ export class VideoRecorder {
 
     try {
       if (output === null || this.framesDone === 0) {
-        // Nothing to finalize. The file, if one was opened, is closed and left
-        // empty rather than abandoned with a lock on it.
+        // Nothing to finalize, so nothing ever locked the stream -- this is the
+        // one path where closing it here is both safe and necessary. An
+        // un-closed handle leaves a zero-byte file the user cannot overwrite
+        // from the picker until the tab goes away.
         await writable?.close().catch(() => {});
         return { kind: 'empty' };
       }
@@ -327,10 +329,19 @@ export class VideoRecorder {
       await output.finalize();
 
       if (writable !== null) {
-        // `finalize()` has written every byte through the stream; closing is
-        // what commits the file to disk. Nothing to return -- it is already
-        // where the user asked for it.
-        await writable.close();
+        // **DO NOT CLOSE THE STREAM HERE.** `finalize()` has already done it.
+        //
+        // `StreamTarget` takes a `getWriter()` on the writable when it starts,
+        // which LOCKS the stream, and closes the file through that writer as
+        // part of finalizing (`target.js`'s `_close`). Calling `writable.close()`
+        // on top of that throws `Cannot close a locked stream`.
+        //
+        // The failure was maximally confusing: the export had completely
+        // succeeded -- every byte written, the file valid and playable -- and
+        // the user still got an error toast, because the throw happened after
+        // all the real work and was caught by the caller's error path. A
+        // correct export that reports itself as broken is worse than either a
+        // clean success or an honest failure.
         return { kind: 'streamed' };
       }
 
@@ -361,9 +372,16 @@ export class VideoRecorder {
     this.source?.close();
     this.source = null;
     this.output = null;
-    // Released, not finalized: this path produces no file. Leaving it open would
-    // hold a lock on a partial file the user cannot overwrite from the picker.
-    void this.fileWritable?.close().catch(() => {});
+    // ABORTED, not closed. This path abandons the export without finalizing, so
+    // `StreamTarget`'s writer still holds the lock and `close()` would throw
+    // `Cannot close a locked stream` -- see `finish()`. `abort()` is the
+    // operation for "give up on this stream", it works on a locked one, and it
+    // discards the partial file rather than committing a truncated MP4 that
+    // would look like a real export until someone tried to play it.
+    //
+    // Still `.catch`-guarded: the stream may already be errored or gone, and
+    // this runs on the device-lost path where nothing is left to report to.
+    void this.fileWritable?.abort().catch(() => {});
     this.fileWritable = null;
     this.releaseTarget();
   }

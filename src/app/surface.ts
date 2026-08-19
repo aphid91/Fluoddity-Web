@@ -43,6 +43,28 @@ export interface Surface {
   readonly format: GPUTextureFormat;
   /** Current framebuffer size in device pixels. Never returns a zero component. */
   size(): WindowSize;
+  /**
+   * Constrain the canvas to `aspect` (width/height), or null to fill the
+   * viewport again.
+   *
+   * **FOR RECORDING, AND CSS-ONLY.** While an export runs, the video holds a
+   * crop of the window with its own aspect; the canvas meanwhile still fills the
+   * viewport, so the preview shows the world composed for the WINDOW's shape
+   * while the file holds something differently shaped. The picture on screen
+   * looks stretched relative to what is being written, which makes it impossible
+   * to judge a recording as it happens.
+   *
+   * Shrinking the ELEMENT to the recording's aspect fixes that at the source:
+   * the crop then fills the canvas exactly, and what you see is what you get.
+   *
+   * Nothing about the render path changes. This sets `style.width/height`, the
+   * `ResizeObserver` below sees the new element size, and the backing store
+   * follows exactly as it does for a browser resize -- which the whole pipeline
+   * already handles every frame. The three aspect quantities in this file's
+   * header keep their meanings; only `window_size` moves, and moving is what it
+   * does.
+   */
+  setAspectLock(aspect: number | null): void;
   dispose(): void;
 }
 
@@ -119,6 +141,37 @@ export function createSurface(canvas: HTMLCanvasElement, device: GPUDevice): Sur
     context,
     format,
     size: () => size,
+    setAspectLock: (aspect) => {
+      if (aspect === null || !Number.isFinite(aspect) || aspect <= 0) {
+        // Back to the stylesheet's `width:100%; height:100%`. Clearing the
+        // inline properties rather than reasserting those values keeps
+        // `index.html` the single place the default geometry is stated.
+        canvas.style.removeProperty('width');
+        canvas.style.removeProperty('height');
+        canvas.style.removeProperty('margin');
+        return;
+      }
+
+      // Fit the largest box of this aspect inside the viewport, and centre it.
+      // Measured from the PARENT rather than from `canvas.getBoundingClientRect`,
+      // which is the box being changed -- reading it here would compound the
+      // previous lock into the next one and walk the canvas smaller on every
+      // call.
+      const parent = canvas.parentElement;
+      const availW = parent?.clientWidth ?? window.innerWidth;
+      const availH = parent?.clientHeight ?? window.innerHeight;
+
+      const byWidth = availW / aspect <= availH;
+      const w = byWidth ? availW : availH * aspect;
+      const h = byWidth ? availW / aspect : availH;
+
+      canvas.style.width = `${Math.floor(w)}px`;
+      canvas.style.height = `${Math.floor(h)}px`;
+      // Centres in both axes. The canvas is a block in a full-height body, so
+      // `auto` horizontal margins centre it across and the vertical remainder is
+      // split explicitly -- `auto` does not centre vertically in flow layout.
+      canvas.style.margin = `${Math.max(0, Math.floor((availH - h) / 2))}px auto`;
+    },
     dispose: () => observer.disconnect(),
   };
 }

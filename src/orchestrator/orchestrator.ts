@@ -789,7 +789,25 @@ export class Orchestrator implements CommandBus {
       // The sub-rect, in uv. Centred, so the offset is half the leftover on each
       // side -- the uv form of `cropRect`'s pixel centring, and derived from the
       // same two sizes so the two cannot disagree about where the box is.
-      const scale: readonly [number, number] = [cw / ww, ch / wh];
+      //
+      // **CLAMPED TO 1, which is not defensive padding -- it is reachable.**
+      // `setRecorder` locks the canvas to the recording's aspect, which SHRINKS
+      // the window; the recording size is fixed when the recorder is built and
+      // does not shrink with it. So `cw` can exceed `ww` for the frames between
+      // the lock being applied and the `ResizeObserver` reporting the new
+      // backing store, and again whenever the user makes the browser smaller
+      // mid-export.
+      //
+      // Unclamped, a scale above 1 samples OUTSIDE the source. The sampler is
+      // clamp-to-edge (`renderTargets.ts`), so that does not read garbage -- it
+      // smears the edge row of pixels into a border, which looks like a
+      // legitimate vignette and would be very easy to mistake for a rendering
+      // choice rather than a bug. Capping at 1 records the whole frame instead,
+      // which is the honest answer when the crop no longer fits.
+      const scale: readonly [number, number] = [
+        Math.min(1, cw / ww),
+        Math.min(1, ch / wh),
+      ];
       this.assembler.present(
         encoder,
         this.camera.result(),
@@ -833,6 +851,29 @@ export class Orchestrator implements CommandBus {
    */
   setRecorder(recorder: VideoRecorder | null): void {
     this.recorder = recorder;
+
+    // **SHAPE THE CANVAS TO THE RECORDING, so the preview is not a lie.**
+    //
+    // Without this the canvas keeps filling the viewport while the video holds a
+    // differently-shaped crop of it, so the picture on screen is composed for
+    // the window's aspect and the file for the crop's. The export is correct
+    // either way -- this is purely what the user sees while it runs -- but a
+    // preview that does not match the output makes a recording impossible to
+    // judge as it happens, which is when judging it is useful.
+    //
+    // Locking the canvas to the recording's aspect makes the crop fill it
+    // exactly. Released on detach, which every path goes through: normal
+    // completion, cancel, and the failure paths in `Panel.finishExport`.
+    //
+    // The RESOLUTION is not forced, only the ASPECT: the backing store stays at
+    // whatever device pixels the element gets, so a 720p export on a large
+    // display still previews at full sharpness rather than being pixel-doubled.
+    if (recorder === null) {
+      this.surface.setAspectLock(null);
+      return;
+    }
+    const { width, height } = recorder.settings.resolution;
+    this.surface.setAspectLock(width / height);
   }
 
   /** The attached recorder, for the driver loop and the UI's progress readout. */

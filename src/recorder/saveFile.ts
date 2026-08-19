@@ -22,40 +22,56 @@
  */
 
 /**
- * Ask the user where to save, returning an open file or null to buffer instead.
+ * What asking for a save location produced.
+ *
+ * THREE OUTCOMES, and conflating two of them is a bug this type exists to
+ * prevent. An earlier version returned `FileSystemWritableFileStream | null`,
+ * where null meant BOTH "this browser has no picker" and "the user pressed
+ * Cancel" -- so dismissing the picker fell through to the buffered path and
+ * started a recording the user had just declined. Cancel must mean cancel.
+ *
+ *   file        A file is open and the export should stream into it.
+ *   unavailable No picker here (Firefox, Safari, any non-secure context).
+ *               Fall back to buffering in memory -- the export SHOULD proceed.
+ *   cancelled   The user dismissed the picker. Do not record.
+ */
+export type SaveChoice =
+  | { readonly kind: 'file'; readonly writable: FileSystemWritableFileStream }
+  | { readonly kind: 'unavailable' }
+  | { readonly kind: 'cancelled' };
+
+/**
+ * Ask the user where to save.
  *
  * **CALL THIS BEFORE ANY OTHER AWAIT IN THE CLICK HANDLER.** See the file
  * header for what happens otherwise.
- *
- * Returns null in three cases that all mean the same thing downstream -- fall
- * back to buffering in memory:
- *
- *   - the API is absent (Firefox, Safari, and any non-secure context);
- *   - the user dismissed the picker;
- *   - the call threw for any other reason, which is treated as a decline rather
- *     than propagated. Failing to open a file is not a reason to refuse to
- *     record at all when there is a working fallback.
  */
 export async function chooseRecordingFile(
   suggestedName: string,
-): Promise<FileSystemWritableFileStream | null> {
+): Promise<SaveChoice> {
   const picker = (
     window as unknown as {
       showSaveFilePicker?: (options: unknown) => Promise<FileSystemFileHandle>;
     }
   ).showSaveFilePicker;
-  if (typeof picker !== 'function') return null;
+  if (typeof picker !== 'function') return { kind: 'unavailable' };
 
   try {
     const handle = await picker.call(window, {
       suggestedName,
       types: [{ description: 'MP4 video', accept: { 'video/mp4': ['.mp4'] } }],
     });
-    return await handle.createWritable();
-  } catch {
-    // AbortError when dismissed, SecurityError without a gesture. Both mean
-    // "no file", and the buffered path handles that perfectly well.
-    return null;
+    return { kind: 'file', writable: await handle.createWritable() };
+  } catch (err: unknown) {
+    // `AbortError` is the user dismissing the dialog, and it is the ONLY case
+    // that means "do not record". Anything else -- a SecurityError from a spent
+    // gesture, a failure to open the chosen file -- is a broken picker rather
+    // than a decision, and buffering in memory still gets the user their video.
+    //
+    // Named rather than matched on the message: `err.name` is specified, the
+    // message is not and differs across browsers.
+    const name = (err as { name?: string } | null)?.name;
+    return name === 'AbortError' ? { kind: 'cancelled' } : { kind: 'unavailable' };
   }
 }
 
