@@ -135,8 +135,10 @@ test('the uncollided desktop bindings are unchanged', () => {
     ['KeyR', 'reset'],
     ['KeyF', 'randomizeSeed'],
     ['KeyB', 'randomizeBehavior'],
-    ['ArrowRight', 'nextPreset'],
-    ['ArrowLeft', 'prevPreset'],
+    // ArrowLeft/ArrowRight ARE ABSENT DELIBERATELY. They carried
+    // `prevPreset`/`nextPreset` from the desktop and were reassigned to the
+    // cohort stepper -- see the test below, and `hotkeys.ts` for why. This list
+    // is "what did not move", so leaving them in it would be false.
     ['Home', 'resetCamera'],
   ];
   for (const [code, kind] of expected) {
@@ -145,6 +147,32 @@ test('the uncollided desktop bindings are unchanged', () => {
       kind,
       `${code} should still be ${kind}`,
     );
+  }
+});
+
+test('the arrows step the cohort highlight, and no longer load presets', () => {
+  // The reassignment, pinned in both directions. Loading a preset replaces every
+  // particle's behaviour, which is far too large an act for a stray arrow key --
+  // and beside a lit cohort, LEFT/RIGHT reads as "move along the cohorts".
+  //
+  // The keys are bound UNCONDITIONALLY and are made inert by the Orchestrator:
+  // `stepHighlightedCohort` refuses when nothing is lit, which is what keeps the
+  // "only while highlighted" rule in one place instead of two.
+  assert.deepEqual(matchHotkey(DEFAULT_HOTKEYS, 'ArrowRight', false)?.command, {
+    kind: 'stepHighlightedCohort',
+    delta: 1,
+  });
+  assert.deepEqual(matchHotkey(DEFAULT_HOTKEYS, 'ArrowLeft', false)?.command, {
+    kind: 'stepHighlightedCohort',
+    delta: -1,
+  });
+
+  // And nothing else picked the preset commands up: they are menu-only now, so a
+  // key that still sent one would be the reassignment half-done.
+  for (const key of ['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown']) {
+    const kind = matchHotkey(DEFAULT_HOTKEYS, key, false)?.command?.kind;
+    assert.notEqual(kind, 'nextPreset', `${key} still loads a preset`);
+    assert.notEqual(kind, 'prevPreset', `${key} still loads a preset`);
   }
 });
 

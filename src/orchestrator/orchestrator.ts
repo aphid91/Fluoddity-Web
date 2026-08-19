@@ -60,6 +60,12 @@ import {
   ZOOM_PER_SECOND,
 } from '../camera/cameraState.ts';
 import { blurSchedule, sampleAt } from '../camera/blurSchedule.ts';
+import {
+  type BehaviorEvent,
+  describeEvent,
+  describeHistoryStep,
+  historyLabelFor,
+} from './notices.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
 // TYPE-ONLY. `recorder.ts` reaches mediabunny through a dynamic `import()`, and
 // a value import here would pull the whole encoder into the main bundle for
@@ -333,6 +339,15 @@ export class Orchestrator implements CommandBus {
   private input: InputState = EMPTY_INPUT;
 
   /**
+   * A message waiting to be shown, or empty. Drained by `status()`.
+   *
+   * See `Status.notice` for why this crosses the boundary as data and why the
+   * read is destructive. Set through `notify()`, never assigned directly, so
+   * there is one place to look when asking what can raise a toast.
+   */
+  private pendingNotice = '';
+
+  /**
    * The in-flight video recorder, or null -- which is the overwhelmingly common
    * case and is why this is nullable rather than always-present.
    *
@@ -575,6 +590,11 @@ export class Orchestrator implements CommandBus {
     // would throw away the state the user is still deciding about.
     if (selected !== null && isHit(selected) && this.pickCommits) {
       this.resetForBehavior();
+      // ANNOUNCED HERE rather than from `describe`, because this is the branch
+      // that knows the click COMMITTED. `describe` runs for the label whenever
+      // `resolve()` records an entry, and an aiming click -- the first of the
+      // two-stage selection -- must not claim to have adopted anything.
+      this.notify(describeEvent({ kind: 'commitSelection', cohort: selected.cohort }));
     }
     // One pick, one verdict. Left true, the NEXT pick to land would be adopted
     // without ever being classified.
@@ -1300,7 +1320,23 @@ export class Orchestrator implements CommandBus {
       setSelected: (result) => {
         this.selected = result;
       },
-      describe: (result) => `select particle #${result.index}`,
+      /**
+       * BY COHORT, not by particle index.
+       *
+       * A commit adopts the picked particle's RULE, and every particle in its
+       * cohort obeys that rule -- so "cohort 7" names what actually changed
+       * where "particle #48213" names an individual the user cannot pick out
+       * again. The index was what this said before the toast existed, when the
+       * label only ever appeared in the undo menu; now that it is shown at the
+       * moment of the act, it has to describe the act.
+       *
+       * The toast for the SAME event is raised in `frame()` rather than here:
+       * this runs inside `resolve()`, which the host may call without a commit
+       * following, and announcing from a describe-callback would fire on
+       * aiming clicks too.
+       */
+      describe: (result) =>
+        historyLabelFor({ kind: 'commitSelection', cohort: result.cohort }),
     };
   }
 
@@ -1378,6 +1414,32 @@ export class Orchestrator implements CommandBus {
    * `project.ts`'s mutators return the receiver unchanged when nothing changes,
    * which is what keeps this meaningful.
    */
+  /**
+   * Queue a message for the toast. See `Status.notice`.
+   *
+   * The ONE writer of `pendingNotice`, so there is a single place to look when
+   * asking what can raise a toast. A later notice in the same frame REPLACES an
+   * earlier one rather than queueing behind it: two things worth announcing in
+   * one frame is a compound action (a preset load resets and re-seeds), and the
+   * last one to fire is the outermost -- which is the one the user asked for.
+   */
+  private notify(message: string): void {
+    this.pendingNotice = message;
+  }
+
+  /** Take the pending notice and clear it. The destructive half of `notify`. */
+  private takeNotice(): string {
+    const notice = this.pendingNotice;
+    this.pendingNotice = '';
+    return notice;
+  }
+
+  /** Announce a behaviour change AND record it, so the toast and undo agree. */
+  private notifyBehavior(before: Project, event: BehaviorEvent): void {
+    this.notify(describeEvent(event));
+    this.recordHistory(before, historyLabelFor(event));
+  }
+
   private recordHistory(before: Project, label: string, coalesceKey: string | null = null): void {
     if (before !== this.project) {
       this.history.record(before, this.project, label, coalesceKey);
@@ -1581,6 +1643,26 @@ export class Orchestrator implements CommandBus {
         return;
       }
 
+      case 'stepHighlightedCohort': {
+        // THE SAME TWO REFUSALS as the absolute form above, restated rather than
+        // shared because falling through would also re-run its wrap on a value
+        // this case has not computed yet. Refusing here is what makes the arrow
+        // keys inert with nothing lit -- the specified behaviour, and the reason
+        // `hotkeys.ts` needs no condition of its own.
+        if (!this.highlightEnabled || !this.highlight.isHighlighted) return;
+
+        // Resolved against the LIVE highlight, which is the authority a hotkey
+        // has no other way to read -- the stepper BUTTONS get it from their own
+        // input field, and a key has no field. Wrapping is the absolute form's
+        // and is reached by routing back through it, so -1 from cohort 0 lands
+        // on the last cohort exactly as the `‹` button does.
+        this.dispatch({
+          kind: 'setHighlightedCohort',
+          cohort: this.highlight.cohort + command.delta,
+        });
+        return;
+      }
+
       case 'setMouseMode':
         // Switching tools abandons any stroke in progress (Step 9), so
         // releasing the button over a different tool cannot resume painting.
@@ -1600,11 +1682,17 @@ export class Orchestrator implements CommandBus {
         // Captured BEFORE `setProject`, because that is what the rule is
         // compared against -- `this.project` is the new state immediately after.
         const before = this.project;
+        // BEFORE the cursor moves, and that is the whole subtlety of undo's
+        // label: the entry being TAKEN BACK is the one at the current cursor,
+        // and `undo()` steps off it. Reading afterwards would name the step
+        // before the one just undone.
+        const undone = this.history.undoLabel();
         const previous = this.history.undo();
         // Only when a step actually happened: undo at the end of the timeline
         // returns null and changes nothing, and restarting the simulation on a
         // keypress that did nothing would be the most confusing reset of all.
         if (previous !== null) {
+          this.notify(describeHistoryStep('undo', undone));
           this.setProject(previous);
           this.resetForUndoRedo();
           // Undoing a rule adoption or a reroll gives the particles a target
@@ -1621,8 +1709,14 @@ export class Orchestrator implements CommandBus {
       case 'redo': {
         this.history.breakCoalescing();
         const before = this.project;
+        // Also before the move, but for the opposite reason to undo's: the entry
+        // redo APPLIES is the one ahead of the cursor, and `redoLabel` reads
+        // `cursorIndex + 1` to name it. See its docstring for why the two are
+        // not mirror images.
+        const redone = this.history.redoLabel();
         const next = this.history.redo();
         if (next !== null) {
+          this.notify(describeHistoryStep('redo', redone));
           this.setProject(next);
           this.resetForUndoRedo();
           // Redo re-applies the rule change undo just took away, so it is a
@@ -1930,7 +2024,9 @@ export class Orchestrator implements CommandBus {
     // preview restarted, which is exactly the case that must NOT reset again.
     const previewed = this.previewOrigins.size > 0;
     this.setProject(loadSavedInto(this.project, entry.name, saved));
-    this.recordHistory(before, `load ${entry.name}`);
+    // Announced AND recorded together, so the toast shown now and the toast
+    // shown when this is undone describe one act. See `notifyBehavior`.
+    this.notifyBehavior(before, { kind: 'loadPreset', name: entry.name });
     // A commit ends EVERY browse, not just the one that produced it: the loaded
     // project is now the state, so no surface has anything left to restore to.
     // Leaving another surface's origin behind would let its close event undo the
@@ -1968,7 +2064,7 @@ export class Orchestrator implements CommandBus {
     this.setProject(loadSavedInto(this.project, name, saved));
     // Undoable, because this REPLACED live work. The startup path deliberately
     // does not record one -- see the `loadSharedConfig` command's comment.
-    this.recordHistory(before, `load ${name}`);
+    this.notifyBehavior(before, { kind: 'loadSharedLink' });
     this.previewOrigins.clear();
     this.presetName = name;
     this.configOrigin = null;
@@ -2144,7 +2240,7 @@ export class Orchestrator implements CommandBus {
     // Before the clear below, for the reason `adoptSaved` gives.
     const previewed = this.previewOrigins.size > 0;
     this.setProject(checkpoint.project);
-    this.recordHistory(before, `restore ${checkpoint.name}`);
+    this.notifyBehavior(before, { kind: 'loadCheckpoint', name: checkpoint.name });
     // Ends every browse, for the reason `adoptSaved` gives.
     this.previewOrigins.clear();
     // Clicking a hovered checkpoint locks in what is already running; the
@@ -2302,6 +2398,9 @@ export class Orchestrator implements CommandBus {
       highlightedCohort: this.highlightEnabled ? this.highlight.cohort : NO_COHORT,
       highlightEnabled: this.highlightEnabled,
       cohortCount: selectedConfig(this.project).cohorts,
+      // DRAINED, not read: this is an event on a snapshot, so leaving it set
+      // would re-fire the same toast every frame. See `Status.notice`.
+      notice: this.takeNotice(),
       selectionIsNoOp: selectionIsNoOp(this.project),
 
       canUndo: this.history.canUndo,

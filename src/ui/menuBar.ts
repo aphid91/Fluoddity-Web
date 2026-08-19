@@ -404,8 +404,13 @@ export class MenuBar {
         },
       );
       this.addSeparator(body);
-      this.addItem(body, 'Previous Preset', () => this.opts.send({ kind: 'prevPreset' }), '←');
-      this.addItem(body, 'Next Preset', () => this.opts.send({ kind: 'nextPreset' }), '→');
+      // NO KEY SHOWN. The arrows used to send these and now step the cohort
+      // highlight instead (`hotkeys.ts`), so advertising `←`/`→` here would
+      // promise a shortcut that does something else entirely -- which is worse
+      // than no shortcut at all, because the user would try it and be surprised
+      // by whatever it did do. Cycling presets is menu-only now.
+      this.addItem(body, 'Previous Preset', () => this.opts.send({ kind: 'prevPreset' }));
+      this.addItem(body, 'Next Preset', () => this.opts.send({ kind: 'nextPreset' }));
     });
 
     // Last, where a Help menu goes. The title is NOT compared anywhere in

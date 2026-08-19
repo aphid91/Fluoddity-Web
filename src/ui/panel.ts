@@ -710,6 +710,16 @@ export class Panel {
     // dialog outlives a hide entirely. Starving either of status would freeze a
     // menu's checkmarks and strand a save dialog waiting for an outcome it
     // could no longer see.
+    // FIRST, and above the hidden check with the menu bar and the overlay. A
+    // notice describes something that just happened to the user's work -- an
+    // undo, a preset load -- and those are all reachable while the panels are
+    // hidden, which is the app's default state. Below the early return the
+    // toast would fire for some routes and silently not for others.
+    //
+    // `Status.notice` is drained by `status()`, so this reads it exactly once;
+    // an empty string is the common case and shows nothing.
+    if (status.notice !== '') this.toast.show(status.notice);
+
     this.menuBar.refresh(status);
     this.dialogs.refresh(status);
     // ALSO before the hidden check, and for the same reason as the menu bar:

@@ -678,6 +678,18 @@ export class MutationOverlay {
       button.style.color = onGrid && count === cohorts ? ACTIVE_GOLD : IDLE_WHITE;
     }
 
+    // GREYED OFF GRID, because the setting genuinely does nothing there: the
+    // fence radius is measured from a grid cell, and Random, Center and Ring
+    // have no cell to measure (`settingsSpec.ts` greys the panel checkbox on the
+    // same condition). A button that can be pressed and changes nothing is worse
+    // than one that says it cannot.
+    //
+    // `disabled` rather than a class, so the pointer, the keyboard and assistive
+    // tech all agree it is inert -- and so the click handler needs no guard of
+    // its own.
+    this.fences.disabled = !onGrid;
+    this.fences.style.opacity = onGrid ? '1' : '0.4';
+    this.fences.style.cursor = onGrid ? 'pointer' : 'default';
     this.fences.style.color = this.fencesOn ? ACTIVE_GOLD : IDLE_WHITE;
     // The ICON changes with the state too, not just its colour: solid when the
     // fences are holding, dashed when they are not. Rebuilt rather than

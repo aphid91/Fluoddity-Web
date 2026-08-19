@@ -118,9 +118,28 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   // share link's paste, and an omitted `shift` would claim both.
   { code: 'KeyV', shift: false, command: { kind: 'loadLatestCheckpoint' } },
 
-  // --- presets, unchanged --------------------------------------------------
-  { code: 'ArrowRight', command: { kind: 'nextPreset' } },
-  { code: 'ArrowLeft', command: { kind: 'prevPreset' } },
+  // --- the cohort stepper --------------------------------------------------
+  //
+  // **THE ARROWS NO LONGER CYCLE PRESETS.** They did, and it was the wrong home
+  // for them: LEFT/RIGHT next to a lit cohort reads as "move along the cohorts",
+  // and loading an entirely different preset is a far larger act than an arrow
+  // key should perform -- it replaces every particle's behaviour, and doing that
+  // by a stray keypress is how someone loses the state they were watching.
+  // Presets remain on the Simulation menu, which is where a deliberate act
+  // belongs.
+  //
+  // **NO CONDITION IS EXPRESSED HERE, and none is needed.** These fire always;
+  // `setHighlightedCohort` is documented to REFUSE when no cohort is lit (and
+  // when highlighting is off at all), so the keys are inert in exactly the state
+  // the specification calls for. Encoding "only when highlighted" in this table
+  // would be a second copy of that rule, and the two would drift.
+  //
+  // The `cohort` values are deltas ONLY because the Orchestrator wraps them:
+  // `wrapCohort` resolves them against the live count, so -1 from cohort 0 lands
+  // on the last cohort rather than off the end. Same command the `‹`/`›` buttons
+  // on the hint bar send, so the two routes cannot disagree.
+  { code: 'ArrowRight', command: { kind: 'stepHighlightedCohort', delta: 1 } },
+  { code: 'ArrowLeft', command: { kind: 'stepHighlightedCohort', delta: -1 } },
 
   // --- camera. `M` for mode; Tab stays with the DOM ------------------------
   { code: 'KeyM', command: { kind: 'toggleCameraMode' } },

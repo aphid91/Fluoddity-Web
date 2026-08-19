@@ -218,6 +218,20 @@ export type Command =
    * arrow cannot disagree about what 64 means with 64 cohorts.
    */
   | { readonly kind: 'setHighlightedCohort'; readonly cohort: number }
+  /**
+   * Move the highlight by `delta` cohorts, wrapping.
+   *
+   * The RELATIVE form of `setHighlightedCohort`, for the LEFT/RIGHT arrows. A
+   * key cannot send the absolute form the stepper buttons do: those read the
+   * current value out of their own input field, and a hotkey has no field to
+   * read. Resolving the delta against the live highlight in the Orchestrator is
+   * the only place that value is authoritative.
+   *
+   * Inherits the same two refusals as the absolute form -- nothing lit, or
+   * highlighting off -- which is what makes the arrows inert rather than
+   * surprising when no cohort is selected.
+   */
+  | { readonly kind: 'stepHighlightedCohort'; readonly delta: number }
   | { readonly kind: 'undo' }
   | { readonly kind: 'redo' }
   // --- presets: the LEFT/RIGHT cycle over the whole catalog ---
@@ -423,6 +437,33 @@ export interface Status {
    * exactly when the overlay is still on screen.
    */
   readonly cohortCount: number;
+
+  /**
+   * A one-shot message for the toast, or empty.
+   *
+   * ## Why this crosses the boundary as DATA rather than as a call
+   *
+   * The Orchestrator holds no DOM and reaches no Web API -- the rule
+   * `projectDocument` cites for keeping the clipboard out of it applies just as
+   * well to a toast, which is an element with a timer. So it states WHAT
+   * happened and the panel decides how to say it, exactly as every other field
+   * here works.
+   *
+   * ## Why it is CONSUMED, not merely read
+   *
+   * This is an EVENT, and `Status` is otherwise a snapshot of levels. A level
+   * would re-fire the same toast every frame for as long as it stayed set. The
+   * Orchestrator therefore clears it as `status()` builds -- one reader, one
+   * showing -- which is the same destructive-read shape `retrievePick` uses and
+   * for the same reason.
+   *
+   * **`status()` IS CALLED MORE THAN ONCE PER FRAME IN SOME PATHS.** The panel
+   * calls it, and so do menu items and dialogs through `bus.status()`. Draining
+   * on read means whoever calls first gets the notice -- which is fine, because
+   * they all funnel into the same `Panel.refresh`, but it is the reason this is
+   * documented as one-shot rather than as "the panel's to read".
+   */
+  readonly notice: string;
 
   /**
    * Whether adopting a picked rule would change nothing, so clicks decline it.

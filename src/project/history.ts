@@ -219,4 +219,19 @@ export class History {
     if (!this.canUndo) return '';
     return this.states[this.cursorIndex]?.label ?? '';
   }
+
+  /**
+   * What redo would re-apply. Empty when nothing would.
+   *
+   * **NOT the mirror of `undoLabel`, and the asymmetry is the point.** A label
+   * describes the act that PRODUCED its state. Undo takes back the act at the
+   * current cursor, so it reads `cursorIndex`; redo re-applies the act that
+   * produced the NEXT state, so it reads `cursorIndex + 1`. Using the same index
+   * for both would make redo announce the step it is moving away from -- and the
+   * two only differ by one, so it would look almost right.
+   */
+  redoLabel(): string {
+    if (!this.canRedo) return '';
+    return this.states[this.cursorIndex + 1]?.label ?? '';
+  }
 }
