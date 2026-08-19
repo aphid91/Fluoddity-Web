@@ -40,12 +40,16 @@ export const BLOOM_UPSAMPLE_UNIFORM_SIZE = 16;
  *                                         z tonemap_softness w field_opacity
  *   reticle    : vec4f  (16)  offset 48   xy center  z radius
  *   flags      : vec4f  (16)  offset 64   x reticle_dashed(i)
- *   reserved   : vec4f  (16)  offset 80
+ *   crop       : vec4f  (16)  offset 80   xy half-extent  z enable  w dim
+ *   capture    : vec4f  (16)  offset 96   xy uv scale  zw uv offset
  *
- * The trailing reserved lane is room for Step 9's field state and Step 10's
- * reticle state to land without churning the bind group layout.
+ * The lane at 80 was reserved for Step 9's field state and Step 10's reticle
+ * state; both landed in `tone` and `reticle` instead, and the recording crop box
+ * claimed it. `capture` is the one addition that grew the struct -- 96 -> 112 --
+ * which costs nothing but keeping this comment and the WGSL struct in step. Both
+ * are checked by `shaders.test.ts`.
  */
-export const FRAME_ASSEMBLY_UNIFORM_SIZE = 96;
+export const FRAME_ASSEMBLY_UNIFORM_SIZE = 112;
 
 /**
  * Pack one bloom downsample level.
@@ -100,6 +104,38 @@ export interface OverlayState {
   readonly reticleRadius: number;
   /** Dashed distinguishes SHOVE from DRAW; both share one brush and reticle. */
   readonly reticleDashed: boolean;
+  /**
+   * The recording crop box, or null for no box.
+   *
+   * **Null on the capture pass, ALWAYS.** This marks which pixels will be in the
+   * video; drawing it into that video would burn the annotation into the thing
+   * it annotates. Same rule as the reticle, and the Orchestrator enforces both
+   * at the same call site.
+   *
+   * Null also when the box covers the whole window, since a rule around the
+   * screen edge and a surround of zero pixels is chrome with nothing to say.
+   */
+  readonly crop: CropOverlay | null;
+  /**
+   * Which sub-rectangle of the source this pass reads, or null for all of it.
+   *
+   * The INVERSE of `crop`'s role, and the two are never both set: the screen
+   * pass draws the box and reads the whole source; the capture pass reads the
+   * box's interior and draws nothing. Null means the identity remap.
+   */
+  readonly capture: CaptureRemap | null;
+}
+
+/** The crop box, as the shader wants it: half-extent from the window's centre. */
+export interface CropOverlay {
+  /** Half the box's size as a fraction of the window, per axis. */
+  readonly halfExtent: readonly [number, number];
+}
+
+/** A uv remap: `uv * scale + offset`. See `frameAssembly.wgsl`'s `fs_main`. */
+export interface CaptureRemap {
+  readonly scale: readonly [number, number];
+  readonly offset: readonly [number, number];
 }
 
 /** No overlays -- what Step 5 passes until Steps 8 and 9 provide the state. */
@@ -108,6 +144,8 @@ export const NO_OVERLAYS: OverlayState = {
   reticleCenter: [0.0, 0.0],
   reticleRadius: 0.0,
   reticleDashed: false,
+  crop: null,
+  capture: null,
 };
 
 /**
@@ -157,5 +195,48 @@ export function packFrameAssemblyUniforms(
   // flags: x reticle_dashed(i), yzw reserved
   i32[16] = overlays.reticleDashed ? 1 : 0;
 
+  // crop: xy half-extent as a fraction of the window, z enable, w dim amount.
+  //
+  // HALF-EXTENT FROM THE CENTRE rather than an origin plus a size, because the
+  // box is always centred and the shader's test is then one symmetric compare
+  // against `abs(uv - 0.5)`. Passing an origin would make the shader re-derive
+  // the centring that `cropRect` already did, which is how the box and the
+  // pixels it claims to contain drift apart.
+  //
+  // The capture pass passes `crop: null` and so packs zero here -- the box is
+  // never drawn into the recording it describes. See `OverlayState.crop`.
+  if (overlays.crop !== null) {
+    f32[20] = overlays.crop.halfExtent[0];
+    f32[21] = overlays.crop.halfExtent[1];
+    f32[22] = 1.0;
+    f32[23] = CROP_SURROUND_DIM;
+  }
+
+  // capture: xy uv scale, zw uv offset.
+  //
+  // **THE IDENTITY IS WRITTEN EXPLICITLY, not left as the buffer's zeros.** A
+  // scale of zero collapses every fragment onto one texel, so the screen would
+  // show a single flat colour -- and this is the DEFAULT path, taken on every
+  // frame that is not a cropped capture. Forgetting it is not a subtle bug, but
+  // it is one that only appears once something else writes this lane.
+  const capture = overlays.capture ?? IDENTITY_CAPTURE;
+  f32[24] = capture.scale[0];
+  f32[25] = capture.scale[1];
+  f32[26] = capture.offset[0];
+  f32[27] = capture.offset[1];
+
   return buffer;
 }
+
+/** The whole source, unremapped: what the screen pass always uses. */
+const IDENTITY_CAPTURE: CaptureRemap = { scale: [1, 1], offset: [0, 0] };
+
+/**
+ * How far the area outside the crop box is dimmed.
+ *
+ * Not black. The surround still has to show what is happening just beyond the
+ * frame -- aiming a crop at something that is about to move into it is the
+ * common case, and a blacked-out border makes that impossible. Two thirds is
+ * enough that the boundary reads instantly without hiding the world.
+ */
+const CROP_SURROUND_DIM = 0.65;

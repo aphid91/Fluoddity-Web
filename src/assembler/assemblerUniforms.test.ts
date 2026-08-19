@@ -137,7 +137,7 @@ test('field opacity is zero unless the overlay was actually asked for', () => {
 
 test('the reticle rides its own lanes, dashed as an INT', () => {
   const overlays: OverlayState = {
-    showField: false,
+    ...NO_OVERLAYS,
     reticleCenter: [0.4, 0.6],
     reticleRadius: 0.031,
     reticleDashed: true,
@@ -148,6 +148,46 @@ test('the reticle rides its own lanes, dashed as an INT', () => {
   assert.equal(f32[13], Math.fround(0.6), 'reticle center y');
   assert.equal(f32[14], Math.fround(0.031), 'reticle radius');
   assert.equal(new Int32Array(buffer)[16], 1, 'reticle_dashed true');
+});
+
+test('the capture remap defaults to the IDENTITY, never to zero', () => {
+  // A scale of zero collapses every fragment onto one texel, so leaving this
+  // lane as the buffer's zeros would render the screen as a single flat colour
+  // -- on the DEFAULT path, taken every frame that is not a cropped capture.
+  const f32 = new Float32Array(
+    packFrameAssemblyUniforms(VIEW, prefs(), false, NO_OVERLAYS),
+  );
+  assert.equal(f32[24], 1.0, 'capture scale x must default to 1');
+  assert.equal(f32[25], 1.0, 'capture scale y must default to 1');
+  assert.equal(f32[26], 0.0, 'capture offset x');
+  assert.equal(f32[27], 0.0, 'capture offset y');
+});
+
+test('the crop box and the capture remap are never both set', () => {
+  // They are inverses: the SCREEN pass draws the box and reads the whole
+  // source; the CAPTURE pass reads the box's interior and draws nothing. A
+  // frame carrying both would burn the annotation into the video it annotates,
+  // which is the one thing the recording pass must never do.
+  const screen: OverlayState = {
+    ...NO_OVERLAYS,
+    crop: { halfExtent: [0.25, 0.25] },
+  };
+  const screenF32 = new Float32Array(
+    packFrameAssemblyUniforms(VIEW, prefs(), false, screen),
+  );
+  assert.equal(screenF32[22], 1.0, 'crop enabled on the screen pass');
+  assert.equal(screenF32[24], 1.0, 'screen pass reads the whole source');
+
+  const capture: OverlayState = {
+    ...NO_OVERLAYS,
+    capture: { scale: [0.5, 0.5], offset: [0.25, 0.25] },
+  };
+  const captureF32 = new Float32Array(
+    packFrameAssemblyUniforms(VIEW, prefs(), false, capture),
+  );
+  assert.equal(captureF32[22], 0.0, 'crop box must NOT be drawn into the video');
+  assert.equal(captureF32[24], Math.fround(0.5), 'capture scale x');
+  assert.equal(captureF32[26], Math.fround(0.25), 'capture offset x');
 });
 
 test('NO_OVERLAYS leaves every overlay switch at exactly zero', () => {

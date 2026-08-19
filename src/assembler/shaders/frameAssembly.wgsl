@@ -28,7 +28,12 @@ struct FrameAssemblyUniforms {
     tone       : vec4f,
     reticle    : vec4f,   // xy: center (canvas uv)   z: radius   w: reserved
     flags      : vec4f,   // x: reticle_dashed(i)   yzw: reserved
-    reserved   : vec4f,   // room for Step 9/10 overlay state
+    // xy: crop half-extent as a fraction of the window   z: enable
+    // w: how far the surround is dimmed, 0..1
+    crop       : vec4f,
+    // xy: uv scale   zw: uv offset. The identity (1,1,0,0) on the screen pass;
+    // the crop sub-rect on the recording pass. See `fs_main`'s first statement.
+    capture    : vec4f,
 }
 
 @group(0) @binding(0) var<uniform> u : FrameAssemblyUniforms;
@@ -63,6 +68,10 @@ const RETICLE_DASH_COUNT: f32 = 16.0;
 // ring still reads as a circle whose radius you can judge.
 const RETICLE_DASH_DUTY: f32 = 0.6625;
 
+// Crop box border width, in pixels. Converted via fwidth like the reticle's, so
+// the rule stays this thick on screen whatever the window size.
+const CROP_BORDER_PX: f32 = 1.0;
+
 // asinh is NOT a WGSL builtin. asinh(x) = log(x + sqrt(x*x + 1)).
 //
 // The argument here is `len * softness` -- a vector length and a preference the
@@ -76,7 +85,24 @@ fn asinh_f32(x: f32) -> f32 {
 
 @fragment
 fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
-    var color = textureSampleLevel(source, tex_sampler, in.uv, 0.0).rgb;
+    // THE CAPTURE REMAP, and it is the first thing that happens because
+    // EVERYTHING downstream must agree about which part of the image this
+    // fragment is.
+    //
+    // On the screen pass `capture_scale` is 1 and `capture_offset` is 0, so this
+    // is the identity and costs a multiply-add. On the RECORDING pass they
+    // describe the crop box, and this maps the recording's full-frame quad onto
+    // that sub-rectangle of the source -- which is what makes the exported
+    // pixels the interior of the box, 1:1 at native resolution, with no
+    // upscaling and no second render of the world.
+    //
+    // The remapped uv then feeds the source sample AND the overlay transform
+    // below, which is the point of doing it once here: a crop that moved the
+    // image without moving the field overlay would put the painted field in the
+    // wrong place in the exported video, and only in the exported video.
+    let uv = in.uv * u.capture.xy + u.capture.zw;
+
+    var color = textureSampleLevel(source, tex_sampler, uv, 0.0).rgb;
 
     // -- bloom, added in linear space where adding light is meaningful --
     // The intensity carries the on/off switch (assembler.py:102-109): at zero
@@ -93,7 +119,10 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
     // Y FLIP, for every consumer", and two shader tests assert the absence of a
     // flip there. Flipping it would mirror the camera to un-mirror the bloom.
     if (u.tone.x > 0.0) {
-        let bloom_uv = vec2f(in.uv.x, 1.0 - in.uv.y);
+        // The REMAPPED uv: the bloom mips are the same size and orientation as
+        // the source, so a crop must take the same sub-rect from both or the
+        // glow would slide against the image it belongs to.
+        let bloom_uv = vec2f(uv.x, 1.0 - uv.y);
         color += textureSampleLevel(bloom_tex, tex_sampler, bloom_uv, 0.0).rgb * u.tone.x;
     }
 
@@ -136,7 +165,11 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
     // makes this shader fail to compile.
     // ------------------------------------------------------------------
     if (u.tone.w > 0.0 || u.reticle.z > 0.0) {
-        let ndc = in.uv * 2.0 - 1.0;
+        // The REMAPPED uv, so the field lands on the same particles it does on
+        // screen. Using `in.uv` here would put the painted field in the wrong
+        // place in the exported video and nowhere else -- a bug visible only in
+        // the finished file, which is the worst place to find one.
+        let ndc = uv * 2.0 - 1.0;
         let canvas_uv = screen_ndc_to_canvas_uv(ndc, u.canvas_res.xy, u.canvas_res.zw,
                                                 u.camera.xy, u.camera.z);
         let inside = all(canvas_uv >= vec2f(0.0)) && all(canvas_uv <= vec2f(1.0));
@@ -189,6 +222,46 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
 
             color = mix(color, vec3f(1.0), ring);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // The recording crop box.
+    //
+    // LAST, and ON THE GLASS. Unlike the field and the reticle above, this does
+    // NOT walk the inverse view transform: it marks a region of the OUTPUT
+    // IMAGE -- the pixels that will be in the video file -- so it must stay put
+    // when the world pans and zoom underneath it. Panning does change which
+    // particles are inside it, which is the entire point of aiming a crop.
+    //
+    // NEVER DRAWN INTO THE RECORDING. `crop.z` is the enable, and the capture
+    // pass always packs it zero -- the same rule the brush reticle follows, for
+    // the same reason: a box marking what will be recorded, recorded, would be
+    // burned into the thing it describes.
+    //
+    // In SCREEN uv throughout. `crop.xy` is the box's half-extent as a fraction
+    // of the window and the box is centred, so the test is a single symmetric
+    // distance from the middle -- which is why no origin needs to be passed.
+    if (u.crop.z > 0.0) {
+        let from_center = abs(in.uv - vec2f(0.5));
+        let half_extent = u.crop.xy;
+
+        // Signed distance to the box edge, in uv. Positive outside.
+        let outside = any(from_center > half_extent);
+        if (outside) {
+            // Dim, not black: the surround still shows what is happening just
+            // beyond the frame, which is what makes it possible to aim a crop at
+            // something that is about to move into it.
+            color *= 1.0 - u.crop.w;
+        }
+
+        // The white rule, drawn at the boundary in both axes. `fwidth` is legal
+        // here for the same reason it is above -- this whole block is guarded on
+        // a UNIFORM only, so every invocation in a quad agrees. `from_center` is
+        // per-fragment but is not in the guard.
+        let d = max(from_center.x - half_extent.x, from_center.y - half_extent.y);
+        let w = fwidth(d) * CROP_BORDER_PX;
+        let border = 1.0 - smoothstep(0.0, w, abs(d));
+        color = mix(color, vec3f(1.0), border);
     }
 
     return vec4f(color, 1.0);

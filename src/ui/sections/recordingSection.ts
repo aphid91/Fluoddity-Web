@@ -40,13 +40,16 @@ import {
   MAX_PHYSICS_STEPS,
   MIN_DURATION,
   MIN_PHYSICS_STEPS,
-  RESOLUTIONS,
+  MIN_RECORDING_DIM,
   type RecordingSettings,
+  type Resolution,
+  clampResolution,
   frameCount,
   withDuration,
+  withHeight,
   withMotionBlurSamples,
   withPhysicsSteps,
-  withResolution,
+  withWidth,
 } from '../../recorder/recordingSettings.ts';
 import { type SectionContext, type SectionHandle } from './section.ts';
 
@@ -61,6 +64,20 @@ export interface RecordingSectionOptions {
    * `refresh` rather than pushed, matching how every other section reads state.
    */
   readonly progress: () => { framesDone: number; framesTotal: number } | null;
+  /**
+   * The window size in device pixels, read fresh each time.
+   *
+   * A function rather than a value, because it is the sliders' CEILING and the
+   * window changes under them -- a captured size would let the user ask for a
+   * recording larger than the window they now have.
+   */
+  readonly windowSize: () => readonly [number, number];
+  /**
+   * The crop box has moved. Drives the on-screen box while the user is choosing
+   * a size, which is before any recorder exists -- see `Orchestrator.
+   * setCropPreview`. Null hides it.
+   */
+  readonly onCropChange: (resolution: Resolution | null) => void;
 }
 
 /** A recording section, plus the settings the panel hands to the recorder. */
@@ -76,27 +93,54 @@ export function buildRecordingSection(
 ): RecordingSectionHandle {
   let settings = DEFAULT_RECORDING_SETTINGS;
 
-  // --- resolution ----------------------------------------------------------
-  const resolutionProxy = { value: settings.resolution.label };
-  const resolutionBlade = folder.addBinding(resolutionProxy, 'value', {
-    label: 'Resolution',
-    options: Object.fromEntries(
-      RESOLUTIONS.map((r) => [`${r.label}  (${r.width}x${r.height})`, r.label]),
-    ),
-  });
-  (resolutionBlade.element as HTMLElement).dataset['setting'] = 'recording.resolution';
-  ctx.tooltip.attach(resolutionBlade.element as HTMLElement, {
-    title: 'Resolution',
-    body:
-      'The exported video size, independent of your window.\n\n' +
-      'Detail is currently limited by your window size: the frame is composed ' +
-      'for the recording size, but is sourced at window resolution. For the ' +
-      'sharpest export, make the window as large as you can before recording.',
-  });
-  resolutionBlade.on('change', (ev) => {
-    if (ctx.isRefreshing()) return;
-    settings = withResolution(settings, ev.value);
-  });
+  // --- resolution: two sliders, capped at the window ------------------------
+  //
+  // Rebuilt when the WINDOW changes, for the same reason the blur slider is
+  // rebuilt when its ceiling moves: Tweakpane cannot retune a binding's `max` in
+  // place, and these two maxima are the window's dimensions -- which change
+  // whenever the user drags the browser edge. See `syncWindow`.
+  let widthBlade: BladeApi | null = null;
+  let heightBlade: BladeApi | null = null;
+  /** The window size the two sliders were last built against. */
+  let builtFor: readonly [number, number] = [0, 0];
+
+  function buildDimension(
+    axis: 'width' | 'height',
+    max: number,
+    before: HTMLElement | null,
+  ): BladeApi {
+    const proxy = { value: clampResolution(settings.resolution, opts.windowSize())[axis] };
+    const blade = folder.addBinding(proxy, 'value', {
+      label: axis === 'width' ? 'Width' : 'Height',
+      min: MIN_RECORDING_DIM,
+      max: Math.max(MIN_RECORDING_DIM, max),
+      step: 2, // Even, for H.264's 4:2:0 chroma. `evenDim` enforces it anyway.
+    });
+    (blade.element as HTMLElement).dataset['setting'] = `recording.${axis}`;
+    ctx.tooltip.attach(blade.element as HTMLElement, {
+      title: axis === 'width' ? 'Recording Width' : 'Recording Height',
+      body:
+        'The exported video size in pixels, capped at your window. Reduce it ' +
+        'and a white box appears on screen showing exactly what will be ' +
+        'recorded -- the area outside is dimmed.\n\nEvery exported pixel is a ' +
+        'real rendered pixel, so cropping never softens the image. For a ' +
+        'larger export, make the window larger.',
+    });
+    blade.on('change', (ev) => {
+      if (ctx.isRefreshing()) return;
+      const win = opts.windowSize();
+      settings = axis === 'width'
+        ? withWidth(settings, ev.value as number, win)
+        : withHeight(settings, ev.value as number, win);
+      opts.onCropChange(settings.resolution);
+      updateSummary();
+    });
+    if (before !== null) {
+      const el = blade.element as HTMLElement;
+      el.parentElement?.insertBefore(el, before);
+    }
+    return blade;
+  }
 
   // --- duration ------------------------------------------------------------
   const durationProxy = { value: settings.duration };
@@ -192,15 +236,67 @@ export function buildRecordingSection(
   const summary = document.createElement('div');
   summary.style.cssText = SUMMARY_CSS;
   summary.dataset['recording'] = 'summary';
-  (folder.element as HTMLElement).append(summary);
+
+  // **INTO THE BLADE CONTAINER, NOT `folder.element`.** This is the bug that
+  // made the recording controls spill out of their tab and appear at the bottom
+  // of the Preferences panel, taking the blur slider with them (it anchors on
+  // `summary`).
+  //
+  // A Tweakpane folder's `element` is the OUTER wrapper -- title button plus a
+  // separate contents div -- so appending to it puts the node as a SIBLING of
+  // the contents rather than inside them. That escapes the container the tab
+  // switch shows and hides via `display`, so the node stayed visible whichever
+  // tab was selected and un-ticking Export Video could not remove it.
+  //
+  // Anchoring on a blade that Tweakpane itself placed cannot drift: whatever
+  // element it chose as the contents parent is by definition the right one. The
+  // fallback is the folder element, which is only reached if no blade exists --
+  // impossible here, since several are built above.
+  const bladeParent =
+    (durationBlade.element as HTMLElement).parentElement ??
+    (folder.element as HTMLElement);
+  bladeParent.append(summary);
 
   function updateSummary(): void {
     const frames = frameCount(settings);
-    summary.textContent =
-      `${frames} frames · ${settings.resolution.width}x${settings.resolution.height} · ` +
+    const res = clampResolution(settings.resolution, opts.windowSize());
+    const text =
+      `${frames} frames · ${res.width}×${res.height} · ` +
       `${settings.physicsSteps} steps/frame`;
+    // Guarded: this runs from `refresh` every frame, and writing an identical
+    // string is DOM work to change nothing.
+    if (summary.textContent !== text) summary.textContent = text;
   }
   updateSummary();
+
+  /**
+   * Rebuild the two dimension sliders when the window has changed size.
+   *
+   * The window is these sliders' ceiling and it moves whenever the user drags
+   * the browser edge. Tweakpane cannot retune `max` in place, so this disposes
+   * and rebuilds -- the same trick `rebuildSamples` uses, and guarded the same
+   * way, on an ACTUAL change. Rebuilding per frame would replace both widgets
+   * sixty times a second and make them impossible to drag.
+   */
+  function syncWindow(): void {
+    const win = opts.windowSize();
+    if (win[0] === builtFor[0] && win[1] === builtFor[1]) return;
+    builtFor = win;
+
+    // Re-clamp first: the window may have shrunk below the chosen size, and the
+    // sliders must be rebuilt around the value they will actually hold.
+    settings = { ...settings, resolution: clampResolution(settings.resolution, win) };
+
+    widthBlade?.dispose();
+    heightBlade?.dispose();
+    // Anchored before the duration blade so the two land back at the top of the
+    // folder rather than at the bottom, where Tweakpane appends them.
+    const anchor = durationBlade.element as HTMLElement;
+    widthBlade = buildDimension('width', win[0], anchor);
+    heightBlade = buildDimension('height', win[1], anchor);
+    updateSummary();
+  }
+  syncWindow();
 
   const exportButton = folder.addButton({ title: 'Export Video' });
   (exportButton.element as HTMLElement).dataset['recording'] = 'export';
@@ -220,6 +316,10 @@ export function buildRecordingSection(
     bindings: [],
     settings: () => settings,
     refresh: (s) => {
+      // The window is the dimension sliders' ceiling, so it is followed per
+      // frame -- `syncWindow` early-returns unless it actually moved.
+      syncWindow();
+
       // The button doubles as Cancel while an export runs. One control rather
       // than two, because "start" and "stop" are never both available and a
       // permanently greyed second button is worse than a label that changes.

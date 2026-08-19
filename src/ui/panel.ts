@@ -111,7 +111,7 @@ import type { RecordingSectionOptions } from './sections/recordingSection.ts';
 // built for every session. `main.ts` supplies the constructed object through
 // `PanelOptions.recording`, so nothing here ever imports the value side.
 import type { RecordingResult, VideoRecorder } from '../recorder/recorder.ts';
-import type { RecordingSettings } from '../recorder/recordingSettings.ts';
+import type { RecordingSettings, Resolution } from '../recorder/recordingSettings.ts';
 
 export interface PanelOptions {
   readonly bus: CommandBus;
@@ -192,6 +192,10 @@ export interface PanelOptions {
     readonly chooseFile: (
       suggestedName: string,
     ) => Promise<FileSystemWritableFileStream | null>;
+    /** The window in device pixels: the recording sliders' ceiling. */
+    readonly windowSize: () => readonly [number, number];
+    /** Show the crop box for a size being chosen, or null to hide it. */
+    readonly setCropPreview: (resolution: Resolution | null) => void;
     /** Build and attach a recorder. Resolves once frames can be rendered. */
     readonly start: (
       settings: RecordingSettings,
@@ -1074,13 +1078,42 @@ export class Panel {
     if (shown === this.exportVideoShown) return;
 
     this.exportVideoShown = shown;
-    if (shown) this.activeTab = RECORDING_TAB;
+
+    if (shown) {
+      // **BRING THE USER TO WHAT THEY JUST SUMMONED.** Three things, in this
+      // order, because ticking a menu item that appears to do nothing is the
+      // failure being avoided:
+      //
+      //   1. Make Recording Controls the active tab, so the rebuild below
+      //      builds with it in front rather than behind Preferences.
+      //   2. REVEAL THE PANELS if they are hidden -- which is the DEFAULT state
+      //      (`startHidden: true` in `main.ts`), so without this the common case
+      //      is ticking the box and seeing nothing at all happen.
+      //
+      // Un-ticking deliberately does NOT hide the panels again: the user may
+      // have opened them for their own reasons in between, and taking them away
+      // would be undoing something this feature never did.
+      this.activeTab = RECORDING_TAB;
+      if (this.hiddenFlag) this.setHidden(false);
+    } else {
+      // The tab is going away, so the crop box must go with it -- a white
+      // rectangle left on screen with no control to change it is worse than no
+      // box at all. `setActiveTab` handles falling back to Preferences.
+      this.recording?.setCropPreview(null);
+    }
+
+    // 3. Rebuild, which is what makes the tab EXIST. Last, so it sees the
+    //    activeTab set above.
     this.rebuild();
   }
 
   /** What the Recording Controls tab is handed. Rebuilt with the section. */
   private recordingOptions(): RecordingSectionOptions {
     return {
+      windowSize: () => this.recording?.windowSize() ?? [1, 1],
+      onCropChange: (resolution) => {
+        this.recording?.setCropPreview(resolution);
+      },
       onExport: (settings) => {
         void this.startExport(settings);
       },
@@ -1142,8 +1175,9 @@ export class Panel {
       // what is wanted. Same shape as the splash's pause handling above.
       if (this.bus.status().paused) this.bus.dispatch({ kind: 'togglePause' });
 
+      const res = this.recorder.settings.resolution;
       this.toast.show(
-        `Recording ${settings.duration}s at ${settings.resolution.label}. ` +
+        `Recording ${settings.duration}s at ${res.width}×${res.height}. ` +
           'The editor will be slow while this runs. Pausing pauses the recording.',
       );
     } catch (err: unknown) {

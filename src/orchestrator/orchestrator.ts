@@ -48,7 +48,11 @@
 import type { Surface } from '../app/surface.ts';
 import { RenderTargets } from '../app/renderTargets.ts';
 import { Assembler } from '../assembler/assembler.ts';
-import { NO_OVERLAYS, type OverlayState } from '../assembler/assemblerUniforms.ts';
+import {
+  NO_OVERLAYS,
+  type CropOverlay,
+  type OverlayState,
+} from '../assembler/assemblerUniforms.ts';
 import { Camera } from '../camera/camera.ts';
 import {
   CameraState,
@@ -61,6 +65,14 @@ import { ParticleSystem } from '../particleSystem/particleSystem.ts';
 // a value import here would pull the whole encoder into the main bundle for
 // every user -- including the majority who never record. See its file header.
 import type { VideoRecorder } from '../recorder/recorder.ts';
+// Value imports, and safe ones: `recordingSettings.ts` is a pure leaf holding
+// arithmetic and constants, with no mediabunny and no GPU behind it. The lazy
+// loading protects the ENCODER, not the geometry.
+import {
+  type Resolution,
+  clampResolution,
+  isFullFrame,
+} from '../recorder/recordingSettings.ts';
 import { StrafeField } from '../strafeField/strafeField.ts';
 import { screenToWorld, worldToUv } from '../particleSystem/coords.ts';
 import {
@@ -722,77 +734,82 @@ export class Orchestrator implements CommandBus {
       this.overlayState(),
     );
 
-    // 5b. THE RECORDING PASS: the same assembled frame, a second time, into the
-    // capture canvas.
+    // 5b. THE RECORDING PASS: the same assembled frame, a second time, into
+    // the capture canvas -- reading only the crop box's interior.
     //
-    // ## KNOWN LIMITATION: the SOURCE is still window-resolution
+    // ## The crop, and why this is now EXACT
     //
-    // `this.targets` is allocated from `windowSize` a few dozen lines above, and
-    // `camera.result()` is one of those targets. So the recording is a
-    // window-resolution frame SCALED UP to the recording size -- correctly
-    // composed for it (the letterbox maths below re-runs against the capture
-    // size), and correctly framed, but not carrying more detail than the window
-    // had. A 4K export from a 900px window is a sharp, well-composed 900px image
-    // at 4K, not a 4K render.
+    // The recording size is capped at the window size, and the recorded pixels
+    // are the interior of a centred box of exactly that size. So every exported
+    // pixel is a real rendered pixel taken 1:1 -- there is no upscaling, no
+    // second render of the world, and no resolution the source cannot supply.
+    // (This replaces an earlier design that offered sizes ABOVE the window and
+    // stretched to reach them, which was correctly composed but no sharper than
+    // the window it came from.)
     //
-    // Fixing it means giving the recording its own `RenderTargets` at its own
-    // size and running the camera into those -- which is a second allocation of
-    // the whole HDR chain plus a bloom mip chain, and touches `camera.ts`'s
-    // target ownership. That is deliberately NOT in this step: it is a real
-    // change to who owns the render targets, and doing it as a rider on the
-    // capture path is how that ownership gets muddled.
-    //
-    // Recording at or below the window size is exact today. The workaround for a
-    // large export is a large window.
+    // `capture` carries that as a uv remap. `windowSize` stays the WINDOW's,
+    // not the crop's: the letterbox maths must place the world exactly as it is
+    // placed on screen, and the remap is what selects the sub-rectangle
+    // afterwards. Passing the crop size here instead would re-letterbox the
+    // world for a smaller viewport and the recording would show a different
+    // framing than the box promised.
     //
     // A SECOND `present()` RATHER THAN A COPY OF THE FIRST. The two differ in
-    // three ways that a blit could not express: the recording is at its own
-    // resolution (so the letterbox maths in `CameraView` must be re-run for it),
-    // it carries no brush reticle, and the screen must keep showing the reticle
-    // while it records. Copying the swap chain would give the recording the
-    // window's size AND its reticle.
+    // ways a blit could not express: this one reads a sub-rect, carries no
+    // brush reticle and no crop box, and the screen must keep showing both.
     //
-    // IT IS CHEAP, and that is not an accident of this design but the point of
-    // it: `camera.result()` is the already-accumulated HDR frame, so everything
-    // expensive -- every physics sub-step, every one of the blur samples --
+    // IT IS CHEAP, and that is the point of the design rather than an accident
+    // of it: `camera.result()` is the already-accumulated HDR frame, so
+    // everything expensive -- every physics sub-step, every blur sample --
     // happened once, above, and is shared. This pass is bloom plus a tone curve
     // over a texture that already exists.
     //
     // WHY THE OVERLAYS ARE HAND-BUILT rather than `this.overlayState()`:
     //
-    //   - The RETICLE is deliberately dropped. It is a cursor, not part of the
-    //     picture, and a video with a ring following an absent mouse around is
-    //     not what anyone is exporting. This is the specified behaviour.
-    //   - The FIELD is deliberately kept, when it would be on screen. Unlike the
-    //     reticle it is painted content -- the user made it, it steers the
-    //     particles, and `fieldAlwaysShow` is an explicit statement about wanting
-    //     to see it. Suppressing it would silently drop authored work from the
-    //     export.
+    //   - The RETICLE is dropped. It is a cursor, not part of the picture, and
+    //     a video with a ring following an absent mouse is not what anyone is
+    //     exporting.
+    //   - The CROP BOX is dropped, for a stronger version of the same reason: it
+    //     marks what will be recorded, so recording it would burn the annotation
+    //     into the thing it describes.
+    //   - The FIELD is KEPT, when it would be on screen. Unlike those two it is
+    //     painted content -- the user made it, it steers the particles, and
+    //     `fieldAlwaysShow` is an explicit statement about wanting to see it.
+    //     Suppressing it would silently drop authored work from the export.
     //
-    // Bloom and motion blur need no mention here at all: blur is baked into
+    // Bloom and motion blur need no mention: blur is baked into
     // `camera.result()` before the assembler sees it, and bloom runs INSIDE
     // `present()` from `this.prefs`. Both are in the recording because both are
     // in the frame, which is what "record what the camera outputs" means.
     const recorder = this.recorder;
     const capture = recorder?.captureTarget ?? null;
     if (recorder !== null && capture !== null) {
+      const [cw, ch] = capture.size();
+      const [ww, wh] = windowSize;
+      // The sub-rect, in uv. Centred, so the offset is half the leftover on each
+      // side -- the uv form of `cropRect`'s pixel centring, and derived from the
+      // same two sizes so the two cannot disagree about where the box is.
+      const scale: readonly [number, number] = [cw / ww, ch / wh];
       this.assembler.present(
         encoder,
         this.camera.result(),
         capture.context.getCurrentTexture().createView(),
         {
           canvasSize: this.system.canvasSize,
-          // THE RECORDING'S SIZE, not the window's. This is what decouples the
-          // export from the browser window: `CameraView` derives the letterbox
-          // from this, so a 4K recording is composed for 4K rather than being a
-          // stretched copy of whatever the window happened to be.
-          windowSize: capture.size(),
+          // THE WINDOW'S, deliberately. See the note above.
+          windowSize,
           pan: this.camera.state.pan,
           zoom: this.camera.state.zoom,
         },
         this.prefs,
-        // The field on the same terms as on screen; never the reticle.
-        { ...NO_OVERLAYS, showField: this.prefs.fieldAlwaysShow || this.mouseMode === 'draw' },
+        {
+          ...NO_OVERLAYS,
+          showField: this.prefs.fieldAlwaysShow || this.mouseMode === 'draw',
+          capture: {
+            scale,
+            offset: [(1 - scale[0]) / 2, (1 - scale[1]) / 2],
+          },
+        },
       );
     }
 
@@ -979,9 +996,13 @@ export class Orchestrator implements CommandBus {
     const shoving = this.mouseMode === 'shove';
     const brushing = drawing || shoving;
     const showField = this.prefs.fieldAlwaysShow || drawing;
+    // The crop box, whenever one has been asked for and is smaller than the
+    // window. Independent of the tool and of the reticle: it says what will be
+    // recorded, which is true regardless of what the mouse is currently doing.
+    const crop = this.cropOverlay;
 
     if (!(brushing && this.prefs.showReticle)) {
-      return { ...NO_OVERLAYS, showField };
+      return { ...NO_OVERLAYS, showField, crop };
     }
     // The brush's VISIBLE extent, which is 2 sigma of its gaussian -- and also
     // exactly the eraser's hard radius, so the ring reads as "what the eraser
@@ -990,11 +1011,56 @@ export class Orchestrator implements CommandBus {
     return {
       ...NO_OVERLAYS,
       showField,
+      crop,
       reticleCenter: this.mouseFieldUv(this.input.mousePos),
       reticleRadius: 2.0 * this.prefs.drawSize,
       reticleDashed: shoving,
     };
   }
+
+  /**
+   * The crop box to draw on screen, or null for none.
+   *
+   * Null in the two cases where a box would be noise rather than information:
+   * nobody has asked for a crop, and the crop is the whole window (a rule around
+   * the screen edge with a zero-pixel surround says nothing).
+   *
+   * The size arrives from the UI through `setCropPreview` rather than being read
+   * from a recorder: the box must be visible while the user is CHOOSING the
+   * size, which is before any recorder exists. During a recording it is the
+   * recorder's own size that is shown, because that is what is being captured
+   * and the sliders can no longer move it.
+   */
+  private get cropOverlay(): CropOverlay | null {
+    const resolution =
+      this.recorder?.settings.resolution ?? this.cropPreview;
+    if (resolution === null) return null;
+
+    const windowSize = this.surface.size();
+    if (isFullFrame(resolution, windowSize)) return null;
+
+    const { width, height } = clampResolution(resolution, windowSize);
+    // HALF-extent, because the box is centred and the shader tests one symmetric
+    // distance from the middle. See `packFrameAssemblyUniforms`.
+    return { halfExtent: [width / windowSize[0] / 2, height / windowSize[1] / 2] };
+  }
+
+  /**
+   * Show a crop box for a size the user is choosing, or null to hide it.
+   *
+   * Set by the Recording Controls tab as its sliders move, so the box is
+   * visible while the size is being chosen rather than only once recording
+   * starts -- which is the entire point of an on-screen box.
+   *
+   * A plain setter and a nullable field rather than a command, for the reason
+   * `panelOpen` is one: it is a statement about what the EDITOR is showing, not
+   * a change to the project, and it must never reach history.
+   */
+  setCropPreview(resolution: Resolution | null): void {
+    this.cropPreview = resolution;
+  }
+
+  private cropPreview: Resolution | null = null;
 
   /**
    * Screen pixel -> field texture uv [0,1].

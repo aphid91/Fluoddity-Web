@@ -30,32 +30,33 @@
  * `rescaleSamples` below, and is the only real rule in this file.
  */
 
-/** A resolution the exporter offers. Width and height in pixels. */
+/** A recording size in pixels. */
 export interface Resolution {
-  readonly label: string;
   readonly width: number;
   readonly height: number;
 }
 
 /**
- * The offered resolutions.
+ * The smallest recording either dimension may be.
  *
- * 16:9 throughout, because that is what a video file is expected to be -- the
- * simulation's own canvas aspect is a separate quantity (`app/surface.ts`'s
- * three-aspect note) and letterboxing is how the two are reconciled, exactly as
- * on screen.
- *
- * Capped at 4K: `maxTextureDimension2D` is 8192 on essentially all WebGPU
- * hardware, but H.264 level limits and encoder memory bite well before that, and
- * an export that fails after twenty minutes of rendering is the worst possible
- * failure mode for this feature.
+ * Not 1: an encoder configured for a 2px-wide frame is legal and useless, and a
+ * crop box that small is impossible to see or aim. 128 is comfortably below any
+ * real use and comfortably above degenerate.
  */
-export const RESOLUTIONS: readonly Resolution[] = Object.freeze([
-  { label: '720p', width: 1280, height: 720 },
-  { label: '1080p', width: 1920, height: 1080 },
-  { label: '1440p', width: 2560, height: 1440 },
-  { label: '4K', width: 3840, height: 2160 },
-]);
+export const MIN_RECORDING_DIM = 128;
+
+/**
+ * Snap a dimension to an even number, rounding DOWN.
+ *
+ * H.264 with 4:2:0 chroma subsampling requires even dimensions -- an odd one is
+ * rejected at `configure` time, which the user would meet only after choosing to
+ * export. Down rather than up so the result can never exceed the window bound
+ * the caller just clamped to; growing past it would put the crop box off screen
+ * by a pixel at full width.
+ */
+export function evenDim(value: number): number {
+  return Math.max(MIN_RECORDING_DIM, Math.trunc(value) - (Math.trunc(value) % 2));
+}
 
 /** Frames per second of the OUTPUT file. Not a rate the renderer must keep up with. */
 export const RECORDING_FPS = 60;
@@ -77,6 +78,19 @@ export const MAX_DURATION = 120;
  * general-purpose `withValue` here on purpose.
  */
 export interface RecordingSettings {
+  /**
+   * The recording size in pixels, which is also the CROP BOX on screen.
+   *
+   * **Never larger than the window**, and that is the whole design: the exported
+   * pixels are a sub-rectangle of the pixels already being rendered, taken 1:1
+   * at native resolution. There is no upscaling and no second render -- which is
+   * why this is cheap, and why it is strictly more honest than choosing a size
+   * larger than the window and stretching to reach it.
+   *
+   * `clampResolution` is the only thing that should write it, because the window
+   * can shrink underneath a chosen size and the invariant has to be restored
+   * when it does.
+   */
   readonly resolution: Resolution;
   /** Clip length in seconds. Frame count is this times `RECORDING_FPS`. */
   readonly duration: number;
@@ -105,7 +119,12 @@ export interface RecordingSettings {
  * the chosen physics rate can produce.
  */
 export const DEFAULT_RECORDING_SETTINGS: RecordingSettings = Object.freeze({
-  resolution: RESOLUTIONS[1]!,
+  // Deliberately huge, and immediately clamped: every read goes through
+  // `clampResolution`, so this means "the whole window, whatever that is today"
+  // without this file needing to know the window size. Starting at full frame is
+  // right because cropping is the exception -- the common export is what is on
+  // screen -- and it means the crop overlay is hidden until the user asks for it.
+  resolution: { width: 1 << 20, height: 1 << 20 },
   duration: 5,
   physicsSteps: 60,
   motionBlurSamples: 60,
@@ -262,19 +281,107 @@ export function withDuration(
 }
 
 /**
- * Set the output resolution by label.
+ * Fit a requested size inside the window, keeping it even and non-degenerate.
  *
- * By LABEL rather than by index, because the control that drives this is a
- * Tweakpane list whose options are built from `RESOLUTIONS` -- an index would
- * silently repoint at a different resolution if that array were ever reordered.
- * An unknown label leaves the settings alone rather than throwing: this is a UI
- * boundary, and the failure a user would see is a dropdown that does nothing,
- * not a crashed export.
+ * THE ONE PLACE THE CEILING IS ENFORCED. The window is not a constant -- it
+ * changes whenever the user drags the browser edge, and it can shrink BELOW a
+ * size that was legal when it was chosen. Every read of the resolution therefore
+ * goes through this rather than trusting the stored value, which is what keeps
+ * "the crop box is inside the window" true at every instant rather than only at
+ * the instant a slider moved.
+ *
+ * The floor wins over the ceiling when they conflict: a window narrower than
+ * `MIN_RECORDING_DIM` would otherwise produce a zero or negative dimension, and
+ * a crop box slightly larger than a tiny window is a cosmetic problem where an
+ * invalid texture size is a crash.
  */
-export function withResolution(
+export function clampResolution(
+  requested: Resolution,
+  windowSize: readonly [number, number],
+): Resolution {
+  const [maxW, maxH] = windowSize;
+  return {
+    width: evenDim(Math.min(requested.width, Math.max(MIN_RECORDING_DIM, maxW))),
+    height: evenDim(Math.min(requested.height, Math.max(MIN_RECORDING_DIM, maxH))),
+  };
+}
+
+/** Set the recording width, clamped to the window. */
+export function withWidth(
   settings: RecordingSettings,
-  label: string,
+  width: number,
+  windowSize: readonly [number, number],
 ): RecordingSettings {
-  const found = RESOLUTIONS.find((r) => r.label === label);
-  return found === undefined ? settings : { ...settings, resolution: found };
+  return {
+    ...settings,
+    resolution: clampResolution(
+      { width, height: settings.resolution.height },
+      windowSize,
+    ),
+  };
+}
+
+/** Set the recording height, clamped to the window. */
+export function withHeight(
+  settings: RecordingSettings,
+  height: number,
+  windowSize: readonly [number, number],
+): RecordingSettings {
+  return {
+    ...settings,
+    resolution: clampResolution(
+      { width: settings.resolution.width, height },
+      windowSize,
+    ),
+  };
+}
+
+/**
+ * The crop box in pixels: where the recorded rectangle sits within the window.
+ *
+ * **CENTRED**, as specified, and the offset is floored to a whole pixel. A
+ * half-pixel offset would make the recording sample between texels and blur
+ * every exported frame very slightly -- invisible in a still, and exactly the
+ * kind of softness that is maddening to track down in a finished video.
+ *
+ * Returned in PIXELS rather than uv because both consumers want pixels: the
+ * overlay draws it, and the capture pass converts it once. Doing the division in
+ * two places is how the box and the pixels it claims to contain drift apart.
+ */
+export interface CropRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export function cropRect(
+  resolution: Resolution,
+  windowSize: readonly [number, number],
+): CropRect {
+  const { width, height } = clampResolution(resolution, windowSize);
+  return {
+    x: Math.floor((windowSize[0] - width) / 2),
+    y: Math.floor((windowSize[1] - height) / 2),
+    width,
+    height,
+  };
+}
+
+/**
+ * True when the crop box covers the whole window, so no overlay is needed.
+ *
+ * Takes a `Resolution` rather than the whole settings record, because that is
+ * all it reads -- and because the two callers that matter have only that: the
+ * Orchestrator's crop preview is a bare size the user is dragging, with no
+ * duration or physics rate attached to it.
+ */
+export function isFullFrame(
+  resolution: Resolution,
+  windowSize: readonly [number, number],
+): boolean {
+  const rect = cropRect(resolution, windowSize);
+  // Within one pixel: `evenDim` rounds down, so an odd-width window can never be
+  // matched exactly and a strict test would dim a one-pixel border forever.
+  return windowSize[0] - rect.width <= 1 && windowSize[1] - rect.height <= 1;
 }

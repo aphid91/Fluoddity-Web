@@ -255,6 +255,13 @@ async function start(): Promise<void> {
           // with no preceding await or the click's user activation is gone and
           // `showSaveFilePicker` refuses. See that file's header.
           chooseFile: chooseRecordingFile,
+          // The recording sliders' ceiling, read fresh: the window changes
+          // whenever the user drags the browser edge, and a captured size would
+          // let them ask for a recording larger than the window they now have.
+          windowSize: () => surface.size(),
+          setCropPreview: (resolution) => {
+            orchestrator.setCropPreview(resolution);
+          },
           start: async (settings, file) => {
             const { VideoRecorder } = await import('./recorder/recorder.ts');
             const recorder = await VideoRecorder.start(device, settings, file);

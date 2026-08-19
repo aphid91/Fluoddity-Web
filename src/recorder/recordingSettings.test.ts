@@ -14,15 +14,19 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_RECORDING_SETTINGS,
   MAX_PHYSICS_STEPS,
+  MIN_RECORDING_DIM,
   RECORDING_FPS,
-  RESOLUTIONS,
+  clampResolution,
+  cropRect,
   driverAction,
   frameCount,
+  isFullFrame,
   rescaleSamples,
   withDuration,
+  withHeight,
   withMotionBlurSamples,
   withPhysicsSteps,
-  withResolution,
+  withWidth,
 } from './recordingSettings.ts';
 
 /** The ceilings the sweeps below walk. */
@@ -132,15 +136,61 @@ test('the blur default is the ceiling, unlike the live editor default of 1', () 
   );
 });
 
-test('duration and resolution are clamped and looked up by label', () => {
+test('duration is clamped to its range', () => {
   assert.equal(withDuration(DEFAULT_RECORDING_SETTINGS, 1000).duration, 120);
   assert.equal(withDuration(DEFAULT_RECORDING_SETTINGS, 0).duration, 1);
+});
 
-  const uhd = withResolution(DEFAULT_RECORDING_SETTINGS, '4K');
-  assert.equal(uhd.resolution.width, 3840);
-  // An unknown label leaves the record alone rather than throwing -- a dropdown
-  // that does nothing beats a crashed export. See `withResolution`.
-  assert.equal(withResolution(uhd, 'nope').resolution.label, '4K');
+test('the recording never exceeds the window, at any window size', () => {
+  // THE CEILING INVARIANT. The window shrinks under a chosen size whenever the
+  // user drags the browser edge, so this is checked on every read rather than
+  // only when a slider moves -- a stored size that was legal yesterday is not
+  // evidence about today.
+  const windows: (readonly [number, number])[] = [
+    [1920, 1080], [800, 600], [3840, 2160], [130, 130], [1, 1], [1001, 777],
+  ];
+  for (const win of windows) {
+    for (const req of [{ width: 99999, height: 99999 }, { width: 640, height: 480 }]) {
+      const got = clampResolution(req, win);
+      assert.ok(got.width <= Math.max(MIN_RECORDING_DIM, win[0]), `w ${got.width} > ${win[0]}`);
+      assert.ok(got.height <= Math.max(MIN_RECORDING_DIM, win[1]), `h ${got.height} > ${win[1]}`);
+      // Even, for H.264's 4:2:0 chroma -- an odd dimension is rejected by the
+      // encoder at configure time, which the user meets only after pressing
+      // Export.
+      assert.equal(got.width % 2, 0, `odd width ${got.width}`);
+      assert.equal(got.height % 2, 0, `odd height ${got.height}`);
+      assert.ok(got.width >= MIN_RECORDING_DIM && got.height >= MIN_RECORDING_DIM);
+    }
+  }
+});
+
+test('the crop box is centred and stays inside the window', () => {
+  const win: readonly [number, number] = [1920, 1080];
+  const settings = withHeight(withWidth(DEFAULT_RECORDING_SETTINGS, 1280, win), 720, win);
+  const rect = cropRect(settings.resolution, win);
+
+  assert.deepEqual(rect, { x: 320, y: 180, width: 1280, height: 720 });
+  // The margins match on both sides, which is what "centred" means and is the
+  // thing a user would notice instantly if it were wrong.
+  assert.equal(rect.x, win[0] - rect.width - rect.x);
+  assert.equal(rect.y, win[1] - rect.height - rect.y);
+  // Whole pixels: a half-pixel offset makes the capture sample between texels
+  // and softens every exported frame.
+  assert.ok(Number.isInteger(rect.x) && Number.isInteger(rect.y));
+});
+
+test('the default is full frame, so the crop overlay starts hidden', () => {
+  // Cropping is the exception; the common export is what is on screen. The
+  // default therefore asks for the whole window and `isFullFrame` reports it,
+  // which is what keeps the grey surround off until the user asks for it.
+  for (const win of [[1920, 1080], [800, 600], [1001, 777]] as const) {
+    assert.ok(
+      isFullFrame(DEFAULT_RECORDING_SETTINGS.resolution, win),
+      `not full frame at ${win.join('x')}`,
+    );
+  }
+  const cropped = withWidth(DEFAULT_RECORDING_SETTINGS, 640, [1920, 1080]);
+  assert.ok(!isFullFrame(cropped.resolution, [1920, 1080]));
 });
 
 test('frameCount is duration times the output rate', () => {
@@ -200,12 +250,3 @@ test('only encoding advances progress, so the frame count is pause-invariant', (
   }
 });
 
-test('every offered resolution is even-dimensioned', () => {
-  // H.264 with 4:2:0 chroma subsampling requires even dimensions; an odd one is
-  // rejected by the encoder at `configure` time, which is a failure the user
-  // meets only after choosing to export.
-  for (const r of RESOLUTIONS) {
-    assert.equal(r.width % 2, 0, `${r.label} width`);
-    assert.equal(r.height % 2, 0, `${r.label} height`);
-  }
-});
