@@ -40,13 +40,28 @@ import {
 } from '../orchestrator/commands.ts';
 import { NO_COHORT } from '../selection/cohortHighlight.ts';
 import { bindFocusRelease } from './focusRelease.ts';
-import { hotkeyLabel } from './hotkeys.ts';
+import { hotkeyLabel, localHotkeyLabel } from './hotkeys.ts';
 import { CONFIG, settingFor } from './settingsSpec.ts';
 
 export interface MutationOverlayOptions {
   readonly send: (command: Command) => void;
   /** Where to mount. Defaults to `document.body`. */
   readonly container?: HTMLElement;
+  /**
+   * Show or hide the side panels: the gear, at the right end of the bar.
+   *
+   * A CALLBACK RATHER THAN A COMMAND, and it has to be. Hiding the panels is the
+   * panel's own business and deliberately never reaches the Orchestrator --
+   * `main.ts` routes `X` the same way, and `panel.ts` cites `ui.py:471-473` for
+   * it. Sending a command here would give the app two answers to "is the UI
+   * hidden". This lands on `Panel.setHidden` exactly as the key and the Editor
+   * menu item do, so all three share one flag and one notification.
+   *
+   * Optional so the bar can still be built without one -- the DOM tests
+   * construct it directly, and a gear that toggles nothing is better than a
+   * required argument they have to invent.
+   */
+  readonly onToggleUi?: () => void;
 }
 
 /** Human-readable tool names. Keyed so a new MOUSE_MODES member fails to compile. */
@@ -71,6 +86,8 @@ export class MutationOverlay {
   private readonly rerollAll: HTMLButtonElement;
   private readonly reset: HTMLButtonElement;
   private readonly tool: HTMLSelectElement;
+  /** The gear, at the right end. See its construction for why it lives here. */
+  private readonly gear: HTMLButtonElement;
 
   // --- the context hint row ------------------------------------------------
   //
@@ -229,6 +246,39 @@ export class MutationOverlay {
       presets.append(this.layoutButton(count, opts.send));
     }
 
+    // The gear, at the RIGHT END, past the tool selector.
+    //
+    // It lived in a corner of the canvas for a while, on the argument that
+    // everything else on this bar acts on the SIMULATION while this acts on the
+    // editor's chrome. True, but it cost more than it bought: a lone button
+    // floating over the picture is a thing to hunt for, and the bar is where a
+    // user already looks for controls. Grouping it at the far end -- past the
+    // tool selector, with the panel-scoped controls rather than the
+    // simulation-scoped ones on the left -- says "different category" by
+    // position, which is what the corner was trying to say by distance.
+    //
+    // LABELLED WITH ITS KEY like every other button here, via the hotkey table
+    // rather than a literal `(X)`, so a rebind moves the label with it. The gear
+    // glyph carries the meaning and the suffix carries the shortcut, which is
+    // the pattern Reroll, Reset and Reroll All already follow.
+    this.gear = document.createElement('button');
+    this.gear.type = 'button';
+    this.gear.style.cssText = GEAR_BUTTON_CSS;
+    const uiKey = keySuffix([localHotkeyLabel('toggleUi')]);
+    const gearLabel = `Show/Hide control panels${uiKey}`;
+    this.gear.title = gearLabel;
+    this.gear.setAttribute('aria-label', gearLabel);
+    this.gear.dataset['setting'] = 'transport.toggleUi';
+    this.gear.append(gearIcon(), keyCaption(uiKey));
+    this.gear.addEventListener('click', () => {
+      opts.onToggleUi?.();
+      // A click leaves the button focused, and `X` would then be swallowed while
+      // Space and Enter re-fire this button -- so the key that does the same job
+      // stops working right after you use its on-screen twin. Blurring hands the
+      // keys straight back, the same answer the tool `<select>` arrives at.
+      this.gear.blur();
+    });
+
     // The tool control goes INSIDE the bar, not below it. Floating on its own
     // it read as a stray tooltip over the canvas rather than as part of the UI,
     // and a status line that looks like an error message is worse than none.
@@ -241,6 +291,7 @@ export class MutationOverlay {
       this.reroll,
       this.reset,
       this.tool,
+      this.gear,
     );
     // --- the context hint row ----------------------------------------------
     //
@@ -722,6 +773,75 @@ function dotsIcon(count: number): SVGSVGElement {
   return svg;
 }
 
+/**
+ * A gear. Moved here from `panelToggle.ts` with the button itself.
+ *
+ * Eight teeth as rotated rectangles plus a stroked hub, rather than a `<path>`
+ * traced from a design tool: at this size the silhouette is all that survives,
+ * and generating it keeps the file free of an opaque coordinate blob nobody can
+ * adjust.
+ *
+ * `fill`/`stroke` of `currentColor` so the icon follows the button's `color` --
+ * which is what lets a hover or disabled state recolour it without this function
+ * knowing either exists.
+ */
+function gearIcon(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${String(ICON_BOX)} ${String(ICON_BOX)}`);
+  svg.setAttribute('width', String(ICON_BOX));
+  svg.setAttribute('height', String(ICON_BOX));
+  svg.style.display = 'block';
+
+  const c = ICON_BOX / 2;
+  const teeth = 8;
+  for (let i = 0; i < teeth; i++) {
+    const tooth = document.createElementNS(SVG_NS, 'rect');
+    tooth.setAttribute('x', String(c - 1.4));
+    tooth.setAttribute('y', String(c - 9.0));
+    tooth.setAttribute('width', '2.8');
+    tooth.setAttribute('height', '5.2');
+    tooth.setAttribute('rx', '0.9');
+    tooth.setAttribute('fill', 'currentColor');
+    // Rotated about the centre rather than placed by trigonometry here: the
+    // transform is what makes "eight evenly spaced" obvious at a glance.
+    tooth.setAttribute(
+      'transform',
+      `rotate(${String((360 / teeth) * i)} ${String(c)} ${String(c)})`,
+    );
+    svg.append(tooth);
+  }
+
+  // The body and its hole, drawn as ONE stroked ring rather than two filled
+  // circles -- so the hole stays transparent over any background instead of
+  // being painted in a colour that has to match one.
+  const ring = document.createElementNS(SVG_NS, 'circle');
+  ring.setAttribute('cx', String(c));
+  ring.setAttribute('cy', String(c));
+  ring.setAttribute('r', '4.3');
+  ring.setAttribute('fill', 'none');
+  ring.setAttribute('stroke', 'currentColor');
+  ring.setAttribute('stroke-width', '3.2');
+  svg.append(ring);
+
+  return svg;
+}
+
+/**
+ * The `(X)` beside an icon, as a dimmed span.
+ *
+ * A separate element rather than text appended to the button, so the glyph and
+ * the key can be sized and dimmed independently -- the icon carries the meaning
+ * at full contrast and the shortcut sits back out of the way. Empty input
+ * yields an empty span, which costs one node and keeps the caller free of a
+ * conditional.
+ */
+function keyCaption(text: string): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.textContent = text.trim();
+  span.style.cssText = KEY_CAPTION_CSS;
+  return span;
+}
+
 // -- styling ----------------------------------------------------------------
 //
 // `pointer-events` is the load-bearing part. The root spans the full width so
@@ -880,6 +1000,22 @@ const LAYOUT_BUTTON_CSS =
   'border-radius:4px;color:#e8e8ea;padding:0;cursor:pointer;' +
   'display:flex;align-items:center;justify-content:center;' +
   'width:24px;height:24px;flex:none;';
+
+// The gear, at the right end of the bar.
+//
+// NOT `LAYOUT_BUTTON_CSS`: this one carries a key caption beside its icon, so it
+// cannot be a fixed 24px square. Text padding like `BUTTON_CSS`, an icon-sized
+// gap, and `height:24px` so it lines up with the layout buttons at the far end
+// of the same row rather than making the bar taller than they do.
+const GEAR_BUTTON_CSS =
+  'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
+  'border-radius:4px;color:#e8e8ea;cursor:pointer;padding:0 8px;height:24px;' +
+  'display:flex;align-items:center;gap:5px;flex:none;';
+
+// The `(X)` beside an icon. Dimmed and a size down, so the glyph stays the thing
+// you see first and the shortcut sits behind it.
+const KEY_CAPTION_CSS =
+  'font:10px system-ui,sans-serif;color:rgba(232,232,234,0.6);white-space:nowrap;';
 
 // The tool dropdown.
 //

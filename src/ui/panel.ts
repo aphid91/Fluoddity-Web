@@ -63,7 +63,6 @@ import { GateState } from './gateState.ts';
 import { showsSlider } from './gatedControl.ts';
 import { MenuBar } from './menuBar.ts';
 import { MutationOverlay } from './mutationOverlay.ts';
-import { PanelToggle } from './panelToggle.ts';
 import { RecordingBar } from './recordingBar.ts';
 import { Splash } from './splash.ts';
 import { isGated } from './gating.ts';
@@ -312,7 +311,6 @@ export class Panel {
    * for why it is not a control in a pane.
    */
   private readonly overlay: MutationOverlay;
-  private readonly panelToggle: PanelToggle;
 
   /**
    * The export progress strip.
@@ -436,19 +434,20 @@ export class Panel {
         this.copyShareLink();
       },
     });
-    this.overlay = new MutationOverlay({ send });
+    // The gear rides the mutation bar now, at its right end -- see the bar's own
+    // construction for why it moved back. Still goes through `setHidden` exactly
+    // as `X` and the Editor menu item do, so all three routes share one flag and
+    // one notification.
+    this.overlay = new MutationOverlay({
+      send,
+      onToggleUi: () => {
+        this.setHidden(!this.hiddenFlag);
+      },
+    });
     // Cancel through the same path the tab's button uses, so there is one
     // meaning of cancelling however it is reached.
     this.recordingBar = new RecordingBar(() => {
       this.recorder?.cancel();
-    });
-    // The gear, in its own corner rather than on the mutation bar -- see
-    // `panelToggle.ts`. Goes through `setHidden` exactly as `X` and the Editor
-    // menu item do, so all three routes share one flag and one notification.
-    this.panelToggle = new PanelToggle({
-      onToggle: () => {
-        this.setHidden(!this.hiddenFlag);
-      },
     });
     // Built before the menu bar, since the bar's Help item closes over it.
     //
@@ -925,10 +924,6 @@ export class Panel {
     // there and says why -- called anyway, so this stays a complete list of
     // what the key governs rather than a list with a silent omission.
     this.overlay.setHidden(hidden);
-    // Nor does the gear, and for a stronger reason: it is the way BACK. Hiding
-    // it with the panels would leave only `X` and a menu that is inside what
-    // just disappeared. A no-op that says so, like the overlay's.
-    this.panelToggle.setHidden(hidden);
   }
 
   /**
@@ -1355,7 +1350,6 @@ export class Panel {
     this.menuBar.dispose();
     this.dialogs.dispose();
     this.overlay.dispose();
-    this.panelToggle.dispose();
     this.recordingBar.dispose();
     this.splash.dispose();
     this.left.container.remove();
