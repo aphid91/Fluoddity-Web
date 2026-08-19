@@ -42,7 +42,6 @@ import {
   MIN_PHYSICS_STEPS,
   MIN_RECORDING_DIM,
   type RecordingSettings,
-  type Resolution,
   clampResolution,
   frameCount,
   physicsFrameCount,
@@ -73,12 +72,6 @@ export interface RecordingSectionOptions {
    * recording larger than the window they now have.
    */
   readonly windowSize: () => readonly [number, number];
-  /**
-   * The crop box has moved. Drives the on-screen box while the user is choosing
-   * a size, which is before any recorder exists -- see `Orchestrator.
-   * setCropPreview`. Null hides it.
-   */
-  readonly onCropChange: (resolution: Resolution | null) => void;
 }
 
 /** A recording section, plus the settings the panel hands to the recorder. */
@@ -133,7 +126,11 @@ export function buildRecordingSection(
       settings = axis === 'width'
         ? withWidth(settings, ev.value as number, win)
         : withHeight(settings, ev.value as number, win);
-      opts.onCropChange(settings.resolution);
+      // The on-screen crop box is NOT pushed from here. `Panel.syncCropPreview`
+      // reads this section's settings once per frame instead, because the box
+      // must also follow things no slider reports -- switching tabs, hiding the
+      // panels -- and one source of truth beats a push plus a poll that can
+      // disagree. The next frame is imperceptible.
       updateSummary();
     });
     if (before !== null) {
@@ -266,9 +263,17 @@ export function buildRecordingSection(
    *
    * The workflow they serve: park on an interesting structure, note the physics
    * frame it formed at, then set duration and rate so a recording started from a
-   * reset actually reaches it. That is a COMPARISON, and it is unreadable if the
-   * two quantities live in different places -- so they are one line, in the same
-   * units, with the verdict spelled out rather than left as arithmetic.
+   * reset actually reaches it. That is a COMPARISON, which is why the two live
+   * on one line and in the same units.
+   *
+   * **IT REPORTS, IT DOES NOT JUDGE.** An earlier version appended a verdict --
+   * a tick for "reaches here", a cross and a shortfall otherwise. It was removed
+   * deliberately: a red cross reads as SOMETHING IS WRONG, and nothing is. A
+   * recording shorter than the current frame is a perfectly ordinary thing to
+   * want (most exports are not trying to reproduce the state on screen), so
+   * flagging it made the panel look broken during normal use. The two numbers
+   * are the information; whether they matter is the user's call on any given
+   * export, and they can do the subtraction on the occasions they care.
    *
    * `Status.frameCount` counts physics sub-steps, not rendered frames
    * (`particleSystem.ts` advances it by `steps` per frame), which is what makes
@@ -296,27 +301,12 @@ export function buildRecordingSection(
   }
 
   function updatePhysics(currentFrame: number): void {
-    const total = physicsFrameCount(settings);
-    // THE VERDICT, not just the numbers. "72,000 vs 50,000" still leaves the
-    // user comparing digit counts; saying whether it reaches is the answer they
-    // came for, and it is one subtraction away.
-    const reaches = total >= currentFrame;
-    const verdict = currentFrame === 0
-      ? '' // Nothing to compare against from a cold start.
-      : reaches
-        ? '  ✓ reaches here'
-        : `  ✗ ${group(currentFrame - total)} short`;
-
+    // Two numbers, stated plainly. No verdict and no colour -- see the header
+    // above for why the tick and cross were removed rather than reworded.
     const text =
       `physics frame ${group(currentFrame)} now · ` +
-      `this video: ${group(total)}${verdict}`;
+      `this video: ${group(physicsFrameCount(settings))}`;
     if (physics.textContent !== text) physics.textContent = text;
-
-    // Colour carries the same verdict for a glance, and is never the ONLY
-    // carrier -- the text says it too, so this reads correctly without colour
-    // vision and in a screenshot.
-    const colour = currentFrame === 0 || reaches ? '' : '#e0a0a0';
-    if (physics.style.color !== colour) physics.style.color = colour;
   }
   updateSummary();
 

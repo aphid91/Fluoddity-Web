@@ -729,6 +729,22 @@ export class Panel {
         : { ...this.recorder.progress, paused: status.paused },
     );
 
+    // THE CROP BOX FOLLOWS THE TAB, and is therefore driven from STATE here
+    // rather than pushed when a slider moves.
+    //
+    // It is only meaningful while the user can see the controls that shape it
+    // and the button that uses it, so it is shown exactly when the Recording
+    // Controls tab is in front -- not merely when Export Video is ticked. An
+    // edge-driven push cannot express that: switching tabs and pressing `X`
+    // move no slider, so a box pushed on change would stay on screen over a
+    // panel that no longer explains it.
+    //
+    // ABOVE the hidden check on purpose. Hiding the panels must retire the box
+    // too -- `X` means "let me look at the picture", and a white rectangle with
+    // no visible control to change it is precisely what that gesture is asking
+    // to be rid of.
+    this.syncCropPreview();
+
     // A hidden panel refreshes nothing else: `pane.refresh()` walks every
     // binding and re-reads every proxy, which is real per-frame work to update
     // widgets nobody can see. The next `setHidden(false)` is followed by the
@@ -1094,25 +1110,52 @@ export class Panel {
       // would be undoing something this feature never did.
       this.activeTab = RECORDING_TAB;
       if (this.hiddenFlag) this.setHidden(false);
-    } else {
-      // The tab is going away, so the crop box must go with it -- a white
-      // rectangle left on screen with no control to change it is worse than no
-      // box at all. `setActiveTab` handles falling back to Preferences.
-      this.recording?.setCropPreview(null);
     }
+    // Un-ticking needs no explicit crop clear: `syncCropPreview` runs every
+    // frame and reads `exportVideoShown`, so the box goes out on the next one.
+    // `setActiveTab` handles falling back to Preferences.
 
     // 3. Rebuild, which is what makes the tab EXIST. Last, so it sees the
     //    activeTab set above.
     this.rebuild();
   }
 
+  /**
+   * Show the crop box exactly while the Recording Controls tab is in front.
+   *
+   * Called once per frame from `refresh`. The four conditions are all
+   * "can the user see the controls this box belongs to?", stated positively:
+   *
+   *   - recording is wired up at all (no GPU, no box);
+   *   - Export Video is ticked, so the tab exists;
+   *   - the panels are not hidden;
+   *   - and the Recording tab is the ACTIVE one.
+   *
+   * WHILE A RECORDING IS RUNNING the box is left alone -- `Orchestrator.
+   * cropOverlay` prefers the recorder's own resolution over this preview, so
+   * what is being captured stays marked even if the user switches tabs to watch
+   * progress. This only governs the box shown while CHOOSING a size.
+   *
+   * Idempotent and cheap: `setCropPreview` is a field assignment, and the
+   * Orchestrator recomputes the overlay from it each frame anyway.
+   */
+  private syncCropPreview(): void {
+    if (this.recording === null) return;
+
+    const visible =
+      this.exportVideoShown &&
+      !this.hiddenFlag &&
+      this.settings?.activeTab() === RECORDING_TAB;
+
+    this.recording.setCropPreview(
+      visible ? this.settings?.recordingSettings()?.resolution ?? null : null,
+    );
+  }
+
   /** What the Recording Controls tab is handed. Rebuilt with the section. */
   private recordingOptions(): RecordingSectionOptions {
     return {
       windowSize: () => this.recording?.windowSize() ?? [1, 1],
-      onCropChange: (resolution) => {
-        this.recording?.setCropPreview(resolution);
-      },
       onExport: (settings) => {
         void this.startExport(settings);
       },

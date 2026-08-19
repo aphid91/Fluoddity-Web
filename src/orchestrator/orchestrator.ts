@@ -2420,6 +2420,18 @@ export class Orchestrator implements CommandBus {
     readonly selected: PickResult | null;
     readonly pickPending: boolean;
     readonly mouseMode: MouseMode;
+    /**
+     * Whether the recording crop box is being drawn.
+     *
+     * On `diagnostics` rather than `Status` because it is exactly what this
+     * getter is for: a readout of what the renderer is doing, for the `?debug`
+     * overlay and the verification tools. `Status` drives CONTROLS, and no
+     * control binds to this -- the box's visibility is decided from the panel's
+     * own tab state (`Panel.syncCropPreview`), so putting it there would invite
+     * something to bind to a value that is downstream of the UI rather than
+     * upstream of it.
+     */
+    readonly cropVisible: boolean;
   } {
     return {
       preset: this.presetName,
@@ -2434,6 +2446,9 @@ export class Orchestrator implements CommandBus {
       selected: this.selected,
       pickPending: this.system.pickPending,
       mouseMode: this.mouseMode,
+      // The same getter the frame path uses, so this reports what is actually
+      // drawn rather than a second opinion about it.
+      cropVisible: this.cropOverlay !== null,
     };
   }
 
