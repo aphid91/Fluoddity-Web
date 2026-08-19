@@ -81,8 +81,16 @@ export class PendingSelection<P> {
  * the same list of collaborators for the same reason.
  */
 export interface SelectionHost<P, R> {
-  /** Dispatch a pick at `pixel`. Phase 1; the result arrives on a later frame. */
-  requestPick(pixel: readonly [number, number]): void;
+  /**
+   * Dispatch a pick at `pixel`. Phase 1; the result arrives on a later frame.
+   *
+   * `wide` searches the whole world rather than a small radius around `pixel`.
+   * It exists for the keyboard confirm, which has no cursor to aim: combined
+   * with the highlighted cohort the shader already prioritises, a world-wide
+   * search resolves to a member of that cohort wherever it happens to be. With
+   * nothing highlighted it simply picks the particle nearest `pixel`.
+   */
+  requestPick(pixel: readonly [number, number], wide?: boolean): void;
   /**
    * The pick result if one is ready, else `null`.
    *
@@ -153,8 +161,17 @@ export class SelectionController<P, R> {
    * nothing to record yet, because which particle was hit is not known until
    * the result comes back.
    */
-  select(pixel: readonly [number, number]): void {
-    this.host.requestPick(pixel);
+  /**
+   * Phase 1: aim.
+   *
+   * `wide` searches the whole world instead of a small radius around `pixel`,
+   * for the keyboard confirm -- see `SelectionHost.requestPick`. Everything
+   * after the dispatch is identical, which is the point: Enter and a click
+   * commit through one path, so they cannot come to different verdicts about
+   * the same cohort.
+   */
+  select(pixel: readonly [number, number], wide = false): void {
+    this.host.requestPick(pixel, wide);
     // CAPTURED HERE, not at resolve time. This is the whole point of the class.
     this.pending.begin(this.host.currentProject());
   }

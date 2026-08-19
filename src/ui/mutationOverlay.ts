@@ -129,6 +129,8 @@ export class MutationOverlay {
   private readonly stepDown: HTMLButtonElement;
   private readonly stepUp: HTMLButtonElement;
   private readonly cohortInput: HTMLInputElement;
+  /** Commits the lit cohort. Replaces the "left click it" clause -- see `hintFor`. */
+  private readonly commitButton: HTMLButtonElement;
 
   /**
    * Last hint written to the DOM, so `refresh` can skip the common case.
@@ -389,7 +391,30 @@ export class MutationOverlay {
     this.cohortInput.setAttribute('aria-label', 'Highlighted cohort');
 
     this.stepper.append(this.stepDown, this.cohortInput, this.stepUp);
-    this.hint.append(this.hintLead, this.stepper, this.hintTail);
+
+    // The commit button, in place of the "left click it to apply" prose.
+    //
+    // A BUTTON RATHER THAN A SENTENCE because the action is now reachable three
+    // ways -- Enter, clicking the cohort again, and this -- and a line of prose
+    // describing two of them is worse than a control that IS the third and names
+    // the others. It also puts the commit within reach of someone who arrived by
+    // keyboard and never touched the canvas.
+    //
+    // Built once and shown by `display`, like the stepper beside it: rebuilding
+    // per frame would drop the listener and re-create the node sixty times a
+    // second.
+    this.commitButton = document.createElement('button');
+    this.commitButton.type = 'button';
+    this.commitButton.style.cssText = COMMIT_BUTTON_CSS;
+    this.commitButton.dataset['setting'] = 'transport.confirmSelection';
+    this.commitButton.addEventListener('click', () => {
+      opts.send({ kind: 'confirmSelection' });
+      // Hands the keys straight back, so Enter keeps working right after the
+      // button is used -- the same answer the gear and the tool select make.
+      this.commitButton.blur();
+    });
+
+    this.hint.append(this.hintLead, this.stepper, this.commitButton, this.hintTail);
 
     this.root.append(bar, this.hint);
     (opts.container ?? document.body).append(this.root);
@@ -582,7 +607,7 @@ export class MutationOverlay {
    * say is the same waste `generatedShown` guards against above.
    */
   private refreshHint(status: Status): void {
-    const { lead, cohort, tail } = hintFor(status);
+    const { lead, cohort, tail, commit } = hintFor(status);
 
     // THE FIELD IS RECONCILED ABOVE THE GUARD, because it can disagree with the
     // state without the STATE having changed. Type "99" over cohort 7 with 8
@@ -608,12 +633,27 @@ export class MutationOverlay {
       }
     }
 
-    const key = `${lead} ${String(cohort)} ${tail}`;
+    // `commit` joins the key, or toggling the button would not repaint: the
+    // no-op case and the commit case share a lead, a cohort and -- once the
+    // clause moved into the button -- very nearly a tail.
+    const key = `${lead} ${String(cohort)} ${tail} ${String(commit)}`;
     if (this.hintShown === key) return;
     this.hintShown = key;
 
     this.hintLead.textContent = lead;
     this.hintTail.textContent = tail;
+
+    // The label names EVERY route to the same act, which is the point of
+    // replacing the prose: the button is one way, and it says what the other two
+    // are rather than leaving them to be discovered. The key comes from the
+    // hotkey table, so a rebind moves it and an unbind drops it cleanly.
+    if (commit) {
+      const enter = hotkeyLabel({ kind: 'confirmSelection' });
+      this.commitButton.textContent =
+        'Generate children from selected cohort' +
+        keySuffix([enter, 'Left click cohort again']);
+    }
+    this.commitButton.style.display = commit ? 'inline-flex' : 'none';
 
     const stepping = cohort !== null;
     // `inline-flex` RESTATED, NOT `''`. Both of these elements carry their
@@ -795,8 +835,21 @@ export function hintFor(status: Status): {
   readonly lead: string;
   readonly cohort: number | null;
   readonly tail: string;
+  /**
+   * Whether to offer the commit BUTTON in place of the "left click it" prose.
+   *
+   * Decided here rather than in the DOM so it is testable with the wording it
+   * replaces -- the two are one decision, and a button that appeared while the
+   * sentence still told you to click would be two answers to the same question.
+   */
+  readonly commit: boolean;
 } {
-  const none = (lead: string) => ({ lead, cohort: null, tail: '' });
+  const none = (lead: string) => ({
+    lead,
+    cohort: null,
+    tail: '',
+    commit: false,
+  });
 
   if (status.mouseMode === 'shove') {
     return none('Left click to push particles away | Right click to pull them in');
@@ -822,6 +875,11 @@ export function hintFor(status: Status): {
       tail:
         ' | Increase Mutation Scale for variations | ' +
         'Right click to cancel selection',
+      // NO BUTTON HERE, and this is the case that most needs to say so. The
+      // commit is REFUSED at mutation scale 0 (`selectionIsNoOp`), so offering
+      // a button that declines when pressed would be worse than the sentence
+      // it replaced -- the sentence at least explains what to do about it.
+      commit: false,
     };
   }
 
@@ -829,9 +887,11 @@ export function hintFor(status: Status): {
     return {
       lead: 'Currently selected: Cohort',
       cohort: status.highlightedCohort,
-      tail:
-        ' | Left click it to apply its behavior to all particles [[[TODO]]] | ' +
-        'Right click to cancel selection',
+      // The commit clause is a BUTTON now, so the tail carries only what is
+      // left. It still leads with the separator, because the stepper sits
+      // between it and the lead.
+      tail: ' | Right click to cancel selection',
+      commit: true,
     };
   }
 
@@ -1214,6 +1274,19 @@ const GEAR_BUTTON_CSS =
   'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
   'border-radius:4px;color:#e8e8ea;cursor:pointer;padding:0 8px;height:24px;' +
   'display:flex;align-items:center;gap:5px;flex:none;';
+
+// The commit button on the hint row.
+//
+// Sized to the hint's 11px text rather than to the bar's buttons above: it sits
+// INSIDE a line of prose and has to read as part of that sentence, not as a
+// control that wandered down from the row above. Gold-tinted because it commits
+// the thing the gold ring and the gold layout dots are already about -- the
+// active cohort -- so the colour is a continuation rather than a new vocabulary.
+const COMMIT_BUTTON_CSS =
+  'display:none;align-items:center;margin:0 6px;padding:2px 8px;' +
+  'background:rgba(232,193,74,0.14);border:1px solid rgba(232,193,74,0.45);' +
+  'border-radius:4px;color:#e8c14a;cursor:pointer;' +
+  'font:11px system-ui,sans-serif;white-space:nowrap;';
 
 // The `(X)` beside an icon. Dimmed and a size down, so the glyph stays the thing
 // you see first and the shortcut sits behind it.

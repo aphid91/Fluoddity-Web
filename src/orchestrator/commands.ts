@@ -232,6 +232,23 @@ export type Command =
    * surprising when no cohort is selected.
    */
   | { readonly kind: 'stepHighlightedCohort'; readonly delta: number }
+  /**
+   * Adopt the highlighted cohort's behaviour: the Enter key, and the hint
+   * bar's button.
+   *
+   * **STILL GOES THROUGH A PICK**, because the rule it adopts is 80 floats
+   * derived on the GPU and there is no host copy to read. What makes it work
+   * without a cursor is the confirmation snap already in `entityPick.wgsl`:
+   * every member of the highlighted cohort inside `CONFIRM_SNAP_FRACTION` of
+   * the search radius is treated as a direct hit, so a search wide enough to
+   * cover the world resolves to a member of that cohort wherever they are.
+   *
+   * Refused when nothing is lit AND the two-stage highlight is running -- there
+   * is no cohort to confirm. With highlighting OFF (one-click selection, or a
+   * single-cohort config) it commits the particle nearest the centre, which is
+   * what one click would have done anyway.
+   */
+  | { readonly kind: 'confirmSelection' }
   | { readonly kind: 'undo' }
   | { readonly kind: 'redo' }
   // --- presets: the LEFT/RIGHT cycle over the whole catalog ---

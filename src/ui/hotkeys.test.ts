@@ -176,6 +176,18 @@ test('the arrows step the cohort highlight, and no longer load presets', () => {
   }
 });
 
+test('Enter confirms the selection, completing the keyboard route', () => {
+  // With the arrows, this makes selection reachable without the mouse: an arrow
+  // lights cohort 0, the arrows walk to the one you want, Enter adopts it.
+  //
+  // Bound unconditionally like the arrows -- the Orchestrator refuses it outside
+  // Select mode and with nothing lit, so the condition lives once, beside the
+  // state it reads.
+  assert.deepEqual(matchHotkey(DEFAULT_HOTKEYS, 'Enter', false)?.command, {
+    kind: 'confirmSelection',
+  });
+});
+
 test('the number keys follow MOUSE_MODES order', () => {
   // `commands.ts:67`: "MEMBER ORDER IS THE TOOLBAR ORDER and the 1/2/3 key
   // order". Adding a tool must add its key here and nowhere else.

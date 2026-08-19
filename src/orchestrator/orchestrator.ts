@@ -1252,7 +1252,7 @@ export class Orchestrator implements CommandBus {
    */
   private selectionHost(): SelectionHost<Project, PickResult> {
     return {
-      requestPick: (pixel) => {
+      requestPick: (pixel, wide = false) => {
         const cam = this.camera.state;
         const windowSize = this.surface.size();
         const canvasSize = this.system.canvasSize;
@@ -1262,13 +1262,27 @@ export class Orchestrator implements CommandBus {
         const target = screenToWorld(pixel, windowSize, canvasSize, cam.pan, cam.zoom);
         // Through the transform, not a fudge factor, so the tolerance is
         // exactly 40 screen pixels at any zoom.
-        const radius = radiusPxToWorld(
-          DEFAULT_PICK_RADIUS_PX,
-          windowSize,
-          canvasSize,
-          cam.pan,
-          cam.zoom,
-        );
+        //
+        // **THE WIDE RADIUS IS HOW ENTER COMMITS WITHOUT A CURSOR.** It is not a
+        // bigger tolerance, it is a different question: with a search that spans
+        // the world, `entityPick.wgsl`'s confirmation snap treats EVERY member
+        // of the highlighted cohort as a direct hit -- they are all inside
+        // `CONFIRM_SNAP_FRACTION` of a radius that large -- so the pick resolves
+        // to that cohort wherever its particles are, rather than to whatever
+        // happens to sit near the screen centre.
+        //
+        // With nothing highlighted the snap does not apply and this degrades to
+        // "the particle nearest the centre", which is what the one-click modes
+        // want anyway.
+        const radius = wide
+          ? WIDE_PICK_RADIUS_WORLD
+          : radiusPxToWorld(
+              DEFAULT_PICK_RADIUS_PX,
+              windowSize,
+              canvasSize,
+              cam.pan,
+              cam.zoom,
+            );
         // THE HIGHLIGHT GOES WITH THE PICK, so the reduce pass can give the lit
         // cohort priority within a small radius of the cursor -- otherwise a
         // click meant to CONFIRM a cohort gets handed to whatever unrelated
@@ -1643,13 +1657,53 @@ export class Orchestrator implements CommandBus {
         return;
       }
 
+      case 'confirmSelection': {
+        // Only in Select mode: Enter while painting or shoving would adopt a
+        // rule the user is not looking at, from a tool that has nothing to do
+        // with selection.
+        if (this.mouseMode !== 'select') return;
+
+        // NOTHING TO CONFIRM, when the two-stage highlight is running and no
+        // cohort is lit. With highlighting OFF -- one-click selection, or a
+        // single-cohort config -- there is no aiming stage to have completed, so
+        // Enter commits the same way one click would, which is the specified
+        // "works when there is only a single cohort".
+        if (this.highlightEnabled && !this.highlight.isHighlighted) return;
+
+        // THE CENTRE, with a world-wide radius. The pixel still matters: it
+        // breaks ties among the cohort's members, so the one nearest the middle
+        // of the view wins and the adopted rule comes from a particle the user
+        // can actually see. See `requestPick`'s `wide` note.
+        const [w, h] = this.surface.size();
+        this.selection.select([w / 2, h / 2], true);
+        return;
+      }
+
       case 'stepHighlightedCohort': {
-        // THE SAME TWO REFUSALS as the absolute form above, restated rather than
-        // shared because falling through would also re-run its wrap on a value
-        // this case has not computed yet. Refusing here is what makes the arrow
-        // keys inert with nothing lit -- the specified behaviour, and the reason
-        // `hotkeys.ts` needs no condition of its own.
-        if (!this.highlightEnabled || !this.highlight.isHighlighted) return;
+        // Highlighting off entirely -- one-click selection, or a single-cohort
+        // config -- means there is no cohort to step through and never will be.
+        // Inert, as before.
+        if (!this.highlightEnabled) return;
+
+        // **NOTHING LIT YET: LIGHT COHORT 0 AND STOP.** The arrows are the
+        // mouse-free route into selection, so the first press has to be able to
+        // START one -- otherwise the keyboard path is unreachable without first
+        // clicking, which is the thing it exists to avoid.
+        //
+        // Cohort 0 REGARDLESS OF DIRECTION, and it is not an oversight that
+        // LEFT does not light the last cohort instead. There is no current
+        // position for a direction to be relative TO; the press means "begin",
+        // and beginning at the same place whichever key was pressed is more
+        // predictable than a rule the user has to derive. Stepping from there
+        // behaves normally, so the last cohort is one LEFT away.
+        //
+        // This is also the one path that can light a cohort without a pick,
+        // which is safe precisely because it adopts nothing: it moves the
+        // highlight, and `confirmSelection` is still what commits.
+        if (!this.highlight.isHighlighted) {
+          this.highlight.set(0);
+          return;
+        }
 
         // Resolved against the LIVE highlight, which is the authority a hotkey
         // has no other way to read -- the stepper BUTTONS get it from their own
@@ -2708,6 +2762,19 @@ export class Orchestrator implements CommandBus {
  * `settingsSources`, which still skips the two payloads that genuinely have no
  * reader outside the panel.
  */
+/**
+ * Search radius, in WORLD units, for a pick with no cursor behind it.
+ *
+ * World space spans roughly [-1, 1] on each axis (`worldHalfExtent` returns
+ * `sqrt(aspect)` and its reciprocal, which is ~1 for any sane canvas), so 100 is
+ * "everything" with two orders of magnitude to spare rather than a tuned value.
+ * Deliberately not `Infinity`: it is written into a float uniform and squared in
+ * the shader (`dist_sq > limit * limit`), where an infinity would produce a NaN
+ * comparison that fails for every particle -- the pick would find nothing at
+ * all, which is the exact opposite of what this is for.
+ */
+const WIDE_PICK_RADIUS_WORLD = 100.0;
+
 const NO_SETTINGS: Pick<Status, 'editWorld' | 'editPrefs'> = Object.freeze({
   editWorld: Object.freeze({}),
   editPrefs: Object.freeze({}),

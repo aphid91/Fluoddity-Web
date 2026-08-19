@@ -140,6 +140,19 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   // on the hint bar send, so the two routes cannot disagree.
   { code: 'ArrowRight', command: { kind: 'stepHighlightedCohort', delta: 1 } },
   { code: 'ArrowLeft', command: { kind: 'stepHighlightedCohort', delta: -1 } },
+  // Enter COMMITS what the arrows aimed. Together the three make selection
+  // reachable without the mouse at all: an arrow lights cohort 0, the arrows
+  // walk to the one you want, Enter adopts it.
+  //
+  // Refused by the Orchestrator outside Select mode and with nothing lit, for
+  // the same reason the arrows are -- the condition lives with the state it
+  // reads rather than being restated here.
+  //
+  // **`Enter`, NOT `NumpadEnter` as well.** `matchHotkey` compares `code`, and
+  // the numpad key reports its own; adding it is one more row here whenever
+  // someone asks. Left out for now rather than guessed at, since a keypad Enter
+  // landing on a text field is the more likely thing a user is doing with it.
+  { code: 'Enter', command: { kind: 'confirmSelection' } },
 
   // --- camera. `M` for mode; Tab stays with the DOM ------------------------
   { code: 'KeyM', command: { kind: 'toggleCameraMode' } },

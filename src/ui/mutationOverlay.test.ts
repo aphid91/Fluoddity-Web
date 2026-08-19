@@ -170,6 +170,39 @@ test('at scale 0 the hint says what to do instead of promising an adoption', () 
   assert.match(hint.tail, /Right click to cancel selection/, 'cancelling still works');
 });
 
+test('a lit cohort offers the commit BUTTON instead of the click prose', () => {
+  // The button replaces the sentence rather than joining it: two answers to
+  // "how do I apply this" is worse than either alone.
+  const hint = hintFor(status({ mouseMode: 'select', highlightedCohort: 2 }));
+  assert.equal(hint.commit, true, 'a lit cohort should offer the button');
+  assert.ok(
+    !/apply its behavior/.test(hint.tail),
+    'the prose it replaces must be gone from the tail',
+  );
+  assert.match(hint.tail, /Right click to cancel selection/, 'cancelling survives');
+});
+
+test('the button is WITHHELD wherever the commit would be refused', () => {
+  // At scale 0 the commit is declined (`selectionIsNoOp`), so a button that did
+  // nothing when pressed would be worse than the sentence explaining why -- and
+  // with nothing lit there is no cohort to commit at all.
+  const noOp = hintFor(
+    status({ mouseMode: 'select', highlightedCohort: 3, selectionIsNoOp: true }),
+  );
+  assert.equal(noOp.commit, false, 'no button while the commit is refused');
+
+  const nothingLit = hintFor(status({ mouseMode: 'select' }));
+  assert.equal(nothingLit.commit, false, 'no button with no cohort lit');
+
+  for (const mouseMode of ['shove', 'draw'] as const) {
+    assert.equal(
+      hintFor(status({ mouseMode, highlightedCohort: 2 })).commit,
+      false,
+      `${mouseMode} has nothing to commit`,
+    );
+  }
+});
+
 test('at scale 0 with nothing lit, the hint is the ORDINARY one', () => {
   // The no-op only changes the commit clause, and there is no commit clause
   // here: aiming is not blocked, so this sentence was already accurate. Saying
