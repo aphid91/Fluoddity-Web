@@ -38,6 +38,7 @@ import {
   MOUSE_MODES,
   mouseModeFromValue,
 } from '../orchestrator/commands.ts';
+import { IC } from '../particleSystem/config.ts';
 import { NO_COHORT } from '../selection/cohortHighlight.ts';
 import { bindFocusRelease } from './focusRelease.ts';
 import { hotkeyLabel, localHotkeyLabel } from './hotkeys.ts';
@@ -88,6 +89,27 @@ export class MutationOverlay {
   private readonly tool: HTMLSelectElement;
   /** The gear, at the right end. See its construction for why it lives here. */
   private readonly gear: HTMLButtonElement;
+  /** Cohort Fences, past the divider at the left group's right edge. */
+  private readonly fences: HTMLButtonElement;
+  /** The three layout presets by cohort count, so `refresh` can colour them. */
+  private readonly layoutButtons = new Map<number, HTMLButtonElement>();
+
+  /**
+   * Whether Cohort Fences is on, as of the last refresh.
+   *
+   * Read by the click handler so it can send the INVERSE. Held rather than
+   * re-derived at click time because the click handler has no `Status` -- and
+   * held rather than owned, because the panel's checkbox edits the same field
+   * and this is a mirror of it, refreshed every frame.
+   */
+  private fencesOn = false;
+
+  /**
+   * What the left group last rendered as active, so `refresh` can skip the
+   * common case. Writing `color` on four buttons every frame to say what they
+   * already say is the waste every other guard in this file avoids.
+   */
+  private activeShown: string | null = null;
 
   // --- the context hint row ------------------------------------------------
   //
@@ -243,8 +265,47 @@ export class MutationOverlay {
     const presets = document.createElement('div');
     presets.style.cssText = PRESETS_CSS;
     for (const count of LAYOUT_PRESETS) {
-      presets.append(this.layoutButton(count, opts.send));
+      const button = this.layoutButton(count, opts.send);
+      this.layoutButtons.set(count, button);
+      presets.append(button);
     }
+
+    // Cohort Fences, past a divider.
+    //
+    // THE DIVIDER IS THE POINT of the grouping. The three buttons to its left
+    // SET the population -- each is a one-shot that writes a cohort count and a
+    // layout. This one TOGGLES a property of whatever population is there. They
+    // sit together because both are about how cohorts are arranged, and they
+    // must not read as a fourth preset: clicking a preset replaces your layout,
+    // clicking this does not, and a user who learned the first three by trying
+    // them would reasonably expect the fourth to behave the same way.
+    //
+    // A rule rather than a gap, because a gap at this size reads as spacing
+    // rather than as a boundary -- the buttons are 24px with 3px between them,
+    // so any gap large enough to signal a break would look like a mistake.
+    const divider = document.createElement('span');
+    divider.style.cssText = DIVIDER_CSS;
+    presets.append(divider);
+
+    this.fences = document.createElement('button');
+    this.fences.type = 'button';
+    this.fences.style.cssText = LAYOUT_BUTTON_CSS;
+    this.fences.dataset['setting'] = 'config.cohortFences';
+    // Dashed to start, matching `fencesOn`'s initial false. The first `refresh`
+    // replaces it with whatever the config actually says, so this only has to be
+    // right for the frame before that.
+    this.fences.append(fencesIcon(false));
+    this.fences.addEventListener('click', () => {
+      const setting = settingFor(CONFIG, 'cohortFences');
+      if (setting === null) return;
+      // Reads the LIVE value and inverts it, rather than tracking a local flag:
+      // the checkbox in the panel edits the same field, and two copies of a
+      // boolean is two things to get out of step. `fencesOn` is the same read
+      // `refresh` uses to colour the icon.
+      opts.send({ kind: 'editSetting', setting, value: !this.fencesOn });
+      this.fences.blur();
+    });
+    presets.append(this.fences);
 
     // The gear, at the RIGHT END, past the tool selector.
     //
@@ -441,6 +502,8 @@ export class MutationOverlay {
    * the panes are.
    */
   refresh(status: Status): void {
+    this.refreshPopulationGroup(status);
+
     const scale = status.editConfig['mutationScale'];
 
     if (typeof scale === 'number') {
@@ -567,6 +630,69 @@ export class MutationOverlay {
     // copy one onto the other reintroduces the bug.
     this.stepper.style.display = stepping ? 'inline-flex' : 'none';
     this.hintTail.style.display = stepping ? 'inline' : 'none';
+  }
+
+  /**
+   * Colour the population group: gold means "this is what is running".
+   *
+   * ## What "active" means, and why it is two conditions
+   *
+   * A layout preset writes BOTH a cohort count and `initialConditions: GRID`
+   * (`setPopulationLayout`), so it is only truthful to light one when both still
+   * hold. Testing the count alone would light the 16 button for a config with 16
+   * cohorts scattered at random -- a state that button has never produced and
+   * would not produce if pressed.
+   *
+   * At most one is ever lit, because the counts are distinct. None is lit
+   * whenever the layout is not Grid, which is the honest answer: no preset
+   * describes that state.
+   *
+   * ## Fences is coloured on its own terms
+   *
+   * Gold when the fences are ON, independent of which preset is active, because
+   * that is what its own toggle says. It also swaps from a DASHED ring to a
+   * SOLID one -- the colour says "active" the same way the presets do, and the
+   * line style says which of the two states it is in without relying on colour
+   * alone.
+   *
+   * **Read from `editConfig`, which survives a closed panel.**
+   * `settingsSources` keeps every config field but `rule` in that payload
+   * precisely so the always-visible bar can read it (`asRecord(config,
+   * ['rule'])`). Adding `Status` fields for these two would duplicate values
+   * already crossing the boundary.
+   */
+  private refreshPopulationGroup(status: Status): void {
+    const layout = status.editConfig['initialConditions'];
+    const onGrid = layout === IC.GRID;
+    const cohorts = status.cohortCount;
+
+    this.fencesOn = status.editConfig['cohortFences'] === true;
+
+    // One key for the whole group, so the guard is a single string compare
+    // rather than four. `refresh` runs every frame and this changes rarely.
+    const key = `${onGrid ? String(cohorts) : '-'}:${this.fencesOn ? 'f' : ''}`;
+    if (key === this.activeShown) return;
+    this.activeShown = key;
+
+    for (const [count, button] of this.layoutButtons) {
+      button.style.color = onGrid && count === cohorts ? ACTIVE_GOLD : IDLE_WHITE;
+    }
+
+    this.fences.style.color = this.fencesOn ? ACTIVE_GOLD : IDLE_WHITE;
+    // The ICON changes with the state too, not just its colour: solid when the
+    // fences are holding, dashed when they are not. Rebuilt rather than
+    // restyled because the dash pattern is an attribute on the circle, and
+    // swapping the whole icon keeps `fencesIcon` the single description of both
+    // states.
+    this.fences.replaceChildren(fencesIcon(this.fencesOn));
+
+    const state = this.fencesOn ? 'on' : 'off';
+    const label = `Cohort Fences: ${state} — hold each cohort near where it started`;
+    this.fences.title = onGrid
+      ? label
+      : `${label}\n\nRequires Initial Conditions: Grid.`;
+    this.fences.setAttribute('aria-label', label);
+    this.fences.setAttribute('aria-pressed', String(this.fencesOn));
   }
 
   /** One of the stepper's two arrows. */
@@ -770,6 +896,50 @@ function dotsIcon(count: number): SVGSVGElement {
       svg.append(dot);
     }
   }
+  return svg;
+}
+
+/**
+ * The Cohort Fences ring: dashed when off, solid when on.
+ *
+ * A RING because that is the shape of the thing -- a fence holds each cohort
+ * inside a circle of half a grid cell (`config.ts`), so the icon is a picture of
+ * the boundary rather than a symbol standing in for one.
+ *
+ * DASHED reads as "a boundary that is not currently holding", which is exactly
+ * the off state; solid reads as closed. That difference survives at 16px and
+ * survives without colour, which is what makes the gold a reinforcement rather
+ * than the only signal -- the same rule the recording readout follows.
+ *
+ * `stroke:currentColor`, so the button's `color` drives it and this function
+ * never needs to know about gold.
+ */
+function fencesIcon(solid: boolean): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${String(ICON_BOX)} ${String(ICON_BOX)}`);
+  svg.setAttribute('width', String(ICON_BOX));
+  svg.setAttribute('height', String(ICON_BOX));
+  svg.style.display = 'block';
+
+  const c = ICON_BOX / 2;
+  const ring = document.createElementNS(SVG_NS, 'circle');
+  ring.setAttribute('cx', String(c));
+  ring.setAttribute('cy', String(c));
+  // Inset by the stroke's half-width plus a hair, so a solid ring does not
+  // clip against the viewBox edge at this size.
+  ring.setAttribute('r', String(c - 2.2));
+  ring.setAttribute('fill', 'none');
+  ring.setAttribute('stroke', 'currentColor');
+  ring.setAttribute('stroke-width', '1.8');
+  if (!solid) {
+    // Tuned against the circumference rather than picked: r=5.8 gives ~36.4, so
+    // a 2.6+2.4 cell repeats ~7.3 times. A pattern that does not divide evenly
+    // leaves one visibly short dash at the seam, which reads as a rendering
+    // fault rather than as a dashed line.
+    ring.setAttribute('stroke-dasharray', '2.6 2.4');
+    ring.setAttribute('stroke-linecap', 'round');
+  }
+  svg.append(ring);
   return svg;
 }
 
@@ -1000,6 +1170,27 @@ const LAYOUT_BUTTON_CSS =
   'border-radius:4px;color:#e8e8ea;padding:0;cursor:pointer;' +
   'display:flex;align-items:center;justify-content:center;' +
   'width:24px;height:24px;flex:none;';
+
+/**
+ * The two states of the population group's icons.
+ *
+ * Gold means "this is what is running" -- the active layout preset, and fences
+ * when they are holding. White is the resting state every other icon on this bar
+ * uses, so the gold reads as a departure from it rather than as its own scheme.
+ *
+ * NEVER THE ONLY SIGNAL. The fences icon also changes from dashed to solid, and
+ * every button states its condition in `title` and `aria-label`, so the group is
+ * readable in a screenshot and without colour vision.
+ */
+const ACTIVE_GOLD = '#e8c14a';
+const IDLE_WHITE = '#e8e8ea';
+
+// The rule between the layout presets and Cohort Fences. See its construction:
+// the three to the left SET a population, the one to the right TOGGLES a
+// property of it, and the divider is what stops the fourth reading as a preset.
+const DIVIDER_CSS =
+  'width:1px;height:16px;flex:none;margin:0 2px;' +
+  'background:rgba(255,255,255,0.22);';
 
 // The gear, at the right end of the bar.
 //
