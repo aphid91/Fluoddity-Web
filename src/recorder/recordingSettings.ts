@@ -61,6 +61,64 @@ export function evenDim(value: number): number {
 /** Frames per second of the OUTPUT file. Not a rate the renderer must keep up with. */
 export const RECORDING_FPS = 60;
 
+/**
+ * The encoder quality presets, worst to best.
+ *
+ * These are mediabunny's five named `QualityLevel`s, which map to 0, 0.25, 0.5,
+ * 0.75 and 1 on its internal scale. The names are passed straight through --
+ * NOT reinterpreted into bitrates here -- because mediabunny picks bitrate- or
+ * quantizer-driven encoding per codec and per system from that level, and a
+ * hardcoded bitrate would throw away that adaptation and be wrong at some
+ * resolutions.
+ *
+ * ## Why the two extremes are offered at all
+ *
+ * `very-high` is the point of this control: this app renders particle fields
+ * with fine bright filaments over near-black, which is exactly the content
+ * H.264 spends its bits worst on -- banding in the dark and mush in the
+ * filaments. Someone exporting a piece they care about should be able to ask
+ * for more.
+ *
+ * `low` and `very-low` are kept for the opposite case rather than for
+ * completeness: a long 4K export at `very-high` produces a very large file, and
+ * a rough take for review does not need one.
+ *
+ * ## Ordering is load-bearing
+ *
+ * Worst first, so the dropdown reads bottom-to-top like every quality control,
+ * and so `QUALITY_PRESETS.indexOf` is a meaningful comparison. `DEFAULT_QUALITY`
+ * names its entry rather than indexing, so reordering cannot silently move the
+ * default.
+ */
+export const QUALITY_PRESETS = [
+  'very-low',
+  'low',
+  'medium',
+  'high',
+  'very-high',
+] as const;
+
+export type QualityPreset = (typeof QUALITY_PRESETS)[number];
+
+/**
+ * The shipped default.
+ *
+ * `high`, which is what this feature used before the control existed -- so
+ * adding the dropdown changes nobody's output until they choose to change it.
+ * That is deliberate: the user called the current quality "an excellent
+ * default" and wanted access to something HIGHER, not a different default.
+ */
+export const DEFAULT_QUALITY: QualityPreset = 'high';
+
+/** Human labels for the dropdown. Separate from the wire values, which are mediabunny's. */
+export const QUALITY_LABELS: Readonly<Record<QualityPreset, string>> = {
+  'very-low': 'Very Low (smallest file)',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High (default)',
+  'very-high': 'Very High (largest file)',
+};
+
 /** Bounds on the recording's physics rate. The live editor's is a preference; this is not. */
 export const MIN_PHYSICS_STEPS = 1;
 export const MAX_PHYSICS_STEPS = 480;
@@ -95,6 +153,14 @@ export interface RecordingSettings {
   /** Clip length in seconds. Frame count is this times `RECORDING_FPS`. */
   readonly duration: number;
   /**
+   * Encoder quality. Passed to mediabunny's `Quality` as a named level.
+   *
+   * Affects FILE SIZE and compression artefacts only -- never the render. The
+   * frames handed to the encoder are identical at every setting; this decides
+   * how many bits are spent describing them.
+   */
+  readonly quality: QualityPreset;
+  /**
    * Physics sub-steps per RECORDED frame. The recording's own rate, independent
    * of the live editor's -- see the file header.
    */
@@ -126,6 +192,7 @@ export const DEFAULT_RECORDING_SETTINGS: RecordingSettings = Object.freeze({
   // screen -- and it means the crop overlay is hidden until the user asks for it.
   resolution: { width: 1 << 20, height: 1 << 20 },
   duration: 5,
+  quality: DEFAULT_QUALITY,
   physicsSteps: 60,
   motionBlurSamples: 60,
 });
@@ -289,6 +356,24 @@ export function withMotionBlurSamples(
     ...settings,
     motionBlurSamples: clampInt(samples, 1, settings.physicsSteps),
   };
+}
+
+/**
+ * Set the encoder quality.
+ *
+ * Validates against the preset list rather than trusting the caller, and leaves
+ * the settings untouched on an unknown value. This is a UI boundary -- a
+ * Tweakpane list hands back whatever is in its options map -- and the failure a
+ * user would see from a bad value is an encoder that refuses to configure AFTER
+ * they pressed Export, which is the worst moment to find out.
+ */
+export function withQuality(
+  settings: RecordingSettings,
+  quality: string,
+): RecordingSettings {
+  return (QUALITY_PRESETS as readonly string[]).includes(quality)
+    ? { ...settings, quality: quality as QualityPreset }
+    : settings;
 }
 
 /** Set the clip length in seconds. */

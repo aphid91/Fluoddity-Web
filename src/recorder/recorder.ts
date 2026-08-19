@@ -258,11 +258,21 @@ export class VideoRecorder {
 
     const source = new CanvasSource(this.target.canvas, {
       codec,
-      quality: new Quality('high'),
+      // The user's preset, passed through as a NAMED LEVEL rather than resolved
+      // to a bitrate here: mediabunny chooses bitrate- or quantizer-driven
+      // encoding from it per codec and per system, and a number computed on this
+      // side would discard that and be wrong at some resolutions.
+      quality: new Quality(this.settings.quality),
       // 'quality', NOT 'realtime'. The realtime mode trades picture for latency
       // to keep up with a live stream; there is no live stream here and no
       // deadline to miss, so the trade is pure loss. This is the encoder-side
       // half of the same decision the explicit timestamps make.
+      //
+      // ORTHOGONAL TO THE PRESET ABOVE, and stays fixed at 'quality' whatever
+      // the user picks: the preset says how many bits to spend, this says how
+      // hard to work to spend them well. Even a `very-low` export should be the
+      // best `very-low` the encoder can manage, since nothing here is racing a
+      // clock.
       latencyMode: 'quality',
     });
 

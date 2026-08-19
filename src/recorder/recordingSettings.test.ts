@@ -12,9 +12,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  DEFAULT_QUALITY,
   DEFAULT_RECORDING_SETTINGS,
   MAX_PHYSICS_STEPS,
   MIN_RECORDING_DIM,
+  QUALITY_LABELS,
+  QUALITY_PRESETS,
   RECORDING_FPS,
   clampResolution,
   cropRect,
@@ -27,6 +30,7 @@ import {
   withHeight,
   withMotionBlurSamples,
   withPhysicsSteps,
+  withQuality,
   withWidth,
 } from './recordingSettings.ts';
 
@@ -197,6 +201,61 @@ test('the default is full frame, so the crop overlay starts hidden', () => {
 test('frameCount is duration times the output rate', () => {
   assert.equal(frameCount(DEFAULT_RECORDING_SETTINGS), 5 * RECORDING_FPS);
   assert.equal(frameCount(withDuration(DEFAULT_RECORDING_SETTINGS, 1)), RECORDING_FPS);
+});
+
+test('the quality default is unchanged from before the control existed', () => {
+  // Adding the dropdown must not silently re-encode everyone's exports at a
+  // different level. `high` is what was hardcoded before it, and the request was
+  // for access to something HIGHER rather than a new default.
+  assert.equal(DEFAULT_RECORDING_SETTINGS.quality, 'high');
+  assert.equal(DEFAULT_QUALITY, 'high');
+});
+
+test('there is a level ABOVE the default, which is the point of the control', () => {
+  // If `high` were the top of the list this whole feature would be decorative.
+  const above = QUALITY_PRESETS.slice(QUALITY_PRESETS.indexOf(DEFAULT_QUALITY) + 1);
+  assert.ok(above.length > 0, 'nothing above the default');
+  assert.deepEqual(above, ['very-high']);
+});
+
+test('the presets run worst to best and every one has a label', () => {
+  // Ordering is load-bearing: the dropdown is built from this array, and a
+  // quality list that does not ascend reads as broken. A missing label would
+  // render as `undefined` in the menu.
+  assert.deepEqual(QUALITY_PRESETS, ['very-low', 'low', 'medium', 'high', 'very-high']);
+  for (const preset of QUALITY_PRESETS) {
+    assert.equal(typeof QUALITY_LABELS[preset], 'string', `no label for ${preset}`);
+    assert.ok(QUALITY_LABELS[preset].length > 0, `empty label for ${preset}`);
+  }
+});
+
+test('withQuality accepts the presets and REFUSES anything else', () => {
+  // The validation matters because the failure it prevents is remote from its
+  // cause: an unknown level reaches `new Quality(...)` and the encoder refuses
+  // to configure -- after the user has pressed Export and chosen a file.
+  for (const preset of QUALITY_PRESETS) {
+    assert.equal(withQuality(DEFAULT_RECORDING_SETTINGS, preset).quality, preset);
+  }
+  for (const junk of ['', 'ultra', 'HIGH', 'very high', '0.9']) {
+    assert.equal(
+      withQuality(DEFAULT_RECORDING_SETTINGS, junk).quality,
+      DEFAULT_QUALITY,
+      `"${junk}" must not be adopted`,
+    );
+  }
+});
+
+test('quality is independent of everything else in the record', () => {
+  // It affects the FILE, not the render. Changing it must not disturb the
+  // resolution, the duration or the physics pair -- and in particular must not
+  // trip the blur ceiling, which is the one coupled invariant here.
+  const before = withPhysicsSteps(DEFAULT_RECORDING_SETTINGS, 120);
+  const after = withQuality(before, 'very-high');
+  assert.equal(after.quality, 'very-high');
+  assert.deepEqual(after.resolution, before.resolution);
+  assert.equal(after.duration, before.duration);
+  assert.equal(after.physicsSteps, before.physicsSteps);
+  assert.equal(after.motionBlurSamples, before.motionBlurSamples);
 });
 
 test('physicsFrameCount is video frames times the physics rate', () => {

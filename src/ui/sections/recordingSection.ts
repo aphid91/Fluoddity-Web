@@ -41,6 +41,8 @@ import {
   MIN_DURATION,
   MIN_PHYSICS_STEPS,
   MIN_RECORDING_DIM,
+  QUALITY_LABELS,
+  QUALITY_PRESETS,
   type RecordingSettings,
   clampResolution,
   frameCount,
@@ -49,6 +51,7 @@ import {
   withHeight,
   withMotionBlurSamples,
   withPhysicsSteps,
+  withQuality,
   withWidth,
 } from '../../recorder/recordingSettings.ts';
 import { type SectionContext, type SectionHandle } from './section.ts';
@@ -160,6 +163,37 @@ export function buildRecordingSection(
     if (ctx.isRefreshing()) return;
     settings = withDuration(settings, ev.value);
     updateSummary();
+  });
+
+  // --- quality -------------------------------------------------------------
+  //
+  // BESIDE THE OUTPUT SETTINGS, above the physics pair, because that is what it
+  // is: size, length and quality describe the FILE, while the physics rate and
+  // blur samples describe what is simulated to fill it. Grouping it with the
+  // physics controls would put a decision about compression next to two that
+  // change the picture itself.
+  const qualityProxy = { value: settings.quality as string };
+  const qualityBlade = folder.addBinding(qualityProxy, 'value', {
+    label: 'Quality',
+    // Label -> value, which is the direction Tweakpane's options map takes.
+    // Built from `QUALITY_PRESETS` so the order here is the order there --
+    // worst first, reading bottom-to-top like every other quality control.
+    options: Object.fromEntries(QUALITY_PRESETS.map((q) => [QUALITY_LABELS[q], q])),
+  });
+  (qualityBlade.element as HTMLElement).dataset['setting'] = 'recording.quality';
+  ctx.tooltip.attach(qualityBlade.element as HTMLElement, {
+    title: 'Quality',
+    body:
+      'How many bits the encoder spends. Affects file size and compression ' +
+      'artefacts only -- the frames themselves are identical at every setting, ' +
+      'so this never changes what is rendered.\n\nVery High is worth it for ' +
+      'this kind of image: fine bright filaments over near-black are exactly ' +
+      'what H.264 compresses worst, and the artefacts show up as banding in ' +
+      'the dark areas. It makes a noticeably larger file.',
+  });
+  qualityBlade.on('change', (ev) => {
+    if (ctx.isRefreshing()) return;
+    settings = withQuality(settings, ev.value as string);
   });
 
   // --- physics rate --------------------------------------------------------
