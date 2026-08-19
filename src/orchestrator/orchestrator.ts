@@ -1263,19 +1263,13 @@ export class Orchestrator implements CommandBus {
         // Through the transform, not a fudge factor, so the tolerance is
         // exactly 40 screen pixels at any zoom.
         //
-        // **THE WIDE RADIUS IS HOW ENTER COMMITS WITHOUT A CURSOR.** It is not a
-        // bigger tolerance, it is a different question: with a search that spans
-        // the world, `entityPick.wgsl`'s confirmation snap treats EVERY member
-        // of the highlighted cohort as a direct hit -- they are all inside
-        // `CONFIRM_SNAP_FRACTION` of a radius that large -- so the pick resolves
-        // to that cohort wherever its particles are, rather than to whatever
-        // happens to sit near the screen centre.
-        //
-        // With nothing highlighted the snap does not apply and this degrades to
-        // "the particle nearest the centre", which is what the one-click modes
-        // want anyway.
+        // **CONFIRM MODE IS HOW ENTER COMMITS WITHOUT A CURSOR.** The negative
+        // radius is a sentinel: `entityPick.wgsl` reads the sign as "restrict to
+        // the highlighted cohort, ignore distance as a filter" and still breaks
+        // ties on nearness to `target`, so the adopted rule comes from a member
+        // near the middle of the view. See `CONFIRM_PICK_RADIUS`.
         const radius = wide
-          ? WIDE_PICK_RADIUS_WORLD
+          ? CONFIRM_PICK_RADIUS
           : radiusPxToWorld(
               DEFAULT_PICK_RADIUS_PX,
               windowSize,
@@ -1670,11 +1664,18 @@ export class Orchestrator implements CommandBus {
         // "works when there is only a single cohort".
         if (this.highlightEnabled && !this.highlight.isHighlighted) return;
 
-        // THE CENTRE, with a world-wide radius. The pixel still matters: it
-        // breaks ties among the cohort's members, so the one nearest the middle
-        // of the view wins and the adopted rule comes from a particle the user
-        // can actually see. See `requestPick`'s `wide` note.
+        // FROM THE CENTRE. In confirm mode the pixel breaks ties among the
+        // cohort's members, so the adopted rule comes from one near the middle
+        // of the view rather than from an arbitrary index.
         const [w, h] = this.surface.size();
+
+        // CONFIRM MODE IN BOTH CASES. It applies the cohort filter only when a
+        // cohort is actually lit; with highlighting off it searches worldwide
+        // and adopts whatever is nearest the centre, which is what one click
+        // there would do. Using an ordinary pick for that case instead would
+        // give Enter the 15px cursor radius with no cursor behind it -- a
+        // keyboard shortcut that usually works is worse than one that always
+        // does.
         this.selection.select([w / 2, h / 2], true);
         return;
       }
@@ -2763,17 +2764,22 @@ export class Orchestrator implements CommandBus {
  * reader outside the panel.
  */
 /**
- * Search radius, in WORLD units, for a pick with no cursor behind it.
+ * The radius that means CONFIRM MODE: search the highlighted cohort, worldwide.
  *
- * World space spans roughly [-1, 1] on each axis (`worldHalfExtent` returns
- * `sqrt(aspect)` and its reciprocal, which is ~1 for any sane canvas), so 100 is
- * "everything" with two orders of magnitude to spare rather than a tuned value.
- * Deliberately not `Infinity`: it is written into a float uniform and squared in
- * the shader (`dist_sq > limit * limit`), where an infinity would produce a NaN
- * comparison that fails for every particle -- the pick would find nothing at
- * all, which is the exact opposite of what this is for.
+ * Negative is a SENTINEL, not a distance. `entityPick.wgsl` takes `abs()` for
+ * the magnitude and reads the sign as "filter by cohort and ignore the radius"
+ * -- see its `confirm_only`. One lane carries both facts, so there is no second
+ * flag that could disagree with it.
+ *
+ * **THIS REPLACES A LARGE POSITIVE RADIUS, WHICH WAS SUBTLY WRONG.** Passing
+ * 100 world units did reach every particle, and then quantized them all into
+ * distance bucket 0 -- `dist_norm` is `distance / limit`. The key collapsed to
+ * the raw index, `atomicMin` returned the lowest index in the world, and
+ * `get_cohort` is monotonic in index, so the winner was always in a low-numbered
+ * cohort: confirming cohort 20 silently re-aimed to cohort 12. Filtering is what
+ * was wanted; distance was the wrong instrument.
  */
-const WIDE_PICK_RADIUS_WORLD = 100.0;
+const CONFIRM_PICK_RADIUS = -1.0;
 
 const NO_SETTINGS: Pick<Status, 'editWorld' | 'editPrefs'> = Object.freeze({
   editWorld: Object.freeze({}),

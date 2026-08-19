@@ -118,7 +118,32 @@ struct PickUniforms {
 // translation does not compile -- a browser-only error, since nothing in
 // `npm test` parses WGSL.
 fn pick_target() -> vec2f { return u.params.xy; }
-fn max_dist() -> f32 { return u.params.z; }
+fn max_dist() -> f32 { return abs(u.params.z); }
+
+/**
+ * CONFIRM MODE: restrict the search to the highlighted cohort.
+ *
+ * Carried as the SIGN of `max_dist` rather than a new lane, because the two
+ * facts are inseparable -- a confirm is always "this cohort, anywhere" and never
+ * has a meaningful radius -- and because distance is only ever compared as a
+ * magnitude, so the sign bit was doing nothing.
+ *
+ * ## Why this exists rather than a very large radius
+ *
+ * The keyboard confirm first tried to reach every member of the cohort by
+ * passing a radius that spanned the world, on the theory that the confirmation
+ * snap below would then pick one of them. It does not work, and the way it fails
+ * is instructive: `dist_norm` is `distance / limit`, so a limit of 100 against
+ * distances of ~1 quantizes EVERY particle in the world into bucket 0. The key
+ * degenerates to the raw index, `atomicMin` returns the lowest index in the
+ * world, and `get_cohort` is monotonic in index -- so the winner was always in a
+ * LOW-numbered cohort. Confirming cohort 20 silently re-aimed to cohort 12.
+ *
+ * The snap could not save it: it sets `dist_norm = 0` for cohort members, but
+ * the huge radius had already set everyone to 0. Filtering is the operation that
+ * was actually wanted, and distance was the wrong instrument for it.
+ */
+fn confirm_only() -> bool { return u.params.z < 0.0; }
 
 // The cohort the user is currently aiming at, or negative when none is. Rides
 // the lane the GLSL left reserved. Floored host-side, matching `col_params.y`
@@ -165,6 +190,19 @@ fn highlighted_cohort() -> f32 { return u.params.w; }
 // anywhere on screen, and the highlight could never be moved by clicking.
 const CONFIRM_SNAP_FRACTION: f32 = 0.5;
 
+// The distance that saturates the key's buckets in CONFIRM MODE, in world units.
+//
+// A FIXED REFERENCE, not the pick radius: confirm mode has no meaningful radius
+// (it searches the whole world), and normalising by one is exactly the mistake
+// that made every particle land in bucket 0 -- see `confirm_only`.
+//
+// 2.0 spans world space, whose half-extent is ~1 per axis, so the buckets are
+// spread across the range distances actually occupy. Anything beyond saturates
+// to the last bucket and ties break on index, which is harmless: every candidate
+// here is already a member of the right cohort, so the worst case is adopting
+// the rule of a cohort-mate further from the centre than another.
+const CONFIRM_DIST_SCALE: f32 = 2.0;
+
 // --- the key ---------------------------------------------------------------
 // Mirrored in pick.ts; pick.test.ts parses THIS FILE for the two bit counts and
 // asserts they match, as tests/test_async_pick.py:65 does against the GLSL.
@@ -197,6 +235,43 @@ fn reduce(@builtin(global_invocation_id) gid: vec3u) {
     let d = pick_target() - pos;
     let dist_sq = dot(d, d);
     let limit = max_dist();
+
+    // CONFIRM MODE FILTERS BY COHORT AND IGNORES THE RADIUS ENTIRELY. The
+    // keyboard confirm has no cursor, so "near the target" is not the question
+    // being asked -- "is this the cohort the user is looking at" is. See
+    // `confirm_only`.
+    //
+    // The cohort is derived EXACTLY as the derive pass and entityUpdate do --
+    // same `get_cohort`, same config selection, same clamp bound, same floor.
+    // Any divergence would select from a different set than the one the shader
+    // draws bright, and the two would disagree while both looked internally
+    // consistent.
+    if (confirm_only()) {
+        // The cohort filter applies only when there IS a highlighted cohort.
+        // With none -- one-click selection, or a single-cohort config -- every
+        // particle is a candidate and the nearest to the target wins, which is
+        // what a click at that point would have adopted. Returning early here
+        // instead would make Enter find nothing in exactly the configurations
+        // that have no other keyboard route.
+        if (highlighted_cohort() >= 0.0) {
+            let config_index = e_config_index(e);
+            let config = configs[clamp(config_index, 0, world_config_count(u.world) - 1)];
+            let cohort = floor(get_cohort(index, config, arrayLength(&entities)));
+            if (cohort != highlighted_cohort()) { return; }
+        }
+
+        // Among the cohort's members, the one NEAREST THE TARGET wins, so the
+        // adopted rule comes from a particle near the middle of the view rather
+        // than from whichever happens to hold the lowest index. Quantized
+        // against a fixed reference -- the radius is meaningless here, and
+        // dividing by it is what collapsed every bucket to 0 in the version this
+        // replaces.
+        let dist_q_confirm = u32(clamp(sqrt(dist_sq) / CONFIRM_DIST_SCALE, 0.0, 1.0)
+                                 * f32(DIST_MAX));
+        atomicMin(&result.key, (dist_q_confirm << INDEX_BITS) | index);
+        return;
+    }
+
     if (dist_sq > limit * limit) { return; }   // outside the radius
 
     // Quantize distance into the high bits. Using the actual distance (not the
@@ -206,12 +281,6 @@ fn reduce(@builtin(global_invocation_id) gid: vec3u) {
     // THE CONFIRMATION SNAP. A member of the highlighted cohort, close enough
     // that the click plausibly meant it, is treated as a direct hit so no merely
     // nearer interloper can steal the confirmation. See CONFIRM_SNAP_FRACTION.
-    //
-    // The cohort is derived EXACTLY as the derive pass and entityUpdate do --
-    // same `get_cohort`, same config selection, same clamp bound, same floor.
-    // Any divergence here would snap to a different set of particles than the
-    // one the shader is drawing bright, and the two would disagree about which
-    // cohort is highlighted while both looked internally consistent.
     if (highlighted_cohort() >= 0.0 && dist_norm <= CONFIRM_SNAP_FRACTION) {
         let config_index = e_config_index(e);
         let config = configs[clamp(config_index, 0, world_config_count(u.world) - 1)];
