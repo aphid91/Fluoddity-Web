@@ -89,6 +89,55 @@ test('one record makes undo return the state before it', () => {
   assert.equal(gainOf(history.redo()), 1);
 });
 
+test('EVERY step keeps its label, not just the newest', () => {
+  // The reported bug: undo the most recent action and it names itself; undo the
+  // one before it and the message degraded to a bare "Undo".
+  //
+  // The cause was in `record`'s re-seating. It replaces the entry at the cursor
+  // so the timeline holds the state actually being left (previews can move the
+  // project without recording), and replacing the WHOLE entry also blanked its
+  // label -- so recording B erased A's. Harmless while labels only fed a menu
+  // that shows one row; visible the moment they became messages.
+  const history = new History();
+  history.seed(base);
+  history.record(base, at(1), 'first', null, 0);
+  history.record(at(1), at(2), 'second', null, 1000);
+
+  // Walking back: each step names the act it takes back.
+  assert.equal(history.undoLabel(), 'second');
+  history.undo();
+  assert.equal(history.undoLabel(), 'first', 'the older step lost its label');
+  history.undo();
+  assert.equal(history.undoLabel(), '', 'the seed has no label to give');
+
+  // And forward: each redo names the act it re-applies.
+  assert.equal(history.redoLabel(), 'first');
+  history.redo();
+  assert.equal(history.redoLabel(), 'second', 'the newer step lost its label');
+  history.redo();
+  assert.equal(history.redoLabel(), '', 'nothing left to redo');
+});
+
+test('labels survive an arbitrarily long chain', () => {
+  // The same property at depth, so a fix that only repairs the last two steps
+  // does not pass. Every entry must name itself on the way back and forward.
+  const history = new History();
+  history.seed(base);
+  const labels = ['a', 'b', 'c', 'd', 'e'];
+  labels.forEach((label, i) => {
+    history.record(at(i), at(i + 1), label, null, i * 1000);
+  });
+
+  for (const expected of [...labels].reverse()) {
+    assert.equal(history.undoLabel(), expected);
+    history.undo();
+  }
+  for (const expected of labels) {
+    assert.equal(history.redoLabel(), expected);
+    history.redo();
+  }
+});
+
 test('undo and redo are symmetric across several steps', () => {
   const history = new History();
   history.seed(base);

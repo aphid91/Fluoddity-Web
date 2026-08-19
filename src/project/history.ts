@@ -136,8 +136,24 @@ export class History {
     if (this.states.length > 0 && this.cursorIndex >= 0) {
       // A new action invalidates any redo entries ahead of the cursor.
       this.states.length = this.cursorIndex + 1;
-      // Re-seat the current entry on the state actually being left.
-      this.states[this.cursorIndex] = { project: before, label: '' };
+      // Re-seat the current entry on the state actually being left -- previews
+      // can move the project without recording, so the stored one may be stale.
+      //
+      // **THE PROJECT IS RE-SEATED; THE LABEL IS KEPT.** This used to assign a
+      // whole fresh entry with `label: ''`, which silently erased the label of
+      // the step already sitting here -- so recording B wiped A's name and only
+      // the newest step could describe itself. That was invisible while labels
+      // fed `undoLabel` alone (the menu shows one row, always the newest), and
+      // became visible the moment undo and redo started announcing themselves.
+      //
+      // A label describes the act that PRODUCED this state, and re-seating does
+      // not change which act that was -- it corrects where that act landed. So
+      // the label is not merely safe to keep, it would be wrong to drop.
+      const current = this.states[this.cursorIndex];
+      this.states[this.cursorIndex] = {
+        project: before,
+        label: current?.label ?? '',
+      };
     } else {
       this.states.push({ project: before, label: '' });
       this.cursorIndex = 0;
