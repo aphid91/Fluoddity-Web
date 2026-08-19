@@ -130,9 +130,28 @@ export const DEFAULT_RECORDING_SETTINGS: RecordingSettings = Object.freeze({
   motionBlurSamples: 60,
 });
 
-/** Total frames the export will produce. */
+/** Total VIDEO frames the export will produce. */
 export function frameCount(settings: RecordingSettings): number {
   return Math.max(1, Math.round(settings.duration * RECORDING_FPS));
+}
+
+/**
+ * Total PHYSICS steps the export will simulate.
+ *
+ * The quantity that answers "will this recording reach the structure I am
+ * looking at?". `ParticleSystem.frameCount` counts physics sub-steps, not
+ * rendered frames (`particleSystem.ts` advances it by `steps` per frame), so
+ * this is directly comparable to it: park the simulation on something good, read
+ * its physics frame, and set duration and rate until this number clears it.
+ *
+ * DISTINCT FROM `frameCount` ABOVE, and the difference is the whole point.
+ * A five-second clip is 300 video frames however the physics is set, but 300
+ * frames at 60 steps each is 18,000 physics steps and at 240 is 72,000. The
+ * video length is what the viewer sees; this is how far the simulation actually
+ * travels, and only the second one says whether a structure will have formed.
+ */
+export function physicsFrameCount(settings: RecordingSettings): number {
+  return frameCount(settings) * settings.physicsSteps;
 }
 
 /** What the driver loop knows about the recording when it decides what to do. */

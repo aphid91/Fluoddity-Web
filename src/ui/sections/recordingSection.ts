@@ -45,6 +45,7 @@ import {
   type Resolution,
   clampResolution,
   frameCount,
+  physicsFrameCount,
   withDuration,
   withHeight,
   withMotionBlurSamples,
@@ -257,6 +258,32 @@ export function buildRecordingSection(
     (folder.element as HTMLElement);
   bladeParent.append(summary);
 
+  /**
+   * The physics-frame readout: where the simulation is NOW, and how far this
+   * recording would travel.
+   *
+   * ## Why these two numbers sit together
+   *
+   * The workflow they serve: park on an interesting structure, note the physics
+   * frame it formed at, then set duration and rate so a recording started from a
+   * reset actually reaches it. That is a COMPARISON, and it is unreadable if the
+   * two quantities live in different places -- so they are one line, in the same
+   * units, with the verdict spelled out rather than left as arithmetic.
+   *
+   * `Status.frameCount` counts physics sub-steps, not rendered frames
+   * (`particleSystem.ts` advances it by `steps` per frame), which is what makes
+   * it directly comparable to `physicsFrameCount`. If it counted rendered frames
+   * this whole readout would be off by the physics rate and would look plausible
+   * while being useless.
+   */
+  const physics = document.createElement('div');
+  physics.style.cssText = SUMMARY_CSS;
+  physics.dataset['recording'] = 'physics';
+  bladeParent.append(physics);
+
+  /** `50000` -> `50,000`. Six-digit frame counts are unreadable unseparated. */
+  const group = (n: number): string => n.toLocaleString('en-US');
+
   function updateSummary(): void {
     const frames = frameCount(settings);
     const res = clampResolution(settings.resolution, opts.windowSize());
@@ -266,6 +293,30 @@ export function buildRecordingSection(
     // Guarded: this runs from `refresh` every frame, and writing an identical
     // string is DOM work to change nothing.
     if (summary.textContent !== text) summary.textContent = text;
+  }
+
+  function updatePhysics(currentFrame: number): void {
+    const total = physicsFrameCount(settings);
+    // THE VERDICT, not just the numbers. "72,000 vs 50,000" still leaves the
+    // user comparing digit counts; saying whether it reaches is the answer they
+    // came for, and it is one subtraction away.
+    const reaches = total >= currentFrame;
+    const verdict = currentFrame === 0
+      ? '' // Nothing to compare against from a cold start.
+      : reaches
+        ? '  ✓ reaches here'
+        : `  ✗ ${group(currentFrame - total)} short`;
+
+    const text =
+      `physics frame ${group(currentFrame)} now · ` +
+      `this video: ${group(total)}${verdict}`;
+    if (physics.textContent !== text) physics.textContent = text;
+
+    // Colour carries the same verdict for a glance, and is never the ONLY
+    // carrier -- the text says it too, so this reads correctly without colour
+    // vision and in a screenshot.
+    const colour = currentFrame === 0 || reaches ? '' : '#e0a0a0';
+    if (physics.style.color !== colour) physics.style.color = colour;
   }
   updateSummary();
 
@@ -319,6 +370,13 @@ export function buildRecordingSection(
       // The window is the dimension sliders' ceiling, so it is followed per
       // frame -- `syncWindow` early-returns unless it actually moved.
       syncWindow();
+
+      // The live physics frame. Per frame BY NECESSITY rather than by choice:
+      // this is the one readout here whose left-hand number changes without any
+      // control being touched, and watching it climb toward the target is how
+      // the user knows when to pause. Both writes are guarded on an actual
+      // change, so a paused simulation costs nothing.
+      updatePhysics(s.frameCount);
 
       // The button doubles as Cancel while an export runs. One control rather
       // than two, because "start" and "stop" are never both available and a

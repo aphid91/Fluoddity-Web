@@ -21,6 +21,7 @@ import {
   driverAction,
   frameCount,
   isFullFrame,
+  physicsFrameCount,
   rescaleSamples,
   withDuration,
   withHeight,
@@ -196,6 +197,38 @@ test('the default is full frame, so the crop overlay starts hidden', () => {
 test('frameCount is duration times the output rate', () => {
   assert.equal(frameCount(DEFAULT_RECORDING_SETTINGS), 5 * RECORDING_FPS);
   assert.equal(frameCount(withDuration(DEFAULT_RECORDING_SETTINGS, 1)), RECORDING_FPS);
+});
+
+test('physicsFrameCount is video frames times the physics rate', () => {
+  // The number the user compares against `Status.frameCount` when deciding
+  // whether a recording will travel far enough to reach the structure they
+  // parked on. Both count physics SUB-STEPS, which is what makes them
+  // comparable -- see `physicsFrameCount`.
+  const at60 = withPhysicsSteps(withDuration(DEFAULT_RECORDING_SETTINGS, 5), 60);
+  assert.equal(frameCount(at60), 300, '5s at 60fps is 300 video frames');
+  assert.equal(physicsFrameCount(at60), 18_000, '300 frames x 60 steps');
+
+  // The distinction the readout exists to make visible: the same clip LENGTH
+  // travels four times as far when the rate is quadrupled.
+  const at240 = withPhysicsSteps(at60, 240);
+  assert.equal(frameCount(at240), 300, 'video length is unchanged');
+  assert.equal(physicsFrameCount(at240), 72_000, 'but the simulation goes 4x as far');
+});
+
+test('physicsFrameCount reaches the ranges the workflow needs', () => {
+  // The motivating case: "I am at physics frame 50k and need the recording to
+  // get there." That must be expressible within the sliders' bounds, or the
+  // readout would only ever report failure.
+  const reach = withPhysicsSteps(withDuration(DEFAULT_RECORDING_SETTINGS, 10), 240);
+  assert.ok(
+    physicsFrameCount(reach) >= 50_000,
+    `10s at 240 steps only reaches ${physicsFrameCount(reach)}`,
+  );
+
+  // And the floor is sane rather than zero -- a one-second clip at one step per
+  // frame is 60 physics steps, not nothing.
+  const min = withPhysicsSteps(withDuration(DEFAULT_RECORDING_SETTINGS, 1), 1);
+  assert.equal(physicsFrameCount(min), 60);
 });
 
 test('pausing suspends the recording rather than encoding a still', () => {
