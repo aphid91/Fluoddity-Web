@@ -86,12 +86,13 @@ import {
   type SettingsTab,
   DRAWING_TAB,
   PREFS_TAB,
+  RECORDING_TAB,
   buildSettingsSection,
 } from './sections/settingsSection.ts';
 import { Tooltip } from './tooltip.ts';
 import { Toast, type ToastTone } from './toast.ts';
 import { copyText, readText } from './clipboard.ts';
-import { fromDocument } from '../config/persistence.ts';
+import { fromDocument, sanitizeName } from '../config/persistence.ts';
 import {
   SHARE_LINK_WARN_LENGTH,
   SHARED_LINK_NAME,
@@ -104,6 +105,12 @@ import { buildDrawingSection } from './sections/drawingSection.ts';
 import { buildPreferencesSection } from './sections/preferencesSection.ts';
 import { buildProjectSection } from './sections/projectSection.ts';
 import { buildTransportSection } from './sections/transportSection.ts';
+import type { RecordingSectionOptions } from './sections/recordingSection.ts';
+// TYPE-ONLY on both: the recorder module pulls in mediabunny, and the panel is
+// built for every session. `main.ts` supplies the constructed object through
+// `PanelOptions.recording`, so nothing here ever imports the value side.
+import type { VideoRecorder } from '../recorder/recorder.ts';
+import type { RecordingSettings } from '../recorder/recordingSettings.ts';
 
 export interface PanelOptions {
   readonly bus: CommandBus;
@@ -154,6 +161,29 @@ export interface PanelOptions {
    * and its gear as the way back to the controls.
    */
   readonly startHidden?: boolean;
+  /**
+   * Video recording, injected because the panel cannot reach either half itself.
+   *
+   * **NOT on `CommandBus`, and that is the point.** Recording needs the
+   * `GPUDevice` and it needs to attach a recorder to the Orchestrator, neither
+   * of which a command can carry: `CommandBus` is documented as a value-in,
+   * value-out seam that keeps DOM and Web APIs out of the Orchestrator entirely
+   * (see `projectDocument`'s note on why the clipboard is not a command). A
+   * `VideoEncoder` and an `<a download>` are exactly what that rule excludes.
+   *
+   * So `main.ts` -- which already owns the device, the surface and the
+   * orchestrator -- supplies these two functions, and the panel drives the
+   * recorder through them without either side reaching into the other.
+   *
+   * Omitted entirely in contexts with no GPU (the DOM tests), where Share >
+   * Export Video is then absent rather than present and broken.
+   */
+  readonly recording?: {
+    /** Build and attach a recorder. Resolves once frames can be rendered. */
+    readonly start: (settings: RecordingSettings) => Promise<VideoRecorder>;
+    /** Detach the recorder, finalize, and hand back the file. */
+    readonly finish: (recorder: VideoRecorder) => Promise<Blob | null>;
+  };
 }
 
 /** Which side of the screen, and therefore which tier flag governs it. */
@@ -288,6 +318,46 @@ export class Panel {
   private readonly runCalibration: (() => Promise<void>) | null;
 
   /**
+   * Whether Share > Export Video is ticked, and so whether the Recording
+   * Controls tab EXISTS.
+   *
+   * Session-only, deliberately: it is not a `Preferences` field and does not
+   * persist. Ticking it is "I am exporting something now", the way expanding a
+   * Load category is -- not a lasting statement about how you work, which is
+   * the test the three `advanced*` flags pass and this one does not.
+   *
+   * Toggling it goes through `rebuild()`, because a tab that exists or does not
+   * is exactly the kind of change per-frame refresh cannot express -- the same
+   * reasoning as the tier flags.
+   */
+  private exportVideoShown = false;
+
+  /**
+   * The recorder, while an export is in flight.
+   *
+   * Held HERE rather than only on the Orchestrator because the panel owns the
+   * lifecycle: it starts the export, polls progress for the button label, and
+   * hands the finished file to the browser. The Orchestrator is given the same
+   * object so `frame()` can render into it, which is the only thing it needs.
+   *
+   * `unknown`-free but deliberately imported as a TYPE only -- see `startExport`
+   * for why the class itself arrives through a dynamic import.
+   */
+  private recorder: VideoRecorder | null = null;
+
+  /** True between pressing Export and the recorder existing. See `startExport`. */
+  private exportStarting = false;
+
+  /**
+   * See `PanelOptions.recording`. Null where there is no GPU to record from.
+   *
+   * `NonNullable`, so the field is `T | null` rather than `T | undefined | null`
+   * -- two ways to say absent is one more than this needs, and it makes every
+   * use site prove the same thing twice.
+   */
+  private readonly recording: NonNullable<PanelOptions['recording']> | null;
+
+  /**
    * Whether a calibration run is in flight.
    *
    * Guards against a second run being started on top of the first -- two
@@ -311,6 +381,7 @@ export class Panel {
     this.lastMouseMode = this.bus.status().mouseMode;
     this.runCalibration = opts.runCalibration ?? null;
     this.onHiddenChange = opts.onHiddenChange ?? null;
+    this.recording = opts.recording ?? null;
 
     // **RESETTING PREFERENCES RE-CALIBRATES.** A reset puts World Size and
     // Physics Rate back to compiled-in defaults the user never chose and their
@@ -398,6 +469,10 @@ export class Panel {
       onShowWelcome: () => {
         this.splash.show();
       },
+      onToggleExportVideo: () => {
+        this.setExportVideoShown(!this.exportVideoShown);
+      },
+      isExportVideoShown: () => this.exportVideoShown,
     });
 
     this.left = {
@@ -493,7 +568,17 @@ export class Panel {
       // The tabbed host is the one section the panel keeps a typed handle on,
       // because `refresh` has to drive its tab from the active tool.
       if (section.id === SETTINGS) {
-        const handle = buildSettingsSection(folder, status, ctx, this.activeTab);
+        const handle = buildSettingsSection(
+          folder,
+          status,
+          ctx,
+          this.activeTab,
+          // Undefined -- and so NO recording tab built at all -- unless both the
+          // menu item is ticked and this build has somewhere to record to.
+          this.exportVideoShown && this.recording !== null
+            ? this.recordingOptions()
+            : undefined,
+        );
         this.settings = handle;
         side.sections.push(handle);
         continue;
@@ -919,6 +1004,125 @@ export class Panel {
       this.splash.setStatus('');
       this.calibrating = false;
     }
+  }
+
+  // =========================================================================
+  // Video recording
+  // =========================================================================
+
+  /**
+   * Show or hide the Recording Controls tab.
+   *
+   * Goes through `rebuild()` because a tab that EXISTS or does not is not
+   * something per-frame refresh can express -- the same reasoning the Advanced
+   * tier toggles document. Bringing the new tab to the front on the way in is
+   * what makes the menu item feel like it did something; on the way out
+   * `setActiveTab` falls back to Preferences on its own.
+   *
+   * **REFUSED WHILE AN EXPORT IS RUNNING.** The rebuild disposes the section
+   * holding the settings the recorder is mid-way through using, and the cancel
+   * path would lose its own progress readout. Someone who wants to stop presses
+   * Cancel, which is the control that means that.
+   */
+  private setExportVideoShown(shown: boolean): void {
+    if (this.recording === null) return;
+    if (this.recorder !== null || this.exportStarting) {
+      this.toast.show('Finish or cancel the current export first.', 'error');
+      return;
+    }
+    if (shown === this.exportVideoShown) return;
+
+    this.exportVideoShown = shown;
+    if (shown) this.activeTab = RECORDING_TAB;
+    this.rebuild();
+  }
+
+  /** What the Recording Controls tab is handed. Rebuilt with the section. */
+  private recordingOptions(): RecordingSectionOptions {
+    return {
+      onExport: (settings) => {
+        void this.startExport(settings);
+      },
+      onCancel: () => {
+        // Marks the recorder finished; `main.ts`'s driver notices on its next
+        // pass and runs the finish path, so the frames already encoded still
+        // become a file. See `VideoRecorder.cancel`.
+        this.recorder?.cancel();
+      },
+      progress: () => this.recorder?.progress ?? null,
+    };
+  }
+
+  /**
+   * Begin an export.
+   *
+   * **`exportStarting` guards the await.** Building a recorder fetches
+   * mediabunny and configures a hardware encoder, which is not instant -- and
+   * the Export button stays live throughout, because its label only becomes
+   * Cancel once `this.recorder` exists. Without the flag a second click in that
+   * window starts a second recorder, and the first is orphaned holding a 4K
+   * swap chain that nothing will ever free.
+   */
+  private async startExport(settings: RecordingSettings): Promise<void> {
+    if (this.recording === null || this.recorder !== null || this.exportStarting) return;
+
+    this.exportStarting = true;
+    try {
+      this.recorder = await this.recording.start(settings);
+      this.toast.show(
+        `Recording ${settings.duration}s at ${settings.resolution.label}. ` +
+          'The editor will be slow while this runs.',
+      );
+    } catch (err: unknown) {
+      // The likely causes are all things the user can act on -- no encoder for
+      // the chosen size, a resolution past the device limit -- so the message
+      // is shown rather than only logged.
+      this.toast.show(`Could not start recording: ${String(err)}`, 'error');
+      console.warn('Recording failed to start:', err);
+    } finally {
+      this.exportStarting = false;
+    }
+  }
+
+  /**
+   * Finalize the export and hand the file to the browser.
+   *
+   * Called by `main.ts`'s driver when the recorder reports itself finished,
+   * rather than by anything in here: the panel does not run a frame loop, and
+   * the last frame must be submitted before the file can be closed.
+   */
+  async finishExport(): Promise<void> {
+    const recorder = this.recorder;
+    if (recorder === null || this.recording === null) return;
+    // Cleared FIRST, so the driver cannot re-enter this while the finalize is
+    // in flight -- `finalize()` is awaited, and a second call would try to
+    // finalize an output that is already closing.
+    this.recorder = null;
+
+    try {
+      const blob = await this.recording.finish(recorder);
+      if (blob === null) {
+        this.toast.show('Recording stopped before any frames were captured.', 'error');
+        return;
+      }
+      const { downloadRecording } = await import('../recorder/recorder.ts');
+      // `sanitizeName` rather than a new helper: it exists precisely to make a
+      // user-typed name safe to use as a filename, and it CAN return empty (a
+      // name of "..." has nothing usable left), which is what the fallback is
+      // for -- an export called ".mp4" would be a puzzle in a downloads folder.
+      const safe = sanitizeName(this.bus.status().projectName) || 'fluoddity';
+      const name = `${safe}.mp4`;
+      downloadRecording(blob, name);
+      this.toast.show(`Exported ${name} — ${(blob.size / 1e6).toFixed(1)} MB.`);
+    } catch (err: unknown) {
+      this.toast.show(`Could not finish the export: ${String(err)}`, 'error');
+      console.warn('Recording failed to finalize:', err);
+    }
+  }
+
+  /** Whether an export is in flight, for `main.ts`'s driver loop. */
+  get exportInFlight(): boolean {
+    return this.recorder !== null;
   }
 
   /**

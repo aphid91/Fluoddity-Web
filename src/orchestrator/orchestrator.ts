@@ -57,6 +57,10 @@ import {
 } from '../camera/cameraState.ts';
 import { blurSchedule, sampleAt } from '../camera/blurSchedule.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
+// TYPE-ONLY. `recorder.ts` reaches mediabunny through a dynamic `import()`, and
+// a value import here would pull the whole encoder into the main bundle for
+// every user -- including the majority who never record. See its file header.
+import type { VideoRecorder } from '../recorder/recorder.ts';
 import { StrafeField } from '../strafeField/strafeField.ts';
 import { screenToWorld, worldToUv } from '../particleSystem/coords.ts';
 import {
@@ -317,6 +321,24 @@ export class Orchestrator implements CommandBus {
   private input: InputState = EMPTY_INPUT;
 
   /**
+   * The in-flight video recorder, or null -- which is the overwhelmingly common
+   * case and is why this is nullable rather than always-present.
+   *
+   * NOTHING about recording is allocated until someone asks for it: no capture
+   * canvas, no encoder, and not even mediabunny's code, which `recorder.ts`
+   * fetches as a separate chunk on first use. An idle session pays nothing.
+   *
+   * Assigned from OUTSIDE this class (`main.ts` builds the recorder and hands it
+   * over), which is the one deviation from invariant 2's "writes are the
+   * asymmetry" worth naming: constructing it requires an `await` for the dynamic
+   * import, and `frame()` is synchronous. Making the Orchestrator own the
+   * construction would mean either an async frame path or a promise field that
+   * `frame()` has to poll -- both worse than a setter that takes an
+   * already-built object. `setRecorder` is that setter.
+   */
+  private recorder: VideoRecorder | null = null;
+
+  /**
    * Whether a settings panel is open, so `settingsSources()` can skip building
    * the three payloads when nothing reads them.
    *
@@ -566,19 +588,14 @@ export class Orchestrator implements CommandBus {
       this.assembler.invalidateTargets();
     }
 
-    // Physics rate is a live preference, read each frame.
-    this.system.physicsSteps = Math.max(1, Math.trunc(this.prefs.physicsSteps));
-
+    // Physics rate is a live preference, read each frame -- unless a recording
+    // is running, which supplies its own. See `frameSchedule`.
+    //
     // MOTION BLUR PUTS THE RENDER INSIDE THE PHYSICS LOOP. A displayed frame is
     // the average of `samples` renders taken `stride` sub-steps apart, so the
     // camera must see the simulation mid-advance rather than only at the end.
-    //
-    // PAUSED IS ONE SAMPLE OF A STILL IMAGE. Nothing moves, so there is nothing
-    // for motion blur to average -- N samples of an unchanging scene is the
-    // same picture at N times the cost (`orchestrator.py:301-304`).
-    const schedule = this.paused
-      ? { samples: 1, stride: 1 }
-      : blurSchedule(this.system.physicsSteps, this.prefs.motionBlurSamples);
+    const { steps, schedule } = this.frameSchedule();
+    this.system.physicsSteps = steps;
     const at = sampleAt(schedule);
 
     const config = selectedConfig(this.project);
@@ -705,12 +722,132 @@ export class Orchestrator implements CommandBus {
       this.overlayState(),
     );
 
+    // 5b. THE RECORDING PASS: the same assembled frame, a second time, into the
+    // capture canvas.
+    //
+    // ## KNOWN LIMITATION: the SOURCE is still window-resolution
+    //
+    // `this.targets` is allocated from `windowSize` a few dozen lines above, and
+    // `camera.result()` is one of those targets. So the recording is a
+    // window-resolution frame SCALED UP to the recording size -- correctly
+    // composed for it (the letterbox maths below re-runs against the capture
+    // size), and correctly framed, but not carrying more detail than the window
+    // had. A 4K export from a 900px window is a sharp, well-composed 900px image
+    // at 4K, not a 4K render.
+    //
+    // Fixing it means giving the recording its own `RenderTargets` at its own
+    // size and running the camera into those -- which is a second allocation of
+    // the whole HDR chain plus a bloom mip chain, and touches `camera.ts`'s
+    // target ownership. That is deliberately NOT in this step: it is a real
+    // change to who owns the render targets, and doing it as a rider on the
+    // capture path is how that ownership gets muddled.
+    //
+    // Recording at or below the window size is exact today. The workaround for a
+    // large export is a large window.
+    //
+    // A SECOND `present()` RATHER THAN A COPY OF THE FIRST. The two differ in
+    // three ways that a blit could not express: the recording is at its own
+    // resolution (so the letterbox maths in `CameraView` must be re-run for it),
+    // it carries no brush reticle, and the screen must keep showing the reticle
+    // while it records. Copying the swap chain would give the recording the
+    // window's size AND its reticle.
+    //
+    // IT IS CHEAP, and that is not an accident of this design but the point of
+    // it: `camera.result()` is the already-accumulated HDR frame, so everything
+    // expensive -- every physics sub-step, every one of the blur samples --
+    // happened once, above, and is shared. This pass is bloom plus a tone curve
+    // over a texture that already exists.
+    //
+    // WHY THE OVERLAYS ARE HAND-BUILT rather than `this.overlayState()`:
+    //
+    //   - The RETICLE is deliberately dropped. It is a cursor, not part of the
+    //     picture, and a video with a ring following an absent mouse around is
+    //     not what anyone is exporting. This is the specified behaviour.
+    //   - The FIELD is deliberately kept, when it would be on screen. Unlike the
+    //     reticle it is painted content -- the user made it, it steers the
+    //     particles, and `fieldAlwaysShow` is an explicit statement about wanting
+    //     to see it. Suppressing it would silently drop authored work from the
+    //     export.
+    //
+    // Bloom and motion blur need no mention here at all: blur is baked into
+    // `camera.result()` before the assembler sees it, and bloom runs INSIDE
+    // `present()` from `this.prefs`. Both are in the recording because both are
+    // in the frame, which is what "record what the camera outputs" means.
+    const recorder = this.recorder;
+    const capture = recorder?.captureTarget ?? null;
+    if (recorder !== null && capture !== null) {
+      this.assembler.present(
+        encoder,
+        this.camera.result(),
+        capture.context.getCurrentTexture().createView(),
+        {
+          canvasSize: this.system.canvasSize,
+          // THE RECORDING'S SIZE, not the window's. This is what decouples the
+          // export from the browser window: `CameraView` derives the letterbox
+          // from this, so a 4K recording is composed for 4K rather than being a
+          // stretched copy of whatever the window happened to be.
+          windowSize: capture.size(),
+          pan: this.camera.state.pan,
+          zoom: this.camera.state.zoom,
+        },
+        this.prefs,
+        // The field on the same terms as on screen; never the reticle.
+        { ...NO_OVERLAYS, showField: this.prefs.fieldAlwaysShow || this.mouseMode === 'draw' },
+      );
+    }
+
     this.device.queue.submit([encoder.finish()]);
 
     // AFTER submit, and it has to be: `mapAsync` may not be called while the
     // encoder that writes the buffer is still open. It resolves on a later
     // frame, which is what makes the whole path two-phase.
     this.system.beginPickReadback();
+  }
+
+  /**
+   * Attach or detach the video recorder.
+   *
+   * A setter rather than construction inside this class, because building a
+   * recorder needs an `await` (mediabunny is fetched on demand) and `frame()` is
+   * synchronous. See the `recorder` field.
+   *
+   * Passing null detaches without finalizing -- the caller owns the recorder's
+   * lifecycle and is the one that knows whether the file should be written.
+   */
+  setRecorder(recorder: VideoRecorder | null): void {
+    this.recorder = recorder;
+  }
+
+  /** The attached recorder, for the driver loop and the UI's progress readout. */
+  get activeRecorder(): VideoRecorder | null {
+    return this.recorder;
+  }
+
+  /**
+   * The physics rate and blur sample count to render THIS frame with.
+   *
+   * Split out of `frame()` so recording can override both without the frame
+   * loop growing a second copy of the schedule logic. While a recording is
+   * running the numbers come from its settings -- which is what lets an export
+   * use 480 steps and 64 samples in an editor that would be unusable at either.
+   *
+   * PAUSED STILL WINS. A paused simulation has nothing to average, so N samples
+   * of a still image is the same picture at N times the cost -- true whether or
+   * not a recording is in flight (`orchestrator.py:301-304`).
+   */
+  private frameSchedule(): { steps: number; schedule: ReturnType<typeof blurSchedule> } {
+    const recording = this.recorder;
+    const steps =
+      recording !== null
+        ? recording.settings.physicsSteps
+        : Math.max(1, Math.trunc(this.prefs.physicsSteps));
+    const samples =
+      recording !== null ? recording.settings.motionBlurSamples : this.prefs.motionBlurSamples;
+
+    return {
+      steps,
+      schedule: this.paused ? { samples: 1, stride: 1 } : blurSchedule(steps, samples),
+    };
   }
 
   /**
@@ -2166,11 +2303,17 @@ export class Orchestrator implements CommandBus {
     };
   }
 
-  /** The blur schedule this frame would resolve to. Diagnostics only. */
+  /**
+   * The blur schedule this frame would resolve to. Diagnostics only.
+   *
+   * Through `frameSchedule()` rather than reading the preferences directly, so
+   * the overlay reports what is ACTUALLY rendering. While a recording overrides
+   * the rate, a readout sourced from `this.prefs` would show the editor's
+   * numbers -- disagreeing with the picture at precisely the moment someone is
+   * looking at the overlay to check what their export is doing.
+   */
   currentSchedule(): { samples: number; stride: number } {
-    return this.paused
-      ? { samples: 1, stride: 1 }
-      : blurSchedule(this.system.physicsSteps, this.prefs.motionBlurSamples);
+    return this.frameSchedule().schedule;
   }
 
   pipelineStatus(): Readonly<Record<string, boolean>> {

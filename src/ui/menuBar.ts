@@ -87,6 +87,16 @@ export interface MenuBarOptions {
   readonly isUiHidden: () => boolean;
   /** Re-show the welcome splash. Owned by the panel, like the dialogs. */
   readonly onShowWelcome: () => void;
+  /**
+   * Show or hide the Recording Controls tab.
+   *
+   * A TOGGLE, not a command that opens something: ticking it adds the tab and
+   * un-ticking removes it, which is why the menu row carries a checkmark rather
+   * than the `...` that marks the rows opening a dialog.
+   */
+  readonly onToggleExportVideo: () => void;
+  /** Whether the Recording Controls tab is showing, for the checkmark. */
+  readonly isExportVideoShown: () => boolean;
 }
 
 /** One entry in the Load menu, flattened out of `configCategories`. */
@@ -270,6 +280,24 @@ export class MenuBar {
           this.opts.onPasteShareLink();
         },
         localHotkeyLabel('pasteShareLink'),
+      );
+      // UNDER SHARE, with a separator. The two rows above put a project in
+      // someone else's hands as a link; this puts it in their hands as a video.
+      // That is the same intent -- getting the work OUT -- and a different
+      // medium, which is what the separator marks.
+      this.addSeparator(body);
+      // Closes the menu on click, like every other row -- `addItem` does that
+      // for all of them. That is right here even though this is a toggle: the
+      // feedback is the Recording Controls TAB appearing in the panel behind the
+      // menu, which is a far larger signal than a checkmark on a row that is
+      // about to be dismissed. The checkmark is for the NEXT visit, to say
+      // whether the tab is already up.
+      this.addItem(
+        body,
+        'Export Video',
+        () => this.opts.onToggleExportVideo(),
+        '',
+        () => this.opts.isExportVideoShown(),
       );
     });
 

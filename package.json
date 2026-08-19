@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "lz-string": "^1.5.0",
+    "mediabunny": "^1.55.1",
     "tweakpane": "^4.0.5"
   }
 }

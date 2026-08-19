@@ -31,15 +31,27 @@ import type { ControlBinding } from '../controls.ts';
 import { type SectionContext, type SectionHandle } from './section.ts';
 import { buildDrawingSection } from './drawingSection.ts';
 import { buildPreferencesSection } from './preferencesSection.ts';
+import {
+  type RecordingSectionHandle,
+  type RecordingSectionOptions,
+  buildRecordingSection,
+} from './recordingSection.ts';
+import type { RecordingSettings } from '../../recorder/recordingSettings.ts';
 
 export const PREFS_TAB = 'preferences';
 export const DRAWING_TAB = 'drawing';
-export type SettingsTab = typeof PREFS_TAB | typeof DRAWING_TAB;
+export const RECORDING_TAB = 'recording';
+export type SettingsTab =
+  | typeof PREFS_TAB
+  | typeof DRAWING_TAB
+  | typeof RECORDING_TAB;
 
 /** A settings section, plus the tab control the panel drives. */
 export interface SettingsSectionHandle extends SectionHandle {
   readonly setActiveTab: (tab: SettingsTab) => void;
   readonly activeTab: () => SettingsTab;
+  /** The recording tab's settings, or null while that tab does not exist. */
+  readonly recordingSettings: () => RecordingSettings | null;
 }
 
 export function buildSettingsSection(
@@ -47,6 +59,16 @@ export function buildSettingsSection(
   status: Status,
   ctx: SectionContext,
   initialTab: SettingsTab,
+  /**
+   * Recording, when Share > Export Video is ticked. Undefined builds NO
+   * recording tab at all -- not a hidden one.
+   *
+   * That distinction is the UI half of the lazy-loading rule: an unticked
+   * Export Video means this section never imports `recordingSettings.ts`,
+   * never builds four blades nobody asked for, and never runs their per-frame
+   * refresh. A built-but-hidden tab would pay all three costs to show nothing.
+   */
+  recording?: RecordingSectionOptions,
 ): SettingsSectionHandle {
   // The host folder's own header goes too: the tab strip sits directly beneath
   // it and names both pages, so a "Settings" bar above them is a third label for
@@ -68,6 +90,16 @@ export function buildSettingsSection(
   const prefs = buildPreferencesSection(prefsFolder, status, ctx);
   const drawing = buildDrawingSection(drawingFolder, status, ctx);
 
+  // The third tab exists only while Export Video is ticked -- see the parameter.
+  let recordingSection: RecordingSectionHandle | null = null;
+  let recordingFolder: FolderApi | null = null;
+  if (recording !== undefined) {
+    recordingFolder = folder.addFolder({ title: 'Recording Controls', expanded: true });
+    hideFolderTitle(recordingFolder);
+    (recordingFolder.element as HTMLElement).dataset['section'] = RECORDING_TAB;
+    recordingSection = buildRecordingSection(recordingFolder, status, ctx, recording);
+  }
+
   // --- the strip ----------------------------------------------------------
   // Built after the folders (Tweakpane needs to own its own children) and then
   // moved to the front, so it renders above them.
@@ -76,11 +108,16 @@ export function buildSettingsSection(
 
   let active: SettingsTab = initialTab;
 
-  const buttons = new Map<SettingsTab, HTMLButtonElement>();
-  for (const [tab, title] of [
+  // Built from the tabs that EXIST, so an untickedRecording leaves two buttons
+  // rather than three with one dead.
+  const tabs: (readonly [SettingsTab, string])[] = [
     [PREFS_TAB, 'Preferences'],
     [DRAWING_TAB, 'Drawing Controls'],
-  ] as const) {
+  ];
+  if (recordingFolder !== null) tabs.push([RECORDING_TAB, 'Recording Controls']);
+
+  const buttons = new Map<SettingsTab, HTMLButtonElement>();
+  for (const [tab, title] of tabs) {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = title;
@@ -106,12 +143,21 @@ export function buildSettingsSection(
   prefsEl.parentElement?.insertBefore(strip, prefsEl);
 
   function setActiveTab(tab: SettingsTab): void {
-    active = tab;
-    (prefsFolder.element as HTMLElement).style.display = tab === PREFS_TAB ? '' : 'none';
+    // A tab that does not exist cannot be shown. Reachable in practice: the
+    // panel remembers `activeTab` across rebuilds, so un-ticking Export Video
+    // while its tab is in front asks for exactly this -- and without the
+    // fallback every folder would hide and the panel would go blank.
+    active = buttons.has(tab) ? tab : PREFS_TAB;
+    (prefsFolder.element as HTMLElement).style.display =
+      active === PREFS_TAB ? '' : 'none';
     (drawingFolder.element as HTMLElement).style.display =
-      tab === DRAWING_TAB ? '' : 'none';
+      active === DRAWING_TAB ? '' : 'none';
+    if (recordingFolder !== null) {
+      (recordingFolder.element as HTMLElement).style.display =
+        active === RECORDING_TAB ? '' : 'none';
+    }
     for (const [id, button] of buttons) {
-      button.style.cssText = id === tab ? TAB_ACTIVE_CSS : TAB_IDLE_CSS;
+      button.style.cssText = id === active ? TAB_ACTIVE_CSS : TAB_IDLE_CSS;
     }
   }
   setActiveTab(active);
@@ -123,14 +169,18 @@ export function buildSettingsSection(
     // reveal, and the two must not be confused.
     bindings: [...prefs.bindings, ...drawing.bindings] as readonly ControlBinding[],
     refresh: (s, input) => {
-      // BOTH tabs, including the one nobody can see. Refreshing only the active
-      // tab would mean switching to the other showed one frame of stale values,
+      // EVERY tab, including the ones nobody can see. Refreshing only the active
+      // tab would mean switching to another showed one frame of stale values,
       // and the cost is a handful of proxy writes.
       prefs.refresh(s, input);
       drawing.refresh(s, input);
+      // Recording's refresh drives the export button's progress label, which
+      // must keep counting while the user reads a different tab.
+      recordingSection?.refresh(s, input);
     },
     setActiveTab,
     activeTab: () => active,
+    recordingSettings: () => recordingSection?.settings() ?? null,
   };
 }
 

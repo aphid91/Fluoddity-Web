@@ -25,6 +25,7 @@ import { CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
 import { type SavedConfig, fromDocument } from './config/persistence.ts';
 import { SHARED_LINK_NAME, decodeShareLink } from './config/shareLink.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
+import { RECORDING_FPS } from './recorder/recordingSettings.ts';
 import { calibrate } from './calibration/calibrate.ts';
 import { ALWAYS_CALIBRATE } from './orchestrator/featureFlags.ts';
 import { bindInput } from './ui/inputBinding.ts';
@@ -236,6 +237,31 @@ async function start(): Promise<void> {
         onHiddenChange: () => {
           orchestrator.panelOpen = panel?.isOpen ?? false;
         },
+        // Video recording. Supplied HERE because this is the one place that
+        // holds both halves -- the device to record with and the orchestrator to
+        // attach the recorder to -- and because `CommandBus` deliberately admits
+        // neither (see `PanelOptions.recording`).
+        //
+        // The dynamic `import()` is what keeps mediabunny out of the main
+        // bundle: this closure body does not run until someone presses Export,
+        // so a session that never records never fetches the encoder.
+        recording: {
+          start: async (settings) => {
+            const { VideoRecorder } = await import('./recorder/recorder.ts');
+            const recorder = await VideoRecorder.start(device, settings);
+            orchestrator.setRecorder(recorder);
+            return recorder;
+          },
+          finish: async (recorder) => {
+            // DETACHED FIRST. `finish()` finalizes the muxer and frees the
+            // capture target, so a frame rendered between those two steps would
+            // present into a destroyed swap chain -- a validation error rather
+            // than a wrong picture, but on the frame loop, which means every
+            // subsequent frame too.
+            orchestrator.setRecorder(null);
+            return recorder.finish();
+          },
+        },
         // Omitted under `?nocalibrate`, which leaves `Panel.calibrate()` inert
         // and so also disables the re-run on Reset Editor Preferences.
         ...(params.has('nocalibrate')
@@ -339,14 +365,37 @@ async function start(): Promise<void> {
   if (firstVisit) void panel?.calibrate();
 
   const overlay = createDebugOverlay();
+  // The recording's frame interval, for the fixed `dt` below. A plain import
+  // rather than a lazy one: `recordingSettings.ts` is a pure leaf holding
+  // constants and arithmetic, with no mediabunny and no GPU behind it, so it
+  // costs a few hundred bytes and none of what the lazy loading is protecting.
   let lastTime = performance.now();
   let firstFrame = true;
   let frameMs = 0;
   // Smoothed like frameMs: a raw per-frame delta is too noisy to read.
   let orchestratorMs = 0;
 
+  /**
+   * True while a recorded frame is being encoded.
+   *
+   * The rAF loop is synchronous and `addFrame()` is not, so without this a
+   * second rAF callback would fire mid-encode, run the physics again, and
+   * overwrite the capture canvas with a frame the encoder had not yet read.
+   * The result is dropped and duplicated frames, silently. Skipping the whole
+   * frame while one is in flight is what makes the slow trickle safe.
+   */
+  let encoding = false;
+
   const frame = (): void => {
     if (deviceLost) return; // Stop cleanly rather than spinning on a dead device.
+
+    // The encoder still holds last frame's canvas. Come back next rAF -- see
+    // `encoding`. The clock is NOT advanced here, so the skipped time does not
+    // land as one huge `dt` on the frame that follows.
+    if (encoding) {
+      requestAnimationFrame(frame);
+      return;
+    }
 
     const now = performance.now();
     const elapsed = now - lastTime;
@@ -366,7 +415,22 @@ async function start(): Promise<void> {
     // one. The first `elapsed` measures the gap since `start()` ran, which is
     // however long device acquisition and pipeline compilation took -- easily
     // hundreds of milliseconds, and it would land as one enormous camera step.
-    const dt = firstFrame ? 0 : elapsed / 1000;
+    // **A FIXED `dt` WHILE RECORDING, NOT THE MEASURED ONE.** Camera panning
+    // integrates `speed * dt`, so a wall-clock delta ties camera speed to how
+    // long each frame took to render -- and an offline render's frames take
+    // wildly varying, arbitrarily long times. A pan held through an export
+    // would visibly accelerate exactly where the physics got expensive, which
+    // is motion nobody asked for and cannot be fixed afterwards.
+    //
+    // The recording's own frame interval is the honest answer: it is what the
+    // timestamps handed to the encoder say the gap is, so the camera moves
+    // through the export at precisely the rate the finished video plays back.
+    const recorder = orchestrator.activeRecorder;
+    const dt = firstFrame
+      ? 0
+      : recorder !== null
+        ? 1 / RECORDING_FPS
+        : elapsed / 1000;
     firstFrame = false;
 
     // Frozen ONCE and handed to both, so the panel's readout and the physics
@@ -404,6 +468,38 @@ async function start(): Promise<void> {
           .map(([n, ok]) => `${n}:${ok ? 'ok' : 'FAILED'}`)
           .join('  ')}`,
       ]);
+    }
+
+    // --- the recording hand-off ----------------------------------------------
+    //
+    // AFTER `orchestrator.frame()`, which has already recorded the recording
+    // pass onto this frame's encoder AND submitted it. The capture canvas holds
+    // the finished frame by the time this runs, which is the ordering
+    // `addFrame()` depends on -- it reads that canvas.
+    if (recorder !== null) {
+      if (recorder.finished) {
+        // Finalize and download. `finishExport` detaches the recorder first, so
+        // the next frame renders normally rather than into a freed target.
+        void panel?.finishExport();
+      } else {
+        // **THE AWAIT IS THE BACKPRESSURE.** `addFrame()` resolves when the
+        // encoder is ready for another, so this is what stops a fast stretch of
+        // simulation from queueing unbounded VideoFrames and killing the tab.
+        // `encoding` holds the rAF loop off until it lands -- see its comment.
+        encoding = true;
+        void recorder
+          .addFrame()
+          .catch((err: unknown) => {
+            console.warn('Dropped a recorded frame:', err);
+          })
+          .finally(() => {
+            encoding = false;
+            // The clock restarts HERE rather than at the top of the next frame:
+            // everything between the two is encode time, and letting it show up
+            // as `elapsed` would report a frame rate measuring the encoder.
+            lastTime = performance.now();
+          });
+      }
     }
 
     requestAnimationFrame(frame);
