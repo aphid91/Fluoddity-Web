@@ -402,9 +402,17 @@ export function buildRecordingSection(
       // change, so a paused simulation costs nothing.
       updatePhysics(s.frameCount);
 
-      // The button doubles as Cancel while an export runs. One control rather
+      // The button doubles as End Video while an export runs. One control rather
       // than two, because "start" and "stop" are never both available and a
       // permanently greyed second button is worse than a label that changes.
+      //
+      // **"END VIDEO", NOT "CANCEL", AND THE DIFFERENCE IS NOT COSMETIC.**
+      // Pressing this keeps every frame encoded so far and writes them to a file
+      // (`panel.ts`'s `onCancel`, and `VideoRecorder.cancel`) -- the recording
+      // ENDS EARLY, it is not discarded. "Cancel" promises the opposite, and a
+      // user who believed it would either press it expecting no file or, worse,
+      // sit through an export they wanted to cut short because they thought
+      // stopping meant losing the footage.
       const progress = opts.progress();
       const title = (exportButton as unknown as { title: string });
       if (progress === null) {
@@ -420,7 +428,7 @@ export function buildRecordingSection(
       // pause is what turns "it stopped" into "you stopped it".
       const suspended = s.paused ? ' — PAUSED' : '';
       title.title =
-        `Cancel  (${percent}% — ${progress.framesDone}/${progress.framesTotal})${suspended}`;
+        `End Video  (${percent}% — ${progress.framesDone}/${progress.framesTotal})${suspended}`;
     },
   };
 }

@@ -118,15 +118,23 @@ test('mutationOverlay is exempt from the X hide, which is why the above matters'
   // closed-panel payload could go back to being empty -- so this failing is the
   // signal to revisit the test above rather than to force it green.
   const overlay = read('mutationOverlay.ts');
-  // The PARAMETER NAME carries it: `_hidden` is how this codebase spells "this
-  // argument is deliberately unused", and it is what tsc's unused-parameter rule
-  // is being told to allow. A real hide would have to read the flag, so the
-  // underscore going away is the signal to revisit the test above. Matching the
-  // body instead would break on the explanatory comment inside it.
-  assert.match(
-    overlay,
-    /setHidden\(_hidden:\s*boolean\):\s*void/,
-    'mutationOverlay.setHidden is expected to ignore its argument (a deliberate no-op)',
+  const method = overlay.slice(overlay.indexOf('setHidden(hidden: boolean)'));
+  assert.ok(method !== '', 'setHidden has been renamed; re-check this test');
+  const body = method.slice(0, method.indexOf('\n  }'));
+
+  // WHAT THE PREMISE ACTUALLY IS: the overlay's own visibility does not follow
+  // the flag. It reads `hidden` now -- the gear is coloured from it, gold while
+  // the panels show -- so the old proxy for this (an unused `_hidden`
+  // parameter) no longer holds and would fail against correct code.
+  //
+  // So this checks the thing that matters instead: nothing in here touches
+  // `display` or `this.root`. A real hide has to do one or the other, and
+  // either appearing is the signal to revisit the test above.
+  assert.doesNotMatch(
+    body,
+    /display|this\.root/,
+    'setHidden must not hide the overlay itself -- the bar stays up when X hides ' +
+      'the panels, which is why the closed-panel payload still builds editConfig',
   );
 });
 

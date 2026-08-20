@@ -250,3 +250,30 @@ export function selectionIsNoOp(project: Project): boolean {
   if (ruleIsGeneratedOnGpu(project)) return false;
   return selectedConfig(project).mutationScale === 0;
 }
+
+/**
+ * Whether rerolling the mutation seed would change nothing.
+ *
+ * **THE SAME TWO CONDITIONS AS `selectionIsNoOp`, AND NOT BY COINCIDENCE.**
+ * Both ask "does `mutate_rule` have any room to act": at mutation scale 0 it
+ * scales both terms to nothing, so the seed picks a variation that is
+ * multiplied away and every cohort obeys the base rule regardless. The
+ * difference between the two commands is what they then do with that fact --
+ * adopting installs a rule identical to the one already there, rerolling moves
+ * `mutationSeed` and marks the document dirty (`project.ts` counts a seed move
+ * as a change) -- but the emptiness is one condition, so it is written once.
+ *
+ * NOT WHEN THE RULE IS GENERATED, for the reason `selectionIsNoOp` gives and
+ * one more that is specific to this command: the GPU seeds its generator from
+ * `mutationSeed`, so a reroll regenerates the behaviour outright. This is the
+ * state where rerolling matters MOST, which is why the bar's Reroll All
+ * Behavior button advertises `F` alongside `B`.
+ *
+ * Kept as its own name rather than a call to `selectionIsNoOp` at the call
+ * site: the two commands are unrelated, and a reader who found the reroll gated
+ * on a function about SELECTION would reasonably wonder which of the two
+ * behaviours was the accident.
+ */
+export function rerollIsNoOp(project: Project): boolean {
+  return selectionIsNoOp(project);
+}

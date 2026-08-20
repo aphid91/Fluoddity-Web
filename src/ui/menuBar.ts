@@ -204,6 +204,16 @@ export class MenuBar {
    */
   private readonly applyCollapsedFns = new Map<string, () => void>();
 
+  /**
+   * The pending "the cursor left this menu" close, or `null`.
+   *
+   * ONE TIMER FOR THE WHOLE BAR rather than one per menu, because at most one
+   * dropdown is ever open -- so at most one can be pending, and a second
+   * scheduled close means the first is already irrelevant. `scheduleMenuClose`
+   * cancels before it schedules for exactly that reason.
+   */
+  private menuCloseTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(opts: MenuBarOptions) {
     this.opts = opts;
 
@@ -388,10 +398,27 @@ export class MenuBar {
       this.addItem(body, 'Reset', () => this.opts.send({ kind: 'reset' }), 'R');
       this.addSeparator(body);
       this.addItem(body, 'Randomize Behavior', () => this.opts.send({ kind: 'randomizeBehavior' }), 'B');
-      // Greyed while the rule is the all-zero sentinel: there is no mutation to
-      // reroll then, and the command -- though it still does something -- would
-      // be offering the user an operation on state they do not have. The
-      // mutation overlay greys its own copy of this button in the same state.
+      // Greyed in the two states where the command cannot change the picture,
+      // and greyed on EXACTLY the conditions the mutation overlay uses for its
+      // own copy of this button (`refreshReroll`) -- the bar and this menu must
+      // never disagree about whether an action is available.
+      //
+      //   - the all-zero sentinel: there is no authored behaviour to mutate,
+      //     and `Reroll All Behavior` is the action that state supports;
+      //   - Mutation Scale at 0: the seed still moves, but it is multiplied by
+      //     zero, so nothing on screen changes.
+      //
+      // THE TWO GREYED STATES DIFFER IN WHAT `F` DOES, even though this row
+      // looks the same in both. Under the sentinel the key REDIRECTS to
+      // Randomize Behavior -- the two collapse to one act there -- so it stays
+      // live while this row is greyed. At scale 0 the key really is inert. The
+      // row is greyed either way because it is captioned "Reroll Mutations",
+      // and in neither state does pressing it reroll mutations.
+      //
+      // `mutationScale` is readable even with the panels hidden -- the
+      // closed-panel payload keeps every config field but `rule` for the
+      // always-visible bar (`Orchestrator.settingsSources`). A missing field
+      // degrades to enabled, matching the overlay.
       this.addItem(
         body,
         'Reroll Mutations',
@@ -400,7 +427,10 @@ export class MenuBar {
         undefined,
         {
           label: () => 'Reroll Mutations',
-          enabled: () => !this.opts.status().ruleIsGenerated,
+          enabled: () => {
+            const status = this.opts.status();
+            return !status.ruleIsGenerated && status.editConfig['mutationScale'] !== 0;
+          },
         },
       );
       this.addSeparator(body);
@@ -436,6 +466,36 @@ export class MenuBar {
     // how every menu bar behaves, and is what makes browsing them feel right.
     button.addEventListener('mouseenter', () => {
       if (this.openMenu !== null && this.openMenu !== title) this.setOpenMenu(title);
+    });
+
+    // LEAVING THE MENU SHUTS IT, on the same delay the submenus use.
+    //
+    // Without this the only ways out of an open dropdown were back onto its own
+    // button or a click on the canvas -- and the canvas click is not a neutral
+    // dismissal: it is a real gesture that draws, shoves or selects depending on
+    // the tool. Requiring a side effect to close a menu is the thing this fixes.
+    //
+    // ON THE WRAPPER, not the button or the body: the wrapper is the only node
+    // that contains BOTH, so travelling from the title down into the rows never
+    // leaves it. The submenu flyouts are descendants of the body, so they are
+    // inside it too -- `Load`'s list keeps the parent menu open exactly as it did
+    // when the only close was a click elsewhere.
+    //
+    // THE DELAY IS THE SUBMENUS' OWN CONSTANT, and shared on purpose. The
+    // dropdown and its flyout are one surface to the user, so two different
+    // grace periods would make the same diagonal forgiving in one direction and
+    // not the other. It also covers the small gap between the bar and the body
+    // that a fast diagonal can clip.
+    wrap.addEventListener('mouseenter', () => {
+      this.cancelMenuClose();
+    });
+    wrap.addEventListener('mouseleave', () => {
+      // ONLY THIS MENU. Sliding along the bar fires this wrapper's `mouseleave`
+      // before the next button's `mouseenter`, so an unconditional close here
+      // would shut the menu the cursor is arriving at a moment later. Re-reading
+      // `openMenu` when the timer fires is what settles that: by then the next
+      // menu has opened and this closer no longer applies.
+      this.scheduleMenuClose(title);
     });
 
     const body = document.createElement('div');
@@ -881,8 +941,44 @@ export class MenuBar {
     this.setOpenMenu(this.openMenu === title ? null : title);
   }
 
+  /**
+   * Drop any pending hover-close.
+   *
+   * Called on re-entering a menu, and by `setOpenMenu` so that OPENING one can
+   * never be undone a moment later by a timer scheduled against the last one --
+   * the same argument `submenuClosers` makes for the flyouts.
+   */
+  private cancelMenuClose(): void {
+    if (this.menuCloseTimer === null) return;
+    clearTimeout(this.menuCloseTimer);
+    this.menuCloseTimer = null;
+  }
+
+  /**
+   * Shut `title` shortly, unless the cursor comes back or moves to another menu.
+   *
+   * GUARDED ON `openMenu` AT FIRE TIME, not at schedule time. Sliding from File
+   * to Share fires File's `mouseleave` first and Share's `mouseenter` second, so
+   * this timer is always scheduled against a menu that may no longer be the open
+   * one by the time it runs. Re-reading the state is what makes the ordering not
+   * matter: if something else is open, this closer has been overtaken and does
+   * nothing.
+   */
+  private scheduleMenuClose(title: string): void {
+    this.cancelMenuClose();
+    this.menuCloseTimer = setTimeout(() => {
+      this.menuCloseTimer = null;
+      if (this.openMenu === title) this.closeMenus();
+    }, SUBMENU_CLOSE_DELAY_MS);
+  }
+
   private setOpenMenu(title: string | null): void {
     this.openMenu = title;
+    // The BAR's own pending close, for the same reason the submenu closers run
+    // below: a click that opens a menu must not be undone by a timer scheduled
+    // when the cursor left the previous one. Clicking File, sliding off, and
+    // clicking it again inside the grace period is the case this covers.
+    this.cancelMenuClose();
     // Cancels any pending delayed close along with hiding them -- see
     // `submenuClosers`. Must run whether opening or closing: a submenu left
     // showing under a dropdown that is now hidden would reappear with it.
@@ -949,6 +1045,10 @@ export class MenuBar {
   }
 
   dispose(): void {
+    // Before the DOM goes: a pending close would otherwise fire against a bar
+    // that no longer exists and touch `openMenu` after teardown.
+    this.cancelMenuClose();
+    for (const close of this.submenuClosers) close();
     this.root.remove();
   }
 }

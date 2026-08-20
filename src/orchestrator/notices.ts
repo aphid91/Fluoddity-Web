@@ -61,19 +61,26 @@ export function describeHistoryStep(
 /**
  * A behaviour change that is not an undo, described for the toast.
  *
- * These four are exactly the events that replace the particles' target rule
- * without the user having dragged anything -- the cases where the app changes
+ * These are exactly the events that replace the particles' target rule without
+ * the user having dragged anything -- the cases where the app changes
  * underneath you and the picture may take a beat to show it.
  *
- * Named as a closed union rather than taking a free string, so adding a fifth
+ * Named as a closed union rather than taking a free string, so adding another
  * event is a compile error at every site that switches on it rather than a
  * silently missing message.
+ *
+ * MEMBERSHIP IS EARNED BY BEING RECORDED TO HISTORY, not by being worth
+ * announcing: `historyLabelFor` derives an undo label from every member, so a
+ * one-shot that pushes no history step does not belong here even when it wants
+ * a toast. `describeCheckpointSet` is the standing example of the other case.
  */
 export type BehaviorEvent =
   | { readonly kind: 'loadPreset'; readonly name: string }
   | { readonly kind: 'commitSelection'; readonly cohort: number }
   | { readonly kind: 'loadCheckpoint'; readonly name: string }
-  | { readonly kind: 'loadSharedLink' };
+  | { readonly kind: 'loadSharedLink' }
+  | { readonly kind: 'randomizeBehavior' }
+  | { readonly kind: 'randomizeSeed' };
 
 export function describeEvent(event: BehaviorEvent): string {
   switch (event.kind) {
@@ -88,6 +95,22 @@ export function describeEvent(event: BehaviorEvent): string {
       return `Load checkpoint ${event.name}`;
     case 'loadSharedLink':
       return 'Load project from URL';
+    case 'randomizeBehavior':
+      // NO NAME TO GIVE, unlike the loads above: the rule is zeroed and the GPU
+      // generates a fresh one from the seed, so there is nothing the user could
+      // be pointed back to. "Randomize behavior" is the whole of what happened.
+      //
+      // Lowercase "behavior" matches `loadCheckpoint` above, and the American
+      // spelling matches the command name and the menu item ("Randomize
+      // Behavior") rather than the British "behaviour" these comments use.
+      return 'Randomize behavior';
+    case 'randomizeSeed':
+      // "MUTATIONS", MATCHING THE BUTTON THAT SENDS IT. This message is only
+      // ever reached with an AUTHORED rule -- under the sentinel the command
+      // redirects to `randomizeBehavior` and reports as that instead, because
+      // there it IS that. So the word is accurate wherever this string can
+      // appear, which is exactly the guarantee the redirect buys.
+      return 'Reroll mutations';
     default: {
       // Exhaustiveness: a new `BehaviorEvent` member fails to compile here
       // rather than falling through to an empty message at runtime.
@@ -95,6 +118,29 @@ export function describeEvent(event: BehaviorEvent): string {
       throw new Error(`No message for event ${JSON.stringify(unreachable)}`);
     }
   }
+}
+
+/**
+ * What to say when a checkpoint is captured.
+ *
+ * **NOT A `BehaviorEvent`, deliberately.** Every member of that union replaces
+ * what the particles are chasing and is recorded to history, which is why
+ * `historyLabelFor` can derive an undo label from any of them. Setting a
+ * checkpoint changes no behaviour and is not undoable -- `setCheckpoint` copies
+ * the project into a list and returns. Adding it to the union would force a
+ * history label for a step that cannot be undone, and the exhaustiveness switch
+ * would then owe a message to a case that never appears in history.
+ *
+ * So it is its own function: same toast, same vocabulary, no undo entry implied.
+ *
+ * THE NAME IS THE POINT. `CheckpointStore.capture` picks it (`<project><NN>`,
+ * numbered per project), and it is what the Checkpoints menu will list the entry
+ * under -- so naming it here is what lets a user find again the thing they just
+ * set. A bare "Checkpoint set" would announce that something happened without
+ * saying what to look for.
+ */
+export function describeCheckpointSet(name: string): string {
+  return `Checkpoint set: ${name}`;
 }
 
 /**

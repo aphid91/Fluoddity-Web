@@ -26,6 +26,7 @@ import {
   applySettingEdit,
   randomizeBehavior,
   randomizeSeed,
+  rerollIsNoOp,
   ruleIsSentinel,
   ruleIsGeneratedOnGpu,
   selectionIsNoOp,
@@ -297,4 +298,60 @@ test('ruleIsGeneratedOnGpu reads the lanes the Rule layout puts them at', () => 
       `float ${String(i)} is outside both tested lanes`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// The no-op reroll guard
+// ---------------------------------------------------------------------------
+//
+// The same emptiness `selectionIsNoOp` describes, reached by the other command.
+// At mutation scale 0 with an authored rule the seed picks a variation that
+// `mutate_rule` multiplies away, so `F` would move `mutationSeed` -- which
+// `project.ts` counts as a document change -- and leave the picture identical.
+// The bar and the Simulation menu both grey Reroll in that state; this is what
+// stops the KEY from being the one route that still fires.
+
+test('rerolling at zero mutation scale is a no-op with an authored rule', () => {
+  assert.equal(rerollIsNoOp(withRule(new Array<number>(80).fill(0.25), 0)), true);
+});
+
+test('any mutation at all makes a reroll meaningful again', () => {
+  // `=== 0`, not a threshold -- the same bargain the selection guard strikes,
+  // since any non-zero scale gives the seed something to vary.
+  assert.equal(rerollIsNoOp(withRule(new Array<number>(80).fill(0.25), 1e-6)), false);
+});
+
+test('rerolling a GENERATED rule is never a no-op, whatever the scale', () => {
+  // THE EXCEPTION THAT SHAPES THE GATE. The GPU seeds its generator from
+  // `mutationSeed`, so a reroll regenerates the behaviour outright -- this is
+  // where `F` matters MOST, and gating it on the scale would break it exactly
+  // there. The bar advertises `F` on Reroll All Behavior for the same reason.
+  assert.equal(rerollIsNoOp(withRule(new Array<number>(80).fill(0), 0)), false);
+});
+
+test('the reroll guard asks the SHADER\'s generate test, not the all-zero one', () => {
+  // The corner case, checked for the reroll as well as the selection: a rule
+  // zero in only the two tested lanes is GENERATED, so `F` must still fire at
+  // scale 0 even though `ruleIsSentinel` would call the rule authored.
+  assert.equal(rerollIsNoOp(withRule(sentinelLanesOnly(), 0)), false);
+});
+
+test('a generated rule sends the reroll down the randomize-behavior path', () => {
+  // THE REDIRECT'S CONDITION. `Orchestrator` routes `randomizeSeed` to
+  // `randomizeBehavior` whenever `ruleIsGeneratedOnGpu` holds -- the two
+  // genuinely collapse to one act there, since the GPU seeds its generator from
+  // `mutationSeed`. Pinned here because the ORDER matters at the call site: this
+  // is checked BEFORE `rerollIsNoOp`, so a generated rule at scale 0 redirects
+  // rather than returning inert. Swapping the two would silently disable `F` in
+  // the state where it is supposed to become a second Randomize Behavior key.
+  for (const scale of [0, 0.5]) {
+    assert.equal(
+      ruleIsGeneratedOnGpu(withRule(new Array<number>(80).fill(0), scale)),
+      true,
+      `a zero rule redirects at scale ${String(scale)}`,
+    );
+  }
+  // And an authored rule never redirects, whatever the scale -- it takes the
+  // reroll path, or the inert path when the scale is 0.
+  assert.equal(ruleIsGeneratedOnGpu(withRule(new Array<number>(80).fill(0.25), 0)), false);
 });

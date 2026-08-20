@@ -68,6 +68,44 @@ test('draw says which button adds and which erases', () => {
   assert.equal(hint.cohort, null);
 });
 
+test('draw offers the clear-barriers button, and no other tool does', () => {
+  // The button is the BULK FORM of the right-click the draw hint describes, so
+  // it belongs beside that sentence and nowhere else. Under Select it would be
+  // an unrelated destructive control in a row about cohort selection -- and it
+  // is not undoable, which makes "somewhere it does not belong" the worst place
+  // for it to be.
+  assert.equal(hintFor(status({ mouseMode: 'draw' })).clearField, true);
+
+  for (const mouseMode of ['select', 'shove'] as const) {
+    assert.equal(
+      hintFor(status({ mouseMode })).clearField,
+      false,
+      `${mouseMode} has no barriers to clear`,
+    );
+  }
+  // Including the select states that show their own button, since the two share
+  // a row and a stuck `display` would put both on it at once.
+  assert.equal(
+    hintFor(status({ mouseMode: 'select', highlightedCohort: 2 })).clearField,
+    false,
+  );
+});
+
+test('the clear-barriers button never shares the row with the commit button', () => {
+  // They occupy the same strip of a row that must not wrap (`HINT_CSS` is
+  // `nowrap`), and each is the one action its own tool offers -- so a state
+  // offering both would be both crowded and confusing about which tool is live.
+  for (const mouseMode of ['select', 'shove', 'draw'] as const) {
+    for (const highlightedCohort of [NO_COHORT, 2]) {
+      const hint = hintFor(status({ mouseMode, highlightedCohort }));
+      assert.ok(
+        !(hint.commit && hint.clearField),
+        `${mouseMode} with cohort ${String(highlightedCohort)} offers both buttons`,
+      );
+    }
+  }
+});
+
 test('neither non-select tool offers a stepper, whatever is lit', () => {
   // A highlight cannot exist outside select -- `setMouseMode` clears it -- but
   // the hint must not depend on that holding: a stepper under the Draw tool

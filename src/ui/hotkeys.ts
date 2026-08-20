@@ -110,9 +110,13 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   //
   // `shift: false` IS LOAD-BEARING, exactly as it is on the `Z` pair above. An
   // omitted `shift` means "don't care" (`matchHotkey`), so without it this row
-  // would claim Shift+C as well and the share link below would never fire --
-  // and the failure would be INVISIBLE, because setting a checkpoint shows
-  // nothing on screen. It would look like the clipboard silently failed.
+  // would claim Shift+C as well and the share link below would never fire.
+  //
+  // That failure used to be INVISIBLE, because setting a checkpoint showed
+  // nothing on screen -- it would have looked like the clipboard silently
+  // failed. It now raises a "Checkpoint set: <name>" toast, so the wrong one
+  // firing would at least be legible; the guard stays because a toast naming a
+  // checkpoint is still the wrong answer to a request for a share link.
   { code: 'KeyC', shift: false, command: { kind: 'setCheckpoint' } },
   // `shift: false` here for the same reason as `KeyC` above: Shift+V is the
   // share link's paste, and an omitted `shift` would claim both.

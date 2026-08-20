@@ -28,8 +28,9 @@
  *
  * The strip itself is inert -- `inputBinding.ts` decides canvas capture by
  * `event.target !== canvas`, so a bar the pointer could hit would eat clicks
- * meant for the simulation. The Cancel button inside it is the one exception and
- * re-enables them on itself, because a button nobody can press is not a button.
+ * meant for the simulation. The End Video button inside it is the one exception
+ * and re-enables them on itself, because a button nobody can press is not a
+ * button.
  */
 
 /** What the bar shows. Rebuilt from the recorder each frame it is visible. */
@@ -111,7 +112,17 @@ export class RecordingBar {
 
     const cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.textContent = 'Cancel';
+    // "END VIDEO", NOT "CANCEL": pressing this keeps every frame encoded so far
+    // and writes them to a file (`VideoRecorder.cancel`, and `panel.ts`'s
+    // `onCancel`). The recording ends EARLY rather than being thrown away, and
+    // "Cancel" told the user the opposite of what the button does. The tab's
+    // Export Video button changes to the same words for the same reason.
+    cancel.textContent = 'End Video';
+    // The dataset key still says `bar-cancel`, and so does `VideoRecorder`'s
+    // `cancel()` behind it. Deliberate: "cancel" is accurate about the
+    // RECORDER's lifecycle -- the frame loop really does stop early -- and only
+    // misleading as a promise to the USER about what happens to the footage. So
+    // the label moved and the internals did not.
     cancel.dataset['recording'] = 'bar-cancel';
     // Re-enables pointer events on itself: the strip is inert so it cannot eat
     // canvas input, and this is the one part that must be clickable.

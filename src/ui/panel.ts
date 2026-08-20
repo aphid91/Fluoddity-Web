@@ -930,9 +930,10 @@ export class Panel {
     this.left.container.style.display = display;
     this.right.container.style.display = display;
     // The overlay does NOT go: `X` hides the panels so you can see the picture,
-    // and the overlay is the picture's own controls. `setHidden` is a no-op
-    // there and says why -- called anyway, so this stays a complete list of
-    // what the key governs rather than a list with a silent omission.
+    // and the overlay is the picture's own controls. It is told anyway, because
+    // its gear REPORTS this flag -- gold while the panels show. That state
+    // never reaches the Orchestrator, so this call is the only notification
+    // there is, and every route that hides the panels comes through here.
     this.overlay.setHidden(hidden);
   }
 

@@ -89,6 +89,14 @@ export class MutationOverlay {
   private readonly tool: HTMLSelectElement;
   /** The gear, at the right end. See its construction for why it lives here. */
   private readonly gear: HTMLButtonElement;
+  /**
+   * The gear's `(X)` suffix, kept so `paintGear` can rebuild its label.
+   *
+   * Read from the hotkey table once at construction rather than at each repaint:
+   * the binding cannot change while the bar is alive, and re-reading it per
+   * toggle would make the label's source look more dynamic than it is.
+   */
+  private readonly uiKeySuffix: string;
   /** Cohort Fences, past the divider at the left group's right edge. */
   private readonly fences: HTMLButtonElement;
   /** The three layout presets by cohort count, so `refresh` can colour them. */
@@ -131,6 +139,8 @@ export class MutationOverlay {
   private readonly cohortInput: HTMLInputElement;
   /** Commits the lit cohort. Replaces the "left click it" clause -- see `hintFor`. */
   private readonly commitButton: HTMLButtonElement;
+  /** Wipes the whole strafe field. Draw tool only -- see `hintFor`. */
+  private readonly clearFieldButton: HTMLButtonElement;
 
   /**
    * Last hint written to the DOM, so `refresh` can skip the common case.
@@ -161,6 +171,16 @@ export class MutationOverlay {
    * the first frame always writes, whichever way it goes.
    */
   private generatedShown: boolean | null = null;
+
+  /**
+   * What `refreshReroll` last wrote, as a two-character state key, or `null`
+   * before the first frame.
+   *
+   * Same bargain as `generatedShown` and `activeShown`: the method rewrites a
+   * label, three styles and a title, and doing that sixty times a second to say
+   * what the button already says is the waste every guard in this file avoids.
+   */
+  private rerollShown: string | null = null;
 
   /**
    * Teardown for the focus-release listeners.
@@ -246,7 +266,7 @@ export class MutationOverlay {
       // Set on each OPTION as well as on the select. An option does not reliably
       // inherit its parent's colours into the OS-drawn popup, which is how the
       // text ended up pale-on-white; stating both ends removes the guess.
-      option.style.cssText = 'background:#ffffff;color:#000000;';
+      option.style.cssText = TOOL_OPTION_CSS;
       this.tool.append(option);
     }
 
@@ -327,12 +347,19 @@ export class MutationOverlay {
     this.gear = document.createElement('button');
     this.gear.type = 'button';
     this.gear.style.cssText = GEAR_BUTTON_CSS;
-    const uiKey = keySuffix([localHotkeyLabel('toggleUi')]);
-    const gearLabel = `Show/Hide control panels${uiKey}`;
-    this.gear.title = gearLabel;
-    this.gear.setAttribute('aria-label', gearLabel);
+    this.uiKeySuffix = keySuffix([localHotkeyLabel('toggleUi')]);
     this.gear.dataset['setting'] = 'transport.toggleUi';
-    this.gear.append(gearIcon(), keyCaption(uiKey));
+    this.gear.append(gearIcon(), keyCaption(this.uiKeySuffix));
+    // GOLD WHILE THE PANELS ARE SHOWING, the same vocabulary the layout presets
+    // and Cohort Fences use: gold means "this toggle is the state you are in".
+    // The gear was the one toggle on this bar that looked identical in both of
+    // its states, which made it the only one you had to press to find out.
+    //
+    // Seeded to the SHOWN state and then kept honest by `setHidden`. `Panel`
+    // calls `applyHidden` at construction only when it starts hidden, so an
+    // un-hidden start never calls in -- the default has to be the one that
+    // needs no call.
+    this.paintGear(false);
     this.gear.addEventListener('click', () => {
       opts.onToggleUi?.();
       // A click leaves the button focused, and `X` would then be swallowed while
@@ -414,7 +441,41 @@ export class MutationOverlay {
       this.commitButton.blur();
     });
 
-    this.hint.append(this.hintLead, this.stepper, this.commitButton, this.hintTail);
+    // Clear All Barriers, the Draw tool's own action on this row.
+    //
+    // RIGHT OF THE SENTENCE it belongs to, which is why it is appended last: the
+    // lead reads "Left click to add barriers | Right click to erase them" and
+    // this is the bulk form of that erase, so it follows the description of the
+    // single-stroke version rather than interrupting it.
+    //
+    // "(Can't undo)" IS IN THE LABEL, not a tooltip. `clearStrafeField` is
+    // deliberately outside the undo timeline (see the Orchestrator's case for
+    // it), and the panel's copy of this button already says so in its own title
+    // -- a destructive one-click action whose irreversibility is only discoverable
+    // by hovering is the version that gets pressed by accident.
+    //
+    // NO CONFIRM DIALOG, matching the panel button it mirrors. The field is
+    // live-only state that no reload preserves, so the cost of a mistaken press
+    // is redrawing rather than losing saved work -- and a dialog on every clear
+    // would be friction on the common deliberate case.
+    this.clearFieldButton = document.createElement('button');
+    this.clearFieldButton.type = 'button';
+    this.clearFieldButton.style.cssText = CLEAR_FIELD_BUTTON_CSS;
+    this.clearFieldButton.textContent = "Clear all barriers (Can't undo)";
+    this.clearFieldButton.dataset['setting'] = 'transport.clearStrafeField';
+    this.clearFieldButton.addEventListener('click', () => {
+      opts.send({ kind: 'clearStrafeField' });
+      // Hands the keys back, like every other button on this bar.
+      this.clearFieldButton.blur();
+    });
+
+    this.hint.append(
+      this.hintLead,
+      this.stepper,
+      this.commitButton,
+      this.hintTail,
+      this.clearFieldButton,
+    );
 
     this.root.append(bar, this.hint);
     (opts.container ?? document.body).append(this.root);
@@ -537,20 +598,9 @@ export class MutationOverlay {
         this.slider.valueAsNumber = scale;
         this.readout.textContent = format(scale);
       }
-      // DELIBERATELY NOT DISABLED AT ZERO. This used to grey out below a scale
-      // of 0, on the reasoning that with no mutation there is no variation for a
-      // seed to select. True of the picture at that instant, but not of the
-      // state: the seed the button sets is what the picture uses the moment the
-      // slider comes off zero, so rerolling first and then raising the scale is
-      // a real gesture -- and the old gate made it unreachable in exactly the
-      // order a user would try it.
-      //
-      // THE SENTINEL GATE BELOW IS NOT THAT GATE, and reinstating this one on
-      // the strength of it would be a mistake. They test different things: this
-      // one asked "is the scale zero", which is a value the user can undo with
-      // one drag; that one asks "is there a rule to scale AT ALL", which no
-      // amount of dragging this slider changes.
     }
+
+    this.refreshReroll(status, typeof scale === 'number' ? scale : null);
 
     // --- the sentinel swap -------------------------------------------------
     //
@@ -563,9 +613,8 @@ export class MutationOverlay {
     // has none has been told the wrong thing about their own document.
     //
     // So the slider's whole group gives up its space to the one action the
-    // state does support, and Reroll greys rather than disappearing: it is
-    // coming back the moment a rule is picked, and a control that vanishes
-    // teaches less than one that visibly does not apply.
+    // state does support. Reroll's own fate belongs to `refreshReroll`, which
+    // greys it here and in one other state -- see that method for both.
     if (this.generatedShown !== status.ruleIsGenerated) {
       this.generatedShown = status.ruleIsGenerated;
       const generated = status.ruleIsGenerated;
@@ -574,14 +623,6 @@ export class MutationOverlay {
       this.slider.style.display = generated ? 'none' : '';
       this.readout.style.display = generated ? 'none' : '';
       this.rerollAll.style.display = generated ? '' : 'none';
-
-      // `disabled` as well as the styling: without it the button still takes
-      // focus and still fires, and an inert-looking control that works is worse
-      // than either. The values match `menuBar.ts`'s greyed rows so the bar and
-      // the Simulation menu read as the same state.
-      this.reroll.disabled = generated;
-      this.reroll.style.opacity = generated ? '0.45' : '1';
-      this.reroll.style.cursor = generated ? 'default' : 'pointer';
     }
 
     // The tool selector. It lives here because the Transport section that used
@@ -599,6 +640,82 @@ export class MutationOverlay {
   }
 
   /**
+   * Grey Reroll in the two states where it cannot change the picture.
+   *
+   * ## The sentinel state, unchanged
+   *
+   * With an all-zero rule there is no authored behaviour to mutate, and
+   * `Reroll All Behavior` has taken the slider's place to offer the action the
+   * state DOES support. Reroll greys rather than disappearing: it comes back
+   * the moment a rule is picked, and a control that vanishes teaches less than
+   * one that visibly does not apply.
+   *
+   * Renaming it to "Reroll Behaviors" here would be the wrong fix even though
+   * the command does reroll behaviour in this state -- `rerollAll` is already
+   * on screen doing exactly that, and two adjacent buttons for one action is a
+   * worse question to put to a user than one greyed button and one live one.
+   *
+   * ## Zero scale, and the argument this REVERSES
+   *
+   * This gate existed once, was removed, and is back on a narrower claim. The
+   * removal argued that rerolling at zero and then raising the slider is a real
+   * gesture, so gating it made that order unreachable. True as far as it goes --
+   * but it weighs an ordering some users might use against a button that, when
+   * pressed, does nothing observable. Pressing it still moves the seed and still
+   * marks the document dirty (`project.ts` counts a seed move as a change), so
+   * the un-gated version spends real state on a no-op and gives no hint why the
+   * picture held still. The order the removal protected still works: raise the
+   * slider, then reroll. So the gate returns, with a title naming the slider
+   * that lifts it -- which is what the earlier version lacked.
+   *
+   * `scale` is null when the field is missing from `editConfig`; that degrades
+   * to "live", since a button that works is the safer failure here.
+   */
+  private refreshReroll(status: Status, scale: number | null): void {
+    const generated = status.ruleIsGenerated;
+    const zeroScale = scale === 0;
+    const inert = generated || zeroScale;
+
+    // One key for both conditions, so the frame-by-frame case is a single
+    // string compare. Both reasons are in it, not just the `inert` result: the
+    // TITLE differs between them, so a frame that swaps one cause for the other
+    // still has a write to make.
+    const key = `${generated ? 'g' : '-'}${zeroScale ? 'z' : '-'}`;
+    if (key === this.rerollShown) return;
+    this.rerollShown = key;
+
+    // `disabled` as well as the styling: without it the button still takes
+    // focus and still fires, and an inert-looking control that works is worse
+    // than either. The values match `menuBar.ts`'s greyed rows so the bar and
+    // the Simulation menu read as the same state.
+    this.reroll.disabled = inert;
+    this.reroll.style.opacity = inert ? '0.45' : '1';
+    this.reroll.style.cursor = inert ? 'default' : 'pointer';
+
+    // Each greyed state says WHY, and how to leave it. A disabled control that
+    // does not explain itself is a dead end -- and in both cases the way out is
+    // a control sitting right beside it, which is worth naming.
+    //
+    // THE SENTINEL CASE IS CHECKED FIRST because both can hold at once, and it
+    // is the one with somewhere to go: `Reroll All Behavior` has taken the
+    // slider's place, so pointing at Mutation Scale would name a slider that is
+    // not on screen.
+    //
+    // THE SENTINEL TEXT NAMES THE KEY, because the key still works here and
+    // this button does not. `F` redirects to Randomize Behavior while the rule
+    // is generated (see the Orchestrator's `randomizeSeed` case) -- the two
+    // collapse to one act -- so a user who reaches for the shortcut is not
+    // stuck, and saying so is what stops the greyed button from reading as
+    // "that shortcut is dead too".
+    this.reroll.title = generated
+      ? 'There is no authored behaviour to mutate yet.\n\n' +
+        'Reroll All Behavior is the action for this state — and F does it too.'
+      : zeroScale
+        ? 'Mutation Scale is 0, so every seed looks the same.\n\nRaise Mutation Scale to reroll.'
+        : 'Reroll the mutations applied to the current behaviour';
+  }
+
+  /**
    * The context hint and its stepper.
    *
    * Guarded on the RENDERED result rather than on the Status fields behind it:
@@ -607,7 +724,7 @@ export class MutationOverlay {
    * say is the same waste `generatedShown` guards against above.
    */
   private refreshHint(status: Status): void {
-    const { lead, cohort, tail, commit } = hintFor(status);
+    const { lead, cohort, tail, commit, clearField } = hintFor(status);
 
     // THE FIELD IS RECONCILED ABOVE THE GUARD, because it can disagree with the
     // state without the STATE having changed. Type "99" over cohort 7 with 8
@@ -636,7 +753,12 @@ export class MutationOverlay {
     // `commit` joins the key, or toggling the button would not repaint: the
     // no-op case and the commit case share a lead, a cohort and -- once the
     // clause moved into the button -- very nearly a tail.
-    const key = `${lead} ${String(cohort)} ${tail} ${String(commit)}`;
+    //
+    // `clearField` JOINS IT FOR THE SAME REASON, and it is not redundant with
+    // the lead. Both flags are decided by state the words do not always
+    // distinguish, and a button whose visibility is not in the key is a button
+    // that gets stuck in whichever state it was first written in.
+    const key = `${lead} ${String(cohort)} ${tail} ${String(commit)} ${String(clearField)}`;
     if (this.hintShown === key) return;
     this.hintShown = key;
 
@@ -654,6 +776,11 @@ export class MutationOverlay {
         keySuffix([enter, 'Left click cohort again']);
     }
     this.commitButton.style.display = commit ? 'inline-flex' : 'none';
+
+    // `inline-flex` RESTATED rather than `''`, for the reason spelled out at the
+    // stepper below: this button carries its layout in an inline `style` set
+    // from `cssText`, and `''` would REMOVE the property rather than revert it.
+    this.clearFieldButton.style.display = clearField ? 'inline-flex' : 'none';
 
     const stepping = cohort !== null;
     // `inline-flex` RESTATED, NOT `''`. Both of these elements carry their
@@ -790,18 +917,41 @@ export class MutationOverlay {
   }
 
   /**
-   * The overlay is deliberately NOT part of what `X` hides.
+   * The overlay is deliberately NOT part of what `X` hides -- but its gear
+   * REPORTS what `X` did.
    *
    * `X` hides the PANELS so you can see the picture; this bar is the picture's
    * own controls -- the one slider worth reaching for while watching, plus the
    * tool you are watching it with. Hiding it would mean pressing `X` to get a
    * clean view and then having to press `X` again to change anything about it.
    *
-   * Kept as a no-op method rather than deleted so `Panel.setHidden` reads as a
-   * complete list of what it governs, with this one saying why it opts out.
+   * So this changes no visibility. What it does is colour the gear, which is
+   * the one control on the bar whose state lives entirely outside `Status`:
+   * hiding the panels never reaches the Orchestrator (see `onToggleUi`), so
+   * `refresh` cannot learn it and this is the only notification there is. Every
+   * route that flips the flag -- the key, the Editor menu item, and the gear's
+   * own click -- goes through `Panel.setHidden`, which is what makes one call
+   * site here sufficient.
    */
-  setHidden(_hidden: boolean): void {
-    // Intentionally empty. See above.
+  setHidden(hidden: boolean): void {
+    this.paintGear(hidden);
+  }
+
+  /**
+   * Colour the gear and state its condition in words.
+   *
+   * Gold when the panels are SHOWING, matching the layout presets and Cohort
+   * Fences: on this bar gold means "this toggle is the state you are in". The
+   * title and `aria-label` name the state too, so the button is readable in a
+   * screenshot and without colour vision -- the same rule the population group
+   * follows, where colour is never the only signal.
+   */
+  private paintGear(hidden: boolean): void {
+    this.gear.style.color = hidden ? IDLE_WHITE : ACTIVE_GOLD;
+    const label = `Control panels: ${hidden ? 'hidden' : 'showing'} — show/hide them${this.uiKeySuffix}`;
+    this.gear.title = label;
+    this.gear.setAttribute('aria-label', label);
+    this.gear.setAttribute('aria-pressed', String(!hidden));
   }
 
   dispose(): void {
@@ -843,19 +993,33 @@ export function hintFor(status: Status): {
    * sentence still told you to click would be two answers to the same question.
    */
   readonly commit: boolean;
+  /**
+   * Whether to offer the "clear every barrier" button.
+   *
+   * Decided here rather than in the DOM for the same reason `commit` is: it is
+   * part of what this row SAYS in a given state, and the tests that pin the
+   * wording should be able to pin which buttons come with it.
+   */
+  readonly clearField: boolean;
 } {
   const none = (lead: string) => ({
     lead,
     cohort: null,
     tail: '',
     commit: false,
+    clearField: false,
   });
 
   if (status.mouseMode === 'shove') {
     return none('Left click to push particles away | Right click to pull them in');
   }
   if (status.mouseMode === 'draw') {
-    return none('Left click to add barriers | Right click to erase them');
+    // THE ONLY STATE THAT OFFERS IT. Clearing the field is a Draw-tool act --
+    // the button is the bulk form of the right-click the same sentence
+    // describes, so it belongs beside that sentence and nowhere else. Under
+    // Select or Shove it would be an unrelated destructive control sitting in a
+    // row about something else entirely.
+    return { ...none('Left click to add barriers | Right click to erase them'), clearField: true };
   }
 
   // Select. `highlightedCohort` arrives ALREADY GATED by the Orchestrator, so
@@ -880,6 +1044,9 @@ export function hintFor(status: Status): {
       // a button that declines when pressed would be worse than the sentence
       // it replaced -- the sentence at least explains what to do about it.
       commit: false,
+      // Select has no barriers to clear. Stated in every branch rather than
+      // defaulted, so adding a state to this function is forced to decide.
+      clearField: false,
     };
   }
 
@@ -892,6 +1059,7 @@ export function hintFor(status: Status): {
       // between it and the lead.
       tail: ' | Right click to cancel selection',
       commit: true,
+      clearField: false,
     };
   }
 
@@ -1288,28 +1456,75 @@ const COMMIT_BUTTON_CSS =
   'border-radius:4px;color:#e8c14a;cursor:pointer;' +
   'font:11px system-ui,sans-serif;white-space:nowrap;';
 
+// Clear All Barriers, on the hint row under the Draw tool.
+//
+// **THE COMMIT BUTTON'S SHAPE, IN THE COMMIT BUTTON'S PLACE.** Same 11px text,
+// same padding, same radius, same `flex:none` -- because it is the same KIND of
+// thing: the one action the current tool's hint row offers, sized to sit inside
+// a line of prose rather than to match the bar's controls above. Sharing the
+// geometry is what makes the two read as one affordance that changes with the
+// tool, rather than as two unrelated buttons that happen to live nearby.
+//
+// **THE COLOUR IS THE ONE DELIBERATE DIFFERENCE.** Gold on the commit button
+// means "the active cohort", continuing the gold of the layout dots and the
+// fence ring. That vocabulary has nothing to say about erasing a field, and
+// borrowing it would imply a connection to the cohort selection that does not
+// exist. Red is the app's existing destructive tint -- `DELETE_BUTTON_CSS` in
+// `menuBar.ts` uses `#d06060` for the X that destroys a stored config, and this
+// is the same family, mixed the way the commit button mixes its gold: a low
+// alpha fill, a stronger border, and the full colour on the text.
+//
+// NEVER THE ONLY SIGNAL, the same rule the population group follows: the label
+// says "(Can't undo)" in words, so the warning survives without colour vision
+// and in a screenshot.
+//
+// `flex:none` IS LOAD-BEARING here exactly as it is on the stepper. The hint row
+// is a flex container whose text spans are allowed to shrink; without this the
+// button would be squeezed below its own content and its label would wrap
+// mid-sentence.
+const CLEAR_FIELD_BUTTON_CSS =
+  'display:none;align-items:center;margin:0 6px;padding:2px 8px;flex:none;' +
+  'background:rgba(208,96,96,0.14);border:1px solid rgba(208,96,96,0.45);' +
+  'border-radius:4px;color:#d06060;cursor:pointer;' +
+  'font:11px system-ui,sans-serif;white-space:nowrap;';
+
 // The `(X)` beside an icon. Dimmed and a size down, so the glyph stays the thing
 // you see first and the shortcut sits behind it.
 const KEY_CAPTION_CSS =
   'font:10px system-ui,sans-serif;color:rgba(232,232,234,0.6);white-space:nowrap;';
 
-// The tool dropdown.
+// The tool dropdown, matching the bar it sits in.
 //
-// **LIGHT, deliberately, while everything around it is dark.** The first attempt
-// styled it to match the Reroll button -- pale text on a translucent dark
-// background -- plus `color-scheme:dark` to carry that into the option list.
-// That popup is drawn by the OS, and `color-scheme` is a HINT it does not always
-// honour: where it was ignored the menu opened white and kept the pale text,
-// which is nearly unreadable.
+// **THIS WAS DELIBERATELY LIGHT ONCE, AND THE REASON IT CHANGED MATTERS.** An
+// earlier attempt styled it dark and leaned on `color-scheme:dark` to carry that
+// into the option list. The popup is drawn by the platform, `color-scheme` is a
+// HINT, and where it was ignored the list opened white while KEEPING the pale
+// text it had been given -- unreadable. Going light was the safe retreat: black
+// on white is legible whichever way the popup resolves.
 //
-// So this does not rely on the hint at all. An opaque light background with
-// black text is legible whether the popup follows the element's colours or the
-// platform's default, which is the only version that cannot fail. The dark
-// border keeps it visually seated in the bar.
+// The retreat is no longer necessary, because the failure it avoided came from
+// setting only ONE end. Every option below states an OPAQUE dark background and
+// a light colour of its own (see the `<option>` loop), so a popup that ignores
+// `color-scheme` still paints the rows from those declarations rather than
+// falling back to a white sheet under pale text. The hint is stated as well, for
+// the platforms that do honour it -- but nothing depends on it now.
 //
-// `color-scheme:light` is still worth stating: where it IS honoured it makes the
-// popup match this element rather than merely tolerating it.
+// The cost of the light version was that the one control in the middle of a dark
+// bar looked like a foreign object, which is what this fixes. The background is
+// OPAQUE rather than the `rgba(255,255,255,0.10)` the buttons use: a translucent
+// closed select shows the canvas through it, and the open list has to be opaque
+// regardless, so matching them keeps the two states the same colour.
 const TOOL_CSS =
-  'background:#e8e8ea;border:1px solid rgba(255,255,255,0.24);' +
-  'border-radius:4px;color:#000;font:11px system-ui,sans-serif;' +
-  'padding:5px 8px;cursor:pointer;color-scheme:light;';
+  'background:#2c2c2e;border:1px solid rgba(255,255,255,0.14);' +
+  'border-radius:4px;color:#e8e8ea;font:11px system-ui,sans-serif;' +
+  'padding:5px 8px;cursor:pointer;color-scheme:dark;';
+
+/**
+ * One row of the tool dropdown's popup.
+ *
+ * OPAQUE, and stating both ends. See `TOOL_CSS`: the option list is drawn by the
+ * platform and does not reliably inherit the select's colours, so each row has
+ * to name its own background AND its own text. Naming only one is what produced
+ * the pale-on-white failure that sent this control light in the first place.
+ */
+const TOOL_OPTION_CSS = 'background:#2c2c2e;color:#e8e8ea;';

@@ -62,6 +62,7 @@ import {
 import { blurSchedule, sampleAt } from '../camera/blurSchedule.ts';
 import {
   type BehaviorEvent,
+  describeCheckpointSet,
   describeEvent,
   describeHistoryStep,
   historyLabelFor,
@@ -132,6 +133,8 @@ import {
   applySettingEdit,
   randomizeBehavior,
   randomizeSeed,
+  rerollIsNoOp,
+  ruleIsGeneratedOnGpu,
   ruleIsSentinel,
   selectionIsNoOp,
   setPopulationLayout,
@@ -1442,6 +1445,35 @@ export class Orchestrator implements CommandBus {
     return notice;
   }
 
+  /**
+   * Zero the rule so the GPU generates a fresh behaviour, and say so.
+   *
+   * A METHOD BECAUSE TWO COMMANDS REACH IT. `randomizeBehavior` is the obvious
+   * one; `randomizeSeed` arrives here whenever the rule is already generated,
+   * because moving the seed under a generated rule IS this act -- see that case
+   * for why the two collapse. Sharing the body rather than copying it is what
+   * makes the toast, the undo entry and the reset identical however it is
+   * reached, so `F` in the sentinel state cannot drift from `B`.
+   */
+  private randomizeBehavior(): void {
+    const before = this.project;
+    this.setProject(randomizeBehavior(this.project));
+    // `notifyBehavior` rather than a bare `recordHistory`: this is the most
+    // complete behaviour change there is, so it earns the toast every other
+    // whole-rule replacement gets -- and routing both through one call keeps
+    // "Randomize behavior" and "Undo: Randomize behavior" derived from the same
+    // value. The stored label is unchanged from when this was a literal:
+    // `historyLabelFor` lowercases the first letter, reproducing `randomize
+    // behavior` exactly.
+    this.notifyBehavior(before, { kind: 'randomizeBehavior' });
+    // The rule is zeroed so the GPU generates a fresh one. That already LOOKS
+    // like a restart (`derive_entity_rule` takes the generate branch and the
+    // population visibly reorganizes), which is why this path never reset
+    // before; but it does not clear the trails or the positions the old rule
+    // built, and "reset on behavior change" is a promise about all three.
+    this.behaviorChangedElsewhere();
+  }
+
   /** Announce a behaviour change AND record it, so the toast and undo agree. */
   private notifyBehavior(before: Project, event: BehaviorEvent): void {
     this.notify(describeEvent(event));
@@ -1839,9 +1871,20 @@ export class Orchestrator implements CommandBus {
         this.saveError = '';
         return;
 
-      case 'setCheckpoint':
-        this.checkpoints.capture(this.project);
+      case 'setCheckpoint': {
+        // `capture` NAMES the checkpoint (`<project><NN>`), and that name is how
+        // the user finds it again in the Checkpoints menu -- so the toast says
+        // it rather than announcing a bare "Checkpoint set". Taking the return
+        // value is what makes the message and the menu entry agree by
+        // construction instead of by a second call to `nameFor`.
+        //
+        // `notify`, NOT `notifyBehavior`: nothing about the particles changed
+        // and nothing was recorded to history, so there is no undo step for a
+        // behaviour label to describe. See `describeCheckpointSet`.
+        const checkpoint = this.checkpoints.capture(this.project);
+        this.notify(describeCheckpointSet(checkpoint.name));
         return;
+      }
 
       case 'deleteCheckpoint':
         this.checkpoints.remove(command.key);
@@ -1941,13 +1984,51 @@ export class Orchestrator implements CommandBus {
       }
 
       case 'randomizeSeed': {
+        // **WITH A GENERATED RULE, THIS IS RANDOMIZE BEHAVIOR** -- not merely
+        // similar to it, the same act. The shader seeds its generator from
+        // `mutationSeed`, so moving the seed regenerates the behaviour outright;
+        // "reroll the mutations" names an operation on an authored rule that is
+        // not there. The two commands collapse to one thing on the backend, so
+        // the honest UI is to stop offering the misleading one: the bar and the
+        // Simulation menu grey Reroll in this state, and `F` becomes a second
+        // key for Randomize Behavior -- which is what the wide Reroll All
+        // Behavior button already implies by naming `F` beside `B`.
+        //
+        // FALLING THROUGH TO THE CASE rather than duplicating its body is the
+        // point: the toast, the undo entry and the reset are then identical by
+        // construction. A copy here would be a second place for "randomize
+        // behavior" to drift from the command that actually means it, and the
+        // undo stack would fill with a step whose label disagreed with what the
+        // key did.
+        if (ruleIsGeneratedOnGpu(this.project)) return this.randomizeBehavior();
+
+        // INERT AT MUTATION SCALE 0, so `F` does nothing there -- matching the
+        // greyed Reroll button on the bar and the greyed Simulation menu row,
+        // which is the point: a key that works while its own on-screen twin is
+        // greyed teaches that the greying is a lie.
+        //
+        // `mutate_rule` scales both its terms by `amount` (see
+        // `selectionIsNoOp`), so at 0 every cohort obeys the base rule and a new
+        // seed selects a variation that is multiplied away. Pressing on would
+        // move the seed and dirty the document while changing nothing visible.
+        //
+        // The sentinel never reaches this line -- it returned above -- so the
+        // exception `rerollIsNoOp` carries is already spent by the time it is
+        // asked. It is still the right predicate: it states the whole condition
+        // in one place, and the UI greys on exactly it.
+        if (rerollIsNoOp(this.project)) return;
+
         const before = this.project;
         const next = randomizeSeed(this.project);
         if (next === null) return;
         this.setProject(next);
         // No coalesce key: a button press is a discrete act, not a gesture to
-        // merge, so three presses give three undo steps.
-        this.recordHistory(before, 'randomize mutation seed');
+        // merge, so three presses give three undo steps. `notifyBehavior`
+        // supplies the label from the event, which RENAMES the stored step from
+        // `randomize mutation seed` to `reroll mutations` -- deliberately: the
+        // control the user pressed says "Reroll Mutations", and the undo entry
+        // should name what they did rather than the field it moved.
+        this.notifyBehavior(before, { kind: 'randomizeSeed' });
         // Every cohort re-mutates around a new seed, so every particle is now
         // chasing a different target -- and a cohort lit against the old seed
         // names a behaviour nothing is running. AFTER `setProject`, per
@@ -1956,19 +2037,8 @@ export class Orchestrator implements CommandBus {
         return;
       }
 
-      case 'randomizeBehavior': {
-        const before = this.project;
-        this.setProject(randomizeBehavior(this.project));
-        this.recordHistory(before, 'randomize behavior');
-        // The most complete behavior change there is -- the rule is zeroed so
-        // the GPU generates a fresh one. That already LOOKS like a restart
-        // (`derive_entity_rule` takes the generate branch and the population
-        // visibly reorganizes), which is why this path never reset before; but
-        // it does not clear the trails or the positions the old rule built, and
-        // "reset on behavior change" is a promise about all three.
-        this.behaviorChangedElsewhere();
-        return;
-      }
+      case 'randomizeBehavior':
+        return this.randomizeBehavior();
 
       case 'setPopulationLayout': {
         const before = this.project;
@@ -2517,9 +2587,10 @@ export class Orchestrator implements CommandBus {
    *
    * **`X` DOES NOT HIDE EVERYTHING, AND THAT IS WHY THE EARLY-OUT IS NOT
    * UNCONDITIONAL.** The mutation overlay deliberately opts out of the hide
-   * (`mutationOverlay.setHidden` is a no-op: it is the picture's own controls,
-   * and pressing `X` for a clean view must not also take away the one slider
-   * worth reaching for while watching). It reads `mutationScale` out of
+   * (`mutationOverlay.setHidden` changes no visibility -- it only colours the
+   * gear, because the bar is the picture's own controls and pressing `X` for a
+   * clean view must not also take away the one slider worth reaching for while
+   * watching). It reads `mutationScale` out of
    * `editConfig` every frame, so returning the empty payload while it is still
    * on screen freezes it: `refresh` finds no number, keeps whatever the slider
    * last showed, and the bar then disagrees with the config until something
