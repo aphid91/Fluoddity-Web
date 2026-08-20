@@ -46,7 +46,7 @@ test('the behaviour events read as the specification asks', () => {
   );
   assert.equal(
     describeEvent({ kind: 'commitSelection', cohort: 7 }),
-    'Commit Selection of cohort 7',
+    'Generate children from cohort 7',
   );
   assert.equal(
     describeEvent({ kind: 'loadCheckpoint', name: 'before the split' }),
@@ -139,6 +139,6 @@ test('cohort 0 is named, not dropped', () => {
   // is a perfectly ordinary cohort and the message has to say so.
   assert.equal(
     describeEvent({ kind: 'commitSelection', cohort: 0 }),
-    'Commit Selection of cohort 0',
+    'Generate children from cohort 0',
   );
 });

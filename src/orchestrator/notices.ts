@@ -90,7 +90,15 @@ export function describeEvent(event: BehaviorEvent): string {
       // The cohort NUMBER, because that is what the user aimed at and what the
       // stepper beside the mutation slider shows. Without it the message cannot
       // be told apart from any other selection.
-      return `Commit Selection of cohort ${String(event.cohort)}`;
+      //
+      // "GENERATE CHILDREN FROM", NOT "COMMIT SELECTION OF". The old phrasing
+      // named the INTERNAL act -- a pick was classified as committing rather
+      // than aiming -- which is vocabulary from `pickCommits`, not from
+      // anything the user did. What they actually did is breed the next
+      // population from this cohort's rule, and the hint row's own button says
+      // exactly that ("Generate children from selected cohort"). The toast and
+      // the control that raises it now use one phrase for one act.
+      return `Generate children from cohort ${String(event.cohort)}`;
     case 'loadCheckpoint':
       return `Load checkpoint ${event.name}`;
     case 'loadSharedLink':
