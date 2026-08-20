@@ -122,7 +122,8 @@ export interface PanelOptions {
   /**
    * Whether to show the welcome splash on construction. Defaults to true.
    *
-   * False still BUILDS it, so Help > Welcome / Controls works either way -- it
+   * False still BUILDS it, so Help > Welcome and Help > Controls/Guide work
+   * either way -- it
    * only suppresses the automatic first showing. That is what `?nosplash`
    * wants, and what a screenshot comparison wants.
    *
@@ -500,7 +501,10 @@ export class Panel {
       },
       isUiHidden: () => this.hiddenFlag,
       onShowWelcome: () => {
-        this.splash.show();
+        this.splash.show('welcome');
+      },
+      onShowGuide: () => {
+        this.showGuide();
       },
       onToggleExportVideo: () => {
         this.setExportVideoShown(!this.exportVideoShown);
@@ -1043,6 +1047,18 @@ export class Panel {
    */
   setSplashStatus(text: string): void {
     this.splash.setStatus(text);
+  }
+
+  /**
+   * Open the Controls/Guide overlay. The `H` / `?` keys, and Help → Controls.
+   *
+   * Fronts the splash for the reason `setSplashStatus` does. Safe while the
+   * welcome is already up: `show` swaps the document in place rather than
+   * refusing, which is what makes `H` work as the welcome's own last line
+   * promises it does.
+   */
+  showGuide(): void {
+    this.splash.show('guide');
   }
 
   /**

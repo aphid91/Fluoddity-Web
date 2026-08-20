@@ -52,6 +52,8 @@ export interface InputBindingOptions {
   readonly copyShareLink: () => void;
   /** Handle the `pasteShareLink` local action -- `Shift+V`. */
   readonly pasteShareLink: () => void;
+  /** Handle the `showGuide` local action -- `H` and `?`. Opens the guide overlay. */
+  readonly showGuide: () => void;
   /** Defaults to `DEFAULT_HOTKEYS`; a parameter so a test or Step 10 can swap it. */
   readonly hotkeys?: readonly Hotkey[];
 }
@@ -71,7 +73,7 @@ export function bindInput(opts: InputBindingOptions): {
   readonly tracker: InputTracker;
   dispose(): void;
 } {
-  const { surface, dispatch, toggleUi, copyShareLink, pasteShareLink } = opts;
+  const { surface, dispatch, toggleUi, copyShareLink, pasteShareLink, showGuide } = opts;
   const canvas = surface.canvas;
   const tracker = new InputTracker();
   const table = opts.hotkeys ?? DEFAULT_HOTKEYS;
@@ -221,6 +223,9 @@ export function bindInput(opts: InputBindingOptions): {
           break;
         case 'pasteShareLink':
           pasteShareLink();
+          break;
+        case 'showGuide':
+          showGuide();
           break;
         default: {
           const unreachable: never = hit.local;

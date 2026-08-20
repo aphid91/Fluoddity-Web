@@ -201,7 +201,7 @@ async function start(): Promise<void> {
   // The welcome splash comes up with it. `?nosplash` suppresses the automatic
   // first showing for the same reason `?nopanel` exists: `browserCheck.mjs`
   // compares screenshots, and a full-frame overlay would change what those
-  // compare. Help > Welcome / Controls still opens it either way.
+  // compare. Help > Welcome still opens it either way.
   //
   // **THE SPLASH IS A FIRST-RUN EXPERIENCE, NOT A TOLL BOOTH.** It used to come
   // up on every single load, which is right exactly once and an obstacle every
@@ -209,8 +209,8 @@ async function start(): Promise<void> {
   // back to use, pausing the simulation until they clear it. `calibrated` is
   // the same signal that gates calibration, so the two arrive together: a first
   // visit gets the welcome copy WITH the progress line under it, and every
-  // visit after starts straight in the app. Help > Welcome / Controls is how
-  // you get it back.
+  // visit after starts straight in the app. Help > Welcome is how you get it
+  // back, and Help > Controls/Guide (or `H`) is where the details went.
   //
   // `ALWAYS_CALIBRATE` is a development flag that forces every load to behave
   // like a first one, for tuning the ladder without clearing `localStorage`
@@ -347,6 +347,8 @@ async function start(): Promise<void> {
     // report the result. Copying silently is worse than not copying.
     copyShareLink: () => panel?.copyShareLink(),
     pasteShareLink: () => panel?.pasteShareLink(),
+    // `?nopanel` takes the splash with the panel, so there is nothing to open.
+    showGuide: () => panel?.showGuide(),
   });
 
   // --- first-run calibration -------------------------------------------------

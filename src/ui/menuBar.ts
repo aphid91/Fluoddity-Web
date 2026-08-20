@@ -88,6 +88,14 @@ export interface MenuBarOptions {
   /** Re-show the welcome splash. Owned by the panel, like the dialogs. */
   readonly onShowWelcome: () => void;
   /**
+   * Show the in-depth guide -- the same overlay, its other document.
+   *
+   * A SECOND callback rather than an argument on `onShowWelcome`, so this menu
+   * never learns that the two share a surface. Which of them the panel puts
+   * them on is the panel's business.
+   */
+  readonly onShowGuide: () => void;
+  /**
    * Show or hide the Recording Controls tab.
    *
    * A TOGGLE, not a command that opens something: ticking it adds the tab and
@@ -447,7 +455,19 @@ export class MenuBar {
     // `setOpenMenu` -- only File and History gate hover-preview sessions -- so
     // this one is an ordinary menu with nothing to keep in sync.
     this.addMenu('Help', (body) => {
-      this.addItem(body, 'Welcome / Controls...', () => this.opts.onShowWelcome());
+      // TWO ROWS, one overlay. The welcome is the five-line first-run screen;
+      // the guide is the reference. Splitting them is the whole point -- a
+      // returning user wants the controls, not the pitch.
+      this.addItem(body, 'Welcome...', () => this.opts.onShowWelcome());
+      // The shortcut is READ FROM THE TABLE, so a rebind moves this label with
+      // it. `H` is what comes back (the `Slash` row is second); the guide's own
+      // copy names `?` as well, which a one-key column has no room for.
+      this.addItem(
+        body,
+        'Controls / Guide...',
+        () => this.opts.onShowGuide(),
+        localHotkeyLabel('showGuide'),
+      );
     });
   }
 

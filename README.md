@@ -758,8 +758,16 @@ both ways: keyboard traversal of a real panel is worth more than a second
 binding for a command that now has `M`.
 
 Everything uncollided keeps its desktop key: `1`/`2`/`3` tool, `X` hide UI,
-`Space` pause, `R` reset, `B` behaviour, `F` seed, `←`/`→` preset, `Home` reset
-camera.
+`Space` pause, `R` reset, `B` behaviour, `F` seed, `Home` reset camera. `←`/`→`
+have since MOVED off presets and onto the cohort stepper, with `Enter` to commit
+the selection — presets are menu-only now, because loading one replaces every
+particle's behaviour and that is too large an act for a stray arrow key.
+
+One binding is web-only: **`H` / `?` opens the guide** (Help → Controls/Guide).
+The desktop has no equivalent because it has no Help menu to mirror. Two rows
+carry it, `KeyH` first so `localHotkeyLabel` returns a key a user can press;
+the `Slash` row leaves `shift` open, since `?` and `/` are one physical key and
+`code` cannot separate them.
 
 **Every hotkey is gated on "no editable element focused"** (`isEditableTarget`,
 tested against the *event target* rather than `document.activeElement` — the two

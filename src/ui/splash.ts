@@ -1,10 +1,25 @@
 /**
- * The welcome splash: what Fluoddity is, and how to drive it.
+ * The welcome splash and the guide: what Fluoddity is, and how to drive it.
  *
  * Shown once at startup, dismissed by a click anywhere. It is deliberately the
  * simplest thing in `ui/`: no command bus, no status, no refresh. It has one
  * piece of state (shown / not shown) and one transition, so it takes none of
  * the machinery the panel needs.
+ *
+ * ## Two documents, ONE overlay
+ *
+ * The screen a first-time visitor meets and the reference they come back to are
+ * different documents with different jobs. The welcome has to be read in full
+ * by someone who has not decided yet whether to care, so it is five lines and
+ * ends by pointing at the guide; the guide is the exhaustive one, and nobody
+ * reaches it without asking.
+ *
+ * They are still ONE class, because everything around the copy is shared and
+ * none of it is trivial: the pause coupling, the calibration lock, the
+ * scrollbar-aware dismiss. Two instances would mean two of each, and a
+ * `pausedBySplash` that two overlays could both claim. So `Variant` selects
+ * which block list `render` walks, and `show(variant)` swaps the card's
+ * children -- the only thing that actually differs.
  *
  * ## Why it is not a `<dialog showModal()>`
  *
@@ -24,9 +39,11 @@
  * ## The instance outlives any one showing
  *
  * `dismiss()` detaches the node and unbinds the key listener, but keeps both --
- * Help > Welcome / Controls re-shows the same instance. Building the DOM once
- * and reattaching it is what makes `show()` cheap enough to call from a menu,
- * and it keeps the scroll position resettable in one place.
+ * Help > Welcome and Help > Controls/Guide re-show the same instance. Building
+ * the chrome once and reattaching it is what makes `show()` cheap enough to
+ * call from a menu or a keystroke, and it keeps the scroll position resettable
+ * in one place. Only the card's CHILDREN are rebuilt, and only when the variant
+ * actually changes.
  *
  * The keydown listener is bound only WHILE VISIBLE, so a dismissed splash costs
  * nothing per keystroke and can never swallow a key meant for the simulation.
@@ -43,17 +60,40 @@ const DIVIDER = Symbol('divider');
  */
 type Block = string | readonly string[] | typeof DIVIDER;
 
-const HEADING = 'Welcome to Fluoddity!';
+/**
+ * Which document the overlay is showing.
+ *
+ * `welcome` is the first-run screen; `guide` is Help → Controls/Guide and the
+ * `H`/`?` keys.
+ */
+export type Variant = 'welcome' | 'guide';
 
-const BODY: readonly Block[] = [
-  'Think of it like an evolvable ant farm, or an interactive lava lamp. ' +
-    'Thousands of particles interact through pheromone-like trails left behind ' +
-    'as they move. There is no fixed particle behavior in Fluoddity. Instead, ' +
-    'each particle has a simple neural-net like brain that it uses to process ' +
-    'local trail conditions and decide how to behave. Groups of particles, ' +
-    'called cohorts, all share the same behavior.',
-  'Go to File → Load and thumb through the presets to see some possibilities!',
-  DIVIDER,
+const WELCOME_HEADING = 'Welcome to Fluoddity!';
+
+/**
+ * The first-run copy. FIVE LINES, and it should stay that way.
+ *
+ * Its whole job is to say what this is and hand off; anything a user needs only
+ * once they have decided to stay belongs in `GUIDE_BODY`, which is one keypress
+ * away and says so on the last line.
+ */
+const WELCOME_BODY: readonly Block[] = [
+  'Part interactive lava lamp, part evolvable ant farm — in Fluoddity ' +
+    'thousands of particles interact through pheromone-like trails they leave ' +
+    'behind as they move.',
+  [
+    'See something you like? Click on it and you can generate children with ' +
+      'similar behaviors.',
+    'Try thumbing through the presets with File → Load to see some ' +
+      'possibilities!',
+    'Press (H), (?), or go to Help → Controls/Guide for details',
+  ],
+];
+
+const GUIDE_HEADING = 'Controls / Guide';
+
+const GUIDE_BODY: readonly Block[] = [
+  'Press X or click the gear icon to toggle the control panels.',
   [
     'The panel on the right shows your editor and tool preferences.',
     'The panel on the left shows your current project. These values are stored ' +
@@ -66,10 +106,13 @@ const BODY: readonly Block[] = [
     'WASD: pan camera',
     'Q/E/Scroll wheel: zoom camera',
     'X: toggle hide UI',
+    'H or ?: Display this window',
   ],
   [
     'R: reset simulation',
     'Space: toggle pause simulation',
+    'Enter (when something is selected): Generate children from selected cohort.',
+    'Left/Right arrow: Select Next/Prev cohort.',
     'F: reroll mutations',
     'B: randomize particle behavior',
   ],
@@ -92,13 +135,18 @@ const BODY: readonly Block[] = [
     'mutation. This process can be repeated, making it possible to explore the ' +
     'space of possible behaviors. When in select mode, right click is mapped ' +
     'to undo.',
-  
+
   'Tool: Shove',
   'Hold left mouse to push particles away from your cursor. Hold right mouse ' +
     'to pull them in.',
-  
+
   'Tool: Draw',
   'Left click to draw barriers that repel particles. Right click to erase.',
+  DIVIDER,
+  'There is no fixed particle behavior in Fluoddity. Instead, each particle ' +
+    'has a simple neural-net like brain that it uses to process local trail ' +
+    'conditions and decide how to behave. Groups of particles, called cohorts, ' +
+    'all share the same behavior.',
 ];
 
 /** Blocks that are a bold sub-heading rather than body copy. */
@@ -130,6 +178,8 @@ export interface SplashOptions {
    * Help menu needs the instance either way.
    */
   readonly showNow?: boolean;
+  /** Which document to open on construction. Defaults to `welcome`. */
+  readonly variant?: Variant;
   /**
    * Called on each transition, with the new visibility.
    *
@@ -152,6 +202,16 @@ export class Splash {
   private readonly onKey: (ev: KeyboardEvent) => void;
   private readonly onVisibilityChange: (visible: boolean) => void;
   private shown = false;
+  /**
+   * Which document the card is currently holding.
+   *
+   * Tracked so `show()` can skip rebuilding when the same one is asked for
+   * twice -- and, more importantly, so a `show('guide')` on an already-visible
+   * welcome still SWAPS rather than silently doing nothing. Pressing `H` while
+   * the first-run splash is up is the obvious way to reach the guide, and it
+   * has to work.
+   */
+  private variant: Variant;
 
   /**
    * Whether dismissal is refused. See `setLocked`.
@@ -164,6 +224,7 @@ export class Splash {
   constructor(opts: SplashOptions = {}) {
     this.container = opts.container ?? document.body;
     this.onVisibilityChange = opts.onVisibilityChange ?? ((): void => {});
+    this.variant = opts.variant ?? 'welcome';
 
     this.root = document.createElement('div');
     this.root.id = 'fluoddity-splash';
@@ -182,7 +243,7 @@ export class Splash {
       'max-width:640px;min-height:0;overflow-y:auto;box-sizing:border-box;' +
       'padding:24px 28px;border:1px solid rgba(255,255,255,0.15);' +
       'border-radius:6px;background:rgba(28,28,30,0.98);cursor:auto;';
-    this.card.append(...render());
+    this.card.append(...render(this.variant));
 
     // OUTSIDE the card, so it stays visible no matter how far the copy scrolls.
     const hint = document.createElement('div');
@@ -270,11 +331,29 @@ export class Splash {
     );
   }
 
-  /** Show it, or do nothing if it is already up. Scrolled back to the top. */
-  show(): void {
+  /**
+   * Show `variant`, scrolled back to the top.
+   *
+   * **NOT a no-op on an already-visible overlay when the variant differs.** The
+   * card is re-filled and re-scrolled either way, so `H` while the welcome is
+   * up switches documents in place; only a request for the document already on
+   * screen returns early. Omitting the argument keeps whatever is loaded, which
+   * is what `calibrate()` wants -- it re-shows the splash to hide a rebuild and
+   * has no opinion about the copy.
+   *
+   * `onVisibilityChange` fires only on an ACTUAL show, never on a swap, so the
+   * pause coupling in `panel.ts` still sees one true per one false.
+   */
+  show(variant?: Variant): void {
+    const next = variant ?? this.variant;
+    if (this.shown && next === this.variant) return;
+    if (next !== this.variant) {
+      this.variant = next;
+      this.card.replaceChildren(...render(next));
+    }
+    this.card.scrollTop = 0;
     if (this.shown) return;
     this.shown = true;
-    this.card.scrollTop = 0;
     this.container.append(this.root);
     // Bound only while visible, so a dismissed splash costs nothing per
     // keystroke and cannot swallow a key meant for the simulation.
@@ -352,15 +431,17 @@ export class Splash {
   }
 }
 
-/** `BODY` as elements, with `HEADING` in front. */
-function render(): HTMLElement[] {
+/** One variant's body as elements, with its heading in front. */
+function render(variant: Variant): HTMLElement[] {
+  const welcome = variant === 'welcome';
+
   const heading = document.createElement('h1');
-  heading.textContent = HEADING;
+  heading.textContent = welcome ? WELCOME_HEADING : GUIDE_HEADING;
   heading.style.cssText = 'margin:0 0 12px;font-size:18px;font-weight:600;';
 
   const out: HTMLElement[] = [heading];
 
-  for (const block of BODY) {
+  for (const block of welcome ? WELCOME_BODY : GUIDE_BODY) {
     if (block === DIVIDER) {
       const hr = document.createElement('hr');
       hr.style.cssText =

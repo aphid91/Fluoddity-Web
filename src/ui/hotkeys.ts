@@ -43,6 +43,9 @@
  * tool, `X` hide UI, `Space` pause, `R` reset, `B` behaviour, `F` seed,
  * arrows for presets, `Home` reset camera.
  *
+ * One binding is WEB-ONLY: `H` / `?` opens the guide. The desktop has no
+ * equivalent because it has no Help menu to mirror.
+ *
  * ## What is not here: WASD and Q/E
  *
  * Continuous motion is not a hotkey. It reads `keysHeld` against `dt` in
@@ -61,7 +64,11 @@ import { MOUSE_MODES, type Command } from '../orchestrator/commands.ts';
  * simulation's vocabulary. `ui.py:471-473` says the same -- "rule 10 cuts both
  * ways".
  */
-export type LocalAction = 'toggleUi' | 'copyShareLink' | 'pasteShareLink';
+export type LocalAction =
+  | 'toggleUi'
+  | 'copyShareLink'
+  | 'pasteShareLink'
+  | 'showGuide';
 
 /** One binding. Exactly one of `command`/`local` is set. */
 export interface Hotkey {
@@ -191,6 +198,21 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   // out -- which is a mnemonic worth more than either key on its own.
   { code: 'KeyC', shift: true, local: 'copyShareLink' },
   { code: 'KeyV', shift: true, local: 'pasteShareLink' },
+
+  // The guide, on the two keys everyone tries. `local` for the same reason as
+  // the rest of this block: the overlay is the panel's, and the Orchestrator
+  // has no DOM in it.
+  //
+  // **TWO ROWS, and `KeyH` is listed FIRST on purpose.** `keyLabel` reads the
+  // first match, so `H` is what any generated hint will say -- `Slash` would
+  // render as the literal word. The copy in `splash.ts` names both.
+  //
+  // `Slash` with `shift: undefined`, so it matches `/` as well as `?`. The two
+  // are one physical key on a US layout and `code` cannot tell them apart
+  // anyway; demanding Shift would leave `/` doing nothing, and `/` is not bound
+  // to anything else to collide with.
+  { code: 'KeyH', local: 'showGuide' },
+  { code: 'Slash', local: 'showGuide' },
 ];
 
 /**
