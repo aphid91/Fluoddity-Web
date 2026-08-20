@@ -435,9 +435,16 @@ export class Splash {
 function render(variant: Variant): HTMLElement[] {
   const welcome = variant === 'welcome';
 
+  // CENTRED ON THE WELCOME ONLY. It is a title above four lines and reads as
+  // one, where the guide's is a section label at the top of a long scrolling
+  // document -- centring that one would leave it floating away from the copy it
+  // heads. `text-align` rather than a flex change, so it centres within the
+  // card's content box and stays put as the card resizes.
   const heading = document.createElement('h1');
   heading.textContent = welcome ? WELCOME_HEADING : GUIDE_HEADING;
-  heading.style.cssText = 'margin:0 0 12px;font-size:18px;font-weight:600;';
+  heading.style.cssText =
+    'margin:0 0 12px;font-size:18px;font-weight:600;' +
+    (welcome ? 'text-align:center;' : '');
 
   const out: HTMLElement[] = [heading];
 
