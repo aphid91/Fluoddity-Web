@@ -249,6 +249,22 @@ export type Command =
    * what one click would have done anyway.
    */
   | { readonly kind: 'confirmSelection' }
+  /**
+   * Put out the highlight without adopting anything: the hint bar's Cancel
+   * Selection button.
+   *
+   * **THE AIM-CANCELLING HALF OF RIGHT-CLICK, AND ONLY THAT HALF.** A
+   * right-click on the canvas cancels an aim when one is running and undoes
+   * otherwise (`applyCanvasInput`); this command is the first branch alone. The
+   * button that sends it is only ever on screen while a cohort is lit, so the
+   * branch it would have taken is the only one it can mean -- and a button that
+   * silently became Undo in some other state would be far worse than one that
+   * does nothing there.
+   *
+   * Refused when nothing is lit, which makes it inert rather than surprising if
+   * it is ever dispatched from a state the button does not appear in.
+   */
+  | { readonly kind: 'cancelSelection' }
   | { readonly kind: 'undo' }
   | { readonly kind: 'redo' }
   // --- presets: the LEFT/RIGHT cycle over the whole catalog ---

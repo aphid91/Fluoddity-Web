@@ -138,7 +138,7 @@ test('a lit cohort names itself and offers the stepper', () => {
   const hint = hintFor(status({ mouseMode: 'select', highlightedCohort: 7 }));
   assert.equal(hint.lead, 'Currently selected: Cohort');
   assert.equal(hint.cohort, 7, 'the stepper shows the lit cohort');
-  assert.match(hint.tail, /Right click to cancel selection$/);
+  assert.equal(hint.cancelSelection, true, 'and the way to back out of it');
 });
 
 test('cohort 0 shows the stepper like any other', () => {
@@ -147,20 +147,26 @@ test('cohort 0 shows the stepper like any other', () => {
   // the one a user is most likely to select first.
   const hint = hintFor(status({ mouseMode: 'select', highlightedCohort: 0 }));
   assert.equal(hint.cohort, 0);
-  assert.notEqual(hint.tail, '', 'the tail must still be shown for cohort 0');
+  assert.equal(hint.cancelSelection, true, 'cohort 0 can be cancelled like any other');
 });
 
 test('the right-click wording changes with the state, because the binding does', () => {
   // `applyCanvasInput` routes right-click to cancel-the-aim while a cohort is
-  // lit and to undo otherwise. These two strings are the only thing telling the
-  // user that, so they have to move together with that branch.
+  // lit and to undo otherwise. The user is told which one is live, so the two
+  // have to move together with that branch.
+  //
+  // THE LIT HALF IS NOW A BUTTON rather than a sentence -- it carries the words
+  // "Cancel selection (Right click)" -- so this asserts the FLAG and then that
+  // the row does not simultaneously claim right-click undoes. The unlit half is
+  // still prose, because there is no aim to offer a button for.
   const lit = hintFor(status({ mouseMode: 'select', highlightedCohort: 2 }));
   const unlit = hintFor(status({ mouseMode: 'select' }));
 
-  assert.match(lit.tail, /Right click to cancel selection/);
+  assert.equal(lit.cancelSelection, true);
+  assert.equal(unlit.cancelSelection, false, 'nothing to cancel with none lit');
   assert.match(unlit.lead, /Right click to undo any action/);
   assert.ok(
-    !/undo/i.test(lit.tail),
+    !/undo/i.test(lit.lead + lit.tail),
     'while a cohort is lit, right click cancels rather than undoing',
   );
 });
@@ -205,7 +211,9 @@ test('at scale 0 the hint says what to do instead of promising an adoption', () 
     'the hint must not promise an adoption that is refused',
   );
   assert.match(hint.tail, /Mutation Scale/, 'it should say what would enable it');
-  assert.match(hint.tail, /Right click to cancel selection/, 'cancelling still works');
+  // CANCELLING IS STILL OFFERED, and this is the state that most needs it: the
+  // commit is refused here, so backing out is the one action fully available.
+  assert.equal(hint.cancelSelection, true, 'cancelling still works');
 });
 
 test('a lit cohort offers the commit BUTTON instead of the click prose', () => {
@@ -217,7 +225,58 @@ test('a lit cohort offers the commit BUTTON instead of the click prose', () => {
     !/apply its behavior/.test(hint.tail),
     'the prose it replaces must be gone from the tail',
   );
-  assert.match(hint.tail, /Right click to cancel selection/, 'cancelling survives');
+  assert.equal(hint.cancelSelection, true, 'cancelling survives');
+  // BOTH CLAUSES ARE BUTTONS in this state, so the tail has nothing left to
+  // say. Asserted rather than left implicit: a stray separator or a leftover
+  // fragment would show as a bare "|" floating after the stepper.
+  assert.equal(hint.tail, '', 'nothing is left for the tail once both are buttons');
+});
+
+test('cancelling is offered exactly while a cohort is lit', () => {
+  // IT TRACKS THE HIGHLIGHT, NOT THE COMMIT -- which is the one way this flag
+  // differs from `commit`, and the difference worth pinning. There is an aim to
+  // throw away in both lit states, including the no-op one where committing is
+  // refused; there is none in any unlit state, and a button offering to cancel
+  // nothing would be a control that does nothing when pressed.
+  for (const highlightedCohort of [0, 5]) {
+    for (const selectionIsNoOp of [false, true]) {
+      const hint = hintFor(
+        status({ mouseMode: 'select', highlightedCohort, selectionIsNoOp }),
+      );
+      assert.equal(
+        hint.cancelSelection,
+        true,
+        `cohort ${String(highlightedCohort)}, no-op ${String(selectionIsNoOp)}`,
+      );
+    }
+  }
+
+  // Nothing lit, highlighting switched off, and the two other tools: no aim
+  // exists in any of them.
+  assert.equal(hintFor(status({ mouseMode: 'select' })).cancelSelection, false);
+  assert.equal(
+    hintFor(status({ mouseMode: 'select', highlightEnabled: false })).cancelSelection,
+    false,
+  );
+  for (const mouseMode of ['shove', 'draw'] as const) {
+    assert.equal(hintFor(status({ mouseMode })).cancelSelection, false, mouseMode);
+  }
+});
+
+test('the cancel button never shares the row with clear-barriers', () => {
+  // They are the two red buttons and would sit side by side on a row that must
+  // not wrap (`HINT_CSS` is `nowrap`). They cannot co-occur -- one is Select,
+  // the other Draw -- but that is a consequence of two separate branches, so it
+  // is worth asserting rather than assuming.
+  for (const mouseMode of ['select', 'shove', 'draw'] as const) {
+    for (const highlightedCohort of [NO_COHORT, 2]) {
+      const hint = hintFor(status({ mouseMode, highlightedCohort }));
+      assert.ok(
+        !(hint.cancelSelection && hint.clearField),
+        `${mouseMode} with cohort ${String(highlightedCohort)} offers both red buttons`,
+      );
+    }
+  }
 });
 
 test('the button is WITHHELD wherever the commit would be refused', () => {

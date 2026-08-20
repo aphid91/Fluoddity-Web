@@ -141,6 +141,8 @@ export class MutationOverlay {
   private readonly commitButton: HTMLButtonElement;
   /** Wipes the whole strafe field. Draw tool only -- see `hintFor`. */
   private readonly clearFieldButton: HTMLButtonElement;
+  /** Puts out the highlight. Shown whenever a cohort is lit -- see `hintFor`. */
+  private readonly cancelSelectionButton: HTMLButtonElement;
 
   /**
    * Last hint written to the DOM, so `refresh` can skip the common case.
@@ -469,11 +471,40 @@ export class MutationOverlay {
       this.clearFieldButton.blur();
     });
 
+    // Cancel Selection, the Select tool's own backing-out action.
+    //
+    // A BUTTON RATHER THAN THE SENTENCE it replaces, for the reason the commit
+    // button beside it gives: the act was reachable only by a right-click on the
+    // canvas, which is undiscoverable from the row that describes it and
+    // unreachable for someone who arrived at this selection from the keyboard.
+    //
+    // **"(Right click)" IS A LITERAL, and deliberately not `keySuffix`.** Every
+    // other key named on this bar comes from the hotkey table so a rebind moves
+    // it -- but this gesture is not in that table. It is decided in
+    // `applyCanvasInput`, which reads the mouse button directly and is not
+    // rebindable, so reading it from `hotkeyLabel` would print an empty suffix
+    // and quietly stop naming the gesture that actually works.
+    this.cancelSelectionButton = document.createElement('button');
+    this.cancelSelectionButton.type = 'button';
+    this.cancelSelectionButton.style.cssText = CANCEL_SELECTION_BUTTON_CSS;
+    this.cancelSelectionButton.textContent = 'Cancel selection (Right click)';
+    this.cancelSelectionButton.dataset['setting'] = 'transport.cancelSelection';
+    this.cancelSelectionButton.addEventListener('click', () => {
+      opts.send({ kind: 'cancelSelection' });
+      // Hands the keys back, like every other button on this bar.
+      this.cancelSelectionButton.blur();
+    });
+
+    // ORDER IS THE READING ORDER of the row. The cancel button goes LAST, after
+    // the tail: the row runs "Currently selected: Cohort <n> | <commit>", and
+    // backing out belongs at the end of that sentence rather than between the
+    // cohort and the action it offers.
     this.hint.append(
       this.hintLead,
       this.stepper,
       this.commitButton,
       this.hintTail,
+      this.cancelSelectionButton,
       this.clearFieldButton,
     );
 
@@ -724,7 +755,7 @@ export class MutationOverlay {
    * say is the same waste `generatedShown` guards against above.
    */
   private refreshHint(status: Status): void {
-    const { lead, cohort, tail, commit, clearField } = hintFor(status);
+    const { lead, cohort, tail, commit, clearField, cancelSelection } = hintFor(status);
 
     // THE FIELD IS RECONCILED ABOVE THE GUARD, because it can disagree with the
     // state without the STATE having changed. Type "99" over cohort 7 with 8
@@ -758,7 +789,13 @@ export class MutationOverlay {
     // the lead. Both flags are decided by state the words do not always
     // distinguish, and a button whose visibility is not in the key is a button
     // that gets stuck in whichever state it was first written in.
-    const key = `${lead} ${String(cohort)} ${tail} ${String(commit)} ${String(clearField)}`;
+    // `cancelSelection` joins the key too, and for the same reason as the other
+    // two: it is decided by state the words do not distinguish, and a button
+    // left out of the key is a button stuck in whichever state it was first
+    // written in.
+    const key =
+      `${lead} ${String(cohort)} ${tail} ${String(commit)} ` +
+      `${String(clearField)} ${String(cancelSelection)}`;
     if (this.hintShown === key) return;
     this.hintShown = key;
 
@@ -781,6 +818,9 @@ export class MutationOverlay {
     // stepper below: this button carries its layout in an inline `style` set
     // from `cssText`, and `''` would REMOVE the property rather than revert it.
     this.clearFieldButton.style.display = clearField ? 'inline-flex' : 'none';
+
+    // `inline-flex` RESTATED, not `''` -- same reason as the two above.
+    this.cancelSelectionButton.style.display = cancelSelection ? 'inline-flex' : 'none';
 
     const stepping = cohort !== null;
     // `inline-flex` RESTATED, NOT `''`. Both of these elements carry their
@@ -1001,6 +1041,16 @@ export function hintFor(status: Status): {
    * wording should be able to pin which buttons come with it.
    */
   readonly clearField: boolean;
+  /**
+   * Whether to offer the "cancel this selection" button.
+   *
+   * Decided here for the same reason `commit` and `clearField` are. It tracks
+   * the HIGHLIGHT rather than the commit: both lit states offer it, including
+   * the no-op one where the commit is refused -- backing out of an aim is
+   * exactly as available at mutation scale 0 as anywhere else, and it is the
+   * useful thing to do in the state where committing is not.
+   */
+  readonly cancelSelection: boolean;
 } {
   const none = (lead: string) => ({
     lead,
@@ -1008,6 +1058,7 @@ export function hintFor(status: Status): {
     tail: '',
     commit: false,
     clearField: false,
+    cancelSelection: false,
   });
 
   if (status.mouseMode === 'shove') {
@@ -1036,17 +1087,21 @@ export function hintFor(status: Status): {
     return {
       lead: 'Currently selected: Cohort',
       cohort: status.highlightedCohort,
-      tail:
-        ' | Increase Mutation Scale for variations | ' +
-        'Right click to cancel selection',
-      // NO BUTTON HERE, and this is the case that most needs to say so. The
-      // commit is REFUSED at mutation scale 0 (`selectionIsNoOp`), so offering
-      // a button that declines when pressed would be worse than the sentence
-      // it replaced -- the sentence at least explains what to do about it.
+      // The cancel clause is a BUTTON now, so the tail keeps only the advice
+      // that has nowhere else to go.
+      tail: ' | Increase Mutation Scale for variations',
+      // NO COMMIT BUTTON HERE, and this is the case that most needs to say so.
+      // The commit is REFUSED at mutation scale 0 (`selectionIsNoOp`), so
+      // offering a button that declines when pressed would be worse than the
+      // sentence it replaced -- the sentence at least explains what to do.
       commit: false,
       // Select has no barriers to clear. Stated in every branch rather than
       // defaulted, so adding a state to this function is forced to decide.
       clearField: false,
+      // OFFERED EVEN THOUGH THE COMMIT IS NOT. Cancelling is not refused here --
+      // it is the one action this state fully supports, and a user who cannot
+      // commit is exactly the user who wants to back out.
+      cancelSelection: true,
     };
   }
 
@@ -1054,12 +1109,13 @@ export function hintFor(status: Status): {
     return {
       lead: 'Currently selected: Cohort',
       cohort: status.highlightedCohort,
-      // The commit clause is a BUTTON now, so the tail carries only what is
-      // left. It still leads with the separator, because the stepper sits
-      // between it and the lead.
-      tail: ' | Right click to cancel selection',
+      // BOTH clauses are buttons now, so nothing is left for the tail to say.
+      // Kept as an empty string rather than dropped, because the field is what
+      // `refreshHint` hides the element on.
+      tail: '',
       commit: true,
       clearField: false,
+      cancelSelection: true,
     };
   }
 
@@ -1487,6 +1543,24 @@ const CLEAR_FIELD_BUTTON_CSS =
   'background:rgba(208,96,96,0.14);border:1px solid rgba(208,96,96,0.45);' +
   'border-radius:4px;color:#d06060;cursor:pointer;' +
   'font:11px system-ui,sans-serif;white-space:nowrap;';
+
+// Cancel Selection, on the hint row under the Select tool.
+//
+// **THE SAME CSS AS CLEAR ALL BARRIERS, and shared rather than copied.** Both
+// are the red, backing-out action of their tool's hint row -- one throws away an
+// aim, the other throws away a field -- so they are the same kind of thing and
+// the geometry argument `CLEAR_FIELD_BUTTON_CSS` makes above applies unchanged.
+// Aliasing means a tweak to one cannot leave the other behind; if they ever need
+// to diverge, that is the moment to write a second string rather than now.
+//
+// RED RATHER THAN GOLD, for the reason the clear button gives: gold on this row
+// means "the active cohort" and is what the commit button beside it uses. This
+// button ENDS that selection, so wearing the selection's own colour would be
+// precisely backwards.
+//
+// The colour is not the only signal here either: the label says "Cancel
+// selection" in words, and names the right-click that does the same thing.
+const CANCEL_SELECTION_BUTTON_CSS = CLEAR_FIELD_BUTTON_CSS;
 
 // The `(X)` beside an icon. Dimmed and a size down, so the glyph stays the thing
 // you see first and the shortcut sits behind it.

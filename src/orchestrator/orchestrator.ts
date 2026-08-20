@@ -1712,6 +1712,23 @@ export class Orchestrator implements CommandBus {
         return;
       }
 
+      case 'cancelSelection':
+        // THE AIM-CANCELLING HALF OF RIGHT-CLICK. `applyCanvasInput` picks
+        // between cancelling and undoing on exactly this condition; the button
+        // that sends this is only shown while a cohort is lit, so the other
+        // branch is unreachable from it. Refusing here rather than falling
+        // through to `undo` is what keeps that true even if the command is ever
+        // dispatched from somewhere else -- an inert press is recoverable, an
+        // unexpected undo is not.
+        //
+        // NO HISTORY ENTRY AND NO TOAST. Nothing about the project changed:
+        // the highlight is view state, and the aim being cancelled was never
+        // committed to anything. Announcing it would put a message on screen
+        // for the act of taking a message away.
+        if (!this.highlightEnabled || !this.highlight.isHighlighted) return;
+        this.clearHighlight();
+        return;
+
       case 'stepHighlightedCohort': {
         // Highlighting off entirely -- one-click selection, or a single-cohort
         // config -- means there is no cohort to step through and never will be.
