@@ -779,12 +779,11 @@ export const SETTINGS: readonly Setting[] = [
     help:
       'The frame-rate button in the top-right corner. Its colour tracks how ' +
       'hard your GPU is working: red or yellow means it is struggling, green ' +
-      'means it is well used, and blue means there is capacity to spare.\n\n' +
-      'Above 60 fps the number becomes 60+, 60++ or 60+++. Those are estimates ' +
-      'of how much headroom is left rather than measured frame rates -- the ' +
-      'display caps what can actually be measured -- so they are shown as marks ' +
-      'instead of numbers.\n\nThe same colour tints World Size, Physics Rate ' +
-      'and Motion Blur, which are the three settings that decide it.',
+      'means it is well used, and blue means the full frame rate is holding.' +
+      '\n\nThe number is capped at 60, which is what the simulation is budgeted ' +
+      'for -- a faster display is spent on a heavier simulation rather than on ' +
+      'more frames.\n\nThe same colour tints World Size, Physics Rate and ' +
+      'Motion Blur, which are the three settings that decide it.',
     group: 'Display',
   }),
 

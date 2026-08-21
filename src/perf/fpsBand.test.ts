@@ -11,47 +11,40 @@ import {
   RED,
   YELLOW,
   bandFor,
-  estimateFps,
+  fpsFrom,
   readoutFor,
   startBand,
   stepBand,
 } from './fpsBand.ts';
 
 test('band thresholds match the specified ranges', () => {
-  // The brief's edges, checked ON the boundary rather than near it: an
-  // off-by-one in a `>=` is exactly the mistake a test at 34 and 36 would miss.
+  // Checked ON each boundary rather than near it: an off-by-one in a `>=` is
+  // exactly the mistake a test at 34 and 36 would miss.
   assert.equal(bandFor(0), RED);
   assert.equal(bandFor(35), YELLOW, '35 is the bottom of yellow, not the top of red');
   assert.equal(bandFor(34.9), RED);
   assert.equal(bandFor(50), GREEN);
   assert.equal(bandFor(49.9), YELLOW);
-  assert.equal(bandFor(70), BLUE);
-  assert.equal(bandFor(69.9), GREEN);
-  assert.equal(bandFor(1000), BLUE);
+  assert.equal(bandFor(58), BLUE, 'blue is the top band: holding the frame rate');
+  assert.equal(bandFor(57.9), GREEN);
+  assert.equal(bandFor(60), BLUE);
 });
 
-test('the readout stylizes headroom and prints real measurements', () => {
-  // Below 60 is a MEASUREMENT and prints as a number.
+test('the readout is always a number, capped at 60', () => {
   assert.equal(readoutFor(41), '41');
   assert.equal(readoutFor(59.6), '60', 'rounds rather than truncating');
-
-  // 60..70 is above target with no headroom worth naming.
   assert.equal(readoutFor(60), '60');
-  assert.equal(readoutFor(69.9), '60');
 
-  // Above 70 is an ESTIMATE and is stylized, never printed as a frame rate.
-  assert.equal(readoutFor(70), '60+');
-  assert.equal(readoutFor(89.9), '60+');
-  assert.equal(readoutFor(90), '60++');
-  assert.equal(readoutFor(119.9), '60++');
-  assert.equal(readoutFor(120), '60+++');
-  assert.equal(readoutFor(400), '60+++');
+  // **CAPPED**, because rAF is vsync-paced: a 144 Hz display would otherwise
+  // report the monitor rather than the simulation, which is budgeted for 60
+  // whatever the panel does (`progression.ts`).
+  assert.equal(readoutFor(144), '60');
+  assert.equal(readoutFor(1000), '60');
 
-  // No stylized readout may look like a measured number -- that is the whole
-  // honesty argument in the module header, so it is asserted rather than
-  // trusted to the three cases above.
-  for (const fps of [70, 95, 130, 600]) {
-    assert.match(readoutFor(fps), /^60\+{1,3}$/);
+  // No readout may carry a `+` any more -- the headroom marks are gone with the
+  // estimate that produced them.
+  for (const fps of [10, 45, 59, 70, 144, 600]) {
+    assert.doesNotMatch(readoutFor(fps), /\+/);
   }
 });
 
@@ -62,50 +55,34 @@ test('a catastrophically slow frame still reads as a running app', () => {
   assert.equal(readoutFor(0), '1');
 });
 
-test('measured fps wins whenever frames are actually being missed', () => {
-  // 25 fps measured, and a GPU that looks idle. Something OTHER than GPU work
-  // is the constraint, and the user is watching a 25 fps app either way --
-  // reporting headroom here would tell them their machine has room while they
-  // watch it stutter.
-  const fps = estimateFps(40, 2);
-  assert.ok(fps < 30, `expected the measured 25 fps to win, got ${String(fps)}`);
+test('fpsFrom converts a frame interval, and reports NaN for none', () => {
+  assert.ok(Math.abs(fpsFrom(16.7) - 59.88) < 0.1);
+  assert.ok(Math.abs(fpsFrom(50) - 20) < 0.001);
+  // Zero is "nothing measured yet" -- `main.ts` holds it there for the whole of
+  // a restart's warmup. It must not read as 0 fps, which would render as a red
+  // "1": an alarm raised by the absence of data.
+  assert.ok(Number.isNaN(fpsFrom(0)));
 });
 
-test('headroom is estimated once the frame delta is vsync-capped', () => {
-  // 16.7 ms frames (capped at 60) with only 4 ms of GPU work: roughly 4x
-  // headroom, which is deep into the blue band.
-  const fps = estimateFps(16.7, 4);
-  assert.equal(bandFor(fps), BLUE);
-  assert.equal(readoutFor(fps), '60+++');
-
-  // The same capped frame delta with the GPU nearly full: no headroom, so this
-  // must NOT read as blue despite hitting 60. This is the case a naive
-  // frame-delta counter gets wrong, and the reason the probe exists.
-  const tight = estimateFps(16.7, 16);
-  assert.equal(bandFor(tight), GREEN);
-  assert.equal(readoutFor(tight), '60');
-});
-
-test('a missing GPU reading degrades to the measured frame rate', () => {
-  // `gpuMs === 0` is "the probe has nothing yet". It must not be treated as
-  // "zero GPU time", which would divide into infinite headroom.
-  const fps = estimateFps(16.7, 0);
-  assert.ok(Number.isFinite(fps));
-  assert.equal(bandFor(fps), GREEN, 'no reading means no headroom claim');
+test('a NaN reading holds the previous state entirely', () => {
+  // Comparisons against NaN are false in both directions, so an unguarded one
+  // would silently take whichever branch happened to be the `else`.
+  const settled = stepBand(startBand(), 45, 0);
+  assert.equal(stepBand(settled, Number.NaN, 100), settled);
 });
 
 test('the band does not move until a change is sustained', () => {
   let state = startBand();
-  assert.equal(state.band, GREEN, 'starts green so no first impression is a false alarm');
+  assert.equal(state.band, BLUE, 'starts optimistic so no first impression is a false alarm');
 
   // A single terrible sample must not change the COLOUR: the dwell has not
   // elapsed. (The number moves immediately -- asserted separately below.)
   state = stepBand(state, 20, 0);
-  assert.equal(state.band, GREEN);
+  assert.equal(state.band, BLUE);
 
   // Still inside the dwell.
   state = stepBand(state, 20, 249);
-  assert.equal(state.band, GREEN);
+  assert.equal(state.band, BLUE);
 
   // Past it, with the same band pending throughout.
   state = stepBand(state, 20, 251);
@@ -120,7 +97,7 @@ test('a transient spike is discarded rather than starting the clock over', () =>
   assert.equal(state.pending, null);
   // So the clock restarts: this is measured from the SPIKE, not the original.
   state = stepBand(state, 20, 300);
-  assert.equal(state.band, GREEN, 'the dwell restarted, so the colour has not moved');
+  assert.equal(state.band, BLUE, 'the dwell restarted, so the colour has not moved');
   state = stepBand(state, 20, 600);
   assert.equal(state.band, RED);
 });
@@ -140,18 +117,18 @@ test('a measured number is NEVER held back by the dwell', () => {
   // measurement of what the user is watching, so it must be current on the very
   // first reading -- even while the colour is still mid-dwell and disagrees.
   let state = startBand();
-  assert.equal(state.band, GREEN);
+  assert.equal(state.band, BLUE);
 
   state = stepBand(state, 24, 0);
   assert.equal(state.readout, '24', 'the number moved on the first bad reading');
-  assert.equal(state.band, GREEN, 'while the colour is still waiting out the dwell');
+  assert.equal(state.band, BLUE, 'while the colour is still waiting out the dwell');
 
   // And it keeps tracking, every reading, throughout the dwell.
   state = stepBand(state, 31, 50);
   assert.equal(state.readout, '31');
   state = stepBand(state, 18, 100);
   assert.equal(state.readout, '18');
-  assert.equal(state.band, GREEN, 'still mid-dwell');
+  assert.equal(state.band, BLUE, 'still mid-dwell');
 
   // The colour catches up once the evidence is sustained.
   state = stepBand(state, 18, 400);
@@ -175,29 +152,29 @@ test('the number tracks across band boundaries without waiting', () => {
   }
 });
 
-test('the plus marks ARE debounced, unlike a measured number', () => {
-  // Above 60 the readout is an estimate derived from the same headroom figure
-  // the colour is, so the two must move together -- marks flickering while the
-  // colour held steady would have them disagreeing on screen.
+test('the readout never contradicts a blue band', () => {
+  // Blue now means "holding the frame rate", so its numbers are 58-60 and the
+  // two halves of the badge cannot disagree the way they once could -- a blue
+  // "20" was reachable when blue meant headroom from a separate measurement.
   let state = startBand();
-  // Settle into blue at 60+.
-  state = stepBand(state, 75, 0);
-  state = stepBand(state, 75, 300);
+  state = stepBand(state, 60, 0);
+  state = stepBand(state, 60, 300);
   assert.equal(state.band, BLUE);
-  assert.equal(state.readout, '60+');
-
-  // A jump to 60+++ territory is still blue, so no band change is pending and
-  // the marks do NOT immediately follow -- they are part of the debounced half.
-  state = stepBand(state, 200, 320);
-  assert.equal(state.readout, '60+', 'the marks held rather than jumping');
+  assert.equal(state.readout, '60');
 });
 
 test('sitting exactly on an edge never flips the band', () => {
+  // Settle into green first -- the counter now starts blue, and this is about
+  // what happens once a band is established.
   let state = startBand();
-  // Green runs 50..70. Readings jittering right at 50 are inside the margin,
+  state = stepBand(state, 54, 0);
+  state = stepBand(state, 54, 300);
+  assert.equal(state.band, GREEN);
+
+  // Green runs 50..58. Readings jittering right at 50 are inside the margin,
   // so no amount of time at the edge may move the band -- this is the flicker
   // the hysteresis exists to kill.
-  for (let t = 0; t < 60000; t += 100) {
+  for (let t = 1000; t < 61000; t += 100) {
     state = stepBand(state, t % 200 === 0 ? 49.9 : 50.1, t);
   }
   assert.equal(state.band, GREEN);

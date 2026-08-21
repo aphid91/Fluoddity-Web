@@ -46,8 +46,7 @@ import {
   BAND_COLOR,
   BAND_DESCRIPTION,
   BAND_TOOLTIP,
-  INITIAL_BAND,
-  readoutFor,
+  startBand,
 } from '../perf/fpsBand.ts';
 
 export interface FpsCounterOptions {
@@ -113,11 +112,12 @@ export class FpsCounter {
       this.root.blur();
     });
 
-    // Seeded with the neutral band so the badge has a face from its first
-    // painted frame. Without this it would exist as an empty plate for the
-    // warmup window -- `update` deliberately refuses to write an empty readout,
-    // so nothing else would fill it.
-    this.update(INITIAL_BAND, readoutFor(60), true);
+    // Seeded from the same starting state `startBand()` uses, so the badge has a
+    // face from its first painted frame. Without this it would exist as an empty
+    // plate for the warmup window -- `update` deliberately refuses to write an
+    // empty readout, so nothing else would fill it.
+    const initial = startBand();
+    this.update(initial.band, initial.readout, true);
 
     (opts.container ?? document.body).append(this.root);
   }

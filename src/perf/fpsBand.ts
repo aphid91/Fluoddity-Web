@@ -1,54 +1,45 @@
 /**
- * What the FPS counter SAYS, given what the GPU is doing.
+ * What the FPS counter SAYS, given the measured frame rate.
  *
  * A pure leaf: no DOM, no GPU, no state beyond what is handed in. Same rationale
  * as `calibration/progression.ts` -- the thresholds and the debounce are the part
  * most worth testing, and they should be readable without a browser in the import
  * graph.
  *
- * ## Two regimes, one dial, and why the split is unavoidable
+ * ## One measurement: the frame delta, and nothing else
  *
- * **Below 60 the counter reports a MEASUREMENT. At 60 it reports an ESTIMATE.**
- * That is not a design preference, it is forced by how the frame loop works:
+ * The dial reports the rate frames are actually arriving at, smoothed, capped at
+ * 60. That is all. It cannot distinguish a machine comfortably holding 60 from
+ * one barely holding it, and does not pretend to.
  *
- *   - `requestAnimationFrame` is vsync-capped. A GPU doing 8 ms of work and one
- *     doing 16 ms of work both deliver frames every 16.7 ms on a 60 Hz panel, so
- *     wall-clock frame delta SATURATES at the refresh rate and cannot see above
- *     it. Every machine keeping up looks identical.
- *   - Below the refresh rate the cap is not binding -- frames are genuinely late
- *     -- so the same delta becomes a true measurement again.
+ * ## The headroom estimate that used to live here, and why it is gone
  *
- * So the dial reads measured fps while frames are being missed, and switches to a
- * headroom estimate once they are not. `estimateFps` is where the two meet.
+ * An earlier version showed `60+`, `60++` and `60+++` above the target, from a
+ * separate measurement of GPU busy time: `requestAnimationFrame` is vsync-paced,
+ * so frame delta saturates at the refresh rate and genuinely cannot see above it,
+ * and the only way to distinguish "just barely 60" from "tons of room" is to time
+ * the GPU independently.
  *
- * ## Headroom, and the honesty line this file draws
+ * **The instrument for that was `queue.onSubmittedWorkDone()`, and it does not
+ * work for continuous measurement.** Its promise resolves on the main thread, so
+ * the interval it times is GPU work PLUS however long the main thread took to get
+ * around to delivering the callback -- and under load the main thread is busy
+ * encoding the next frame. Samples came back bimodal: some measuring the frame,
+ * some measuring the delay. At a steady physics rate of 32 the dial swung between
+ * a correct mid-50s and a spurious 10, and no amount of median-filtering fixed
+ * it, because the outliers were not noise around a true value -- half the samples
+ * were measuring a different quantity.
  *
- * Headroom comes from GPU busy time (`perf/gpuProbe.ts`), not from frame delta.
- * `TARGET_FRAME_MS / gpuMs` is how many times over the GPU could have done this
- * frame's work inside one frame's budget -- 5 ms of work in a 16.7 ms frame is
- * ~3.3x.
+ * (`Orchestrator.probeFrame` uses the same call and is CORRECT to: calibration
+ * awaits it in isolation with nothing else in flight, which is the one situation
+ * where what it times is unambiguous.)
  *
- * **THAT RATIO IS SPARE CAPACITY, NOT A FRAME RATE THE MACHINE WOULD ACHIEVE.**
- * Raising World Size does not scale cost linearly with every other setting, the
- * measurement excludes compositing, and nothing here models what the user would
- * turn up. This is why the high bands render as `60+`/`60++`/`60+++` rather than
- * as numbers: a `+` reads as "you have room", which is what was measured, while
- * "127" would read as a promise nothing here can keep.
- *
- * Below 60 there is no such gap -- a measured 41 fps IS 41 fps -- so those bands
- * print the number.
+ * The honest instrument is `timestamp-query`, which reads the GPU's own clock and
+ * is immune to main-thread scheduling. It was deliberately not adopted: it needs a
+ * device feature request, per-pass plumbing, a readback path, and a fallback for
+ * adapters that lack it -- real complexity for a decorative refinement. A dial
+ * that is right is worth more than one that is precise and wrong.
  */
-
-/**
- * The reference frame budget: 60 fps.
- *
- * FIXED AT 60 REGARDLESS OF THE DISPLAY, matching `progression.ts`'s
- * `TARGET_FRAME_MS` and for the same stated reason -- the app deliberately spends
- * a 120 Hz panel's extra capacity on a heavier simulation rather than on more
- * frames. A 144 Hz machine hitting every vsync therefore reads as headroom above
- * 60, which is exactly what it is.
- */
-export const TARGET_FRAME_MS = 16.7;
 
 /** The four bands, coldest to hottest. The order IS the severity ranking. */
 export const RED = 'red';
@@ -59,32 +50,27 @@ export const BLUE = 'blue';
 export type Band = typeof RED | typeof YELLOW | typeof GREEN | typeof BLUE;
 
 /**
- * Band edges in effective-fps space, from the brief.
+ * Band edges in measured-fps space.
  *
- * `<=35` red, `35..50` yellow, `50..70` green, `70+` blue. Stated as the LOWER
+ * `<35` red, `35..50` yellow, `50..58` green, `58+` blue. Stated as the LOWER
  * bound of each band so `bandFor` is a single descending walk and the gaps
- * between the brief's ranges cannot become unhandled cases.
+ * between the ranges cannot become unhandled cases.
+ *
+ * **BLUE IS NOW THE TOP OF THE SCALE RATHER THAN BEYOND IT.** It used to mean
+ * "measurably more headroom than 60 fps needs", which required knowing GPU cost
+ * independently of the frame rate -- see the file header for why that
+ * measurement was withdrawn. It now means "holding the frame rate", which is the
+ * most this dial can honestly report, and green has become the band just below
+ * it rather than the target.
  */
 const BAND_FLOOR: readonly (readonly [Band, number])[] = Object.freeze([
-  [BLUE, 70],
+  [BLUE, 58],
   [GREEN, 50],
   [YELLOW, 35],
   [RED, 0],
 ]);
 
-/**
- * Where the `+` marks start, and what each one costs.
- *
- * 70..90 is `60+`, 90..120 is `60++`, 120+ is `60+++`. Only ever reached from
- * the blue band -- see `readoutFor`.
- */
-const PLUS_FLOOR: readonly (readonly [string, number])[] = Object.freeze([
-  ['60+++', 120],
-  ['60++', 90],
-  ['60+', 70],
-]);
-
-/** Which band an effective fps falls in. */
+/** Which band a measured fps falls in. */
 export function bandFor(fps: number): Band {
   for (const [band, floor] of BAND_FLOOR) {
     if (fps >= floor) return band;
@@ -93,81 +79,50 @@ export function bandFor(fps: number): Band {
 }
 
 /**
- * What the button prints for an effective fps.
+ * What the button prints for a measured fps.
  *
- * Three cases, in the order they are reached:
+ * Always a number now. The `60+`/`60++`/`60++​+` marks are gone with the headroom
+ * estimate that produced them -- they claimed to distinguish degrees of spare
+ * capacity, and nothing here can measure that any more.
  *
- *   - 120+/90+/70+  ->  `60+++` / `60++` / `60+`. Stylized, because these come
- *     from a headroom ESTIMATE and printing "134" would claim a measurement.
- *   - 60..70        ->  `60`. Above target with no headroom worth naming.
- *   - below 60      ->  the rounded number. A real measurement, printed as one.
+ * **CAPPED AT 60**, because that is where the measurement stops meaning
+ * anything: `requestAnimationFrame` is vsync-paced, so a 144 Hz display would
+ * otherwise read 144 while the simulation is deliberately budgeted for 60
+ * (`progression.ts` fixes the target at 60 regardless of the panel). Printing
+ * the panel's refresh rate would be reporting the monitor rather than the app.
  *
  * Rounds rather than truncating: 59.6 fps reading as "59" understates a machine
  * that is essentially holding target.
  */
 export function readoutFor(fps: number): string {
-  for (const [text, floor] of PLUS_FLOOR) {
-    if (fps >= floor) return text;
-  }
-  if (fps >= 60) return '60';
   // `max(1)` so a catastrophically slow frame reads "1" rather than "0" -- zero
   // would suggest the app has stopped, which is a different failure.
-  return String(Math.max(1, Math.round(fps)));
+  return String(Math.min(60, Math.max(1, Math.round(fps))));
 }
 
 /**
- * Effective fps from the two measurements, picking the honest one.
+ * Frames per second from a smoothed frame interval, or NaN if there is none.
  *
- * `frameMs` is smoothed wall-clock delta between rAF callbacks -- valid ONLY
- * while frames are being missed, since it saturates at the refresh rate
- * otherwise. `gpuMs` is real GPU busy time from the probe, which keeps scaling
- * however fast the machine is.
- *
- * **THE MEASURED NUMBER WINS WHENEVER IT IS BINDING.** If frames really are
- * arriving at 41 fps, the user is watching a 41 fps app and no amount of GPU
- * headroom changes that -- something else (CPU, compositing, a background tab
- * stealing the GPU) is the constraint, and reporting blue there would be telling
- * someone their machine has room while they watch it stutter.
- *
- * So: below the threshold, report what was measured. At or above it, the cap is
- * binding and the estimate is the only thing with information in it.
- *
- * `gpuMs <= 0` means the probe has no reading yet (or the platform gave a
- * useless one), which degrades to the measured number -- the conservative
- * direction, since it can only under-report headroom.
+ * `frameMs` is the smoothed wall-clock delta between `requestAnimationFrame`
+ * callbacks. Zero means "nothing measured yet" -- `main.ts` zeroes it for the
+ * whole of a restart's warmup -- and that is NOT the same as zero fps, which
+ * would render as a red "1" and raise an alarm about the absence of data.
+ * `stepBand` holds its previous reading when it sees a NaN.
  */
-export function estimateFps(frameMs: number, gpuMs: number): number {
-  const measured = frameMs > 0 ? 1000 / frameMs : 0;
-  if (measured < MEASURED_CEILING || gpuMs <= 0) return measured;
-  // Headroom: how many times over this frame's GPU work fits in the budget.
-  // Anchored at 60 rather than at `measured`, so a 144 Hz panel and a 60 Hz
-  // panel with the same GPU load report the same headroom.
-  return 60 * (TARGET_FRAME_MS / gpuMs);
+export function fpsFrom(frameMs: number): number {
+  return frameMs > 0 ? 1000 / frameMs : Number.NaN;
 }
-
-/**
- * Measured fps below which the wall clock is believed over the estimate.
- *
- * 58 rather than 60: a machine holding vsync perfectly still reports 59.7-60.2
- * depending on how the browser rounds its callback times, and a threshold at
- * exactly 60 would flip between regimes on rounding noise alone.
- */
-const MEASURED_CEILING = 58;
 
 /**
  * The debounce: what it governs, and -- just as important -- what it does not.
  *
- * ## Only the COLOUR and the `+` MARKS are debounced
+ * ## Only the COLOUR is debounced
  *
- * **A measured number is never held back.** At or below 60 fps the readout is a
- * real measurement of what the user is watching, and staleness there is simply
- * wrong information: if the app drops to 24 fps the badge must say 24, right
- * away, whatever the colour is still deciding. Those two facts move on different
- * schedules and that is deliberate -- see `stepBand`.
- *
- * What IS debounced is the part that would distract: the band colour, and the
- * number of `+` marks above 60. Both are estimates rather than measurements, and
- * both are large visual changes in the corner of the eye.
+ * **The number is never held back.** It is a measurement of what the user is
+ * watching, and staleness there is simply wrong information: if the app drops to
+ * 24 fps the badge must say 24, right away, whatever the colour is still
+ * deciding. The colour is what would distract -- a large change in the corner of
+ * the eye -- and it is the only thing this delays.
  *
  * ## Why hysteresis AND a dwell time, rather than just smoothing
  *
@@ -216,28 +171,43 @@ const MARGIN_FPS = 3;
  *
  * **Down from 3 seconds**, which was tuned for a version where the NUMBER was
  * debounced along with the colour and staleness was therefore very costly. Now
- * that a measured number is never held back (see `stepBand`), the dwell only has
- * to protect against flicker -- and `MARGIN_FPS` already does most of that job,
+ * that the number is never held back (see `stepBand`), the dwell only has to
+ * protect against flicker -- and `MARGIN_FPS` already does most of that job,
  * since a reading has to clear a band edge by 3 fps before the clock even
  * starts.
+ *
+ * **THIS COMPOSES WITH THE CALLER'S AVERAGING WINDOW.** `main.ts` feeds this a
+ * mean over its own 250 ms of frames, so a step change takes that long to move
+ * the input and then this long to be adopted -- up to half a second before the
+ * colour settles. That is the intended total: the number tracks immediately
+ * throughout, and only the fill waits. Shortening one without the other buys
+ * little, since whichever remains sets the floor.
  */
 const DWELL_MS = 250;
 
-/** The band a fresh counter starts in. See `startBand`. */
-export const INITIAL_BAND: Band = GREEN;
-
 /**
- * A counter's starting state.
+ * The band a fresh counter starts in.
  *
- * **GREEN, not red.** The first reading arrives before any warmup has settled,
- * and opening on a red badge telling someone their GPU is struggling -- when
- * nothing has been measured yet -- is a false alarm on the one impression that
- * matters most. Green is the neutral "nothing to report" of these four.
+ * **BLUE, and it must agree with `INITIAL_READOUT`.** Nothing has been measured
+ * when the badge first paints, so the opening state is a guess -- and the
+ * optimistic guess is the right one: a red badge claiming the GPU is struggling,
+ * before anything has been timed, is a false alarm on the one impression that
+ * matters most.
+ *
+ * It was GREEN while green was the target band. Now that blue means "holding the
+ * frame rate" and 60 falls in it, a green badge reading "60" would contradict
+ * itself on the first frame.
  */
+export const INITIAL_BAND: Band = BLUE;
+
+/** What a fresh counter shows: the target rate, matching `INITIAL_BAND`. */
+const INITIAL_FPS = 60;
+
+/** A counter's starting state. See `INITIAL_BAND` for why it is optimistic. */
 export function startBand(): BandState {
   return Object.freeze({
     band: INITIAL_BAND,
-    readout: readoutFor(60),
+    readout: readoutFor(INITIAL_FPS),
     pending: null,
     pendingSince: 0,
   });
@@ -252,61 +222,39 @@ export function startBand(): BandState {
  *
  * ## The readout and the band move on DIFFERENT schedules
  *
- * This is the whole shape of the function, so it is stated before the code:
- *
- *   - **At or below 60 fps the readout is live, always.** It is a measurement of
- *     what the user is watching, and a stale measurement is a wrong one. It is
- *     written on every call regardless of what the band is doing -- including
- *     mid-dwell, when the colour has not yet caught up.
- *   - **Above 60 the readout is an ESTIMATE** (`60+`/`60++`/`60+++`), so it is
- *     debounced along with the colour. Those marks are derived from the same
- *     headroom figure the band is, and letting them flicker while the colour
- *     held steady would be the distraction this debounce exists to prevent --
- *     they would disagree with each other on screen.
- *
- * So `liveReadout` decides which half a reading falls in, and the band machinery
- * below only ever governs the colour plus the estimated marks.
+ * The number is written on every call; the colour is debounced. That asymmetry
+ * is the whole shape of the function: a measurement the user can check against
+ * what they are watching must never lag, while the colour is a large visual
+ * change that should only move on sustained evidence.
  *
  * `now` is injected rather than read from `performance` so the dwell is testable
  * without waiting on a real clock.
  */
 export function stepBand(state: BandState, fps: number, now: number): BandState {
+  // NOTHING MEASURED THIS FRAME -- see `fpsFrom`. Hold everything: a comparison
+  // against NaN is false in both directions, so letting one through would
+  // silently take whichever branch happened to be the `else`.
+  if (!Number.isFinite(fps)) return state;
+
   const target = bandFor(fps);
   const next = advanceBand(state, target, fps, now);
 
-  // **THE MEASURED NUMBER OVERRIDES WHATEVER THE BAND DECIDED.** `advanceBand`
-  // only writes a readout when it actually adopts a new band; below 60 the
-  // number has to move on every reading, so it is applied here, last, on top of
-  // whatever came back. Above 60 `liveReadout` returns null and the band's own
-  // answer stands.
-  const live = liveReadout(fps);
-  if (live === null || live === next.readout) return next;
-  return Object.freeze({ ...next, readout: live });
-}
-
-/**
- * The readout when it is a MEASUREMENT rather than an estimate, else null.
- *
- * Null above 60, where the readout becomes `60+`/`60++`/`60+++` -- headroom
- * marks, which are debounced with the colour they are derived from.
- *
- * The boundary is `readoutFor`'s own: anything that renders as a bare number, or
- * as the plain "60" of the 60..70 band, is something measured. Asking
- * `readoutFor` rather than re-testing `fps < 60` keeps the two from drifting
- * apart -- there is one definition of which readouts are numbers.
- */
-function liveReadout(fps: number): string | null {
-  const text = readoutFor(fps);
-  return text.includes('+') ? null : text;
+  // **THE NUMBER IS WRITTEN ON EVERY CALL.** `advanceBand` only touches the
+  // readout when it actually adopts a new band, which is not often enough --
+  // the measurement has to move whether or not the colour did. Applied last, on
+  // top of whatever came back.
+  const readout = readoutFor(fps);
+  if (readout === next.readout) return next;
+  return Object.freeze({ ...next, readout });
 }
 
 /**
  * The band half of `stepBand`: hysteresis plus dwell, and nothing else.
  *
  * Split out so the readout rule above reads as one statement rather than being
- * threaded through four branches. Returns a state whose `readout` is only
- * updated when a band is actually adopted; the caller overrides it for measured
- * numbers.
+ * threaded through four branches. The `readout` it writes is immediately
+ * overridden by the caller; it is set here only so an adopted band never carries
+ * a stale one even for an instant.
  */
 function advanceBand(
   state: BandState,
@@ -433,7 +381,7 @@ export const BAND_TOOLTIP: Readonly<Record<Band, string>> = Object.freeze({
     'Fluoddity can be demanding! Looks like your GPU is well utilized. Click ' +
     'here to bring up the performance-critical settings.',
   [BLUE]:
-    'Fluoddity can be demanding, but it looks like your GPU can handle more! Try ' +
+    'Fluoddity can be demanding, but it looks like your GPU can handle it! Try ' +
     'raising the physics rate, turning on motion blur, or increasing World size. ' +
     'Click here to bring up the performance-critical settings.',
 });
@@ -449,5 +397,7 @@ export const BAND_DESCRIPTION: Readonly<Record<Band, string>> = Object.freeze({
   [RED]: 'GPU struggling',
   [YELLOW]: 'GPU under strain',
   [GREEN]: 'GPU well utilized',
-  [BLUE]: 'GPU has headroom to spare',
+  // "Holding the frame rate", not "headroom to spare" -- the dial can no longer
+  // measure spare capacity, only whether frames are arriving on time.
+  [BLUE]: 'holding full frame rate',
 });
