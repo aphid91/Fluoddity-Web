@@ -115,6 +115,14 @@ import type { RecordingSectionOptions } from './sections/recordingSection.ts';
 import type { RecordingResult, VideoRecorder } from '../recorder/recorder.ts';
 import type { SaveChoice } from '../recorder/saveFile.ts';
 import type { RecordingSettings, Resolution } from '../recorder/recordingSettings.ts';
+// VALUE imports, and safe ones -- the distinction the comment above draws.
+// `recordingSettings.ts` is a pure leaf with no mediabunny and no WebGPU (see
+// its header), which is why `orchestrator.ts` value-imports it too. Only
+// `recorder.ts` has to stay type-only.
+import {
+  loadExportVideoShown,
+  saveExportVideoShown,
+} from '../recorder/recordingSettings.ts';
 
 export interface PanelOptions {
   readonly bus: CommandBus;
@@ -402,16 +410,24 @@ export class Panel {
    * Whether Share > Export Video is ticked, and so whether the Recording
    * Controls tab EXISTS.
    *
-   * Session-only, deliberately: it is not a `Preferences` field and does not
-   * persist. Ticking it is "I am exporting something now", the way expanding a
-   * Load category is -- not a lasting statement about how you work, which is
-   * the test the three `advanced*` flags pass and this one does not.
+   * **PERSISTED**, and it did not used to be. The original reasoning was that
+   * ticking this means "I am exporting something now" -- a temporary peek, like
+   * expanding a Load category, rather than a lasting statement about how you
+   * work. Watching it in use settled the question the other way: someone who
+   * exports video does it repeatedly, and re-ticking the box every reload to get
+   * a tab back is the same re-assertion the three `advanced*` flags were made
+   * persistent to avoid. It passes their test after all.
+   *
+   * Stored beside the recording settings rather than in `Preferences`, because
+   * it belongs to the same lazily-loaded feature they do -- see
+   * `RECORDING_STORAGE_KEY`. It still DEFAULTS to false, so a first-run user
+   * meets the same two-tab panel as before.
    *
    * Toggling it goes through `rebuild()`, because a tab that exists or does not
    * is exactly the kind of change per-frame refresh cannot express -- the same
    * reasoning as the tier flags.
    */
-  private exportVideoShown = false;
+  private exportVideoShown = loadExportVideoShown();
 
   /**
    * The recorder, while an export is in flight.
@@ -1305,6 +1321,10 @@ export class Panel {
     if (shown === this.exportVideoShown) return;
 
     this.exportVideoShown = shown;
+    // Stored on the toggle rather than at teardown: there is no reliable
+    // "session ended" moment in a browser tab -- `unload` is not guaranteed to
+    // run -- and this is the only place the flag changes.
+    saveExportVideoShown(shown);
 
     if (shown) {
       // **BRING THE USER TO WHAT THEY JUST SUMMONED.** Three things, in this

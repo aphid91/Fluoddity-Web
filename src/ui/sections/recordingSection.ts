@@ -35,7 +35,6 @@
 import type { BladeApi, FolderApi } from 'tweakpane';
 import type { Status } from '../../orchestrator/commands.ts';
 import {
-  DEFAULT_RECORDING_SETTINGS,
   MAX_DURATION,
   MAX_PHYSICS_STEPS,
   MIN_DURATION,
@@ -46,7 +45,9 @@ import {
   type RecordingSettings,
   clampResolution,
   frameCount,
+  loadRecordingSettings,
   physicsFrameCount,
+  saveRecordingSettings,
   withDuration,
   withHeight,
   withMotionBlurSamples,
@@ -89,7 +90,34 @@ export function buildRecordingSection(
   ctx: SectionContext,
   opts: RecordingSectionOptions,
 ): RecordingSectionHandle {
-  let settings = DEFAULT_RECORDING_SETTINGS;
+  // FROM STORAGE, not from the defaults -- these persist across sessions the way
+  // `Preferences` does. See `loadRecordingSettings`, which never throws.
+  //
+  // Read on every build, and this section is rebuilt whenever a tier checkbox or
+  // Export Video is toggled. That is harmless rather than wasteful: the value in
+  // storage is the value this section last wrote, so a rebuild reloads its own
+  // state and the read is one `JSON.parse` of a five-field record.
+  let settings = loadRecordingSettings();
+
+  /**
+   * Persist the current settings.
+   *
+   * Called from every `change` handler rather than on export, because the
+   * settings must outlive a session in which the user never pressed Begin
+   * Recording -- setting up an export and coming back to it tomorrow is the
+   * normal way this feature gets used.
+   *
+   * **UNCONDITIONAL, AND CHEAP ENOUGH TO BE.** Tweakpane fires `change`
+   * throughout a slider drag, so this runs perhaps a hundred times across a
+   * gesture. Each is a `JSON.stringify` of five fields into `localStorage`,
+   * which is a synchronous write of ~120 bytes -- immaterial beside the DOM work
+   * the same event already does. Debouncing it would buy nothing measurable and
+   * would add a timer that could lose the last edit if the tab closed inside its
+   * window.
+   */
+  function persist(): void {
+    saveRecordingSettings(settings);
+  }
 
   // --- resolution: two sliders, capped at the window ------------------------
   //
@@ -131,6 +159,7 @@ export function buildRecordingSection(
       // panels -- and one source of truth beats a push plus a poll that can
       // disagree. The next frame is imperceptible.
       updateSummary();
+      persist();
     });
     if (before !== null) {
       const el = blade.element as HTMLElement;
@@ -156,6 +185,7 @@ export function buildRecordingSection(
     if (ctx.isRefreshing()) return;
     settings = withDuration(settings, ev.value);
     updateSummary();
+    persist();
   });
 
   // --- quality -------------------------------------------------------------
@@ -183,6 +213,7 @@ export function buildRecordingSection(
   qualityBlade.on('change', (ev) => {
     if (ctx.isRefreshing()) return;
     settings = withQuality(settings, ev.value as string);
+    persist();
   });
 
   // --- physics rate --------------------------------------------------------
@@ -219,6 +250,12 @@ export function buildRecordingSection(
     // against the ceiling the user actually settled on.
     settings = withPhysicsStepsRaw(settings, ev.value);
     updateSummary();
+    // Persisted from the LIVE write as well as from `commitSteps`, not only
+    // from the latter. `commitSteps` early-returns when the ceiling ended where
+    // it started, and a drag out and back is exactly that -- but it can still
+    // have clamped `motionBlurSamples` down on the way through, which is a real
+    // change to the record and would otherwise never be written.
+    persist();
     scheduleStepsCommit();
   });
 
@@ -278,6 +315,9 @@ export function buildRecordingSection(
     committedSteps = settings.physicsSteps;
     rebuildSamples();
     updateSummary();
+    // The rescaled blur count is the value the user keeps, so it is the one
+    // worth storing -- the live write above saved an intermediate.
+    persist();
   }
 
   // CAPTURE PHASE -- see `commitSteps`. Removed in `dispose`, because this
@@ -311,6 +351,7 @@ export function buildRecordingSection(
     blade.on('change', (ev) => {
       if (ctx.isRefreshing()) return;
       settings = withMotionBlurSamples(settings, ev.value as number);
+      persist();
     });
 
     samplesBlade = blade;
@@ -421,6 +462,15 @@ export function buildRecordingSection(
 
     // Re-clamp first: the window may have shrunk below the chosen size, and the
     // sliders must be rebuilt around the value they will actually hold.
+    //
+    // **DELIBERATELY NOT PERSISTED.** This is the one write of `settings` that
+    // is not the user's choice -- it is the window imposing its ceiling. Saving
+    // it would let a session in a small window permanently shrink a size chosen
+    // in a large one, and, worse, would burn the full-frame sentinel down to a
+    // concrete number the first time this ran: everyone would come back cropped
+    // to their last window rather than to full frame. The stored record keeps
+    // what was ASKED for; `clampResolution` at each use site keeps what is
+    // legal, which is the same division of labour the field comment describes.
     settings = { ...settings, resolution: clampResolution(settings.resolution, win) };
 
     widthBlade?.dispose();

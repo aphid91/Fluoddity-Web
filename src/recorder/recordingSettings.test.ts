@@ -14,18 +14,26 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_QUALITY,
   DEFAULT_RECORDING_SETTINGS,
+  EXPORT_SHOWN_STORAGE_KEY,
+  FULL_FRAME,
   MAX_PHYSICS_STEPS,
   MIN_RECORDING_DIM,
   QUALITY_LABELS,
   QUALITY_PRESETS,
   RECORDING_FPS,
+  RECORDING_STORAGE_KEY,
+  type RecordingStorage,
   clampResolution,
   cropRect,
   driverAction,
   frameCount,
   isFullFrame,
+  loadExportVideoShown,
+  loadRecordingSettings,
   physicsFrameCount,
   rescaleSamples,
+  saveExportVideoShown,
+  saveRecordingSettings,
   withDuration,
   withHeight,
   withMotionBlurSamples,
@@ -342,3 +350,230 @@ test('only encoding advances progress, so the frame count is pause-invariant', (
   }
 });
 
+
+// ---------------------------------------------------------------------------
+// Persistence
+//
+// Faked storage rather than a mocked-out module, for `preferences.test.ts`'s
+// reason: `localStorage` does not exist under `node --test`, which is exactly
+// why these functions take a storage object. It also makes the two failure
+// modes testable rather than merely asserted -- a store that THROWS (Safari
+// private mode) and one holding CORRUPT text (a hand-edited entry).
+//
+// The corrupt case is the one that matters. A bad entry in `localStorage`
+// OUTLIVES A PAGE RELOAD, so a `load` that threw would make the recording tab
+// permanently unopenable until the user cleared site data by hand.
+// ---------------------------------------------------------------------------
+
+/** A `localStorage` stand-in over a plain map. */
+function fakeStorage(initial: Record<string, string> = {}): RecordingStorage {
+  const map = new Map(Object.entries(initial));
+  return {
+    getItem: (key: string): string | null => map.get(key) ?? null,
+    setItem: (key: string, value: string): void => {
+      map.set(key, value);
+    },
+  };
+}
+
+/** A store that throws from both methods, as a disabled one does. */
+const hostileStorage: RecordingStorage = {
+  getItem(): string | null {
+    throw new Error('SecurityError: storage is disabled');
+  },
+  setItem(): void {
+    throw new Error('QuotaExceededError');
+  },
+};
+
+test('settings survive a round trip unchanged', () => {
+  // The whole point of the feature: set something up, reload, find it as you
+  // left it. Every field is moved off its default so a load that silently
+  // returned the defaults could not pass.
+  const storage = fakeStorage();
+  const chosen = withQuality(
+    withDuration(
+      withMotionBlurSamples(withPhysicsSteps(DEFAULT_RECORDING_SETTINGS, 240), 37),
+      42,
+    ),
+    'very-high',
+  );
+  saveRecordingSettings(chosen, storage);
+  assert.deepEqual(loadRecordingSettings(storage), chosen);
+});
+
+test('the full-frame default round-trips as full frame, not as a fixed crop', () => {
+  // The regression this sentinel is named for. `FULL_FRAME` means "the whole
+  // window, whatever it is today", and it has to survive storage as itself --
+  // if loading rejected or clamped it, a user who never touched the sliders
+  // would come back cropped to whatever window they last had.
+  const storage = fakeStorage();
+  saveRecordingSettings(DEFAULT_RECORDING_SETTINGS, storage);
+  const loaded = loadRecordingSettings(storage);
+  assert.equal(loaded.resolution.width, FULL_FRAME);
+  assert.equal(loaded.resolution.height, FULL_FRAME);
+  // And still reads as full frame against a real window, which is what the
+  // crop overlay asks. A stored sentinel that loaded but no longer satisfied
+  // this would put a crop box on screen for someone who never cropped.
+  assert.ok(isFullFrame(loaded.resolution, [1920, 1080]));
+});
+
+test('an empty store yields the defaults', () => {
+  assert.deepEqual(loadRecordingSettings(fakeStorage()), DEFAULT_RECORDING_SETTINGS);
+});
+
+test('loading never throws, whatever the store holds', () => {
+  // The contract. Each of these is a plausible real entry: a half-written
+  // string, a hand edit, a value of the wrong shape, or a newer version's
+  // record met after a downgrade.
+  const corrupt = [
+    '',
+    '{',
+    'null',
+    'true',
+    '[]',
+    '"a string"',
+    '{"duration":"long"}',
+    '{"resolution":null}',
+    '{"resolution":[1,2]}',
+    '{"resolution":{"width":"wide"}}',
+    '{"physicsSteps":NaN}',
+    '{"unknownFutureKey":1}',
+  ];
+  for (const raw of corrupt) {
+    const got = loadRecordingSettings(fakeStorage({ [RECORDING_STORAGE_KEY]: raw }));
+    // Not merely "did not throw": every field must be usable, because these
+    // feed loop bounds and texture sizes downstream.
+    assert.ok(Number.isInteger(got.duration) && got.duration >= 1, raw);
+    assert.ok(Number.isInteger(got.physicsSteps) && got.physicsSteps >= 1, raw);
+    assert.ok(
+      (QUALITY_PRESETS as readonly string[]).includes(got.quality),
+      `quality escaped the preset list: ${raw}`,
+    );
+  }
+});
+
+test('a storage that throws is survivable in both directions', () => {
+  // Safari in private mode. Losing the ability to PERSIST a setting must not
+  // lose the ability to SET one, so neither call may propagate.
+  assert.deepEqual(loadRecordingSettings(hostileStorage), DEFAULT_RECORDING_SETTINGS);
+  assert.doesNotThrow(() => {
+    saveRecordingSettings(DEFAULT_RECORDING_SETTINGS, hostileStorage);
+  });
+  // The same for the visibility flag, which is read at Panel construction --
+  // a throw there would take the whole editor down, not just the tab.
+  assert.equal(loadExportVideoShown(hostileStorage), false);
+  assert.doesNotThrow(() => {
+    saveExportVideoShown(true, hostileStorage);
+  });
+});
+
+test('a null storage is survivable: no browser, no crash', () => {
+  // The embedded/no-localStorage case, which is how these run under the DOM
+  // tests. `null` is a legal argument and means "do not persist".
+  assert.deepEqual(loadRecordingSettings(null), DEFAULT_RECORDING_SETTINGS);
+  assert.equal(loadExportVideoShown(null), false);
+  assert.doesNotThrow(() => {
+    saveRecordingSettings(DEFAULT_RECORDING_SETTINGS, null);
+    saveExportVideoShown(true, null);
+  });
+});
+
+test('the blur ceiling invariant is re-established on load, not trusted', () => {
+  // A stored record can hold a pair that violates `samples <= steps` -- a hand
+  // edit, or a downgrade from a version with a higher ceiling. This is a
+  // BOUNDARY, so the invariant the rest of the module assumes is restored here
+  // rather than assumed: `motionBlurSamples` is divided by and `physicsSteps`
+  // is a loop bound, so a bad pair is a dim frame or a hang, not a wrong pixel.
+  const loaded = loadRecordingSettings(
+    fakeStorage({
+      [RECORDING_STORAGE_KEY]: '{"physicsSteps":10,"motionBlurSamples":400}',
+    }),
+  );
+  assert.equal(loaded.physicsSteps, 10);
+  assert.equal(loaded.motionBlurSamples, 10);
+});
+
+test('a rejected physics rate does not leave the sample count inconsistent', () => {
+  // The subtle half of the invariant: the sample count is clamped against the
+  // rate that was ACTUALLY LOADED, not the one that was stored. Here the rate
+  // is out of range and falls back to the default, and the samples must follow
+  // that default rather than the number beside them in the record.
+  const loaded = loadRecordingSettings(
+    fakeStorage({
+      [RECORDING_STORAGE_KEY]: '{"physicsSteps":99999,"motionBlurSamples":5000}',
+    }),
+  );
+  assert.equal(loaded.physicsSteps, DEFAULT_RECORDING_SETTINGS.physicsSteps);
+  assert.ok(loaded.motionBlurSamples <= loaded.physicsSteps);
+});
+
+test('out-of-range and unknown values fall back per field, not wholesale', () => {
+  // One bad field must not discard the record. Someone who hand-edited the
+  // duration should keep the quality they chose through the UI.
+  const loaded = loadRecordingSettings(
+    fakeStorage({
+      [RECORDING_STORAGE_KEY]: '{"duration":9999,"quality":"very-high"}',
+    }),
+  );
+  assert.equal(loaded.duration, DEFAULT_RECORDING_SETTINGS.duration);
+  assert.equal(loaded.quality, 'very-high');
+});
+
+test('an unknown quality falls back rather than reaching the encoder', () => {
+  // A value outside the preset list would fail at `configure` time -- after the
+  // user pressed Begin Recording, which is the worst moment to find out. Same
+  // reasoning as `withQuality`'s validation, applied at the storage boundary.
+  const loaded = loadRecordingSettings(
+    fakeStorage({ [RECORDING_STORAGE_KEY]: '{"quality":"insane"}' }),
+  );
+  assert.equal(loaded.quality, DEFAULT_QUALITY);
+});
+
+test('a dimension below the floor falls back rather than becoming degenerate', () => {
+  // `MIN_RECORDING_DIM` exists because an encoder configured for a 2px frame is
+  // legal and useless. A stored value under it is not clamped up to the floor
+  // but rejected, so the user gets the default back rather than a 128px sliver
+  // they never asked for.
+  const loaded = loadRecordingSettings(
+    fakeStorage({
+      [RECORDING_STORAGE_KEY]: `{"resolution":{"width":2,"height":${MIN_RECORDING_DIM}}}`,
+    }),
+  );
+  assert.equal(loaded.resolution.width, DEFAULT_RECORDING_SETTINGS.resolution.width);
+  // The legal one beside it is kept: per-field fallback, as above.
+  assert.equal(loaded.resolution.height, MIN_RECORDING_DIM);
+});
+
+test('the visibility flag round-trips and defaults to hidden', () => {
+  // Defaults to false on anything unexpected: the cost of wrongly hiding is a
+  // menu item to re-tick, while wrongly showing puts a tab in front of someone
+  // who never asked for one.
+  const storage = fakeStorage();
+  assert.equal(loadExportVideoShown(storage), false);
+  saveExportVideoShown(true, storage);
+  assert.equal(loadExportVideoShown(storage), true);
+  saveExportVideoShown(false, storage);
+  assert.equal(loadExportVideoShown(storage), false);
+  for (const junk of ['', 'yes', '1', 'TRUE', '{}']) {
+    assert.equal(
+      loadExportVideoShown(fakeStorage({ [EXPORT_SHOWN_STORAGE_KEY]: junk })),
+      false,
+      `treated ${junk} as shown`,
+    );
+  }
+});
+
+test('the two records are stored under separate keys', () => {
+  // The visibility flag is deliberately not a sixth `RecordingSettings` field
+  // -- that record is handed WHOLE to the recorder, and whether a panel tab is
+  // on screen is nothing the encoder should receive. Separate keys are what
+  // let `Panel` read the flag at construction, before any settings exist.
+  assert.notEqual(RECORDING_STORAGE_KEY, EXPORT_SHOWN_STORAGE_KEY);
+  const storage = fakeStorage();
+  saveRecordingSettings(DEFAULT_RECORDING_SETTINGS, storage);
+  saveExportVideoShown(true, storage);
+  // Neither clobbered the other.
+  assert.equal(loadExportVideoShown(storage), true);
+  assert.deepEqual(loadRecordingSettings(storage), DEFAULT_RECORDING_SETTINGS);
+});

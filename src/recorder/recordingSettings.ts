@@ -58,6 +58,23 @@ export function evenDim(value: number): number {
   return Math.max(MIN_RECORDING_DIM, Math.trunc(value) - (Math.trunc(value) % 2));
 }
 
+/**
+ * "The whole window, whatever that is today" -- the resolution sentinel.
+ *
+ * A dimension this large is never a real window, and every read of the
+ * resolution goes through `clampResolution`, so it collapses to the current
+ * window size at the point of use. That is what lets this file express "full
+ * frame" without knowing the window size.
+ *
+ * **NAMED RATHER THAN INLINE BECAUSE IT MUST SURVIVE PERSISTENCE.** It is the
+ * upper bound `loadRecordingSettings` validates a stored dimension against; a
+ * tighter bound would reject the DEFAULT record and quietly turn "full frame"
+ * into a fixed crop at whatever size the window happened to be when it was
+ * saved -- so someone who never touched the sliders would find their next
+ * session cropped to their last one's window.
+ */
+export const FULL_FRAME = 1 << 20;
+
 /** Frames per second of the OUTPUT file. Not a rate the renderer must keep up with. */
 export const RECORDING_FPS = 60;
 
@@ -190,7 +207,7 @@ export const DEFAULT_RECORDING_SETTINGS: RecordingSettings = Object.freeze({
   // without this file needing to know the window size. Starting at full frame is
   // right because cropping is the exception -- the common export is what is on
   // screen -- and it means the crop overlay is hidden until the user asks for it.
-  resolution: { width: 1 << 20, height: 1 << 20 },
+  resolution: { width: FULL_FRAME, height: FULL_FRAME },
   duration: 5,
   quality: DEFAULT_QUALITY,
   physicsSteps: 60,
@@ -473,6 +490,247 @@ export function withHeight(
       windowSize,
     ),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+
+/**
+ * Where recording settings live. Namespaced like `preferences.ts`'s key, and
+ * SEPARATE from it on purpose.
+ *
+ * The file header explains why these are not `Preferences` fields: the whole
+ * recording feature is lazily loaded, and folding them into the shared record
+ * would have code that runs every session reading state for a tab most sessions
+ * never open. That argument is about the in-memory record, and it survives
+ * persistence -- a second `localStorage` entry is read only by the module that
+ * owns it, whereas a wider `Preferences` would be read by everyone.
+ *
+ * The user-visible contract is nonetheless the SAME as the preferences one:
+ * these are editor settings, they follow you across reloads, and they are never
+ * part of a saved config. `settingsSection.ts`'s tab tooltip already promises
+ * exactly that ("Persistent; not saved/loaded with projects or checkpoints"),
+ * which before this was a promise the code did not keep.
+ */
+export const RECORDING_STORAGE_KEY = 'fluoddity.recording';
+
+/**
+ * The `localStorage`-shaped slice this module needs.
+ *
+ * Injectable for the reason `PreferenceStorage` is: `recordingSettings.test.ts`
+ * runs under `node --test`, where there is no `localStorage` at all -- and the
+ * "storage throws" path is worth testing rather than merely asserting.
+ */
+export interface RecordingStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+/**
+ * The browser's `localStorage`, or `null` where there is none.
+ *
+ * MERELY TOUCHING `localStorage` CAN THROW -- a sandboxed iframe raises a
+ * SecurityError on property access, before any method is called. Hence the
+ * try/catch around the read itself rather than around a later `getItem`.
+ */
+export function browserRecordingStorage(): RecordingStorage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A finite whole number within `[min, max]`, or `null` if `value` is not one.
+ *
+ * The validating half of `clampInt`: that one is for values the UI produced and
+ * coerces whatever it is handed, this one is for values that came back out of
+ * `localStorage` as untyped JSON a user can hand-edit. Rejecting rather than
+ * clamping is what lets `loadRecordingSettings` keep the DEFAULT for a bad key
+ * instead of silently substituting a bound -- a hand-edited `"duration": "long"`
+ * should restore 5 seconds, not become 1.
+ */
+function validInt(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const whole = Math.trunc(value);
+  return whole >= min && whole <= max ? whole : null;
+}
+
+/**
+ * Read stored recording settings, falling back to the defaults.
+ *
+ * NEVER THROWS, which is `loadPreferences`'s contract and matters here for the
+ * same reason: a corrupt entry in `localStorage` outlives a page reload, so an
+ * exception would make the recording tab permanently unopenable until the user
+ * cleared site data by hand.
+ *
+ * ## The invariants are re-established, not trusted
+ *
+ * Everything here arrives as untyped JSON, so this is a BOUNDARY and the two
+ * real rules in this file are re-applied rather than assumed:
+ *
+ *   - `motionBlurSamples <= physicsSteps`. Stored separately, so a hand-edited
+ *     (or downgraded) record can hold a pair that violates it. `clampInt`
+ *     against the loaded rate restores it -- the same guard `withPhysicsStepsRaw`
+ *     applies, for the same reason.
+ *   - The resolution is NOT clamped to the window here. It cannot be: this is a
+ *     pure leaf with no window to read, and `clampResolution` is applied at
+ *     every use site anyway. That is what makes the full-frame sentinel below
+ *     survive a round trip.
+ *
+ * Unknown keys are dropped, so a downgrade survives a newer version's record --
+ * the reason `loadPreferences` filters against its known field set.
+ */
+export function loadRecordingSettings(
+  storage: RecordingStorage | null = browserRecordingStorage(),
+): RecordingSettings {
+  if (storage === null) return DEFAULT_RECORDING_SETTINGS;
+
+  let raw: string | null;
+  try {
+    raw = storage.getItem(RECORDING_STORAGE_KEY);
+  } catch (e) {
+    console.warn(`Could not read recording settings (${String(e)}); using defaults`);
+    return DEFAULT_RECORDING_SETTINGS;
+  }
+  if (raw === null) return DEFAULT_RECORDING_SETTINGS;
+
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    console.warn(`Could not parse recording settings (${String(e)}); using defaults`);
+    return DEFAULT_RECORDING_SETTINGS;
+  }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    return DEFAULT_RECORDING_SETTINGS;
+  }
+  const stored = data as Record<string, unknown>;
+
+  const duration =
+    validInt(stored['duration'], MIN_DURATION, MAX_DURATION)
+    ?? DEFAULT_RECORDING_SETTINGS.duration;
+
+  const quality = (QUALITY_PRESETS as readonly string[]).includes(
+    stored['quality'] as string,
+  )
+    ? (stored['quality'] as QualityPreset)
+    : DEFAULT_RECORDING_SETTINGS.quality;
+
+  const physicsSteps =
+    validInt(stored['physicsSteps'], MIN_PHYSICS_STEPS, MAX_PHYSICS_STEPS)
+    ?? DEFAULT_RECORDING_SETTINGS.physicsSteps;
+
+  // Against the rate just loaded, not against the stored one -- see the header.
+  // A rejected `physicsSteps` with an accepted sample count must not leave the
+  // pair inconsistent.
+  const samples = validInt(stored['motionBlurSamples'], 1, MAX_PHYSICS_STEPS);
+  const motionBlurSamples =
+    samples === null
+      // No usable stored value: pin to the ceiling, which is both the default's
+      // posture and what an offline render wants. See `DEFAULT_RECORDING_SETTINGS`.
+      ? physicsSteps
+      : Math.min(samples, physicsSteps);
+
+  // Each dimension independently: a record with a good width and a corrupt
+  // height should keep the width. `MIN_RECORDING_DIM` is the floor and the
+  // sentinel is the ceiling, so a stored full-frame value survives verbatim.
+  const res = stored['resolution'];
+  const storedRes =
+    typeof res === 'object' && res !== null && !Array.isArray(res)
+      ? (res as Record<string, unknown>)
+      : {};
+  const resolution: Resolution = {
+    width:
+      validInt(storedRes['width'], MIN_RECORDING_DIM, FULL_FRAME)
+      ?? DEFAULT_RECORDING_SETTINGS.resolution.width,
+    height:
+      validInt(storedRes['height'], MIN_RECORDING_DIM, FULL_FRAME)
+      ?? DEFAULT_RECORDING_SETTINGS.resolution.height,
+  };
+
+  return Object.freeze({
+    resolution,
+    duration,
+    quality,
+    physicsSteps,
+    motionBlurSamples,
+  });
+}
+
+/**
+ * Write recording settings. Failure is reported, never thrown.
+ *
+ * `setItem` throws on a full or disabled store (Safari private mode being the
+ * usual case), and losing the ability to PERSIST a setting must not lose the
+ * ability to SET one -- the in-memory value has already been adopted by the
+ * time this is called.
+ */
+export function saveRecordingSettings(
+  settings: RecordingSettings,
+  storage: RecordingStorage | null = browserRecordingStorage(),
+): void {
+  if (storage === null) return;
+  try {
+    storage.setItem(RECORDING_STORAGE_KEY, JSON.stringify(settings));
+  } catch (e) {
+    console.warn(`Could not write recording settings: ${String(e)}`);
+  }
+}
+
+/**
+ * Whether the Recording Controls tab is shown -- Share > Export Video's tick.
+ *
+ * ## Why a second key rather than a sixth field
+ *
+ * It is not a `RecordingSettings` field and must not become one. That record is
+ * what gets handed WHOLE to the recorder (`recordingSection.ts`'s header calls
+ * that the narrow interface, and it is), and whether a panel tab is on screen is
+ * nothing the encoder has any business receiving. Keeping them separate also
+ * means the two can be read independently: `Panel` needs this flag at
+ * construction, before any recording tab or its settings exist.
+ *
+ * It lives in this file anyway, rather than in `panel.ts`, so that all the
+ * recording feature's persistence -- its key names and its never-throws
+ * contract -- sits in one place and is testable under `node --test`.
+ */
+export const EXPORT_SHOWN_STORAGE_KEY = 'fluoddity.recording.shown';
+
+/**
+ * Whether the recording tab was showing when the user last left.
+ *
+ * DEFAULTS TO FALSE on anything unexpected -- absent, unparseable, or a
+ * non-boolean. False is the state a first-run user gets and the conservative
+ * answer: the cost of wrongly returning false is a menu item to re-tick, while
+ * wrongly returning true puts a tab in front of someone who never asked for it.
+ *
+ * Never throws, for `loadRecordingSettings`'s reason.
+ */
+export function loadExportVideoShown(
+  storage: RecordingStorage | null = browserRecordingStorage(),
+): boolean {
+  if (storage === null) return false;
+  try {
+    return storage.getItem(EXPORT_SHOWN_STORAGE_KEY) === 'true';
+  } catch (e) {
+    console.warn(`Could not read recording visibility (${String(e)}); hiding`);
+    return false;
+  }
+}
+
+/** Store the tab's visibility. Failure is reported, never thrown. */
+export function saveExportVideoShown(
+  shown: boolean,
+  storage: RecordingStorage | null = browserRecordingStorage(),
+): void {
+  if (storage === null) return;
+  try {
+    storage.setItem(EXPORT_SHOWN_STORAGE_KEY, shown ? 'true' : 'false');
+  } catch (e) {
+    console.warn(`Could not write recording visibility: ${String(e)}`);
+  }
 }
 
 /**
