@@ -347,6 +347,41 @@ export function withPhysicsSteps(
   };
 }
 
+/**
+ * Set the physics rate WITHOUT rescaling the blur slider, clamping samples.
+ *
+ * ## Why this exists next to `withPhysicsSteps`
+ *
+ * `rescaleSamples` is deliberately lossy: it preserves the slider's POSITION
+ * and `floor`s the value that falls out, which is correct once per deliberate
+ * change and wrong applied repeatedly. Tweakpane fires `change` throughout a
+ * drag, so routing every intermediate rate through `withPhysicsSteps` compounds
+ * that floor once per event and walks the sample count down for no reason the
+ * user can see.
+ *
+ * So the UI writes the rate live through THIS -- which keeps the invariant
+ * (`motionBlurSamples <= physicsSteps`) true at every intermediate value
+ * without pretending to preserve a handle position -- and calls
+ * `withPhysicsSteps` once on release, against the rate the user settled on.
+ * See `recordingSection.ts`'s `scheduleStepsCommit`.
+ *
+ * **The invariant is still enforced here**, which is what keeps this a legal
+ * way to write the field: dragging the rate DOWN past the sample count clamps
+ * the count with it. What it does not do is push the count back up on the way
+ * out, which is `withPhysicsSteps`'s job and happens at the end of the gesture.
+ */
+export function withPhysicsStepsRaw(
+  settings: RecordingSettings,
+  physicsSteps: number,
+): RecordingSettings {
+  const next = clampInt(physicsSteps, MIN_PHYSICS_STEPS, MAX_PHYSICS_STEPS);
+  return {
+    ...settings,
+    physicsSteps: next,
+    motionBlurSamples: clampInt(settings.motionBlurSamples, 1, next),
+  };
+}
+
 /** Set the blur sample count, clamped to the current ceiling. */
 export function withMotionBlurSamples(
   settings: RecordingSettings,

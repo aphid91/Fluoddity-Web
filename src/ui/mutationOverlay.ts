@@ -42,7 +42,14 @@ import { IC } from '../particleSystem/config.ts';
 import { NO_COHORT } from '../selection/cohortHighlight.ts';
 import { bindFocusRelease } from './focusRelease.ts';
 import { hotkeyLabel, localHotkeyLabel } from './hotkeys.ts';
+import {
+  RANDOMIZE_BEHAVIOR_HELP,
+  REROLL_MUTATIONS_HELP,
+  RESET_HELP,
+  TOGGLE_UI_HELP,
+} from './menuHelp.ts';
 import { CONFIG, settingFor } from './settingsSpec.ts';
+import { type TooltipContent, Tooltip } from './tooltip.ts';
 
 export interface MutationOverlayOptions {
   readonly send: (command: Command) => void;
@@ -164,6 +171,42 @@ export class MutationOverlay {
   private dragging = false;
 
   /**
+   * The bar's help tooltips.
+   *
+   * The same styled element the panels use, rather than the `title` attribute
+   * this bar carried before. A native `title` cannot be styled, takes about a
+   * second to appear with no control over the delay, and renders the `\n\n`
+   * paragraph breaks these strings are written with as literal blank space in a
+   * single-line strip -- see `tooltip.ts`, which was written for exactly those
+   * three reasons and was until now only wired into Tweakpane blades.
+   *
+   * `aria-label` IS STILL SET on every button that had one, and is now set on
+   * the ones that only had a `title`. The tooltip is a hover affordance and
+   * reaches neither screen readers nor keyboard users, so dropping `title`
+   * without that would be a real accessibility loss rather than a cosmetic
+   * change. The two carry the same words.
+   *
+   * Its own instance, for the reason `menuBar.ts` gives for having one: this
+   * bar is deliberately outside both panel containers and outlives their
+   * rebuilds.
+   */
+  private readonly tooltip = new Tooltip();
+
+  /**
+   * The last `Status` seen by `refresh`, for the live tooltip sources to read.
+   *
+   * **NOT a second source of truth**, and deliberately not a copy of any field:
+   * it is the whole status object as handed in, read only at HOVER time by
+   * `attachRerollHelp` and the fences help. Those two describe state that
+   * changes under the user, and a tooltip attached once at construction has no
+   * other way to see it.
+   *
+   * `null` until the first refresh, which every reader degrades on rather than
+   * asserting -- the bar is constructed before the first frame.
+   */
+  private lastStatus: Status | null = null;
+
+  /**
    * Last `ruleIsGenerated` written to the DOM, or `null` before the first
    * frame.
    *
@@ -213,7 +256,6 @@ export class MutationOverlay {
     this.label = document.createElement('span');
     this.label.textContent = setting?.label ?? 'Mutation Scale';
     this.label.style.cssText = LABEL_CSS;
-    if (setting !== null) this.label.title = setting.help;
 
     this.slider = document.createElement('input');
     this.slider.type = 'range';
@@ -228,6 +270,24 @@ export class MutationOverlay {
     this.readout = document.createElement('span');
     this.readout.style.cssText = READOUT_CSS;
 
+    // ON ALL THREE ELEMENTS, not just the label. They are one control split
+    // across three nodes -- name, track and number -- and a tooltip that
+    // appeared over only one of them would look like a bug in the other two.
+    // `attach` adds three listeners per element and no DOM, so this is cheap.
+    //
+    // The registry's `help` is NOT used here: this is the one control whose
+    // panel entry is `panel: false`, so no Tweakpane blade renders it and this
+    // is the only place its help can appear. The wording is the bar's own.
+    const mutationHelp = {
+      title: setting?.label ?? 'Mutation Scale',
+      body:
+        'Controls how different the cohorts are from their parent. Each cohort ' +
+        'has a unique mutation. At 0, every cohort is identical to the parent.',
+    };
+    for (const el of [this.label, this.slider, this.readout]) {
+      this.tooltip.attach(el, mutationHelp);
+    }
+
     this.reroll = document.createElement('button');
     this.reroll.type = 'button';
     // The shortcut comes from the hotkey table, not from a literal here -- see
@@ -241,19 +301,25 @@ export class MutationOverlay {
     // Takes the slider's place while the rule is the all-zero sentinel. See
     // `refresh` for why, and `REROLL_ALL_CSS` for why it is that wide.
     //
-    // BOTH KEYS ARE NAMED. `B` is what this button sends; `F` is named too
-    // because in the sentinel state it lands in the same place -- the shader's
-    // generator is seeded by `mutationSeed`, so rerolling the seed regenerates
-    // the behaviour just as zeroing the rule does. Telling the user only about
-    // `B` would make `F` look broken in the one state where it is most useful.
+    // **`B` ALONE, where this used to read "(B or F)".** `F` did land here in
+    // the sentinel state, because the Orchestrator redirected it -- and naming
+    // two keys for one button meant `F` changed jobs depending on state the
+    // user could not see. The redirect is gone (`hotkeys.ts`), so `B` is the
+    // only key that randomizes behavior and this label names only it.
     this.rerollAll = document.createElement('button');
     this.rerollAll.type = 'button';
     this.rerollAll.textContent = `Reroll All Behavior${keySuffix([
       hotkeyLabel({ kind: 'randomizeBehavior' }),
-      hotkeyLabel({ kind: 'randomizeSeed' }),
     ])}`;
     this.rerollAll.style.cssText = REROLL_ALL_CSS;
     this.rerollAll.dataset['setting'] = 'config.rule.randomize';
+    // SHARED WITH THE SIMULATION MENU ROW it mirrors, imported rather than
+    // restated -- the bar and the menu must not disagree about what an action
+    // does, the same argument `refreshReroll` makes for greying them together.
+    this.tooltip.attach(this.rerollAll, {
+      title: 'Reroll All Behavior',
+      body: RANDOMIZE_BEHAVIOR_HELP,
+    });
 
     // A real <select>, not a readout: the tool was previously only reachable
     // from the Tools menu and the number keys, and a modal state you can see but
@@ -281,6 +347,13 @@ export class MutationOverlay {
     this.reset.textContent = `Reset${keySuffix([hotkeyLabel({ kind: 'reset' })])}`;
     this.reset.style.cssText = BUTTON_CSS;
     this.reset.dataset['setting'] = 'transport.reset';
+    // Shared with the Simulation menu row, like Reroll All Behavior above.
+    this.tooltip.attach(this.reset, { title: 'Reset', body: RESET_HELP });
+
+    // The Reroll button's help depends on why it is greyed, so it is a live
+    // source rather than a fixed string -- attached once here, resolved on
+    // hover. See `attachRerollHelp`.
+    this.attachRerollHelp();
 
     // The population presets, leftmost. Deliberately OUTSIDE the sentinel swap
     // below: how many cohorts there are and how they are arranged is orthogonal
@@ -319,6 +392,25 @@ export class MutationOverlay {
     // replaces it with whatever the config actually says, so this only has to be
     // right for the frame before that.
     this.fences.append(fencesIcon(false));
+    // A LIVE SOURCE: the Grid requirement only applies in some layouts, and the
+    // button is greyed rather than rebuilt when it stops applying. Resolved on
+    // hover, so `refreshPopulationGroup` no longer pushes text per state.
+    this.tooltip.attach(this.fences, () => {
+      const layout = this.lastStatus?.editConfig['initialConditions'];
+      const body =
+        'Cohort fences: When enabled, particles are forced to stay close to ' +
+        'their initial locations (Grid only).';
+      // The greyed case says so, for the reason `rerollHelp` gives: a disabled
+      // control that does not explain itself is a dead end, and the way out is
+      // a dropdown a few rows away in the Project panel.
+      return {
+        title: 'Cohort Fences',
+        body:
+          layout === IC.GRID || layout === undefined
+            ? body
+            : `${body}\n\nRequires Initial Conditions: Grid.`,
+      };
+    });
     this.fences.addEventListener('click', () => {
       const setting = settingFor(CONFIG, 'cohortFences');
       if (setting === null) return;
@@ -362,6 +454,15 @@ export class MutationOverlay {
     // un-hidden start never calls in -- the default has to be the one that
     // needs no call.
     this.paintGear(false);
+    // A live source, so the tooltip reports which way the toggle currently
+    // goes. The `(X)` suffix is kept from the hotkey table, as everywhere else
+    // on this bar -- the request's wording dropped it, but a rebind has to be
+    // able to move it and a label naming no key would be the one control here
+    // that hides its shortcut.
+    this.tooltip.attach(this.gear, () => ({
+      title: 'Toggle UI Panels',
+      body: `${TOGGLE_UI_HELP}${this.uiKeySuffix}`,
+    }));
     this.gear.addEventListener('click', () => {
       opts.onToggleUi?.();
       // A click leaves the button focused, and `X` would then be swallowed while
@@ -619,6 +720,11 @@ export class MutationOverlay {
    * the panes are.
    */
   refresh(status: Status): void {
+    // FIRST, before anything that could early-return: the live tooltip sources
+    // read this at hover time, and a stale one would describe a state the bar
+    // has already left.
+    this.lastStatus = status;
+
     this.refreshPopulationGroup(status);
 
     const scale = status.editConfig['mutationScale'];
@@ -723,27 +829,34 @@ export class MutationOverlay {
     this.reroll.style.opacity = inert ? '0.45' : '1';
     this.reroll.style.cursor = inert ? 'default' : 'pointer';
 
-    // Each greyed state says WHY, and how to leave it. A disabled control that
-    // does not explain itself is a dead end -- and in both cases the way out is
-    // a control sitting right beside it, which is worth naming.
+    // THE TOOLTIP IS NOT WRITTEN HERE ANY MORE. It is a live source attached
+    // once in the constructor and resolved when the user actually hovers, so
+    // this method no longer has to push text on every state change -- see
+    // `rerollHelp`. What stays is the disabled state and its styling, which
+    // must be on screen whether or not anyone hovers.
     //
-    // THE SENTINEL CASE IS CHECKED FIRST because both can hold at once, and it
-    // is the one with somewhere to go: `Reroll All Behavior` has taken the
-    // slider's place, so pointing at Mutation Scale would name a slider that is
-    // not on screen.
-    //
-    // THE SENTINEL TEXT NAMES THE KEY, because the key still works here and
-    // this button does not. `F` redirects to Randomize Behavior while the rule
-    // is generated (see the Orchestrator's `randomizeSeed` case) -- the two
-    // collapse to one act -- so a user who reaches for the shortcut is not
-    // stuck, and saying so is what stops the greyed button from reading as
-    // "that shortcut is dead too".
-    this.reroll.title = generated
-      ? 'There is no authored behaviour to mutate yet.\n\n' +
-        'Reroll All Behavior is the action for this state — and F does it too.'
-      : zeroScale
-        ? 'Mutation Scale is 0, so every seed looks the same.\n\nRaise Mutation Scale to reroll.'
-        : 'Reroll the mutations applied to the current behaviour';
+    // `aria-label` DOES stay per-state, because it is the only channel that
+    // reaches a screen reader and it cannot be resolved lazily.
+    this.reroll.setAttribute('aria-label', rerollHelp(generated, zeroScale).body);
+  }
+
+  /**
+   * Attach the Reroll button's help, which depends on why it is greyed.
+   *
+   * A LIVE SOURCE rather than a string, because all three cases are reachable
+   * without the button being rebuilt -- see `TooltipSource`. Called once from
+   * the constructor; `refreshReroll` no longer touches the tooltip at all.
+   */
+  private attachRerollHelp(): void {
+    this.tooltip.attach(this.reroll, () => {
+      const status = this.lastStatus;
+      // Before the first refresh there is no state to describe, so the button
+      // is presented as live -- which is what it looks like, and matches the
+      // `scale === null` degradation `refreshReroll` documents.
+      if (status === null) return rerollHelp(false, false);
+      const scale = status.editConfig['mutationScale'];
+      return rerollHelp(status.ruleIsGenerated, scale === 0);
+    });
   }
 
   /**
@@ -905,12 +1018,15 @@ export class MutationOverlay {
     // states.
     this.fences.replaceChildren(fencesIcon(this.fencesOn));
 
+    // The TOOLTIP is a live source attached once in the constructor, so it is
+    // not written here -- see `attachFencesHelp`. `aria-label` still is: it is
+    // the only channel that reaches a screen reader, and it cannot be resolved
+    // lazily on hover the way the tooltip can.
     const state = this.fencesOn ? 'on' : 'off';
-    const label = `Cohort Fences: ${state} — hold each cohort near where it started`;
-    this.fences.title = onGrid
-      ? label
-      : `${label}\n\nRequires Initial Conditions: Grid.`;
-    this.fences.setAttribute('aria-label', label);
+    this.fences.setAttribute(
+      'aria-label',
+      `Cohort Fences: ${state} — hold each cohort near where it started`,
+    );
     this.fences.setAttribute('aria-pressed', String(this.fencesOn));
   }
 
@@ -923,7 +1039,10 @@ export class MutationOverlay {
     // The glyph is a chevron, which a screen reader reads as punctuation or not
     // at all -- so the name has to be stated.
     button.setAttribute('aria-label', label);
-    button.title = label;
+    // TITLE `Cohort`, body the direction. A tooltip with a title and no body
+    // renders as a heading over a horizontal rule over nothing, which reads as
+    // a control whose help failed to load rather than as a one-line hint.
+    this.tooltip.attach(button, { title: 'Cohort', body: label });
     return button;
   }
 
@@ -942,12 +1061,21 @@ export class MutationOverlay {
     button.type = 'button';
     button.style.cssText = LAYOUT_BUTTON_CSS;
 
-    const description = `${String(count)} cohort${count === 1 ? '' : 's'}, grid layout`;
-    button.title = description;
+    // **THE ONE-COHORT CASE IS WORDED SEPARATELY.** "1 cohort, grid layout"
+    // was generated by the same template as the other two and was misleading
+    // for it: a grid of one has no arrangement to speak of, and what the button
+    // actually produces is a single cohort in the middle of the world. The
+    // other counts really are laid out on a grid, so they keep that wording.
+    const description =
+      count === 1
+        ? 'Single cohort, centered'
+        : `${String(count)} cohorts, grid layout`;
     // Not decorative: the icon is the only content, so without this the button
-    // is unnamed to a screen reader.
+    // is unnamed to a screen reader. The tooltip below is a hover affordance
+    // and reaches neither screen readers nor keyboard users, so this stays.
     button.setAttribute('aria-label', description);
     button.dataset['setting'] = `config.cohorts.preset${String(count)}`;
+    this.tooltip.attach(button, { title: 'Population Layout', body: description });
 
     button.append(dotsIcon(count));
     button.addEventListener('click', () => {
@@ -988,14 +1116,21 @@ export class MutationOverlay {
    */
   private paintGear(hidden: boolean): void {
     this.gear.style.color = hidden ? IDLE_WHITE : ACTIVE_GOLD;
-    const label = `Control panels: ${hidden ? 'hidden' : 'showing'} — show/hide them${this.uiKeySuffix}`;
-    this.gear.title = label;
-    this.gear.setAttribute('aria-label', label);
+    // `aria-label` only. The tooltip is attached once in the constructor and
+    // reads the panel state on hover, like the other two live sources here.
+    this.gear.setAttribute(
+      'aria-label',
+      `Control panels: ${hidden ? 'hidden' : 'showing'} — show/hide them${this.uiKeySuffix}`,
+    );
     this.gear.setAttribute('aria-pressed', String(!hidden));
   }
 
   dispose(): void {
     this.releaseFocus();
+    // Its element is on `document.body`, not inside `root` -- removing the bar
+    // would strand it, and a pending show timer would fire against an anchor
+    // that has left the document.
+    this.tooltip.dispose();
     this.root.remove();
   }
 }
@@ -1131,6 +1266,46 @@ export function hintFor(status: Status): {
   return none(
     'Left click a particle to select its cohort | Right click to undo any action',
   );
+}
+
+/**
+ * What the Reroll button says, given why it is (or is not) greyed.
+ *
+ * PURE AND MODULE-LEVEL, so the three cases can be read together and tested
+ * without a DOM -- the same reason `hintFor` above is.
+ *
+ * Each greyed state says WHY and how to leave it. A disabled control that does
+ * not explain itself is a dead end, and in both cases the way out is a control
+ * sitting right beside it, which is worth naming.
+ *
+ * THE SENTINEL CASE IS CHECKED FIRST because both can hold at once, and it is
+ * the one with somewhere to go: `Reroll All Behavior` has taken the slider's
+ * place, so pointing at Mutation Scale would name a slider that is not on
+ * screen.
+ *
+ * **THE SENTINEL TEXT NO LONGER NAMES `F`.** It used to say "and F does it
+ * too", which was true while the Orchestrator redirected the key to Randomize
+ * Behavior. That redirect is gone: `F` is now inert wherever this button is
+ * greyed, so the old sentence would promise a shortcut that does nothing.
+ */
+function rerollHelp(generated: boolean, zeroScale: boolean): TooltipContent {
+  if (generated) {
+    return {
+      title: 'Reroll Mutations',
+      body:
+        'There is no authored behaviour to mutate yet.\n\n' +
+        'Reroll All Behavior is the action for this state.',
+    };
+  }
+  if (zeroScale) {
+    return {
+      title: 'Reroll Mutations',
+      body:
+        'Mutation Scale is 0, so every seed looks the same.\n\n' +
+        'Raise Mutation Scale to reroll.',
+    };
+  }
+  return { title: 'Reroll Mutations', body: REROLL_MUTATIONS_HELP };
 }
 
 /** Two decimals: enough to read, few enough not to jitter under a drag. */

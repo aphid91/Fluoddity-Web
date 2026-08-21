@@ -51,6 +51,7 @@ import {
   withHeight,
   withMotionBlurSamples,
   withPhysicsSteps,
+  withPhysicsStepsRaw,
   withQuality,
   withWidth,
 } from '../../recorder/recordingSettings.ts';
@@ -115,13 +116,8 @@ export function buildRecordingSection(
     });
     (blade.element as HTMLElement).dataset['setting'] = `recording.${axis}`;
     ctx.tooltip.attach(blade.element as HTMLElement, {
-      title: axis === 'width' ? 'Recording Width' : 'Recording Height',
-      body:
-        'The exported video size in pixels, capped at your window. Reduce it ' +
-        'and a white box appears on screen showing exactly what will be ' +
-        'recorded -- the area outside is dimmed.\n\nEvery exported pixel is a ' +
-        'real rendered pixel, so cropping never softens the image. For a ' +
-        'larger export, make the window larger.',
+      title: axis === 'width' ? 'Width' : 'Height',
+      body: axis === 'width' ? 'Video X resolution' : 'Video Y resolution',
     });
     blade.on('change', (ev) => {
       if (ctx.isRefreshing()) return;
@@ -154,10 +150,7 @@ export function buildRecordingSection(
   (durationBlade.element as HTMLElement).dataset['setting'] = 'recording.duration';
   ctx.tooltip.attach(durationBlade.element as HTMLElement, {
     title: 'Duration',
-    body:
-      'Length of the exported clip in seconds, at 60fps. This is video time, ' +
-      'not how long the export takes -- at high physics rates and sample ' +
-      'counts a five-second clip can take many minutes to render.',
+    body: 'Number of seconds before recording is automatically concluded',
   });
   durationBlade.on('change', (ev) => {
     if (ctx.isRefreshing()) return;
@@ -184,12 +177,8 @@ export function buildRecordingSection(
   ctx.tooltip.attach(qualityBlade.element as HTMLElement, {
     title: 'Quality',
     body:
-      'How many bits the encoder spends. Affects file size and compression ' +
-      'artefacts only -- the frames themselves are identical at every setting, ' +
-      'so this never changes what is rendered.\n\nVery High is worth it for ' +
-      'this kind of image: fine bright filaments over near-black are exactly ' +
-      'what H.264 compresses worst, and the artefacts show up as banding in ' +
-      'the dark areas. It makes a noticeably larger file.',
+      'Lower quality yields faster renders and smaller files. Higher quality ' +
+      'yields better compression',
   });
   qualityBlade.on('change', (ev) => {
     if (ctx.isRefreshing()) return;
@@ -206,23 +195,96 @@ export function buildRecordingSection(
   });
   (stepsBlade.element as HTMLElement).dataset['setting'] = 'recording.physicsSteps';
   ctx.tooltip.attach(stepsBlade.element as HTMLElement, {
-    title: 'Video Physics Rate',
+    title: 'Physics Rate',
     body:
-      'Physics sub-steps per recorded frame -- how fast simulation time runs ' +
-      'in the export. Independent of the editor\'s own rate, so you can render ' +
-      'far above what your machine can play back live.\n\nThis is also the ' +
-      'ceiling for Motion Blur Samples.',
+      'Determines how many physics substeps per frame of video. High values can ' +
+      'result in long renders, but the video recorder is tolerant of ' +
+      'non-realtime performance.',
   });
   stepsBlade.on('change', (ev) => {
     if (ctx.isRefreshing()) return;
-    const before = settings.physicsSteps;
-    settings = withPhysicsSteps(settings, ev.value);
-    // ONLY when the ceiling actually moved. `rebuildSamples` disposes a blade
-    // and builds another, and doing that on every drag event of this slider
-    // would replace the samples widget dozens of times per second.
-    if (settings.physicsSteps !== before) rebuildSamples();
+
+    // **THE BLUR COUNT IS NOT RESCALED HERE ANY MORE -- see `commitSteps`.**
+    //
+    // Tweakpane fires `change` continuously through a drag, and `rescaleSamples`
+    // is lossy by design: it preserves the HANDLE POSITION and `floor`s the
+    // value that falls out. Applying it per event compounded that floor once
+    // per intermediate rate, so wiggling this slider walked the blur count
+    // steadily downward and left it somewhere unrelated to where it started --
+    // the drift `rescaleSamples`'s own `floor` was chosen to prevent across a
+    // SINGLE change, defeated by being asked dozens of times.
+    //
+    // So the rate is written live (the summary and the readouts follow the
+    // drag), and the rescale is deferred to release, where it runs exactly once
+    // against the ceiling the user actually settled on.
+    settings = withPhysicsStepsRaw(settings, ev.value);
     updateSummary();
+    scheduleStepsCommit();
   });
+
+  /**
+   * Rescale the blur count once the physics-rate gesture is over.
+   *
+   * ## Why release is detected with a CAPTURING window listener
+   *
+   * A Tweakpane slider is a composite of divs with its own pointer handling and
+   * exposes no "drag ended" event -- only the continuous `change`. The gesture
+   * genuinely ends on `pointerup`, and by then the pointer may be anywhere:
+   * dragging past the end of the track and releasing over the canvas is the
+   * normal way to reach the maximum. A listener on the blade would never see
+   * that release, so it has to be higher up.
+   *
+   * **CAPTURE PHASE, so a `stopPropagation` between the slider and the window
+   * cannot swallow it** -- `inputBinding.ts` handles pointer events on the
+   * canvas, which is exactly where a released drag tends to land.
+   *
+   * `keyup` is the keyboard half: the slider is focusable and the arrow keys
+   * step it, which produces the same `change` stream with no pointer involved.
+   *
+   * ## Why the pending flag is not just "did the value change"
+   *
+   * The commit has to run exactly once per gesture and only when one happened.
+   * Every release in the app reaches this listener, so without the flag a click
+   * anywhere would rescale the samples against an unchanged ceiling --
+   * harmless arithmetic, but `rescaleSamples` at an unchanged ceiling is not
+   * the identity (its `floor` can still move the value), so it would silently
+   * edit a setting the user was not touching.
+   */
+  let stepsPending = false;
+  /** The rate the blur count was last rescaled against. See `commitSteps`. */
+  let committedSteps = settings.physicsSteps;
+
+  function scheduleStepsCommit(): void {
+    stepsPending = true;
+  }
+
+  function commitSteps(): void {
+    if (!stepsPending) return;
+    stepsPending = false;
+    // NOTHING TO DO if the ceiling ended where it started -- a drag out and
+    // back, or a click that moved nothing. Skipping keeps `rescaleSamples`'s
+    // floor from nudging a value the user never asked to change.
+    if (settings.physicsSteps === committedSteps) return;
+
+    // Rescaled from the ceiling at the START of the gesture, not from the last
+    // intermediate one: that is the whole point of deferring. `withPhysicsSteps`
+    // reads `settings.physicsSteps` as the PREVIOUS ceiling, so it is restored
+    // before the call and the real destination passed in.
+    const target = settings.physicsSteps;
+    settings = withPhysicsSteps(
+      { ...settings, physicsSteps: committedSteps },
+      target,
+    );
+    committedSteps = settings.physicsSteps;
+    rebuildSamples();
+    updateSummary();
+  }
+
+  // CAPTURE PHASE -- see `commitSteps`. Removed in `dispose`, because this
+  // section is rebuilt whenever a tier checkbox or Export Video is toggled and
+  // window listeners would otherwise accumulate one set per rebuild.
+  window.addEventListener('pointerup', commitSteps, true);
+  window.addEventListener('keyup', commitSteps, true);
 
   // --- motion blur samples -------------------------------------------------
   // Rebuilt rather than retuned. See the file header.
@@ -240,12 +302,11 @@ export function buildRecordingSection(
     });
     (blade.element as HTMLElement).dataset['setting'] = 'recording.motionBlurSamples';
     ctx.tooltip.attach(blade.element as HTMLElement, {
-      title: 'Motion Blur Samples',
+      title: 'Blur Samples',
       body:
-        'Temporal supersamples averaged into each recorded frame. Higher is ' +
-        'smoother motion and a slower render.\n\nThe top of this slider is ' +
-        'always the Video Physics Rate, so raising that rate keeps the handle ' +
-        'where it is and raises the number instead.',
+        'Determines how many of the physics substeps are visually rendered and ' +
+        'blended together each frame. Higher values result in smoother ' +
+        'recordings',
     });
     blade.on('change', (ev) => {
       if (ctx.isRefreshing()) return;
@@ -373,8 +434,17 @@ export function buildRecordingSection(
   }
   syncWindow();
 
-  const exportButton = folder.addButton({ title: 'Export Video' });
+  // "BEGIN RECORDING", not "Export Video". The old name described the OUTCOME
+  // and the button does not produce it: pressing this opens a title dialog and
+  // then records for the chosen duration, and the file arrives at the end. A
+  // user who read "Export" reasonably expected a save dialog and a finished
+  // video, not a recording that has to run first.
+  const exportButton = folder.addButton({ title: 'Begin Recording' });
   (exportButton.element as HTMLElement).dataset['recording'] = 'export';
+  ctx.tooltip.attach(exportButton.element as HTMLElement, {
+    title: 'Begin Recording',
+    body: 'Opens a dialog to title your video then initiates recording',
+  });
   exportButton.on('click', () => {
     // The button is the ONE place recording is entered from, which is what makes
     // the lazy import a single, obvious cost rather than something that could
@@ -390,6 +460,12 @@ export function buildRecordingSection(
   return {
     bindings: [],
     settings: () => settings,
+    dispose: () => {
+      // Same capture flag as the registration, or `removeEventListener` does
+      // not match and the listener stays.
+      window.removeEventListener('pointerup', commitSteps, true);
+      window.removeEventListener('keyup', commitSteps, true);
+    },
     refresh: (s) => {
       // The window is the dimension sliders' ceiling, so it is followed per
       // frame -- `syncWindow` early-returns unless it actually moved.
@@ -416,7 +492,7 @@ export function buildRecordingSection(
       const progress = opts.progress();
       const title = (exportButton as unknown as { title: string });
       if (progress === null) {
-        title.title = 'Export Video';
+        title.title = 'Begin Recording';
         return;
       }
       const percent = progress.framesTotal === 0

@@ -32,14 +32,9 @@ import type { SectionContext } from './sections/section.ts';
 
 /** Help text per panel, so each checkbox says what it actually reveals. */
 const HELP: Record<ViewPrefField, string> = {
-  advancedProject:
-    'Show the advanced project controls -- the finer physics parameters, the ' +
-    'jitters, and the world settings.\n\nApplies to this panel only.',
-  advancedPreferences:
-    'Show the advanced editor preferences -- tone mapping, motion blur and the ' +
-    'bloom parameters.\n\nApplies to this panel only.',
-  advancedDrawing:
-    'Show the advanced drawing controls.\n\nApplies to this panel only.',
+  advancedProject: 'Show/Hide the advanced project settings',
+  advancedPreferences: 'Show/Hide the advanced preferences settings',
+  advancedDrawing: 'Show/Hide the advanced drawing controls settings',
 };
 
 /**

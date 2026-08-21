@@ -263,17 +263,27 @@ export function selectionIsNoOp(project: Project): boolean {
  * `mutationSeed` and marks the document dirty (`project.ts` counts a seed move
  * as a change) -- but the emptiness is one condition, so it is written once.
  *
- * NOT WHEN THE RULE IS GENERATED, for the reason `selectionIsNoOp` gives and
- * one more that is specific to this command: the GPU seeds its generator from
- * `mutationSeed`, so a reroll regenerates the behaviour outright. This is the
- * state where rerolling matters MOST, which is why the bar's Reroll All
- * Behavior button advertises `F` alongside `B`.
+ * **TRUE WHEN THE RULE IS GENERATED, WHICH REVERSES WHAT THIS USED TO SAY.**
+ * The GPU seeds its generator from `mutationSeed`, so a reroll there really
+ * does regenerate the behaviour -- and on that basis this returned false and
+ * the Orchestrator redirected `F` to Randomize Behavior. The redirect is gone.
+ * `B` is now the only key for Randomize Behavior and `F` only ever rerolls
+ * mutations, so in the one state that has no mutations to reroll `F` must do
+ * NOTHING rather than quietly perform the other command.
  *
- * Kept as its own name rather than a call to `selectionIsNoOp` at the call
- * site: the two commands are unrelated, and a reader who found the reroll gated
- * on a function about SELECTION would reasonably wonder which of the two
- * behaviours was the accident.
+ * That makes the predicate agree with the UI it drives: the bar's Reroll button
+ * and the Simulation menu row are both greyed on exactly this function, and a
+ * key that fired while its on-screen twin was greyed was the inconsistency
+ * being removed. `Reroll All Behavior` is on screen in this state and is the
+ * action it supports.
+ *
+ * NO LONGER a call to `selectionIsNoOp`: the two now differ. Adopting a picked
+ * rule under a generated one is a real act (each cohort obeys a different
+ * generated rule, so there is something to pick), which is why that function
+ * still returns false there. Rerolling is not. Writing the sentinel test here
+ * rather than widening `selectionIsNoOp` is what keeps selection working.
  */
 export function rerollIsNoOp(project: Project): boolean {
-  return selectionIsNoOp(project);
+  if (ruleIsGeneratedOnGpu(project)) return true;
+  return selectedConfig(project).mutationScale === 0;
 }

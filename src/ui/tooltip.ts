@@ -46,6 +46,25 @@ export interface TooltipContent {
 }
 
 /**
+ * Content, or a function returning it.
+ *
+ * **The function form exists for controls whose help depends on live state.**
+ * The Reroll button explains WHY it is greyed and names the control that
+ * un-greys it, and the Cohort Fences button reports whether the fences are
+ * currently holding -- both change under the user without the element being
+ * rebuilt. Fixed content captured at `attach` time would freeze the first
+ * frame's wording and then describe the wrong state for the rest of the
+ * session.
+ *
+ * Evaluated at SHOW time, not per frame: the tooltip is only ever read while it
+ * is on screen, so there is nothing to gain from recomputing it sixty times a
+ * second into an element nobody is looking at. That also means a caller can
+ * build the string freely here without a per-frame guard, unlike everything
+ * `refresh` touches.
+ */
+export type TooltipSource = TooltipContent | (() => TooltipContent);
+
+/**
  * The shared tooltip element and its hover timer.
  *
  * One per panel. `attach` wires a control's element to it; the element is
@@ -66,8 +85,14 @@ export class Tooltip {
    * Returns nothing to unbind: the listeners live as long as the element does,
    * and a rebuilt pane discards both together.
    */
-  attach(anchor: HTMLElement, content: TooltipContent): void {
-    if (content.body === '' && content.title === '') return;
+  attach(anchor: HTMLElement, content: TooltipSource): void {
+    // ONLY the fixed form can be rejected up front. A function is not called
+    // here -- it would be answering about the wrong frame, and a control that
+    // has nothing to say on its first frame may well have something to say
+    // later. `show` re-checks, so an empty result still displays nothing.
+    if (typeof content !== 'function' && content.body === '' && content.title === '') {
+      return;
+    }
 
     anchor.addEventListener('mouseenter', () => {
       this.cancel();
@@ -100,7 +125,18 @@ export class Tooltip {
     }
   }
 
-  private show(anchor: HTMLElement, content: TooltipContent): void {
+  private show(anchor: HTMLElement, source: TooltipSource): void {
+    // Resolved HERE rather than at attach time, so a live control describes the
+    // state it is in right now. See `TooltipSource`.
+    const content = typeof source === 'function' ? source() : source;
+    // A live source can legitimately have nothing to say this frame -- the
+    // fixed form was already filtered in `attach`, but this one cannot be.
+    // Showing an empty bordered box would read as a rendering fault.
+    if (content.body === '' && content.title === '') {
+      this.hide();
+      return;
+    }
+
     const el = this.ensure();
     el.textContent = '';
 

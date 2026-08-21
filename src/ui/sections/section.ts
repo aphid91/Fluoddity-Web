@@ -75,6 +75,20 @@ export interface SectionHandle {
    * section ignores it.
    */
   refresh(status: Status, input: InputState): void;
+  /**
+   * Release anything that outlives the folder, if the section has any.
+   *
+   * OPTIONAL, because almost nothing does. A section's blades and listeners
+   * belong to the `FolderApi` it built into, and disposing the pane takes them
+   * all -- which is why this did not exist until a section needed a listener
+   * somewhere else. Recording Controls is that section: it watches the WINDOW
+   * for the end of a slider drag (`commitSteps`), and the pane cannot reclaim
+   * that.
+   *
+   * The panel rebuilds its sections on every tier toggle and every Export Video
+   * toggle, so a section that skips this leaks one listener set per rebuild.
+   */
+  dispose?(): void;
 }
 
 /** A section builder. */

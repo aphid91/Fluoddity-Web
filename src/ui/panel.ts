@@ -663,6 +663,12 @@ export class Panel {
     const pane = new Pane({ container: side.container });
     const ctx = this.context(which);
 
+    // BEFORE the list is replaced. A section may hold something the pane cannot
+    // reclaim -- Recording Controls listens on the window for the end of a
+    // slider drag -- and this method is reached on every rebuild, so dropping
+    // the old handles without asking them to let go leaks one set per toggle of
+    // any tier checkbox or of Export Video.
+    for (const handle of side.sections) handle.dispose?.();
     side.sections = [];
     for (const section of sections) {
       const folder = pane.addFolder({
@@ -1555,6 +1561,10 @@ export class Panel {
   dispose(): void {
     for (const release of this.focusReleasers) release();
     this.perfDragRelease();
+    // Sections first, for the reason `buildPane` gives: what they hold outside
+    // their own folder is not the pane's to reclaim.
+    for (const handle of this.left.sections) handle.dispose?.();
+    for (const handle of this.right.sections) handle.dispose?.();
     this.left.pane.dispose();
     this.right.pane.dispose();
     this.tooltip.dispose();

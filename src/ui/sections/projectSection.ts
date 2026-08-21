@@ -54,6 +54,23 @@ export function buildProjectSection(
 
   folder.title = projectTitle(status.projectName);
 
+  // ON THE TITLE BUTTON, not the folder element. A folder's `element` wraps the
+  // header AND its contents, so attaching there would fire the tooltip over
+  // every control inside -- each of which has its own help and would be
+  // shadowed by this one. The header is the folder's own direct child button,
+  // which is the same node `hideFolderTitle` reaches for in
+  // `settingsSection.ts`; if it is ever missing there is nothing to describe
+  // and doing nothing is correct.
+  const header = (folder.element as HTMLElement).querySelector(':scope > button');
+  if (header !== null) {
+    ctx.tooltip.attach(header as HTMLElement, {
+      title: 'Project',
+      body:
+        'All settings on the project panel are covered by File->Save/Load, ' +
+        'project urls, and the checkpoint system',
+    });
+  }
+
   // FIRST, above the groups it governs. Tweakpane appends, so build order is
   // display order. This panel's tier only -- the other two answer for
   // themselves (`advancedToggle.ts`).

@@ -134,7 +134,6 @@ import {
   randomizeBehavior,
   randomizeSeed,
   rerollIsNoOp,
-  ruleIsGeneratedOnGpu,
   ruleIsSentinel,
   selectionIsNoOp,
   setPopulationLayout,
@@ -1065,7 +1064,17 @@ export class Orchestrator implements CommandBus {
     // recorded, which is true regardless of what the mouse is currently doing.
     const crop = this.cropOverlay;
 
-    if (!(brushing && this.prefs.showReticle)) {
+    // **THE RETICLE IS UNCONDITIONAL WHILE BRUSHING.** `prefs.showReticle` used
+    // to gate this and no longer does: the checkbox that set it was removed
+    // from the Drawing Controls (see that file's table), because turning the
+    // reticle off leaves the brush tools with nothing showing where the stroke
+    // will land or how wide it is -- which is not a preference so much as a way
+    // to break them.
+    //
+    // The FIELD is still read from prefs, and deliberately: `fieldAlwaysShow`
+    // is a real choice between seeing the barriers all the time and seeing them
+    // only while drawing. The reticle has no such second mode.
+    if (!brushing) {
       return { ...NO_OVERLAYS, showField, crop };
     }
     // The brush's VISIBLE extent, which is 2 sigma of its gaussian -- and also
@@ -2001,38 +2010,25 @@ export class Orchestrator implements CommandBus {
       }
 
       case 'randomizeSeed': {
-        // **WITH A GENERATED RULE, THIS IS RANDOMIZE BEHAVIOR** -- not merely
-        // similar to it, the same act. The shader seeds its generator from
-        // `mutationSeed`, so moving the seed regenerates the behaviour outright;
-        // "reroll the mutations" names an operation on an authored rule that is
-        // not there. The two commands collapse to one thing on the backend, so
-        // the honest UI is to stop offering the misleading one: the bar and the
-        // Simulation menu grey Reroll in this state, and `F` becomes a second
-        // key for Randomize Behavior -- which is what the wide Reroll All
-        // Behavior button already implies by naming `F` beside `B`.
+        // **INERT IN BOTH STATES `rerollIsNoOp` NAMES, INCLUDING THE SENTINEL.**
         //
-        // FALLING THROUGH TO THE CASE rather than duplicating its body is the
-        // point: the toast, the undo entry and the reset are then identical by
-        // construction. A copy here would be a second place for "randomize
-        // behavior" to drift from the command that actually means it, and the
-        // undo stack would fill with a step whose label disagreed with what the
-        // key did.
-        if (ruleIsGeneratedOnGpu(this.project)) return this.randomizeBehavior();
-
-        // INERT AT MUTATION SCALE 0, so `F` does nothing there -- matching the
-        // greyed Reroll button on the bar and the greyed Simulation menu row,
-        // which is the point: a key that works while its own on-screen twin is
-        // greyed teaches that the greying is a lie.
+        // This case used to REDIRECT to `randomizeBehavior` under a generated
+        // rule, on the grounds that moving the seed regenerates the behaviour
+        // there anyway -- so the two commands collapse to one act. That is true
+        // of the backend and was the wrong thing to expose: it made `F` mean
+        // "reroll mutations" in one state and "randomize behavior" in another,
+        // while the Reroll button and menu row it belongs to were greyed in the
+        // second. One key doing two jobs depending on invisible state, with its
+        // own on-screen twin disabled, is the confusion this removes.
         //
-        // `mutate_rule` scales both its terms by `amount` (see
-        // `selectionIsNoOp`), so at 0 every cohort obeys the base rule and a new
-        // seed selects a variation that is multiplied away. Pressing on would
-        // move the seed and dirty the document while changing nothing visible.
+        // `B` is now the only key for Randomize Behavior; `F` only ever rerolls
+        // mutations and does nothing when there are none. The bar's wide
+        // `Reroll All Behavior` button is what this state offers instead, and
+        // it names `B` alone.
         //
-        // The sentinel never reaches this line -- it returned above -- so the
-        // exception `rerollIsNoOp` carries is already spent by the time it is
-        // asked. It is still the right predicate: it states the whole condition
-        // in one place, and the UI greys on exactly it.
+        // `rerollIsNoOp` covers BOTH conditions -- the sentinel and mutation
+        // scale 0 -- and is the same predicate the UI greys on, so the key and
+        // the button cannot disagree about whether the action is available.
         if (rerollIsNoOp(this.project)) return;
 
         const before = this.project;

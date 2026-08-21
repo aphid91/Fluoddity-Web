@@ -321,37 +321,43 @@ test('any mutation at all makes a reroll meaningful again', () => {
   assert.equal(rerollIsNoOp(withRule(new Array<number>(80).fill(0.25), 1e-6)), false);
 });
 
-test('rerolling a GENERATED rule is never a no-op, whatever the scale', () => {
-  // THE EXCEPTION THAT SHAPES THE GATE. The GPU seeds its generator from
-  // `mutationSeed`, so a reroll regenerates the behaviour outright -- this is
-  // where `F` matters MOST, and gating it on the scale would break it exactly
-  // there. The bar advertises `F` on Reroll All Behavior for the same reason.
-  assert.equal(rerollIsNoOp(withRule(new Array<number>(80).fill(0), 0)), false);
+test('rerolling a GENERATED rule is a no-op, whatever the scale', () => {
+  // **THIS REVERSES WHAT THE GUARD USED TO SAY, DELIBERATELY.** It returned
+  // false here, and the Orchestrator redirected `randomizeSeed` to
+  // `randomizeBehavior` -- the two do collapse to one act on the backend, since
+  // the GPU seeds its generator from `mutationSeed`.
+  //
+  // The redirect is gone. `B` is the only key that randomizes behavior and `F`
+  // only ever rerolls mutations, so in the one state with no authored rule to
+  // mutate `F` must do nothing rather than quietly perform the other command
+  // while its own on-screen button sits greyed.
+  for (const scale of [0, 0.5]) {
+    assert.equal(
+      rerollIsNoOp(withRule(new Array<number>(80).fill(0), scale)),
+      true,
+      `a generated rule is inert at scale ${String(scale)}`,
+    );
+  }
 });
 
 test('the reroll guard asks the SHADER\'s generate test, not the all-zero one', () => {
-  // The corner case, checked for the reroll as well as the selection: a rule
-  // zero in only the two tested lanes is GENERATED, so `F` must still fire at
-  // scale 0 even though `ruleIsSentinel` would call the rule authored.
-  assert.equal(rerollIsNoOp(withRule(sentinelLanesOnly(), 0)), false);
+  // The corner case still routes through the shader's own predicate rather than
+  // the cautious `ruleIsSentinel`: a rule zero in only the two tested lanes IS
+  // generated, so the reroll is inert there even though `ruleIsSentinel` would
+  // call the rule authored. What changed is the ANSWER, not which question is
+  // asked -- see the test above.
+  assert.equal(rerollIsNoOp(withRule(sentinelLanesOnly(), 0)), true);
 });
 
-test('a generated rule sends the reroll down the randomize-behavior path', () => {
-  // THE REDIRECT'S CONDITION. `Orchestrator` routes `randomizeSeed` to
-  // `randomizeBehavior` whenever `ruleIsGeneratedOnGpu` holds -- the two
-  // genuinely collapse to one act there, since the GPU seeds its generator from
-  // `mutationSeed`. Pinned here because the ORDER matters at the call site: this
-  // is checked BEFORE `rerollIsNoOp`, so a generated rule at scale 0 redirects
-  // rather than returning inert. Swapping the two would silently disable `F` in
-  // the state where it is supposed to become a second Randomize Behavior key.
+test('selection stays live under a generated rule, unlike the reroll', () => {
+  // **THE TWO GUARDS NOW DIFFER, WHICH THEY DID NOT BEFORE.** `rerollIsNoOp`
+  // was `selectionIsNoOp` verbatim; widening it to cover the sentinel would
+  // have broken selection, because under a generated rule each cohort really
+  // does obey a different rule and picking one is a real act. Pinned so the two
+  // cannot be re-merged without a failure.
   for (const scale of [0, 0.5]) {
-    assert.equal(
-      ruleIsGeneratedOnGpu(withRule(new Array<number>(80).fill(0), scale)),
-      true,
-      `a zero rule redirects at scale ${String(scale)}`,
-    );
+    const project = withRule(new Array<number>(80).fill(0), scale);
+    assert.equal(selectionIsNoOp(project), false, `selection is live at ${String(scale)}`);
+    assert.equal(rerollIsNoOp(project), true, `reroll is inert at ${String(scale)}`);
   }
-  // And an authored rule never redirects, whatever the scale -- it takes the
-  // reroll path, or the inert path when the scale is 0.
-  assert.equal(ruleIsGeneratedOnGpu(withRule(new Array<number>(80).fill(0.25), 0)), false);
 });

@@ -48,38 +48,40 @@ const CONTROLS: readonly DrawControl[] = [
     field: 'drawSize',
     label: 'Brush Size',
     params: { min: 0.01, max: 2.5 },
-    help: "The airbrush's radius. Shared by the Draw and Shove tools.",
+    help: 'Determines the radius of the brush reticle',
   },
   {
     field: 'drawPower',
-    label: 'Draw Power',
+    label: 'Brush Power',
     params: { min: 0.1, max: 5.0 },
-    help: 'How hard the brush pushes. Shared by the Draw and Shove tools.',
+    help:
+      'Determines the strength of the position offsets applied by shoving and ' +
+      'drawn barriers',
   },
   {
     field: 'fieldOpacity',
     label: 'Field Opacity',
     params: { min: 0.0, max: 1.0 },
-    help:
-      'How visible the painted field is. The field is otherwise invisible -- ' +
-      'you can only infer it from how particles move -- so this is the one way ' +
-      'to see what you have painted.',
+    help: 'Allows you to see the currently painted barriers',
     advanced: true,
   },
   {
     field: 'fieldAlwaysShow',
     label: 'Always Show Field',
     params: {},
-    help: 'Show the field outside the Draw tool as well.',
+    help: 'Allows you to see the current barriers when not in draw-mode',
     advanced: true,
   },
-  {
-    field: 'showReticle',
-    label: 'Brush Reticle',
-    params: {},
-    help: 'Draw the brush ring around the cursor.',
-    advanced: true,
-  },
+  // **BRUSH RETICLE WAS REMOVED FROM THIS TABLE**, and the `showReticle`
+  // preference no longer has a control anywhere. In practice the reticle is
+  // wanted in every session -- it is the only thing that shows where the brush
+  // will land and how big it is -- so the checkbox was a way to break the brush
+  // tools and nothing else.
+  //
+  // The FIELD survives in `Preferences` rather than being deleted, because a
+  // stored `false` in someone's `localStorage` must not become a parse error on
+  // their next visit (`prefs/preferences.ts` validates against its schema). The
+  // Orchestrator now ignores it -- see `applyCanvasInput`'s reticle branch.
 ];
 
 export function buildDrawingSection(
@@ -129,8 +131,13 @@ export function buildDrawingSection(
 
   // Not undoable, and the button says so: the field is live-only state that
   // never survives a restart either, and History is a timeline of Projects.
-  folder.addButton({ title: 'Clear Field (not undoable)' }).on('click', () => {
+  const clear = folder.addButton({ title: 'Clear Field (not undoable)' });
+  clear.on('click', () => {
     ctx.send({ kind: 'clearStrafeField' });
+  });
+  ctx.tooltip.attach(clear.element as HTMLElement, {
+    title: 'Clear Field',
+    body: 'Remove all currently painted barriers',
   });
 
   return {

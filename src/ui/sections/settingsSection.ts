@@ -46,6 +46,27 @@ export type SettingsTab =
   | typeof DRAWING_TAB
   | typeof RECORDING_TAB;
 
+/**
+ * What each tab is FOR, shown on hovering its button.
+ *
+ * All three make the same point from different angles, and it is the point
+ * `panelModel.ts` splits the screen on: none of this travels with a project.
+ * The Project panel holds what Save, share links and checkpoints capture; these
+ * three hold how your editor is set up, which persists across sessions and is
+ * deliberately untouched by loading someone else's work.
+ */
+const TAB_HELP: Record<SettingsTab, string> = {
+  [PREFS_TAB]:
+    'Editor Settings: automatically tracked between sessions, but not ' +
+    'saved/loaded with projects, share-urls or checkpoints',
+  [DRAWING_TAB]:
+    'Editor settings for shove and barrier brushes. Persistent; not ' +
+    'saved/loaded with projects or checkpoints.',
+  [RECORDING_TAB]:
+    'Editor settings for video recording and export. Persistent; not ' +
+    'saved/loaded with projects or checkpoints.',
+};
+
 /** A settings section, plus the tab control the panel drives. */
 export interface SettingsSectionHandle extends SectionHandle {
   readonly setActiveTab: (tab: SettingsTab) => void;
@@ -122,6 +143,11 @@ export function buildSettingsSection(
     button.type = 'button';
     button.textContent = title;
     button.dataset['tab'] = tab;
+    // ON THE TAB BUTTON, which is the only header these three pages have --
+    // their folder titles are suppressed (`hideFolderTitle`), so this is where
+    // "what is this whole page for" has to live. All three say the same thing
+    // in different words: none of it travels with a project.
+    ctx.tooltip.attach(button, { title, body: TAB_HELP[tab] });
     button.addEventListener('click', () => {
       // A manual choice, and it stands until the next qualifying tool
       // transition. Nothing re-asserts a tab on a timer.
@@ -177,6 +203,12 @@ export function buildSettingsSection(
       // Recording's refresh drives the export button's progress label, which
       // must keep counting while the user reads a different tab.
       recordingSection?.refresh(s, input);
+    },
+    // Forwarded so the window listeners the recording tab registers are
+    // released when this host is torn down. The other two sections have
+    // nothing outside their folders and define no `dispose`.
+    dispose: () => {
+      recordingSection?.dispose?.();
     },
     setActiveTab,
     activeTab: () => active,

@@ -48,6 +48,7 @@ import {
   BAND_TOOLTIP,
   startBand,
 } from '../perf/fpsBand.ts';
+import { Tooltip } from './tooltip.ts';
 
 export interface FpsCounterOptions {
   /**
@@ -95,6 +96,26 @@ export class FpsCounter {
    */
   private visible: boolean | null = null;
 
+  /**
+   * The band this frame, for the tooltip to read at hover time.
+   *
+   * The tooltip's text is per-BAND and the band changes under the user without
+   * the button being rebuilt, so the help is a live source rather than a fixed
+   * string -- see `TooltipSource`. Seeded from `startBand()` in the constructor,
+   * like the readout itself.
+   */
+  private band: Band;
+
+  /**
+   * The counter's help tooltip.
+   *
+   * The same styled element the panels and the menu bar use, replacing the
+   * `title` attribute this button carried. `BAND_TOOLTIP`'s strings are written
+   * as paragraphs, which a native `title` renders as literal blank space in a
+   * single-line strip -- the exact failure `tooltip.ts` exists to fix.
+   */
+  private readonly tooltip = new Tooltip();
+
   constructor(opts: FpsCounterOptions) {
     this.root = document.createElement('button');
     this.root.type = 'button';
@@ -117,7 +138,16 @@ export class FpsCounter {
     // plate for the warmup window -- `update` deliberately refuses to write an
     // empty readout, so nothing else would fill it.
     const initial = startBand();
+    this.band = initial.band;
     this.update(initial.band, initial.readout, true);
+
+    // Attached ONCE, resolved on hover -- so `update`'s per-frame guard does not
+    // have to cover the tooltip, and the text always describes the band the
+    // badge is showing right now.
+    this.tooltip.attach(this.root, () => ({
+      title: 'Frame Rate',
+      body: BAND_TOOLTIP[this.band],
+    }));
 
     (opts.container ?? document.body).append(this.root);
   }
@@ -147,6 +177,13 @@ export class FpsCounter {
     // would look like a rendering fault rather than like "no data".
     if (readout === '') return;
 
+    // OUTSIDE the guard below, because the tooltip reads it at hover time
+    // rather than being written here -- and the guard's key is `band:readout`,
+    // so it would skip a write on any frame where neither changed, which is
+    // exactly the frames where this is already correct. Keeping it above the
+    // early-return is the cheaper way to be sure it never lags.
+    this.band = band;
+
     const key = `${band}:${readout}`;
     if (key === this.shown) return;
     this.shown = key;
@@ -160,8 +197,9 @@ export class FpsCounter {
     // COLOUR IS NEVER THE ONLY SIGNAL. The number differs per band already, and
     // the state is stated in words here for a screen reader and for anyone who
     // cannot distinguish the four fills -- the rule the gear and the cohort
-    // fences already follow in `mutationOverlay.ts`.
-    this.root.title = BAND_TOOLTIP[band];
+    // fences already follow in `mutationOverlay.ts`. The tooltip does NOT
+    // satisfy this: it is a hover affordance and reaches neither, which is why
+    // `aria-label` stays even though `title` went.
     this.root.setAttribute(
       'aria-label',
       `${readout} frames per second — ${BAND_DESCRIPTION[band]}. ` +
@@ -170,6 +208,8 @@ export class FpsCounter {
   }
 
   dispose(): void {
+    // Its element is on `document.body`, not inside `root`.
+    this.tooltip.dispose();
     this.root.remove();
   }
 }

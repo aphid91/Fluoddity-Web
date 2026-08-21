@@ -52,6 +52,8 @@ import { MOUSE_MODES } from '../orchestrator/commands.ts';
 import { ARCHIVE_CATEGORY, CORE_CATEGORY } from '../config/configStore.ts';
 import { localHotkeyLabel } from './hotkeys.ts';
 import { PreviewSession } from './previewSession.ts';
+import { Tooltip } from './tooltip.ts';
+import { MENU_HELP } from './menuHelp.ts';
 
 export interface MenuBarOptions {
   readonly send: (command: Command) => void;
@@ -222,6 +224,22 @@ export class MenuBar {
    */
   private menuCloseTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * The bar's own help tooltip.
+   *
+   * ITS OWN INSTANCE, not the panel's. `Tooltip` is documented as "one per
+   * panel" and holds a single floating element it repositions per hover, so
+   * sharing one between the bar and a panel would be fine mechanically -- but
+   * the bar is constructed before any panel and outlives every rebuild of one,
+   * and taking one as a constructor argument would make the menu depend on a
+   * panel existing.
+   *
+   * Mounted on `document.body`, which is where the default puts it: the bar is
+   * `position:fixed` at the top-left and its dropdowns hang below it, so the
+   * tooltip has to be free to sit outside the menu's own subtree.
+   */
+  private readonly tooltip = new Tooltip();
+
   constructor(opts: MenuBarOptions) {
     this.opts = opts;
 
@@ -312,7 +330,7 @@ export class MenuBar {
       // whether the tab is already up.
       this.addItem(
         body,
-        'Export Video',
+        'Video Export Controls',
         () => this.opts.onToggleExportVideo(),
         '',
         () => this.opts.isExportVideoShown(),
@@ -381,7 +399,15 @@ export class MenuBar {
     // not a view at all, and it now holds the preferences reset -- so the thing
     // these items have in common is the editor, not the camera.
     this.addMenu('Editor', (body) => {
-      this.addItem(body, 'Toggle Camera Mode', () => this.opts.send({ kind: 'toggleCameraMode' }), 'M');
+      // "Toggle Trail-Map View", not "Toggle Camera Mode". The old name
+      // described the IMPLEMENTATION -- the camera has two modes -- and said
+      // nothing about what the user would see. The command is unchanged.
+      this.addItem(
+        body,
+        'Toggle Trail-Map View',
+        () => this.opts.send({ kind: 'toggleCameraMode' }),
+        'M',
+      );
       this.addItem(body, 'Reset View', () => this.opts.send({ kind: 'resetCamera' }), 'Home');
       // Under Reset View because both discard editor state you did not save --
       // and SEPARATED from it, because Reset View is a keystroke you can take
@@ -416,12 +442,14 @@ export class MenuBar {
       //   - Mutation Scale at 0: the seed still moves, but it is multiplied by
       //     zero, so nothing on screen changes.
       //
-      // THE TWO GREYED STATES DIFFER IN WHAT `F` DOES, even though this row
-      // looks the same in both. Under the sentinel the key REDIRECTS to
-      // Randomize Behavior -- the two collapse to one act there -- so it stays
-      // live while this row is greyed. At scale 0 the key really is inert. The
-      // row is greyed either way because it is captioned "Reroll Mutations",
-      // and in neither state does pressing it reroll mutations.
+      // **`F` IS INERT IN BOTH, and that is a deliberate reversal.** The
+      // sentinel case used to REDIRECT `F` to Randomize Behavior, on the
+      // argument that the two collapse to one act there. They do -- but it
+      // meant one key did different things in different states while its
+      // on-screen twin was greyed, which is exactly the confusion the greying
+      // is meant to remove. `B` is now the only key for Randomize Behavior and
+      // `F` only ever rerolls mutations; when this row is greyed, `F` does
+      // nothing. See `hotkeys.ts` and the `randomizeSeed` case.
       //
       // `mutationScale` is readable even with the panels hidden -- the
       // closed-panel payload keeps every config field but `rule` for the
@@ -441,14 +469,16 @@ export class MenuBar {
           },
         },
       );
-      this.addSeparator(body);
-      // NO KEY SHOWN. The arrows used to send these and now step the cohort
-      // highlight instead (`hotkeys.ts`), so advertising `←`/`→` here would
-      // promise a shortcut that does something else entirely -- which is worse
-      // than no shortcut at all, because the user would try it and be surprised
-      // by whatever it did do. Cycling presets is menu-only now.
-      this.addItem(body, 'Previous Preset', () => this.opts.send({ kind: 'prevPreset' }));
-      this.addItem(body, 'Next Preset', () => this.opts.send({ kind: 'nextPreset' }));
+      // PREVIOUS / NEXT PRESET WERE REMOVED HERE. They were the last callers of
+      // the `prevPreset`/`nextPreset` commands, which still exist in the
+      // Orchestrator and in `projectCommands.switchPreset` -- unreferenced, and
+      // deliberately left that way, so re-exposing them is one `addItem` rather
+      // than a re-implementation.
+      //
+      // What replaced them is File > Load, which browses the whole catalog by
+      // name with hover-preview. Stepping blindly through 175 presets two rows
+      // at a time was the worse half of that, and it had already lost its arrow
+      // keys to the cohort stepper (`hotkeys.ts`).
     });
 
     // Last, where a Help menu goes. The title is NOT compared anywhere in
@@ -562,6 +592,13 @@ export class MenuBar {
     const hint = document.createElement('span');
     hint.style.cssText = 'opacity:0.45;margin-left:24px;';
     row.append(text, hint);
+
+    // KEYED ON THE STATIC LABEL, which is the same identity `data-item` carries
+    // -- so a row that renames itself per frame (`Revert to Saved`) keeps one
+    // stable help entry rather than losing it the moment the label changes.
+    // A row with no entry in the table gets nothing: `attach` early-returns on
+    // empty content, so this costs one lookup and adds no listeners.
+    this.tooltip.attach(row, { title: label, body: MENU_HELP[label] ?? '' });
 
     row.addEventListener('click', () => {
       // A greyed row is inert. Without this the click would still fire and be
@@ -1069,6 +1106,10 @@ export class MenuBar {
     // that no longer exists and touch `openMenu` after teardown.
     this.cancelMenuClose();
     for (const close of this.submenuClosers) close();
+    // Its element is on `document.body`, NOT inside `root` -- so removing the
+    // bar would strand it, and a pending show timer would fire against an
+    // anchor that is no longer in the document.
+    this.tooltip.dispose();
     this.root.remove();
   }
 }

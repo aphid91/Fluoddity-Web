@@ -284,9 +284,8 @@ export const SETTINGS: readonly Setting[] = [
     lo: 1,
     hi: 64,
     help:
-      'How many groups the population is divided into. Each cohort gets its ' +
-      'own mutation of the rule, so more cohorts means more distinct ' +
-      'behaviours coexisting.',
+      'How many groups the population is divided into. When mutation Scale > ' +
+      '0, each cohort gets its own mutation of the parent behavior.',
     group: 'Population',
   }),
   setting({
@@ -298,11 +297,9 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0,
     hi: 2,
     help:
-      'What happens when a particle reaches the edge of the world. Bounce ' +
-      'reflects it, Wrap carries it round to the far side, Reset returns it to ' +
-      'its starting position.\n\nA world setting: the trails themselves wrap or ' +
-      'stop at the edge to match, so it cannot differ between particles sharing ' +
-      'a canvas.',
+      'What happens when a particle reaches the edge of the world: Bounce ' +
+      'reflects it, reset returns it to starting position, and wrap carries it ' +
+      'around to the opposite edge.',
     group: 'Population',
     options: DROPDOWN_MODES.boundaryConditions,
   }),
@@ -315,10 +312,9 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0,
     hi: 3,
     help:
-      'How particles are arranged when the simulation resets. Grid and Ring lay ' +
-      'the cohorts out, Random scatters them, Center starts them all in a clump ' +
-      'at the middle.\n\nAlso governs where Hazard Rate respawns particles, and ' +
-      'where Cohort Fences hold them.',
+      'How particles are arranged when the simulation starts: Grid and ring lay ' +
+      'the cohorts out in a regular pattern, Random spreads them evenly, and ' +
+      'Center starts them all in a dense clump in the middle.',
     group: 'Population',
     options: DROPDOWN_MODES.initialConditions,
   }),
@@ -330,15 +326,13 @@ export const SETTINGS: readonly Setting[] = [
     kind: BOOL,
     lo: 0,
     hi: 1,
+    // THE SAME SENTENCE THE BAR BUTTON SHOWS. The two controls edit one field
+    // and the bar's own tooltip states the Grid requirement in a second
+    // paragraph when it applies; here the requirement is already visible as the
+    // greyed-out row, and `requires` below is what greys it.
     help:
-      'Holds each particle near where it started, so cohorts stay distinct ' +
-      'instead of mixing.\n\nThe fence RADIUS is derived, not dialled: it is ' +
-      'always half a grid cell, so neighbouring cohorts just barely touch no ' +
-      'matter how many Cohorts there are. Raising the cohort count tightens ' +
-      'every fence to match.\n\nREQUIRES Initial Conditions: Grid. The radius ' +
-      'is measured from the grid cell, and the other modes have no cell to ' +
-      'measure -- Random scatters cohorts, Center stacks them all in one place, ' +
-      'and Ring spaces them round a circle. The checkbox greys out there.',
+      'Cohort fences: When enabled, particles are forced to stay close to their ' +
+      'initial locations (Grid only).',
     group: 'Population',
     // Grid is IC_GRID, i.e. index 0 of `DROPDOWN_MODES.initialConditions` --
     // spelled as the index because this file imports nothing (see the note on
@@ -355,13 +349,8 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.0,
     hi: 0.01,
     help:
-      'Chance per step that a particle is reset to its initial state. A slow ' +
-      'churn that keeps the population from settling.\n\nThe slider is CUBED, so ' +
-      'most of its travel covers the very small rates where the effect is a slow ' +
-      'churn rather than a constant teardown. This is a per-STEP probability ' +
-      'applied ~1800 times a second at the default Physics Rate, so the usable ' +
-      'range is far smaller than it looks: 0.001 already resets most of the ' +
-      'population within a second.',
+      'Applies a small probability each tick for a particle to "die" and be ' +
+      '"reincarnated" at its initial conditions',
     group: 'Population',
     curve: 3.0,
   }),
@@ -376,9 +365,9 @@ export const SETTINGS: readonly Setting[] = [
     lo: -1.0,
     hi: 1.0,
     help:
-      "The angle, in half-turns, between a particle's heading and each of its " +
-      'two sensors. Small angles look ahead; larger angles sweep wide. Negative ' +
-      'values swap left and right.',
+      "Defines how wide the angle is between a particle's two sensor locations. " +
+      'Values near 0.0 are looking straight ahead, values near 0.5 look to the ' +
+      'left and right, while values near 1.0 look behind.',
     group: 'Sensors',
   }),
   setting({
@@ -389,13 +378,7 @@ export const SETTINGS: readonly Setting[] = [
     kind: GATED,
     lo: 0.0,
     hi: 1.0,
-    help:
-      'Random wobble added to Sensor Angle, redrawn every physics step. A ' +
-      'shimmer rather than a trait: the same particle looks somewhere slightly ' +
-      'different each step, which softens structure into something looser and ' +
-      'more organic.\n\nScaled so 1.0 spans the whole Sensor Angle slider, ' +
-      'meaning the angle is then effectively random and the base value stops ' +
-      'mattering.',
+    help: "Adds random, per-tick variation to each particle's sensor angle",
     group: 'Sensors',
   }),
   // NOTE: the 5.0 upper bound is mirrored in common.wgsl as
@@ -411,8 +394,8 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.0,
     hi: 5.0,
     help:
-      'How far ahead a particle samples the trail field. Short distances produce ' +
-      'tight, detailed structure; long distances produce broad, smooth flows.',
+      "Defines how far away from a particle's center it reads the trail. Higher " +
+      'values tend to result in larger, more global patterns',
     group: 'Sensors',
   }),
   setting({
@@ -424,13 +407,9 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.0,
     hi: 1.0,
     help:
-      'Random wobble added to Sensor Distance, redrawn every physics step -- the ' +
-      'distance counterpart to Sensor Angle Jitter, mixing near and far sampling ' +
-      'instead of near and wide.\n\nScaled so 1.0 spans the whole Sensor Distance ' +
-      'slider. Because that range is offset either way, high values push the ' +
-      'distance NEGATIVE for some steps, which puts the sensors behind the ' +
-      'particle with left and right swapped. That is deliberate: it is a look no ' +
-      'other slider reaches.',
+      "Adds random, per-tick variation to each particle's sensor distance. " +
+      'Distance jitter often produces softer edges and less noticeable ' +
+      'grid-aligned aliasing',
     group: 'Sensors',
   }),
   setting({
@@ -442,8 +421,9 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.0,
     hi: 8.0,
     help:
-      'How strongly particles respond to what they sense. Higher values make ' +
-      'particles more reactive to the trails on the canvas.',
+      'Determines how sensitive each particle is to trail conditions. Set it too ' +
+      'low and particles will travel ~straight, ignoring the trails. Set it too ' +
+      'high and their behavior will become noisy and chaotic',
     group: 'Sensors',
   }),
 
@@ -457,8 +437,8 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.0,
     hi: 1.0,
     help:
-      'Master multiplier on every force a particle applies to itself. Raise for ' +
-      'faster, more violent motion; lower for languid drift.',
+      'Determines the strength with which particles turn quickly, accelerate, ' +
+      'and strafe',
     group: 'Forces',
   }),
   // Stored as `drag`, shown as Momentum: the field is how much velocity CARRIES
@@ -473,8 +453,8 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.0,
     hi: 1.0,
     help:
-      'How much velocity carries over between steps. Low values make particles ' +
-      'turn on a dime; high values give them momentum.',
+      'How much velocity carries over between ticks. At high values, particles ' +
+      'will be able to build up momentum',
     group: 'Forces',
   }),
 
@@ -486,10 +466,7 @@ export const SETTINGS: readonly Setting[] = [
     tier: BASIC,
     source: CONFIG,
     kind: BOOL,
-    help:
-      'Reveals the two gravity sliders.\n\nNot itself a saved setting -- it ' +
-      'simply reads as on whenever either gravity value is non-zero, so a config ' +
-      'that uses gravity opens with these already showing.',
+    help: 'Enables vertical/radial gravity controls',
     group: 'Forces',
     gates: ['gravityStrafe', 'gravityForce'],
   }),
@@ -502,12 +479,7 @@ export const SETTINGS: readonly Setting[] = [
     lo: -1.0,
     hi: 1.0,
     help:
-      'A steady pull on every particle, applied as displacement -- it slides ' +
-      'particles without changing their velocity, so they keep steering as ' +
-      'before while drifting. Positive pulls down.\n\nThe slider is not ' +
-      'proportional to the force: it is expanded logarithmically, so the middle ' +
-      'of the range covers small adjustments and the ends reach far. Dead centre ' +
-      'is exactly zero.',
+      'Applies a fixed offset to particles each frame, shifting them downward',
     group: 'Forces',
     revealsOn: 'Gravity',
   }),
@@ -520,10 +492,7 @@ export const SETTINGS: readonly Setting[] = [
     lo: -1.0,
     hi: 1.0,
     help:
-      'A steady pull on every particle, applied as acceleration -- it feeds ' +
-      'velocity, so particles build up speed and fight their own steering. ' +
-      'Positive pulls down.\n\nLogarithmically expanded like Gravity (Strafe), ' +
-      'with a true zero at centre.',
+      'Applies a fixed force to particles each frame, accelerating them downward',
     group: 'Forces',
     revealsOn: 'Gravity',
   }),
@@ -537,13 +506,8 @@ export const SETTINGS: readonly Setting[] = [
     source: CONFIG,
     kind: BOOL,
     help:
-      'Pull each particle along its own position vector instead of straight down ' +
-      'the screen.\n\nBoth gravity sliders swing together -- positive values fall ' +
-      'inwards towards the centre of the world, negative values blow outwards. ' +
-      'The strength is unchanged; only the direction differs, so a config can be ' +
-      'flipped between a downpour and a collapse without retuning either ' +
-      'slider.\n\nA particle sitting exactly at the centre has no direction to ' +
-      'fall in and is left alone.',
+      'Makes gravity push particles towards the center of the simulation instead ' +
+      'of straight down',
     group: 'Forces',
     revealsOn: 'Gravity',
   }),
@@ -558,9 +522,8 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.5,
     hi: 0.999,
     help:
-      'How much of the trail field survives each step. High values leave ' +
-      'long-lived trails; low values make them evaporate quickly. A world ' +
-      'setting: shared by every particle on the canvas.',
+      'Determines how long particle trails remain detectable. At high values, ' +
+      'trails will spread widely and decay slowly.',
     group: 'Trails',
   }),
 
@@ -577,14 +540,9 @@ export const SETTINGS: readonly Setting[] = [
     lo: -1.0,
     hi: 1.0,
     help:
-      "How strongly each particle's own output swings its hue, in the particle " +
-      'view.\n\nAt 0 every particle is the same colour. Turning it up spreads the ' +
-      'population across the hue wheel by how each particle\'s rule is behaving, ' +
-      'so mutation and cohort structure become visible. Negative simply runs the ' +
-      'hue the other way.\n\nThe signal driving this typically has a spread of ~3, ' +
-      'so hue wraps more than once above about 0.15 and the population starts to ' +
-      'read as static rather than structure. Low values are where the structure ' +
-      'is.\n\nAffects rendering only -- the simulation does not change.',
+      'Determines how sensitive the hue of a particle is to its brain outputs. ' +
+      'At high values particle hue becomes chaotic and regions will become a ' +
+      'random mix of hues: appearing pale/white',
     group: 'Appearance',
   }),
   setting({
@@ -594,10 +552,7 @@ export const SETTINGS: readonly Setting[] = [
     source: CONFIG,
     kind: BOOL,
     help:
-      'Give each cohort one flat colour instead of colouring by what each ' +
-      'particle is doing.\n\nMakes populations legible as groups -- useful with ' +
-      'Cohort Fences, or for seeing how far cohorts have mixed. Color Sensitivity ' +
-      'still scales the spread between them.',
+      'Assign each cohort a unique color instead of basing hue on brain outputs',
     group: 'Appearance',
   }),
 
@@ -613,7 +568,9 @@ export const SETTINGS: readonly Setting[] = [
     kind: SLIDER,
     lo: -2.0,
     hi: 2.0,
-    help: "Scales the forward/backward component of a particle's response.",
+    help:
+      'Determines the relative strength of acceleration/braking forces and ' +
+      'forward/backward strafing',
     group: 'Advanced',
   }),
   setting({
@@ -625,8 +582,7 @@ export const SETTINGS: readonly Setting[] = [
     lo: -2.0,
     hi: 2.0,
     help:
-      "Scales the left/right component of a particle's response. Negative values " +
-      'invert the turn direction.',
+      'Determines the relative strength of turning forces and left-right strafing',
     group: 'Advanced',
   }),
   setting({
@@ -638,8 +594,8 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.0,
     hi: 0.5,
     help:
-      'Strength of sideways displacement that moves a particle without changing ' +
-      'its velocity -- a sidestep rather than a push.',
+      'Determines the relative strength of particle strafe, which directly ' +
+      'shifts particle positions, bypassing momentum',
     group: 'Advanced',
   }),
   // Stored as `trailDiffusion` but shown INVERTED, as stiffness: 0.0 is full
@@ -656,10 +612,9 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.0,
     hi: 1.0,
     help:
-      'How much the trail field RESISTS spreading outward. 1.0 holds trails ' +
-      'exactly where they were laid; lower values let them bleed, and 0.0 is ' +
-      'full-rate diffusion that blurs them into soft washes. A world setting, ' +
-      'shared by all particles.',
+      'Allows you to slow or stop the pace at which particle trails spread ' +
+      'through the environment. At stiffness 1.0, trails do not diffuse at all, ' +
+      'and simply decay over time.',
     group: 'Advanced',
     inverted: true,
     gateBase: 1.0,
@@ -675,9 +630,8 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.05,
     hi: 4.0,
     help:
-      'Scales the particle count and canvas resolution together. Changing this ' +
-      'rebuilds and resets the simulation, so it is typed and committed with ' +
-      'Enter rather than dragged.',
+      '(Expensive) Determines the particle count and resolution of the trail ' +
+      'map. Overall density -- Particles/Trail pixel -- is kept constant.',
     disruptive: true,
     group: 'Simulation',
   }),
@@ -689,10 +643,7 @@ export const SETTINGS: readonly Setting[] = [
     kind: INPUT,
     lo: 0.1,
     hi: 10.0,
-    help:
-      'Canvas width divided by height. Reshapes the simulated world (area is ' +
-      'preserved). Rebuilds and resets the simulation, so it is typed and ' +
-      'committed with Enter.',
+    help: 'Determines Width/Height ratio of simulation area.',
     disruptive: true,
     group: 'Simulation',
   }),
@@ -705,8 +656,8 @@ export const SETTINGS: readonly Setting[] = [
     lo: 1,
     hi: 60,
     help:
-      'Simulation sub-steps per rendered frame. Higher runs the simulation ' +
-      'faster in wall-clock terms, at proportional GPU cost.',
+      '(Expensive) Determines how many physics substeps are performed per ' +
+      'frame. Higher values run the simulation faster.',
     group: 'Simulation',
   }),
 
@@ -719,9 +670,7 @@ export const SETTINGS: readonly Setting[] = [
     kind: SLIDER,
     lo: 0.1,
     hi: 4.0,
-    help:
-      'Output brightness of the display. A view setting only -- it does not ' +
-      'affect the simulation and is not saved with a config.',
+    help: 'Determines overall intensity of each particle',
     group: 'Display',
   }),
   setting({
@@ -733,9 +682,8 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.1,
     hi: 5.0,
     help:
-      'How hard the highlights are compressed.\n\nLow is more linear: highlights ' +
-      'stay bright and can blow out. High is more logarithmic: it pulls faint ' +
-      'detail up out of the dark at the cost of flattening the brightest regions.',
+      'Determines how aggressively the bright highlights are dimmed. High values ' +
+      'have reduced contrast between bright and dim regions.',
     group: 'Display',
   }),
 
@@ -750,14 +698,8 @@ export const SETTINGS: readonly Setting[] = [
     lo: 1,
     hi: 16,
     help:
-      'Renders each frame several times across the simulation\'s advance and ' +
-      'averages the result, so fast movement smears instead of stepping. The ' +
-      'slider is how many samples to average, and costs one full render ' +
-      'each.\n\nA TARGET, not a promise: samples must fall a whole number of ' +
-      'physics steps apart, so the count achieved is this one when it divides ' +
-      'Physics Rate and the nearest reachable value otherwise. Raising Physics ' +
-      'Rate gives it more room to hit the number asked for. Overall brightness ' +
-      'does not change either way.',
+      '(Expensive) Renders multiple images at different substeps and blends them ' +
+      'together. Results in a smoother, less noisy image',
     group: 'Display',
     gateBase: 1.0,
   }),
@@ -793,7 +735,7 @@ export const SETTINGS: readonly Setting[] = [
     tier: BASIC,
     source: PREFS,
     kind: BOOL,
-    help: 'Glow around bright areas.',
+    help: 'Adds a glowing halo effect to over-bright regions',
     group: 'Display',
   }),
   setting({
@@ -804,9 +746,7 @@ export const SETTINGS: readonly Setting[] = [
     kind: SLIDER,
     lo: 0.0,
     hi: 2.0,
-    help:
-      'Brightness cutoff for what glows. Lower spreads the glow to more of the ' +
-      'image; higher confines it to the brightest regions.',
+    help: 'Determines the brightness above which bloom is applied',
     group: 'Display',
     revealsOn: 'bloomEnabled',
   }),
@@ -818,7 +758,7 @@ export const SETTINGS: readonly Setting[] = [
     kind: SLIDER,
     lo: 0.0,
     hi: 1.0,
-    help: 'Strength of the glow.',
+    help: 'Determines the strength of the bloom effect',
     group: 'Display',
     revealsOn: 'bloomEnabled',
   }),
@@ -830,7 +770,7 @@ export const SETTINGS: readonly Setting[] = [
     kind: SLIDER,
     lo: 0.1,
     hi: 1.0,
-    help: 'Spread of the blur kernel -- how far the glow reaches.',
+    help: 'Determines the size of the bloom halo',
     group: 'Display',
     revealsOn: 'bloomEnabled',
   }),
@@ -845,13 +785,7 @@ export const SETTINGS: readonly Setting[] = [
     tier: ADVANCED,
     source: PREFS,
     kind: BOOL,
-    help:
-      'Restart the simulation whenever the particles are given a new target ' +
-      'behavior -- selecting a particle, Reroll Mutations, Reroll All Behavior, ' +
-      'and undoing or redoing any of those.\n\nOn, a new behavior starts from ' +
-      'fresh initial conditions, so what you see is that behavior alone. Off, it ' +
-      'has to take over the structure the previous behavior already built, which ' +
-      'is worth watching but makes the two hard to tell apart.',
+    help: 'Resets the simulation whenever particles are given new behaviors',
     group: 'Behavior',
   }),
   setting({
@@ -861,13 +795,8 @@ export const SETTINGS: readonly Setting[] = [
     source: PREFS,
     kind: BOOL,
     help:
-      'Adopt a particle behavior on the first click, with no confirmation ' +
-      'step.\n\nNormally clicking a particle highlights its cohort and a second ' +
-      'click inside that cohort adopts it, so you always see which particles ' +
-      'you are about to retarget. With this on, the first click adopts ' +
-      'immediately and cohort highlighting is switched off.\n\nHighlighting is ' +
-      'also off automatically whenever there is only one cohort, since there is ' +
-      'nothing to choose between.',
+      'Allow a single click to bypass cohort selection and generate children ' +
+      'immediately',
     group: 'Behavior',
   }),
 ];

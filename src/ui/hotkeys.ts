@@ -101,6 +101,13 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   // --- transport, unchanged from the desktop -------------------------------
   { code: 'Space', command: { kind: 'togglePause' } },
   { code: 'KeyR', command: { kind: 'reset' } },
+  // **ONE KEY, ONE COMMAND.** `F` reaches `randomizeSeed` and nothing else.
+  // The Orchestrator used to redirect it to `randomizeBehavior` whenever the
+  // rule was the all-zero sentinel, which made `F` a second key for `B` in a
+  // state the user could not see -- while the Reroll button and menu row that
+  // `F` belongs to were greyed. That redirect is gone: `F` is now inert
+  // wherever Reroll is greyed (`rerollIsNoOp`), and `B` is the only key that
+  // randomizes behavior. See the `randomizeSeed` case in `orchestrator.ts`.
   { code: 'KeyF', command: { kind: 'randomizeSeed' } },
   { code: 'KeyB', command: { kind: 'randomizeBehavior' } },
 
