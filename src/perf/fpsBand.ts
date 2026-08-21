@@ -230,14 +230,34 @@ export function startBand(): BandState {
  * `now` is injected rather than read from `performance` so the dwell is testable
  * without waiting on a real clock.
  */
-export function stepBand(state: BandState, fps: number, now: number): BandState {
+export function stepBand(
+  state: BandState,
+  fps: number,
+  now: number,
+  /**
+   * Adopt a new band the instant it clears the margin, skipping the dwell.
+   *
+   * **FOR WHILE THE USER IS DRAGGING A PERFORMANCE SLIDER.** The dwell exists so
+   * the colour does not flicker in the corner of the eye while someone is
+   * watching the artwork -- but during a drag on Physics Rate or Motion Blur
+   * they are looking straight at the control and asking what it costs, and a
+   * colour that lags a quarter second behind the handle answers for where the
+   * slider was rather than where it is. `ui/perfLabels.ts`'s `watchPerfDrag`
+   * decides when this holds.
+   *
+   * The MARGIN still applies. Only the dwell is skipped: a reading must still
+   * clear the band edge by `MARGIN_FPS` to count, so this makes the colour
+   * prompt without making it jittery at a boundary.
+   */
+  immediate = false,
+): BandState {
   // NOTHING MEASURED THIS FRAME -- see `fpsFrom`. Hold everything: a comparison
   // against NaN is false in both directions, so letting one through would
   // silently take whichever branch happened to be the `else`.
   if (!Number.isFinite(fps)) return state;
 
   const target = bandFor(fps);
-  const next = advanceBand(state, target, fps, now);
+  const next = advanceBand(state, target, fps, now, immediate);
 
   // **THE NUMBER IS WRITTEN ON EVERY CALL.** `advanceBand` only touches the
   // readout when it actually adopts a new band, which is not often enough --
@@ -261,6 +281,7 @@ function advanceBand(
   target: Band,
   fps: number,
   now: number,
+  immediate: boolean,
 ): BandState {
   // Already in the target band: cancel any pending change and leave the colour
   // alone. The readout is the caller's business.
@@ -273,19 +294,25 @@ function advanceBand(
   // Not yet clear of the current band by the margin: treat it as noise. Which
   // direction the margin applies in depends on which way we are moving, so it is
   // measured against the CURRENT band's own edges rather than the target's.
+  //
+  // **CHECKED EVEN WHEN `immediate`.** The margin is what stops a reading parked
+  // on a band edge from oscillating; skipping it during a drag would trade a
+  // lagging colour for a strobing one, which is worse in exactly the moment the
+  // user is watching most closely.
   if (!clearsMargin(state.band, fps)) {
     return state.pending === null
       ? state
       : Object.freeze({ ...state, pending: null, pendingSince: 0 });
   }
 
-  // A new candidate: start its clock.
-  if (state.pending !== target) {
+  // A new candidate. During a drag it is adopted on the spot; otherwise its
+  // clock starts and the dwell decides.
+  if (!immediate && state.pending !== target) {
     return Object.freeze({ ...state, pending: target, pendingSince: now });
   }
 
   // The same candidate as last time -- has it held long enough?
-  if (now - state.pendingSince < DWELL_MS) return state;
+  if (!immediate && now - state.pendingSince < DWELL_MS) return state;
 
   return Object.freeze({
     band: target,

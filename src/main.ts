@@ -448,9 +448,44 @@ async function start(): Promise<void> {
     }
   };
 
+  /**
+   * A shorter window, used while a performance slider is being dragged.
+   *
+   * **THE DWELL IS NOT THE ONLY THING THAT LAGS.** Suspending the colour's
+   * debounce during a drag buys nothing on its own, because the value FEEDING it
+   * is still a mean over 250 ms of history -- half of which predates the handle's
+   * current position. The colour would become prompt about a number that was
+   * itself a quarter second stale.
+   *
+   * So the read window shrinks too. 80 ms is ~5 frames at 60 fps: enough to
+   * average out single-frame noise, short enough that the mean is describing
+   * where the slider is now. Outside a drag the longer window is right, because
+   * there steadiness matters more than latency.
+   *
+   * Only the READ is affected; `pushFrameSample` still records the full 250 ms,
+   * so releasing the slider restores the steadier reading immediately rather
+   * than having to refill.
+   */
+  const FPS_DRAG_WINDOW_MS = 80;
+
   /** Mean frame interval across the window, or 0 when there is nothing to report. */
-  const windowFrameMs = (): number => {
+  const windowFrameMs = (spanMs: number = FPS_WINDOW_MS): number => {
     if (fpsWindow.length === 0) return 0;
+    if (spanMs < FPS_WINDOW_MS) {
+      const cutoff = fpsWindow[fpsWindow.length - 1]!.at - spanMs;
+      let total = 0;
+      let count = 0;
+      // Backwards from the newest: the samples wanted are the tail, and stopping
+      // at the first one outside the span avoids walking history that cannot
+      // contribute.
+      for (let i = fpsWindow.length - 1; i >= 0; i--) {
+        const sample = fpsWindow[i]!;
+        if (sample.at < cutoff) break;
+        total += sample.ms;
+        count++;
+      }
+      if (count > 0) return total / count;
+    }
     let total = 0;
     for (const sample of fpsWindow) total += sample.ms;
     return total / fpsWindow.length;
@@ -570,7 +605,16 @@ async function start(): Promise<void> {
     const recording = recorder !== null;
 
     if (!recording && !frameStatus.paused) {
-      band = stepBand(band, fpsFrom(windowFrameMs()), now);
+      // The dwell is suspended while a performance slider is under the pointer:
+      // there the user is looking at the control rather than at the artwork, and
+      // a lagging colour answers for where the handle WAS. See `watchPerfDrag`.
+      const adjusting = panel?.adjustingPerformance ?? false;
+      band = stepBand(
+        band,
+        fpsFrom(windowFrameMs(adjusting ? FPS_DRAG_WINDOW_MS : FPS_WINDOW_MS)),
+        now,
+        adjusting,
+      );
     }
 
     // AFTER the frame, so the panel shows what the simulation actually holds --

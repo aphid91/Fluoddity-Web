@@ -102,6 +102,45 @@ test('a transient spike is discarded rather than starting the clock over', () =>
   assert.equal(state.band, RED);
 });
 
+test('the immediate flag adopts a new band with no dwell at all', () => {
+  // While a performance slider is under the pointer the user is looking at the
+  // control, not the artwork, and a quarter-second lag answers for where the
+  // handle WAS. One reading is enough there.
+  let state = startBand();
+  state = stepBand(state, 20, 0, true);
+  assert.equal(state.band, RED, 'adopted on the first reading, no dwell');
+  assert.equal(state.readout, '20');
+});
+
+test('the immediate flag still respects the margin', () => {
+  // Skipping the dwell must not also skip the hysteresis -- that would trade a
+  // lagging colour for a strobing one, in the moment the user is watching most
+  // closely. Settle into green, then offer a reading just past its edge.
+  let state = stepBand(startBand(), 54, 0);
+  state = stepBand(state, 54, 300);
+  assert.equal(state.band, GREEN);
+
+  // 49.9 is over the yellow line but inside the 3 fps margin.
+  state = stepBand(state, 49.9, 400, true);
+  assert.equal(state.band, GREEN, 'inside the margin, so still noise');
+
+  // Well clear of it, and now the drag adopts at once.
+  state = stepBand(state, 44, 420, true);
+  assert.equal(state.band, YELLOW);
+});
+
+test('releasing the slider restores the dwell', () => {
+  // The flag is per-call, so dropping it must put the debounce straight back.
+  let state = stepBand(startBand(), 20, 0, true);
+  assert.equal(state.band, RED);
+
+  // Back to a fast reading with no flag: the colour waits again.
+  state = stepBand(state, 60, 10, false);
+  assert.equal(state.band, RED, 'debounced once more');
+  state = stepBand(state, 60, 300, false);
+  assert.equal(state.band, BLUE);
+});
+
 test('the dwell is short enough to feel immediate', () => {
   // A quarter second: the colour should answer while a hand is still on the
   // slider that caused the change. Pinned as a property rather than as the

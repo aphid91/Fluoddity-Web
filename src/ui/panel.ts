@@ -65,7 +65,7 @@ import { MenuBar } from './menuBar.ts';
 import { MutationOverlay } from './mutationOverlay.ts';
 import { RecordingBar } from './recordingBar.ts';
 import { FpsCounter } from './fpsCounter.ts';
-import { paintPerfLabels } from './perfLabels.ts';
+import { paintPerfLabels, watchPerfDrag } from './perfLabels.ts';
 import { type Band, INITIAL_BAND } from '../perf/fpsBand.ts';
 import { Splash } from './splash.ts';
 import { isGated } from './gating.ts';
@@ -361,6 +361,22 @@ export class Panel {
   private labelsShown: string | null = null;
 
   /**
+   * Whether a performance slider is under the pointer right now.
+   *
+   * Read by `main.ts` each frame and handed to `stepBand` as its `immediate`
+   * flag, which suspends the colour's dwell for the duration -- see
+   * `watchPerfDrag` for why that inversion is right.
+   *
+   * Lives on the panel because the panel owns the container the listener is
+   * delegated to, and because it is a fact about the UI rather than about the
+   * simulation -- the same reasoning that keeps `hiddenFlag` off `Status`.
+   */
+  private draggingPerfSlider = false;
+
+  /** Teardown for the perf-slider drag watcher. See `watchPerfDrag`. */
+  private readonly perfDragRelease: () => void;
+
+  /**
    * The welcome splash, shown once at startup and again from Help.
    *
    * Owned here for the same reason the dialogs are: it is reachable from the
@@ -582,6 +598,14 @@ export class Panel {
       bindFocusRelease(this.left.container),
       bindFocusRelease(this.right.container),
     ];
+
+    // The RIGHT container only: both performance sliders are `PREFS` fields and
+    // so live in the Preferences tab. Bound to the container rather than to the
+    // blades for the reason the focus releasers above are -- it outlives every
+    // rebuild, and a per-blade listener would be discarded by the next one.
+    this.perfDragRelease = watchPerfDrag(this.right.container, (dragging) => {
+      this.draggingPerfSlider = dragging;
+    });
 
     this.buildBoth();
 
@@ -947,7 +971,7 @@ export class Panel {
     if (this.settings !== null) this.activeTab = this.settings.activeTab();
 
     this.applyVisibility(status);
-    this.paintLabels(status);
+    this.paintLabels();
   }
 
   /**
@@ -964,19 +988,23 @@ export class Panel {
    * applying until the band happened to change. Clearing the memory alongside
    * the elements it describes is what keeps the two in step.
    *
-   * Follows the preference: turning the counter off clears the tint too, since
-   * a colour with no badge to explain it is a mystery rather than a signal.
+   * **DOES NOT FOLLOW THE `showFpsCounter` PREFERENCE**, and that reverses an
+   * earlier decision. The argument for following it was that a colour with no
+   * badge to explain it is a mystery -- but the tint is not only an echo of the
+   * badge. It is the one thing on screen that says WHICH THREE SETTINGS decide
+   * performance, and that is worth knowing whether or not someone wants a
+   * frame-rate readout in the corner of their artwork. Turning the counter off
+   * is a statement about the badge, not a request to stop marking these three.
    */
-  private paintLabels(status: Status): void {
-    const enabled = status.showFpsCounter;
-    const key = `${this.band}:${String(enabled)}`;
+  private paintLabels(): void {
+    const key = this.band;
     if (key === this.labelsShown) return;
     this.labelsShown = key;
 
     // The right panel only: all three settings are `PREFS` fields and so live in
     // the Preferences tab. Searching the left panel too would be three more
     // queries per repaint that can never match.
-    paintPerfLabels(this.right.container, this.band, enabled);
+    paintPerfLabels(this.right.container, this.band);
   }
 
   /**
@@ -1044,6 +1072,16 @@ export class Panel {
   /** Whether `X` has hidden the panel. The port of `ui.py`'s `gui_hidden`. */
   get hidden(): boolean {
     return this.hiddenFlag;
+  }
+
+  /**
+   * Whether a performance slider is being dragged this instant.
+   *
+   * `main.ts` passes this to `stepBand` as its `immediate` flag. See
+   * `draggingPerfSlider`.
+   */
+  get adjustingPerformance(): boolean {
+    return this.draggingPerfSlider;
   }
 
   /**
@@ -1516,6 +1554,7 @@ export class Panel {
 
   dispose(): void {
     for (const release of this.focusReleasers) release();
+    this.perfDragRelease();
     this.left.pane.dispose();
     this.right.pane.dispose();
     this.tooltip.dispose();
