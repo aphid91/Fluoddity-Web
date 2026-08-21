@@ -84,5 +84,7 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
     // changing it is a gratuitous divergence in a step verified by eye.
     let color = CANVAS_GAIN * hsv2rgb(vec3f(atan2(canv.y, canv.x) / 3.1415 / 2.0,
                                             0.75, length(canv.xy)));
+     //This term is an (unused) emboss style effect: 
+     //+ dot(normalize(vec3f(1.,.05,1.)),normalize(vec3f(canv.x,.05,canv.y)));
     return vec4f(color, 1.0);
 }
