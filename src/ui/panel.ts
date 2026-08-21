@@ -67,11 +67,12 @@ import { RecordingBar } from './recordingBar.ts';
 import { FpsCounter } from './fpsCounter.ts';
 import { paintPerfLabels, watchPerfDrag } from './perfLabels.ts';
 import { type Band, INITIAL_BAND } from '../perf/fpsBand.ts';
+import { AutoCalibration } from '../perf/autoCalibrate.ts';
 import { Splash } from './splash.ts';
 import { isGated } from './gating.ts';
 import { type InputState, EMPTY_INPUT } from './inputState.ts';
 import { gateOpen, isRevealed } from './reveal.ts';
-import type { Source } from './settingsSpec.ts';
+import { type Source, PREFS, settingFor } from './settingsSpec.ts';
 import {
   DEBUG,
   DRAWING,
@@ -383,6 +384,26 @@ export class Panel {
 
   /** Teardown for the perf-slider drag watcher. See `watchPerfDrag`. */
   private readonly perfDragRelease: () => void;
+
+  /**
+   * The Physics Rate auto-calibration in flight, or null.
+   *
+   * Held here for the recorder's reasons: the panel owns the button that starts
+   * it and the label that reports it, while `main.ts` owns the frame loop that
+   * drives it. `feedCalibration` is the seam -- see `PanelOptions.onCalibrateRate`.
+   */
+  private rateCalibration: AutoCalibration | null = null;
+
+  /**
+   * Whether this calibration was the thing that unpaused the simulation.
+   *
+   * The run needs frames to measure, so a paused simulation has to be resumed --
+   * but only a pause THIS started may be undone at the end. Someone who paused
+   * deliberately and then pressed calibrate should be handed their pause back;
+   * someone who was already running should not be paused when it finishes. Same
+   * shape, and same reasoning, as `pausedBySplash` above.
+   */
+  private unpausedByCalibration = false;
 
   /**
    * The welcome splash, shown once at startup and again from Help.
@@ -754,6 +775,11 @@ export class Panel {
           this.rebuild();
         });
       },
+      // RIGHT ONLY: Physics Rate is a `PREFS` field, so its button can only be
+      // built in the Preferences tab. Omitting it for the left panel means the
+      // Project section cannot accidentally grow a calibrate button by reading a
+      // context member that was never meant for it.
+      ...(which === RIGHT ? { calibrateRate: this.calibrateRateContext() } : {}),
     };
   }
 
@@ -934,6 +960,114 @@ export class Panel {
     this.lastMouseMode = mode;
     if (was === now) return; // A move within a group. Leave the tab alone.
     this.setActiveTab(now ? DRAWING_TAB : PREFS_TAB);
+  }
+
+  // =========================================================================
+  // Physics Rate auto-calibration
+  // =========================================================================
+
+  /**
+   * Begin a calibration run, unpausing first if it has to.
+   *
+   * **THE SIMULATION MUST BE RUNNING TO BE MEASURED**, and a paused frame is
+   * deliberately not one this app measures -- `frame()` skips `runFrame` and
+   * re-renders a still, so every probe would report an idle loop and the search
+   * would drive the rate to the ceiling. Pressing the button is an unambiguous
+   * request to find out what the machine can do, so resuming is implied by it.
+   *
+   * Reads the state first and only toggles when it must, the same shape
+   * `startExport` and the splash both use: the bus offers `togglePause` and no
+   * absolute setter, so a blind toggle would pause a running simulation.
+   */
+  private startRateCalibration(): void {
+    if (this.rateCalibration !== null) return;
+
+    const setting = settingFor(PREFS, 'physicsSteps');
+    if (setting === null) return; // A renamed field: no button rather than a crash.
+
+    const status = this.bus.status();
+    this.unpausedByCalibration = status.paused;
+    if (status.paused) this.bus.dispatch({ kind: 'togglePause' });
+
+    const current = status.editPrefs['physicsSteps'];
+    this.rateCalibration = new AutoCalibration({
+      lo: setting.lo,
+      hi: setting.hi,
+      startRate: typeof current === 'number' ? current : setting.lo,
+      // Straight through `editSetting`, exactly as dragging the slider does, so
+      // the value persists and the panel's own binding follows it on the next
+      // refresh. Nothing about this path is special-cased.
+      setRate: (rate) => {
+        this.bus.dispatch({ kind: 'editSetting', setting, value: rate });
+      },
+    });
+  }
+
+  /**
+   * Stop a run early, putting the rate back where it started.
+   *
+   * See `AutoCalibration.cancel` for why abandoning restores rather than
+   * commits. The pause is restored here for the same reason it is on the normal
+   * finish -- the user's pause outlives our need for frames.
+   */
+  private cancelRateCalibration(): void {
+    if (this.rateCalibration === null) return;
+    this.rateCalibration.cancel();
+    this.finishRateCalibration();
+  }
+
+  /** Common teardown: drop the run and hand back a pause we took. */
+  private finishRateCalibration(): void {
+    this.rateCalibration = null;
+    if (!this.unpausedByCalibration) return;
+    this.unpausedByCalibration = false;
+    // Re-read rather than trusting the flag: pausing stays reachable throughout
+    // (the menu bar and Space both work), so the simulation may already be where
+    // we want it.
+    if (!this.bus.status().paused) this.bus.dispatch({ kind: 'togglePause' });
+  }
+
+  /**
+   * Offer one frame to a run in flight. Called every frame by `main.ts`.
+   *
+   * Takes the interval the FPS counter already measures rather than timing
+   * anything itself -- one clock, one set of frames, and no second rAF loop
+   * racing the real one.
+   */
+  feedCalibration(frameMs: number): void {
+    const run = this.rateCalibration;
+    if (run === null) return;
+    run.onFrame(frameMs);
+    if (!run.finished) return;
+
+    const rate = run.result;
+    this.finishRateCalibration();
+    if (rate !== null) {
+      this.toast.show(`Physics Rate calibrated to ${String(rate)} for this project.`);
+    }
+  }
+
+  /** What the calibrate button says right now. */
+  private rateCalibrationLabel(): string {
+    const run = this.rateCalibration;
+    if (run === null) return 'Auto-calibrate Physics Rate';
+    // Naming the rate being probed is what makes the wait legible: the slider is
+    // visibly jumping, and this says why.
+    return `Calibrating… ${String(run.probingRate)} (click to stop)`;
+  }
+
+  /** What the Preferences section is handed. See `SectionContext.calibrateRate`. */
+  private calibrateRateContext(): NonNullable<SectionContext['calibrateRate']> {
+    return {
+      start: () => {
+        this.startRateCalibration();
+      },
+      cancel: () => {
+        this.cancelRateCalibration();
+      },
+      label: () => this.rateCalibrationLabel(),
+      running: () => this.rateCalibration !== null,
+    };
   }
 
   /**
@@ -1579,6 +1713,11 @@ export class Panel {
   }
 
   dispose(): void {
+    // BEFORE the rest: a run in flight has moved the physics rate away from
+    // where the user left it, and cancelling is what puts it back. Disposing the
+    // panel around it would strand them at whatever the last probe happened to
+    // set.
+    this.cancelRateCalibration();
     for (const release of this.focusReleasers) release();
     this.perfDragRelease();
     // Sections first, for the reason `buildPane` gives: what they hold outside

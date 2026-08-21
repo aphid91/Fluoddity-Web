@@ -615,6 +615,16 @@ async function start(): Promise<void> {
         now,
         adjusting,
       );
+
+      // **THE RAW INTERVAL, NOT THE SMOOTHED ONE.** The calibration keeps its own
+      // per-probe average over a known number of frames, and feeding it a value
+      // that already carries history from the PREVIOUS probe's rate would blend
+      // two workloads into one measurement -- exactly the error the settle
+      // frames exist to avoid. It wants frames, not an average.
+      //
+      // Same gate as the badge: a paused or recording frame measures something
+      // other than the simulation, and a probe built from those is worthless.
+      panel?.feedCalibration(elapsed);
     }
 
     // AFTER the frame, so the panel shows what the simulation actually holds --

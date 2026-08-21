@@ -53,6 +53,28 @@ export interface SectionContext extends ControlContext {
   readonly advancedFor: (field: ViewPrefField) => boolean;
   /** Ask the panel to rebuild itself. Used by the tier toggles. */
   readonly requestRebuild: () => void;
+  /**
+   * Auto-calibrate Physics Rate, and report on a run in flight.
+   *
+   * Supplied by the panel rather than reached for, the same shape as
+   * `PanelOptions.recording`: the run has to be driven from the FRAME LOOP -- it
+   * measures real frames as they arrive -- and a section has no access to that.
+   * `main.ts` owns the loop, the panel owns the button, and this is the seam.
+   *
+   * Absent where there is nothing to drive (the DOM tests, which build a panel
+   * with no frame loop behind it), in which case the button is not built at all
+   * rather than built and inert.
+   */
+  readonly calibrateRate?: {
+    /** Begin a run. No-op if one is already going. */
+    readonly start: () => void;
+    /** Abandon a run, restoring the rate it started from. */
+    readonly cancel: () => void;
+    /** The label for the button right now -- see `Panel.rateCalibrationLabel`. */
+    readonly label: () => string;
+    /** Whether a run is in flight, so the button can offer to cancel. */
+    readonly running: () => boolean;
+  };
 }
 
 /** One built section. */

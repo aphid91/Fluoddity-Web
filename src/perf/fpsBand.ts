@@ -41,30 +41,29 @@
  * that is right is worth more than one that is precise and wrong.
  */
 
-/** The four bands, coldest to hottest. The order IS the severity ranking. */
+/** The three bands, coldest to hottest. The order IS the severity ranking. */
 export const RED = 'red';
 export const YELLOW = 'yellow';
 export const GREEN = 'green';
-export const BLUE = 'blue';
 
-export type Band = typeof RED | typeof YELLOW | typeof GREEN | typeof BLUE;
+export type Band = typeof RED | typeof YELLOW | typeof GREEN;
 
 /**
  * Band edges in measured-fps space.
  *
- * `<35` red, `35..50` yellow, `50..58` green, `58+` blue. Stated as the LOWER
- * bound of each band so `bandFor` is a single descending walk and the gaps
- * between the ranges cannot become unhandled cases.
+ * `<35` red, `35..50` yellow, `50+` green. Stated as the LOWER bound of each
+ * band so `bandFor` is a single descending walk and the gaps between the ranges
+ * cannot become unhandled cases.
  *
- * **BLUE IS NOW THE TOP OF THE SCALE RATHER THAN BEYOND IT.** It used to mean
- * "measurably more headroom than 60 fps needs", which required knowing GPU cost
- * independently of the frame rate -- see the file header for why that
- * measurement was withdrawn. It now means "holding the frame rate", which is the
- * most this dial can honestly report, and green has become the band just below
- * it rather than the target.
+ * **THERE IS NO BLUE ANY MORE, and green runs to the top.** Blue originally
+ * meant "measurably more headroom than 60 fps needs", which required timing the
+ * GPU independently of the frame rate -- see the file header for why that
+ * measurement was withdrawn. What was left was a band meaning "holding the frame
+ * rate" sitting directly above one meaning "nearly holding it", which is a
+ * distinction without a difference to anyone reading a badge: both say the app
+ * is fine. Green now covers everything from 50 up.
  */
 const BAND_FLOOR: readonly (readonly [Band, number])[] = Object.freeze([
-  [BLUE, 58],
   [GREEN, 50],
   [YELLOW, 35],
   [RED, 0],
@@ -188,17 +187,16 @@ const DWELL_MS = 250;
 /**
  * The band a fresh counter starts in.
  *
- * **BLUE, and it must agree with `INITIAL_READOUT`.** Nothing has been measured
+ * **GREEN, and it must agree with `INITIAL_FPS`.** Nothing has been measured
  * when the badge first paints, so the opening state is a guess -- and the
  * optimistic guess is the right one: a red badge claiming the GPU is struggling,
  * before anything has been timed, is a false alarm on the one impression that
  * matters most.
  *
- * It was GREEN while green was the target band. Now that blue means "holding the
- * frame rate" and 60 falls in it, a green badge reading "60" would contradict
- * itself on the first frame.
+ * Green is the top band now, so it is both the optimistic guess and the band the
+ * initial "60" readout actually falls in.
  */
-export const INITIAL_BAND: Band = BLUE;
+export const INITIAL_BAND: Band = GREEN;
 
 /** What a fresh counter shows: the target rate, matching `INITIAL_BAND`. */
 const INITIAL_FPS = 60;
@@ -339,41 +337,38 @@ function boundsOf(band: Band): readonly [number, number] {
   const index = BAND_FLOOR.findIndex(([b]) => b === band);
   const floor = BAND_FLOOR[index]?.[1] ?? 0;
   // The band above this one starts where this one ends. The topmost band has no
-  // ceiling, so nothing can ever be "above" blue.
+  // ceiling, so nothing can ever be "above" green.
   const ceiling = index <= 0 ? Number.POSITIVE_INFINITY : BAND_FLOOR[index - 1]![1];
   return [floor, ceiling];
 }
 
 /**
- * The four colours, as pale fills over a dark chrome.
+ * The three colours, as pale fills over a dark chrome.
  *
  * PALE, as the brief asks: this sits over the artwork permanently, and a
  * saturated badge would compete with the picture it is reporting on. These are
- * high-lightness, low-chroma versions of the same hues the rest of the interface
- * already uses -- `#8ab4f8` is the active-tab blue from `settingsSection.ts`, and
- * the others are tuned to sit at a similar weight beside it.
+ * high-lightness, low-chroma versions of hues the rest of the interface already
+ * uses, tuned to sit at a similar weight to one another.
  */
 export const BAND_COLOR: Readonly<Record<Band, string>> = Object.freeze({
   [RED]: '#f5a3a3',
   [YELLOW]: '#f2d9a0',
   [GREEN]: '#a8dcb0',
-  [BLUE]: '#a8c8f8',
 });
 
 /**
- * The same four hues, saturated for use on a SLIDER LABEL.
+ * The same three hues, saturated for use on a SLIDER LABEL.
  *
  * **A second ramp, and it is not redundant.** The badge sits on a dark chrome
  * plate over the artwork, where pale is right -- a saturated badge would compete
  * with the picture. A slider label sits in a panel beside a column of OTHER
  * labels already drawn in a light grey (`rgba(232,232,234,0.7)`), and against
- * that neighbour the pale ramp is nearly invisible: `#a8c8f8` and the idle grey
- * are within a few percent of the same lightness, so a screenshot of the
- * Preferences tab showed World Size, Physics Rate and Motion Blur looking
- * essentially untinted.
+ * that neighbour the pale ramp is nearly invisible: the two are within a few
+ * percent of the same lightness, so a screenshot of the Preferences tab showed
+ * World Size, Physics Rate and Motion Blur looking essentially untinted.
  *
- * That was only ever going to be caught by looking at it. The browser check
- * asserts that an inline colour is PRESENT, which it was -- "present but
+ * That was only ever going to be caught by looking at it. A browser check
+ * asserting that an inline colour is PRESENT would have passed -- "present but
  * indistinguishable" is not a property an assertion of that shape can see.
  *
  * So these are the same hues pushed up in chroma and down in lightness until
@@ -385,15 +380,20 @@ export const BAND_LABEL_COLOR: Readonly<Record<Band, string>> = Object.freeze({
   [RED]: '#ff8080',
   [YELLOW]: '#ffc857',
   [GREEN]: '#6ede8a',
-  [BLUE]: '#71a9ff',
 });
 
 /**
- * The tooltip for each band, verbatim from the brief.
+ * The tooltip for each band.
  *
  * Red and yellow deliberately share one string: both mean "the GPU is not
  * keeping up", and the advice for the two is identical. Splitting them would
  * mean inventing a distinction the user cannot act on differently.
+ *
+ * **GREEN CARRIES WHAT BLUE USED TO SAY.** With blue gone, green is the top band
+ * -- it means the frame rate is holding, so the useful thing to tell someone is
+ * that there may be room to turn settings UP. The old green copy ("well
+ * utilized") described a narrow strip just below a band that no longer exists,
+ * and offered no action at all.
  */
 export const BAND_TOOLTIP: Readonly<Record<Band, string>> = Object.freeze({
   [RED]:
@@ -405,9 +405,6 @@ export const BAND_TOOLTIP: Readonly<Record<Band, string>> = Object.freeze({
     'off motion blur, reducing the physics rate, or lowering world size. Click ' +
     'here to bring up the performance-critical settings.',
   [GREEN]:
-    'Fluoddity can be demanding! Looks like your GPU is well utilized. Click ' +
-    'here to bring up the performance-critical settings.',
-  [BLUE]:
     'Fluoddity can be demanding, but it looks like your GPU can handle it! Try ' +
     'raising the physics rate, turning on motion blur, or increasing World size. ' +
     'Click here to bring up the performance-critical settings.',
@@ -423,8 +420,5 @@ export const BAND_TOOLTIP: Readonly<Record<Band, string>> = Object.freeze({
 export const BAND_DESCRIPTION: Readonly<Record<Band, string>> = Object.freeze({
   [RED]: 'GPU struggling',
   [YELLOW]: 'GPU under strain',
-  [GREEN]: 'GPU well utilized',
-  // "Holding the frame rate", not "headroom to spare" -- the dial can no longer
-  // measure spare capacity, only whether frames are arriving on time.
-  [BLUE]: 'holding full frame rate',
+  [GREEN]: 'holding the frame rate',
 });

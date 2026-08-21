@@ -6,7 +6,6 @@ import {
   BAND_DESCRIPTION,
   BAND_LABEL_COLOR,
   BAND_TOOLTIP,
-  BLUE,
   GREEN,
   RED,
   YELLOW,
@@ -25,9 +24,10 @@ test('band thresholds match the specified ranges', () => {
   assert.equal(bandFor(34.9), RED);
   assert.equal(bandFor(50), GREEN);
   assert.equal(bandFor(49.9), YELLOW);
-  assert.equal(bandFor(58), BLUE, 'blue is the top band: holding the frame rate');
-  assert.equal(bandFor(57.9), GREEN);
-  assert.equal(bandFor(60), BLUE);
+  // Green runs all the way to the top: there is no band above it.
+  assert.equal(bandFor(58), GREEN);
+  assert.equal(bandFor(60), GREEN);
+  assert.equal(bandFor(1000), GREEN);
 });
 
 test('the readout is always a number, capped at 60', () => {
@@ -73,16 +73,16 @@ test('a NaN reading holds the previous state entirely', () => {
 
 test('the band does not move until a change is sustained', () => {
   let state = startBand();
-  assert.equal(state.band, BLUE, 'starts optimistic so no first impression is a false alarm');
+  assert.equal(state.band, GREEN, 'starts optimistic so no first impression is a false alarm');
 
   // A single terrible sample must not change the COLOUR: the dwell has not
   // elapsed. (The number moves immediately -- asserted separately below.)
   state = stepBand(state, 20, 0);
-  assert.equal(state.band, BLUE);
+  assert.equal(state.band, GREEN);
 
   // Still inside the dwell.
   state = stepBand(state, 20, 249);
-  assert.equal(state.band, BLUE);
+  assert.equal(state.band, GREEN);
 
   // Past it, with the same band pending throughout.
   state = stepBand(state, 20, 251);
@@ -97,7 +97,7 @@ test('a transient spike is discarded rather than starting the clock over', () =>
   assert.equal(state.pending, null);
   // So the clock restarts: this is measured from the SPIKE, not the original.
   state = stepBand(state, 20, 300);
-  assert.equal(state.band, BLUE, 'the dwell restarted, so the colour has not moved');
+  assert.equal(state.band, GREEN, 'the dwell restarted, so the colour has not moved');
   state = stepBand(state, 20, 600);
   assert.equal(state.band, RED);
 });
@@ -138,7 +138,7 @@ test('releasing the slider restores the dwell', () => {
   state = stepBand(state, 60, 10, false);
   assert.equal(state.band, RED, 'debounced once more');
   state = stepBand(state, 60, 300, false);
-  assert.equal(state.band, BLUE);
+  assert.equal(state.band, GREEN);
 });
 
 test('the dwell is short enough to feel immediate', () => {
@@ -156,18 +156,18 @@ test('a measured number is NEVER held back by the dwell', () => {
   // measurement of what the user is watching, so it must be current on the very
   // first reading -- even while the colour is still mid-dwell and disagrees.
   let state = startBand();
-  assert.equal(state.band, BLUE);
+  assert.equal(state.band, GREEN);
 
   state = stepBand(state, 24, 0);
   assert.equal(state.readout, '24', 'the number moved on the first bad reading');
-  assert.equal(state.band, BLUE, 'while the colour is still waiting out the dwell');
+  assert.equal(state.band, GREEN, 'while the colour is still waiting out the dwell');
 
   // And it keeps tracking, every reading, throughout the dwell.
   state = stepBand(state, 31, 50);
   assert.equal(state.readout, '31');
   state = stepBand(state, 18, 100);
   assert.equal(state.readout, '18');
-  assert.equal(state.band, BLUE, 'still mid-dwell');
+  assert.equal(state.band, GREEN, 'still mid-dwell');
 
   // The colour catches up once the evidence is sustained.
   state = stepBand(state, 18, 400);
@@ -191,20 +191,17 @@ test('the number tracks across band boundaries without waiting', () => {
   }
 });
 
-test('the readout never contradicts a blue band', () => {
-  // Blue now means "holding the frame rate", so its numbers are 58-60 and the
-  // two halves of the badge cannot disagree the way they once could -- a blue
-  // "20" was reachable when blue meant headroom from a separate measurement.
+test('a full frame rate settles green', () => {
   let state = startBand();
   state = stepBand(state, 60, 0);
   state = stepBand(state, 60, 300);
-  assert.equal(state.band, BLUE);
+  assert.equal(state.band, GREEN);
   assert.equal(state.readout, '60');
 });
 
 test('sitting exactly on an edge never flips the band', () => {
-  // Settle into green first -- the counter now starts blue, and this is about
-  // what happens once a band is established.
+  // Settle into green from a mid-green reading first: this is about what happens
+  // once a band is established, not about the opening state.
   let state = startBand();
   state = stepBand(state, 54, 0);
   state = stepBand(state, 54, 300);
@@ -253,7 +250,7 @@ test('stepBand returns the receiver unchanged when nothing moved', () => {
 test('every band has both colours, a tooltip and a spoken description', () => {
   // Colour must never be the only signal, so a band that gained a fill without
   // gaining words would be a regression this catches.
-  for (const band of [RED, YELLOW, GREEN, BLUE] as const) {
+  for (const band of [RED, YELLOW, GREEN] as const) {
     assert.match(BAND_COLOR[band], /^#[0-9a-f]{6}$/i);
     assert.match(BAND_LABEL_COLOR[band], /^#[0-9a-f]{6}$/i);
     assert.ok(BAND_TOOLTIP[band].length > 0);
@@ -274,7 +271,7 @@ test('the label ramp is more saturated than the badge ramp', () => {
     const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
     return Math.max(r!, g!, b!) - Math.min(r!, g!, b!);
   };
-  for (const band of [RED, YELLOW, GREEN, BLUE] as const) {
+  for (const band of [RED, YELLOW, GREEN] as const) {
     assert.ok(
       chroma(BAND_LABEL_COLOR[band]) > chroma(BAND_COLOR[band]),
       `${band}'s label colour is no more saturated than its badge colour`,
@@ -292,9 +289,10 @@ test('the struggling tooltip names all three settings to turn down', () => {
     assert.match(text, /physics rate/);
     assert.match(text, /world size/);
   }
-  // Blue offers the same three in the opposite direction.
-  const blue = BAND_TOOLTIP[BLUE].toLowerCase();
-  assert.match(blue, /motion blur/);
-  assert.match(blue, /physics rate/);
-  assert.match(blue, /world size/);
+  // Green offers the same three in the opposite direction -- it is the top band
+  // now, so its advice is "there may be room to turn these up".
+  const green = BAND_TOOLTIP[GREEN].toLowerCase();
+  assert.match(green, /motion blur/);
+  assert.match(green, /physics rate/);
+  assert.match(green, /world size/);
 });
