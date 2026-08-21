@@ -98,16 +98,17 @@ test('the band does not move until a change is sustained', () => {
   let state = startBand();
   assert.equal(state.band, GREEN, 'starts green so no first impression is a false alarm');
 
-  // A single terrible sample must change nothing: the dwell has not elapsed.
+  // A single terrible sample must not change the COLOUR: the dwell has not
+  // elapsed. (The number moves immediately -- asserted separately below.)
   state = stepBand(state, 20, 0);
   assert.equal(state.band, GREEN);
 
   // Still inside the dwell.
-  state = stepBand(state, 20, 2999);
+  state = stepBand(state, 20, 249);
   assert.equal(state.band, GREEN);
 
   // Past it, with the same band pending throughout.
-  state = stepBand(state, 20, 3001);
+  state = stepBand(state, 20, 251);
   assert.equal(state.band, RED);
 });
 
@@ -115,13 +116,80 @@ test('a transient spike is discarded rather than starting the clock over', () =>
   let state = startBand();
   state = stepBand(state, 20, 0); // red pending
   // A single good frame mid-dwell cancels the pending change entirely.
-  state = stepBand(state, 60, 1000);
+  state = stepBand(state, 60, 100);
   assert.equal(state.pending, null);
-  // So the clock restarts: this is 3s after the SPIKE, not after the original.
-  state = stepBand(state, 20, 3500);
-  assert.equal(state.band, GREEN, 'the dwell restarted, so nothing has changed yet');
-  state = stepBand(state, 20, 6600);
+  // So the clock restarts: this is measured from the SPIKE, not the original.
+  state = stepBand(state, 20, 300);
+  assert.equal(state.band, GREEN, 'the dwell restarted, so the colour has not moved');
+  state = stepBand(state, 20, 600);
   assert.equal(state.band, RED);
+});
+
+test('the dwell is short enough to feel immediate', () => {
+  // A quarter second: the colour should answer while a hand is still on the
+  // slider that caused the change. Pinned as a property rather than as the
+  // literal, so the constant can be tuned without editing this.
+  let state = startBand();
+  state = stepBand(state, 20, 0);
+  state = stepBand(state, 20, 300);
+  assert.equal(state.band, RED, 'the band should have moved well within 300ms');
+});
+
+test('a measured number is NEVER held back by the dwell', () => {
+  // THE RULE THIS FILE EXISTS TO PIN. At or below 60 the readout is a
+  // measurement of what the user is watching, so it must be current on the very
+  // first reading -- even while the colour is still mid-dwell and disagrees.
+  let state = startBand();
+  assert.equal(state.band, GREEN);
+
+  state = stepBand(state, 24, 0);
+  assert.equal(state.readout, '24', 'the number moved on the first bad reading');
+  assert.equal(state.band, GREEN, 'while the colour is still waiting out the dwell');
+
+  // And it keeps tracking, every reading, throughout the dwell.
+  state = stepBand(state, 31, 50);
+  assert.equal(state.readout, '31');
+  state = stepBand(state, 18, 100);
+  assert.equal(state.readout, '18');
+  assert.equal(state.band, GREEN, 'still mid-dwell');
+
+  // The colour catches up once the evidence is sustained.
+  state = stepBand(state, 18, 400);
+  assert.equal(state.band, RED);
+  assert.equal(state.readout, '18');
+});
+
+test('the number tracks across band boundaries without waiting', () => {
+  // Walking down through yellow into red, the number must be right at every
+  // step even though the colour lags each crossing by the dwell.
+  let state = startBand();
+  const walk: readonly (readonly [number, number])[] = [
+    [55, 0],
+    [45, 20],
+    [40, 40],
+    [30, 60],
+  ];
+  for (const [fps, at] of walk) {
+    state = stepBand(state, fps, at);
+    assert.equal(state.readout, String(fps), `readout should be ${String(fps)}`);
+  }
+});
+
+test('the plus marks ARE debounced, unlike a measured number', () => {
+  // Above 60 the readout is an estimate derived from the same headroom figure
+  // the colour is, so the two must move together -- marks flickering while the
+  // colour held steady would have them disagreeing on screen.
+  let state = startBand();
+  // Settle into blue at 60+.
+  state = stepBand(state, 75, 0);
+  state = stepBand(state, 75, 300);
+  assert.equal(state.band, BLUE);
+  assert.equal(state.readout, '60+');
+
+  // A jump to 60+++ territory is still blue, so no band change is pending and
+  // the marks do NOT immediately follow -- they are part of the debounced half.
+  state = stepBand(state, 200, 320);
+  assert.equal(state.readout, '60+', 'the marks held rather than jumping');
 });
 
 test('sitting exactly on an edge never flips the band', () => {
@@ -140,20 +208,20 @@ test('a decisive change still moves promptly', () => {
   // outside green, so it should be adopted as soon as the dwell allows.
   let state = startBand();
   state = stepBand(state, 20, 0);
-  state = stepBand(state, 20, 3001);
+  state = stepBand(state, 20, 251);
   assert.equal(state.band, RED);
 });
 
-test('the readout updates within a band while the band itself is debounced', () => {
+test('the readout updates within a band as well as across one', () => {
   // The number is information at a glance and costs nothing; the COLOUR is what
   // draws the eye. Debouncing both would leave a visibly stale number.
   let state = startBand();
   state = stepBand(state, 20, 0);
-  state = stepBand(state, 20, 3001);
+  state = stepBand(state, 20, 251);
   assert.equal(state.band, RED);
 
   const before = state.readout;
-  state = stepBand(state, 25, 3100);
+  state = stepBand(state, 25, 300);
   assert.equal(state.band, RED, 'still red -- same band');
   assert.notEqual(state.readout, before, 'but the number tracked the change');
   assert.equal(state.readout, '25');

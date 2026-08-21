@@ -42,24 +42,37 @@
  */
 
 /**
- * Frames between samples. ~3 samples a second at 60 fps.
+ * Frames between samples. ~8 samples a second at 60 fps.
  *
- * Chosen so the stall is rare enough to be invisible while the window still
- * refills within a few seconds of a real change -- `WINDOW` samples at this rate
- * is about a two-second memory, which sits comfortably inside the band debounce
- * that consumes it.
+ * **THIS AND `WINDOW` TOGETHER SET HOW FAST THE ESTIMATE CAN MOVE**, and they
+ * have to be read against `fpsBand.ts`'s dwell rather than chosen alone. The
+ * median only turns over once a majority of the window is new, so the estimate's
+ * true latency is roughly `SAMPLE_INTERVAL * WINDOW / 2` frames -- and a debounce
+ * shorter than that is simply waiting on a number that cannot move yet.
+ *
+ * At 7 frames and a 5-sample window that is ~18 frames, about 300 ms, which sits
+ * just behind the 250 ms dwell instead of dominating it. The earlier pairing (20
+ * frames, 7 samples) was ~1.2 s: fine when the dwell was 3 s, and the binding
+ * constraint the moment the dwell came down.
+ *
+ * Still infrequent enough that the fence stall stays invisible -- one frame in
+ * seven, and the other six run untouched.
  */
-const SAMPLE_INTERVAL = 20;
+const SAMPLE_INTERVAL = 7;
 
 /**
  * Samples kept for the median.
  *
- * Seven, for `calibrate.ts`'s reasoning at a smaller size: a single bad sample
- * -- a GC pause, another tab waking up -- must not be able to move the readout,
- * and a median over an odd count is thoroughly insensitive to one or two
- * outliers while staying cheap to sort.
+ * Five, for `calibrate.ts`'s reasoning at a smaller size: a single bad sample --
+ * a GC pause, another tab waking up -- must not be able to move the readout, and
+ * a median over an odd count is thoroughly insensitive to one or two outliers
+ * while staying cheap to sort.
+ *
+ * Trimmed from seven along with `SAMPLE_INTERVAL`; see that constant for the
+ * latency budget the pair has to meet. Five still discards a lone outlier
+ * completely, which is the property that matters.
  */
-const WINDOW = 7;
+const WINDOW = 5;
 
 /**
  * A rolling estimate of how long the GPU spends on one frame.

@@ -155,15 +155,26 @@ export function estimateFps(frameMs: number, gpuMs: number): number {
 const MEASURED_CEILING = 58;
 
 /**
- * The debounce: a band that only moves when the evidence is sustained.
+ * The debounce: what it governs, and -- just as important -- what it does not.
+ *
+ * ## Only the COLOUR and the `+` MARKS are debounced
+ *
+ * **A measured number is never held back.** At or below 60 fps the readout is a
+ * real measurement of what the user is watching, and staleness there is simply
+ * wrong information: if the app drops to 24 fps the badge must say 24, right
+ * away, whatever the colour is still deciding. Those two facts move on different
+ * schedules and that is deliberate -- see `stepBand`.
+ *
+ * What IS debounced is the part that would distract: the band colour, and the
+ * number of `+` marks above 60. Both are estimates rather than measurements, and
+ * both are large visual changes in the corner of the eye.
  *
  * ## Why hysteresis AND a dwell time, rather than just smoothing
  *
  * Smoothing alone does not fix an edge. An EMA sitting at 50.0 with the green
  * floor at 50 still crosses back and forth on the smallest jitter, and the
- * counter flickers between yellow and green -- which is precisely the
- * distraction the brief rules out. Two mechanisms, because they solve different
- * halves:
+ * counter flickers between yellow and green. Two mechanisms, because they solve
+ * different halves:
  *
  *   - **A margin** (`MARGIN_FPS`) means leaving a band requires clearing its
  *     edge by a real amount, not by 0.1. This kills edge-sitting.
@@ -171,8 +182,9 @@ const MEASURED_CEILING = 58;
  *     it is adopted. This kills brief spikes -- a GC pause, another tab waking
  *     up, the user dragging a slider through an expensive value.
  *
- * A change must satisfy BOTH. The result is a dial that moves when the machine's
- * situation genuinely changed and ignores everything else.
+ * A change must satisfy BOTH. With the dwell now short, the margin carries most
+ * of the anti-flicker work; it is what stops a reading parked on a band edge
+ * from oscillating however briefly the dwell waits.
  */
 export interface BandState {
   /** The band currently displayed. */
@@ -197,11 +209,19 @@ const MARGIN_FPS = 3;
 /**
  * How long a new band must hold before it is adopted.
  *
- * 3 seconds -- long enough to ride out a GC pause or a slider drag, short enough
- * that someone who just changed a setting sees the consequence while they are
- * still thinking about that setting.
+ * 250 ms: long enough to swallow a single bad frame or a GC pause, short enough
+ * that the colour tracks what the user is doing rather than lagging visibly
+ * behind it. Someone dragging World Size should see the badge answer while their
+ * hand is still on the slider.
+ *
+ * **Down from 3 seconds**, which was tuned for a version where the NUMBER was
+ * debounced along with the colour and staleness was therefore very costly. Now
+ * that a measured number is never held back (see `stepBand`), the dwell only has
+ * to protect against flicker -- and `MARGIN_FPS` already does most of that job,
+ * since a reading has to clear a band edge by 3 fps before the clock even
+ * starts.
  */
-const DWELL_MS = 3000;
+const DWELL_MS = 250;
 
 /** The band a fresh counter starts in. See `startBand`. */
 export const INITIAL_BAND: Band = GREEN;
@@ -230,22 +250,76 @@ export function startBand(): BandState {
  * can use `next !== prev` to decide whether to touch the DOM, exactly as
  * `preferences.ts`'s `withValue` lets a caller decide whether to save.
  *
+ * ## The readout and the band move on DIFFERENT schedules
+ *
+ * This is the whole shape of the function, so it is stated before the code:
+ *
+ *   - **At or below 60 fps the readout is live, always.** It is a measurement of
+ *     what the user is watching, and a stale measurement is a wrong one. It is
+ *     written on every call regardless of what the band is doing -- including
+ *     mid-dwell, when the colour has not yet caught up.
+ *   - **Above 60 the readout is an ESTIMATE** (`60+`/`60++`/`60+++`), so it is
+ *     debounced along with the colour. Those marks are derived from the same
+ *     headroom figure the band is, and letting them flicker while the colour
+ *     held steady would be the distraction this debounce exists to prevent --
+ *     they would disagree with each other on screen.
+ *
+ * So `liveReadout` decides which half a reading falls in, and the band machinery
+ * below only ever governs the colour plus the estimated marks.
+ *
  * `now` is injected rather than read from `performance` so the dwell is testable
- * without waiting three real seconds.
+ * without waiting on a real clock.
  */
 export function stepBand(state: BandState, fps: number, now: number): BandState {
   const target = bandFor(fps);
+  const next = advanceBand(state, target, fps, now);
 
-  // Already there: cancel any pending change, and refresh the READOUT.
-  //
-  // The readout updates freely within a band while the band itself is debounced,
-  // and that asymmetry is deliberate: the number ticking 44 -> 45 is information
-  // at a glance and costs nothing, while a COLOUR change draws the eye away from
-  // the picture. Debouncing both would leave the number visibly stale.
+  // **THE MEASURED NUMBER OVERRIDES WHATEVER THE BAND DECIDED.** `advanceBand`
+  // only writes a readout when it actually adopts a new band; below 60 the
+  // number has to move on every reading, so it is applied here, last, on top of
+  // whatever came back. Above 60 `liveReadout` returns null and the band's own
+  // answer stands.
+  const live = liveReadout(fps);
+  if (live === null || live === next.readout) return next;
+  return Object.freeze({ ...next, readout: live });
+}
+
+/**
+ * The readout when it is a MEASUREMENT rather than an estimate, else null.
+ *
+ * Null above 60, where the readout becomes `60+`/`60++`/`60+++` -- headroom
+ * marks, which are debounced with the colour they are derived from.
+ *
+ * The boundary is `readoutFor`'s own: anything that renders as a bare number, or
+ * as the plain "60" of the 60..70 band, is something measured. Asking
+ * `readoutFor` rather than re-testing `fps < 60` keeps the two from drifting
+ * apart -- there is one definition of which readouts are numbers.
+ */
+function liveReadout(fps: number): string | null {
+  const text = readoutFor(fps);
+  return text.includes('+') ? null : text;
+}
+
+/**
+ * The band half of `stepBand`: hysteresis plus dwell, and nothing else.
+ *
+ * Split out so the readout rule above reads as one statement rather than being
+ * threaded through four branches. Returns a state whose `readout` is only
+ * updated when a band is actually adopted; the caller overrides it for measured
+ * numbers.
+ */
+function advanceBand(
+  state: BandState,
+  target: Band,
+  fps: number,
+  now: number,
+): BandState {
+  // Already in the target band: cancel any pending change and leave the colour
+  // alone. The readout is the caller's business.
   if (target === state.band) {
-    const readout = readoutFor(fps);
-    if (state.pending === null && readout === state.readout) return state;
-    return Object.freeze({ ...state, readout, pending: null, pendingSince: 0 });
+    return state.pending === null
+      ? state
+      : Object.freeze({ ...state, pending: null, pendingSince: 0 });
   }
 
   // Not yet clear of the current band by the margin: treat it as noise. Which
