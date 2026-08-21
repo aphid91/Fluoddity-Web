@@ -431,6 +431,21 @@ export interface Status {
   readonly ruleIsGenerated: boolean;
 
   /**
+   * Whether the frame-rate button is switched on.
+   *
+   * **NOT read from `editPrefs`, for the reason `ruleIsGenerated` is not read
+   * from `editConfig`:** that payload is EMPTY whenever no panel is open
+   * (`settingsSources`'s optimization), and the FPS counter is deliberately one
+   * of the surfaces that stays on screen when `X` hides the panels. Reading it
+   * from there would make the counter vanish the moment someone hid the UI --
+   * which is the app's default state, and precisely when the counter is most
+   * worth having.
+   *
+   * A named boolean rather than a record entry, so a typo is a compile error.
+   */
+  readonly showFpsCounter: boolean;
+
+  /**
    * The highlighted cohort, or `NO_COHORT` when none is.
    *
    * Drives the context hint under the mutation slider and the cohort stepper in

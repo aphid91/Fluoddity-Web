@@ -119,6 +119,10 @@ test('the registry has the same 35 entries the desktop does, plus the web-only o
     // click-to-select reset to govern.
     'resetOnBehaviorChange',
     'oneClickSelection',
+    // No desktop equivalent: the desktop has no frame-rate counter, and could
+    // not have this one -- it reports GPU headroom measured through the WebGPU
+    // queue fence (`perf/gpuProbe.ts`), which has no moderngl counterpart.
+    'showFpsCounter',
   ];
   const ported = SETTINGS.filter((s) => !WEB_ONLY.includes(s.field));
   assert.equal(ported.length, 35);

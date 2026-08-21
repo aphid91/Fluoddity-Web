@@ -64,6 +64,9 @@ import { showsSlider } from './gatedControl.ts';
 import { MenuBar } from './menuBar.ts';
 import { MutationOverlay } from './mutationOverlay.ts';
 import { RecordingBar } from './recordingBar.ts';
+import { FpsCounter } from './fpsCounter.ts';
+import { paintPerfLabels } from './perfLabels.ts';
+import { type Band, INITIAL_BAND } from '../perf/fpsBand.ts';
 import { Splash } from './splash.ts';
 import { isGated } from './gating.ts';
 import { type InputState, EMPTY_INPUT } from './inputState.ts';
@@ -324,6 +327,40 @@ export class Panel {
   private readonly recordingBar: RecordingBar;
 
   /**
+   * The frame-rate button, top-right.
+   *
+   * Owned here for the recording bar's reasons -- attached to `document.body`,
+   * so a pane rebuild cannot orphan it -- and **NOT hidden by `X`**, which is
+   * the point of it rather than an oversight: the panels start hidden, and this
+   * button is the way back to the three settings it is reporting on. Someone
+   * whose app is struggling is exactly the person looking at the picture rather
+   * than at a panel.
+   *
+   * The `showFpsCounter` preference is how it is turned off for good, which is
+   * a different gesture from `X` and deliberately not conflated with it.
+   */
+  private readonly fpsCounter: FpsCounter;
+
+  /**
+   * The band the counter and the three tinted labels are showing.
+   *
+   * Held on the panel rather than passed through, because `refresh` receives it
+   * from `main.ts` while `applyStatus` is where the labels get painted -- and
+   * because the labels must be repainted after a REBUILD, which replaces every
+   * element and takes the tint with it. See `paintLabels`.
+   */
+  private band: Band = INITIAL_BAND;
+
+  /**
+   * What `paintLabels` last wrote, so the per-frame case is one string compare.
+   *
+   * `null` before the first paint AND after every rebuild -- a rebuild discards
+   * the elements this describes, so the memory of having painted them is stale
+   * in the one way that matters.
+   */
+  private labelsShown: string | null = null;
+
+  /**
    * The welcome splash, shown once at startup and again from Help.
    *
    * Owned here for the same reason the dialogs are: it is reachable from the
@@ -449,6 +486,14 @@ export class Panel {
     // meaning of cancelling however it is reached.
     this.recordingBar = new RecordingBar(() => {
       this.recorder?.cancel();
+    });
+    // The click does what Export Video's menu item does for its own tab: reveal
+    // the panels if they are hidden and bring the right tab to the front. See
+    // `showPerformanceSettings`.
+    this.fpsCounter = new FpsCounter({
+      onClick: () => {
+        this.showPerformanceSettings();
+      },
     });
     // Built before the menu bar, since the bar's Help item closes over it.
     //
@@ -697,6 +742,11 @@ export class Panel {
     this.left.pane.dispose();
     this.right.pane.dispose();
     this.settings = null;
+    // The tint lives on elements that are about to be replaced, so the memory of
+    // having applied it is now describing nodes that no longer exist. Cleared
+    // here rather than in `buildBoth` because THIS is the operation that
+    // invalidates it -- see `paintLabels`.
+    this.labelsShown = null;
     this.buildBoth();
   }
 
@@ -708,7 +758,22 @@ export class Panel {
    * not cause (undo, a preset load, randomize). That is the whole reason the
    * bindings are proxies rather than direct.
    */
-  refresh(status: Status, input: InputState = EMPTY_INPUT): void {
+  refresh(
+    status: Status,
+    input: InputState = EMPTY_INPUT,
+    /**
+     * This frame's frame-rate readout, or null where there is none.
+     *
+     * Null under `?nopanel`-adjacent conditions and in the DOM tests, which
+     * construct a Panel with no frame loop behind it -- the counter then keeps
+     * whatever it last showed rather than being fed a fabricated number.
+     *
+     * Passed IN rather than measured here for the reason `PanelOptions.recording`
+     * is injected: the measurement needs the `GPUDevice` and the frame loop, and
+     * `CommandBus` admits neither. `main.ts` owns both and hands over the answer.
+     */
+    fps: { readonly band: Band; readonly readout: string } | null = null,
+  ): void {
     // BEFORE the hidden check: the menu bar stays on screen when the panel is
     // hidden -- it holds the only visible way to bring it back -- and an open
     // dialog outlives a hide entirely. Starving either of status would freeze a
@@ -741,6 +806,32 @@ export class Panel {
         ? null
         : { ...this.recorder.progress, paused: status.paused },
     );
+
+    // ALSO above the hidden check, and this one is emphatic about it: the button
+    // is NOT hidden by `X`, because it is the route back to the settings it
+    // reports on and the panels start hidden. Below this line it would freeze
+    // the moment someone pressed `X` -- which is the state they spend most of
+    // their time in.
+    //
+    // The preference is read from `editPrefs`, which is EMPTY while the panels
+    // are shut (`settingsSources`'s optimization). So an absent value means
+    // "no panel is open to tell us", not "the user turned it off", and it
+    // degrades to SHOWN -- the same live-read-with-a-safe-default shape
+    // `refreshReroll` uses for a missing `mutationScale`.
+    //
+    // `status.showFpsCounter` is what makes that honest: it rides on `Status`
+    // beside `ruleIsGenerated` for precisely this reason -- a value the
+    // always-visible chrome reads, which therefore cannot live in a payload
+    // that empties when the panel closes.
+    //
+    // **THE PREFERENCE ALONE DECIDES VISIBILITY**, not the preference AND
+    // whether a reading has arrived. Those are different questions, and
+    // conflating them made the badge appear a few seconds into every session --
+    // a control that pops into existence unannounced, in the corner, over the
+    // artwork. `startBand()` supplies a neutral "60" for the warmup window, so
+    // there is always something honest to show.
+    if (fps !== null) this.band = fps.band;
+    this.fpsCounter.update(this.band, fps?.readout ?? '', status.showFpsCounter);
 
     // THE CROP BOX FOLLOWS THE TAB, and is therefore driven from STATE here
     // rather than pushed when a slider moves.
@@ -799,6 +890,31 @@ export class Panel {
     this.setActiveTab(now ? DRAWING_TAB : PREFS_TAB);
   }
 
+  /**
+   * Bring the three performance settings into view. The FPS button's click.
+   *
+   * **THE SAME TWO STEPS `setExportVideoShown` TAKES**, in the same order and
+   * for the same reason: reveal the panels if they are hidden -- which is the
+   * DEFAULT state (`startHidden: true` in `main.ts`), so without this the common
+   * case is clicking the badge and seeing nothing happen -- and bring the tab
+   * holding the settings to the front.
+   *
+   * **NO REBUILD, unlike the recording path.** The Preferences tab always
+   * exists, so there is nothing to construct; `setActiveTab` is a `display`
+   * toggle over folders that are already built. A rebuild here would drop folder
+   * expansion state and replace every node to show controls that were one CSS
+   * property away, and it would also throw away the label tint mid-frame.
+   *
+   * Deliberately does NOT scroll to or highlight the individual controls. The
+   * three are already tinted the counter's own colour, which is the connection
+   * this click is making -- and a panel that jumped its own scroll position
+   * would fight a user who had put it where they wanted it.
+   */
+  private showPerformanceSettings(): void {
+    if (this.hiddenFlag) this.setHidden(false);
+    this.setActiveTab(PREFS_TAB);
+  }
+
   /** Show one tab, remembering it across rebuilds. */
   private setActiveTab(tab: SettingsTab): void {
     this.activeTab = tab;
@@ -831,6 +947,36 @@ export class Panel {
     if (this.settings !== null) this.activeTab = this.settings.activeTab();
 
     this.applyVisibility(status);
+    this.paintLabels(status);
+  }
+
+  /**
+   * Tint World Size, Physics Rate and Motion Blur to match the counter.
+   *
+   * Guarded on the rendered result, like every other per-frame writer here: the
+   * band moves rarely (it is debounced by three seconds) and the tint is three
+   * `querySelectorAll` calls, so doing it every frame would be real DOM work to
+   * change nothing.
+   *
+   * **The guard is cleared by `rebuild`, and it has to be.** A tier toggle
+   * replaces every element in both panes, so the new labels are untinted while
+   * `labelsShown` still claims they are painted -- the tint would silently stop
+   * applying until the band happened to change. Clearing the memory alongside
+   * the elements it describes is what keeps the two in step.
+   *
+   * Follows the preference: turning the counter off clears the tint too, since
+   * a colour with no badge to explain it is a mystery rather than a signal.
+   */
+  private paintLabels(status: Status): void {
+    const enabled = status.showFpsCounter;
+    const key = `${this.band}:${String(enabled)}`;
+    if (key === this.labelsShown) return;
+    this.labelsShown = key;
+
+    // The right panel only: all three settings are `PREFS` fields and so live in
+    // the Preferences tab. Searching the left panel too would be three more
+    // queries per repaint that can never match.
+    paintPerfLabels(this.right.container, this.band, enabled);
   }
 
   /**
@@ -1378,6 +1524,7 @@ export class Panel {
     this.dialogs.dispose();
     this.overlay.dispose();
     this.recordingBar.dispose();
+    this.fpsCounter.dispose();
     this.splash.dispose();
     this.left.container.remove();
     this.right.container.remove();

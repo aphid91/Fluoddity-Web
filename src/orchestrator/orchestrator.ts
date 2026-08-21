@@ -2533,6 +2533,11 @@ export class Orchestrator implements CommandBus {
       // `.every()` over 80 floats is nothing next to the deep copy the
       // closed-panel early-out exists to avoid.
       ruleIsGenerated: ruleIsSentinel(this.project),
+      // NOT inside `settingsSources()`, for the reason `ruleIsGenerated` is not:
+      // the FPS counter reads this and stays on screen while the panels are
+      // hidden, where that payload is empty. A bare boolean read costs nothing
+      // next to the deep copy the closed-panel early-out exists to avoid.
+      showFpsCounter: this.prefs.showFpsCounter,
       // THROUGH THE SAME GATE THE CLICKS AND THE SHADER USE, so the hint under
       // the slider can never advertise a highlight the clicks would not honour
       // -- with `oneClickSelection` on, or a single-cohort config, this reads

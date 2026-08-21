@@ -762,6 +762,32 @@ export const SETTINGS: readonly Setting[] = [
     gateBase: 1.0,
   }),
 
+  // ABOVE BLOOM, and immediately below Motion Blur, which is deliberate: the
+  // three controls the counter's colour also tints -- World Size, Physics Rate
+  // and Motion Blur -- are what it is reporting on, so it sits at the end of
+  // that run rather than at the bottom of the group.
+  //
+  // The only entry here whose field changes nothing about the rendered frame.
+  // It governs a `document.body` widget rather than a pass, which is why
+  // `Preferences.showFpsCounter` is kept out of `DisplayPreferences`.
+  setting({
+    field: 'showFpsCounter',
+    label: 'Show FPS Counter',
+    tier: BASIC,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'The frame-rate button in the top-right corner. Its colour tracks how ' +
+      'hard your GPU is working: red or yellow means it is struggling, green ' +
+      'means it is well used, and blue means there is capacity to spare.\n\n' +
+      'Above 60 fps the number becomes 60+, 60++ or 60+++. Those are estimates ' +
+      'of how much headroom is left rather than measured frame rates -- the ' +
+      'display caps what can actually be measured -- so they are shown as marks ' +
+      'instead of numbers.\n\nThe same colour tints World Size, Physics Rate ' +
+      'and Motion Blur, which are the three settings that decide it.',
+    group: 'Display',
+  }),
+
   setting({
     field: 'bloomEnabled',
     label: 'Bloom',

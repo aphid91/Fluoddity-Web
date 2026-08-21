@@ -73,6 +73,21 @@ export interface Preferences {
    */
   readonly motionBlurSamples: number;
 
+  /**
+   * Whether the frame-rate button is on screen.
+   *
+   * **AN EDITOR PREFERENCE, NOT A DISPLAY ONE**, despite sitting beside bloom in
+   * the panel. It changes nothing about what is rendered -- no pass, no uniform,
+   * no pixel of the canvas -- so it is deliberately absent from
+   * `DisplayPreferences` below, which is the subset the camera and assembler
+   * read. Adding it there would hand the render path a value it must ignore.
+   *
+   * Grouped with Display anyway, because that is where a user looks for "things
+   * on my screen", and the counter is one. The registry entry decides that; this
+   * only stores it.
+   */
+  readonly showFpsCounter: boolean;
+
   readonly bloomEnabled: boolean;
   /** Brightness cutoff for bloom extraction. Lower glows more widely. */
   readonly bloomThreshold: number;
@@ -216,6 +231,10 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   physicsSteps: 5,
   tonemapSoftness: 2.5,
   motionBlurSamples: 1,
+  // ON by default. The counter is how someone learns their machine has room to
+  // spare -- or has none -- and neither is discoverable from a checkbox that
+  // starts off.
+  showFpsCounter: true,
   bloomEnabled: true,
   bloomThreshold: 0.2,
   bloomIntensity: 0.2,
@@ -260,6 +279,7 @@ export const PREFERENCE_KINDS = {
   physicsSteps: 'int',
   tonemapSoftness: 'float',
   motionBlurSamples: 'int',
+  showFpsCounter: 'bool',
   bloomEnabled: 'bool',
   bloomThreshold: 'float',
   bloomIntensity: 'float',

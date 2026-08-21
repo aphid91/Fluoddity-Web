@@ -34,6 +34,8 @@ import { calibrate } from './calibration/calibrate.ts';
 import { ALWAYS_CALIBRATE } from './orchestrator/featureFlags.ts';
 import { bindInput } from './ui/inputBinding.ts';
 import { Panel } from './ui/panel.ts';
+import { GpuProbe } from './perf/gpuProbe.ts';
+import { estimateFps, startBand, stepBand } from './perf/fpsBand.ts';
 
 /**
  * The `?debug` readout.
@@ -393,6 +395,71 @@ async function start(): Promise<void> {
   // Smoothed like frameMs: a raw per-frame delta is too noisy to read.
   let orchestratorMs = 0;
 
+  // --- the frame-rate counter ------------------------------------------------
+  //
+  // **NEITHER `frameMs` NOR `orchestratorMs` CAN ANSWER THIS**, which is why
+  // there is a third measurement rather than a reuse of one of these two.
+  // `frameMs` is vsync-capped and saturates at the refresh rate; `orchestratorMs`
+  // times CPU-side encoding, which barely moves as GPU load changes. Both facts
+  // are already written down at `Orchestrator.probeFrame`, which reaches the same
+  // conclusion for calibration and uses the same instrument this does.
+  //
+  // `GpuProbe` samples the queue fence a few times a second, so the readout can
+  // tell "comfortably inside budget" from "exactly at budget" -- the distinction
+  // the whole 60+/60++/60+++ idea rests on, and the one a capped frame delta
+  // cannot make.
+  const gpuProbe = new GpuProbe(device);
+  let band = startBand();
+
+  /**
+   * Frames to skip before the counter is believed.
+   *
+   * Startup compiles pipelines, allocates buffers and runs the first reset,
+   * none of which recur -- and calibration reshapes the simulation repeatedly
+   * behind the splash. Measuring across any of that reports a machine far
+   * slower than the one the user actually has, and a red badge on first paint
+   * is the worst possible first impression.
+   *
+   * Cleared to this again by `restartCounter` whenever the thing being measured
+   * changes underneath the window.
+   */
+  const WARMUP_FRAMES = 90;
+  let warmup = WARMUP_FRAMES;
+
+  /**
+   * Throw away the measurement and start again.
+   *
+   * For the transitions that make the existing window describe a simulation
+   * that no longer exists: a world-size rebuild, an export ending, a tab coming
+   * back to the foreground. Blending across one of those would report a median
+   * that was never true of either state.
+   */
+  const restartCounter = (): void => {
+    gpuProbe.reset();
+    warmup = WARMUP_FRAMES;
+  };
+
+  // A HIDDEN TAB CANNOT BE MEASURED -- `calibrate.ts` spells out why at length:
+  // rAF stops, compositing suspends, and GPU work is deprioritised, so anything
+  // sampled while backgrounded times as wildly slow. Coming back therefore
+  // starts a fresh window rather than carrying those samples forward, which
+  // would otherwise show red for several seconds after every tab switch.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) restartCounter();
+  });
+
+  /**
+   * Entity count as of the last frame, as the tell for a rebuild.
+   *
+   * `entityCount` rather than `worldSize` because it is what a rebuild actually
+   * MOVES: a world-size change reallocates the entity buffer, and the count is
+   * on `diagnostics` already. It also catches a canvas-aspect change, which
+   * rebuilds for the same reason and would otherwise slip through.
+   */
+  let lastEntityCount = orchestrator.diagnostics.entityCount;
+  /** Whether an export was running last frame. See the frame loop. */
+  let wasRecording = false;
+
   /**
    * True while a recorded frame is being encoded.
    *
@@ -460,9 +527,66 @@ async function start(): Promise<void> {
     orchestrator.frame(frameInput);
     orchestratorMs += (performance.now() - tOrchestrator - orchestratorMs) * 0.1;
 
+    // --- the frame-rate counter ----------------------------------------------
+    //
+    // **SAMPLED HERE, AFTER `frame()` HAS SUBMITTED.** The probe awaits the
+    // queue fence, so it covers work that is already queued -- sampling before
+    // the submit would time an empty queue and report near-zero, which reads as
+    // infinite headroom.
+    //
+    // The three states below all mean "the number in the window no longer
+    // describes what is on screen", and each restarts rather than blends:
+    //
+    //   - A REBUILD. World size changes construct a new `ParticleSystem` whose
+    //     first frames regenerate every entity and clear the canvas
+    //     (`calibrate.ts`'s `REBUILD_WARMUP` burns 25 frames for exactly this).
+    //     Noticed through `entityCount`, which is what a world-size change
+    //     actually moves.
+    //   - AN EXPORT. Recording deliberately runs slow -- it renders at the
+    //     capture resolution and encodes every frame -- so measuring through one
+    //     would show red and tell the user their GPU is struggling when what is
+    //     really happening is the export they asked for. Suppressed outright
+    //     below, and restarted when it ends.
+    //   - A PAUSE. `frame()` takes the branch that skips `runFrame` entirely,
+    //     so GPU time collapses to the cost of re-presenting a still. Sampling
+    //     that would report enormous headroom for a simulation that is not
+    //     running.
+    // `frameStatus`, NOT `status`: the outer `status` is the pipeline-build
+    // result the debug overlay prints below, and shadowing it here would make
+    // that readout print this frame's `Status` instead -- a silent wrong answer
+    // in the one surface that exists for diagnosing wrong answers.
+    const diagnostics = orchestrator.diagnostics;
+    const frameStatus = orchestrator.status();
+    const recording = recorder !== null;
+    if (diagnostics.entityCount !== lastEntityCount) {
+      lastEntityCount = diagnostics.entityCount;
+      restartCounter();
+    }
+    if (wasRecording && !recording) restartCounter();
+    wasRecording = recording;
+
+    // Sampled only in the steady state. A paused or recording frame is not a
+    // frame this counter has anything true to say about.
+    if (!recording && !frameStatus.paused) {
+      gpuProbe.sample();
+      if (warmup > 0) warmup--;
+    }
+
+    // The band FREEZES rather than resetting outside the steady state: the last
+    // honest reading is better than a fabricated one, and a badge that jumped to
+    // green every time someone hit Space would be noise. `stepBand`'s debounce
+    // then means even a real change takes a few seconds to show, which is what
+    // stops the colour from chasing every transient.
+    if (warmup === 0 && !recording && !frameStatus.paused) {
+      band = stepBand(band, estimateFps(frameMs, gpuProbe.frameMs), now);
+    }
+
     // AFTER the frame, so the panel shows what the simulation actually holds --
     // including changes the panel did not cause (undo, a preset load).
-    panel?.refresh(orchestrator.status(), frameInput);
+    panel?.refresh(frameStatus, frameInput, {
+      band: band.band,
+      readout: band.readout,
+    });
 
     if (overlay !== null) {
       const d = orchestrator.diagnostics;
