@@ -511,8 +511,8 @@ export class MutationOverlay {
     this.stepper = document.createElement('span');
     this.stepper.style.cssText = STEPPER_CSS;
 
-    this.stepDown = this.stepButton('‹', 'Previous cohort');
-    this.stepUp = this.stepButton('›', 'Next cohort');
+    this.stepDown = this.stepButton('‹', 'Previous cohort (Left arrow)');
+    this.stepUp = this.stepButton('›', 'Next cohort (Right arrow)');
 
     this.cohortInput = document.createElement('input');
     this.cohortInput.type = 'text';
@@ -1345,7 +1345,7 @@ export function hintFor(status: Status): {
   // state a user spends most of their time in.
   if (status.selectionIsNoOp && status.highlightedCohort !== NO_COHORT) {
     return {
-      lead: 'Currently selected: Cohort',
+      lead: 'Currently selected cohort:',
       cohort: status.highlightedCohort,
       // The cancel clause is a BUTTON now, so the tail keeps only the advice
       // that has nowhere else to go.
@@ -1373,7 +1373,7 @@ export function hintFor(status: Status): {
 
   if (status.highlightedCohort !== NO_COHORT) {
     return {
-      lead: 'Currently selected: Cohort',
+      lead: 'Currently selected cohort:',
       cohort: status.highlightedCohort,
       // BOTH clauses are buttons now, so nothing is left for the tail to say.
       // Kept as an empty string rather than dropped, because the field is what

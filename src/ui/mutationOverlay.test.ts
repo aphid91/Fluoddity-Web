@@ -144,7 +144,7 @@ test('select with nothing lit promises a cohort selection', () => {
 
 test('a lit cohort names itself and offers the stepper', () => {
   const hint = hintFor(status({ mouseMode: 'select', highlightedCohort: 7 }));
-  assert.equal(hint.lead, 'Currently selected: Cohort');
+  assert.equal(hint.lead, 'Currently selected cohort:');
   assert.equal(hint.cohort, 7, 'the stepper shows the lit cohort');
   assert.equal(hint.cancelSelection, true, 'and the way to back out of it');
 });
