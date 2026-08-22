@@ -6,18 +6,24 @@
  * piece of state (shown / not shown) and one transition, so it takes none of
  * the machinery the panel needs.
  *
- * ## Two documents, ONE overlay
+ * ## Three documents, ONE overlay
  *
- * The screen a first-time visitor meets and the reference they come back to are
- * different documents with different jobs. The welcome has to be read in full
- * by someone who has not decided yet whether to care, so it is five lines and
- * ends by pointing at the guide; the guide is the exhaustive one, and nobody
- * reaches it without asking.
+ * The screen a first-time visitor meets and the references they come back to
+ * are different documents with different jobs. The welcome has to be read in
+ * full by someone who has not decided yet whether to care, so it is five lines
+ * and ends by pointing at the rest; the `guide` explains what the thing is
+ * doing and the `controls` lists what to press, and nobody reaches either
+ * without asking.
+ *
+ * Splitting the reference in two is worth the extra variant because the keys
+ * are what people come BACK for -- a returning user hunting for "which key
+ * redoes" should not scroll past the algorithm to find it. `H` opens the prose,
+ * `?` the keys.
  *
  * They are still ONE class, because everything around the copy is shared and
  * none of it is trivial: the pause coupling, the calibration lock, the
- * scrollbar-aware dismiss. Two instances would mean two of each, and a
- * `pausedBySplash` that two overlays could both claim. So `Variant` selects
+ * scrollbar-aware dismiss. Three instances would mean three of each, and a
+ * `pausedBySplash` that three overlays could all claim. So `Variant` selects
  * which block list `render` walks, and `show(variant)` swaps the card's
  * children -- the only thing that actually differs.
  *
@@ -39,7 +45,7 @@
  * ## The instance outlives any one showing
  *
  * `dismiss()` detaches the node and unbinds the key listener, but keeps both --
- * Help > Welcome and Help > Controls/Guide re-show the same instance. Building
+ * Help > Welcome, Help > Guide and Help > Controls re-show the same instance. Building
  * the chrome once and reattaching it is what makes `show()` cheap enough to
  * call from a menu or a keystroke, and it keeps the scroll position resettable
  * in one place. Only the card's CHILDREN are rebuilt, and only when the variant
@@ -57,16 +63,24 @@ const DIVIDER = Symbol('divider');
  * leading `-` on an item marks it as nested one level (matching the `--` in the
  * source copy). Keeping it as data rather than an HTML string means the markup
  * decisions live in `render` and the words live here.
+ *
+ * Bare `http(s)://` runs inside any string become real links -- see `linkify`.
  */
 type Block = string | readonly string[] | typeof DIVIDER;
 
 /**
  * Which document the overlay is showing.
  *
- * `welcome` is the first-run screen; `guide` is Help → Controls/Guide and the
- * `H`/`?` keys.
+ * `welcome` is the first-run screen; `guide` is the prose reference (Help →
+ * Guide, `H`); `controls` is the key and mouse reference (Help → Controls,
+ * `?`/`/`).
+ *
+ * **The reference is TWO documents, not one.** They answer different questions
+ * -- "what is this thing doing" versus "which key does that" -- and the second
+ * is the one people come back for, so burying it under a scroll of prose made
+ * the common case the expensive one.
  */
-export type Variant = 'welcome' | 'guide';
+export type Variant = 'welcome' | 'guide' | 'controls';
 
 const WELCOME_HEADING = 'Welcome to Fluoddity!';
 
@@ -86,14 +100,61 @@ const WELCOME_BODY: readonly Block[] = [
       'similar behaviors.',
     'Try thumbing through the presets with File → Load to see some ' +
       'possibilities!',
-    'Press (H), (?), or go to Help → Controls/Guide for details',
+    'Press (H) or go to Help → Guide for details; press (?) or Help → ' +
+      'Controls for the list of keys.',
   ],
 ];
 
-const GUIDE_HEADING = 'Controls / Guide';
+const GUIDE_HEADING = 'Guide';
 
 const GUIDE_BODY: readonly Block[] = [
-  'Press X or click the gear icon to toggle the control panels.',
+  'Basics',
+  [
+  'There is no fixed particle behavior in Fluoddity. Instead, each particle ' +
+    'has a simple brain that it uses to process local trail ' +
+    'conditions and decide how to behave.' ,
+    'Groups of particles, called cohorts, all share the same behavior.',
+  ],  "There's a lot to explore in Fluoddity! But most of the time, all you'll need is File->Save/Load "+
+  "and the main control bar at the top of the screen."+
+  ' Most actions have hotkeys indicated by parentheses and any action that'+
+  ' changes a project can be undone with (Z).',
+  'Press ? or go to Help → Controls for the full list of keys and mouse tools.',
+  DIVIDER,
+  "Getting Started:",
+  "Go to File->Load and select a preset that appeals to you. Diversity and Medley can be good places to start exploring. Click on a cohort that you want to see more of, or reroll all the current mutations with (F). In Fluoddity, there is always current set of brain parameters that act as the 'parent'. If you reduce mutation scale to 0, all the particles will behave exactly as the parent did. Selecting a cohort and generating children allows you to set a new parent and see a new crop mutations of it.",
+  DIVIDER,
+  "Tips:",
+  ["I like to start at 16 or 4 cohorts (press the buttons to the far left of the mutation slider) and reduce down to 1 once I've found something I like.",
+    "Set/Load checkpoints with (C)/(V) so that you can explore without losing your place.",
+    "Enable cohort fences if you want to keep the cohorts from mixing together (Click the dotted circle button to the left of the mutation bar).",
+    "File->Save your favorite creations or turn them into shareable urls with Share->Copy Link to this Project"
+  ],
+  DIVIDER,
+  'Understanding the algorithm:',
+  "Particles in Fluoddity have no direct interactions with each-other. Instead, they leave trails as they move. These trails decay and diffuse over time. Particles respond to the density and direction of trails around them. There is no fixed rule that determines how particles respond to their senses: Each particle has a simple neural-net like brain which determines how the particle responds to stimuli.",
+  "Those responses take the form of:",
+  ["A force which cause the the particle to accelerate/brake/turn.",
+    "A so called 'strafe', like a little hop, which direcltly shifts particle position without changing it's velocity."
+  ],
+  "Each cohort has a unique mutation of the current parent brain, causing them to apply different ",
+  "Learn More:",
+  [
+  "Fluoddity is an extension of the classic Physarum model which you can read about in this excellent Sage Jenson blog post: https://cargocollective.com/sagejenson/physarum",
+  "This github readme page contains many more details on how this system expands on traditional Physarum simulations:"+
+  " https://github.com/aphid91/Fluoddity"
+  ]
+
+];
+
+const CONTROLS_HEADING = 'Controls';
+
+/**
+ * The key and mouse reference. Split out of `GUIDE_BODY` because it is the one
+ * people come BACK for, and a reader hunting for "which key redoes" should not
+ * have to scroll past the algorithm to reach it.
+ */
+const CONTROLS_BODY: readonly Block[] = [
+  'Press X or click the gear icon to toggle the control panels:',
   [
     'The panel on the right shows your editor and tool preferences.',
     'The panel on the left shows your current project. These values are stored ' +
@@ -101,12 +162,13 @@ const GUIDE_BODY: readonly Block[] = [
       'mutations.',
   ],
   DIVIDER,
-  'Controls',
+  'Keyboard controls',
   [
     'WASD: pan camera',
     'Q/E/Scroll wheel: zoom camera',
     'X: toggle hide UI',
-    'H or ?: Display this window',
+    '? or /: Display this window',
+    'H: Display the guide',
   ],
   [
     'R: reset simulation',
@@ -130,9 +192,11 @@ const GUIDE_BODY: readonly Block[] = [
   DIVIDER,
   'Mouse controls',
   'Tool: Select',
-  'See something you like? Click on a particle and the rest will adopt its ' +
-    'behavior. If mutation scale is nonzero, each cohort will take on a unique ' +
-    'mutation. This process can be repeated, making it possible to explore the ' +
+  'See something you like? Click on a particle to select its cohort: all the ' +
+    'particles with which it shares behavior. Click it again, press enter, or use '+
+    'the yellow button on the hint bar to confirm selection and set the chosen cohort '+
+    'as the new parent. Each cohort will take on a unique mutation of that parent. ' +
+    'This process can be repeated, making it possible to explore the ' +
     'space of possible behaviors. When in select mode, right click is mapped ' +
     'to undo.',
 
@@ -142,20 +206,19 @@ const GUIDE_BODY: readonly Block[] = [
 
   'Tool: Draw',
   'Left click to draw barriers that repel particles. Right click to erase.',
-  DIVIDER,
-  'There is no fixed particle behavior in Fluoddity. Instead, each particle ' +
-    'has a simple neural-net like brain that it uses to process local trail ' +
-    'conditions and decide how to behave. Groups of particles, called cohorts, ' +
-    'all share the same behavior.',
 ];
 
 /** Blocks that are a bold sub-heading rather than body copy. */
 const SUBHEADINGS: ReadonlySet<string> = new Set([
-  'Controls',
+  'Basics:',
+  'Keyboard controls',
   'Mouse controls',
   'Tool: Select',
   'Tool: Shove',
   'Tool: Draw',
+  'Getting Started:',
+  'Tips:',
+  'Understanding the algorithm:'
 ]);
 
 /**
@@ -274,6 +337,11 @@ export class Splash {
     // press that drifts a few pixels would leave the splash up. The overlay
     // sits above the canvas, so this press is consumed here and the simulation
     // never sees it either way.
+    //
+    // Links in the copy exempt themselves at their own node (`linkify`), which
+    // is why this only has the scrollbar to test: an anchor is a real element
+    // and can stop the event before it bubbles here, where the scrollbar is
+    // drawn inside the card and has no node to bind to.
     this.root.addEventListener('pointerdown', (ev) => {
       if (this.onScrollbar(ev)) return;
       this.dismiss();
@@ -431,24 +499,84 @@ export class Splash {
   }
 }
 
+/**
+ * The three documents, by variant. One table rather than a chain of ternaries
+ * in `render`, which is what a third variant turned from tidy into unreadable.
+ */
+const DOCUMENTS: Readonly<Record<Variant, { heading: string; body: readonly Block[] }>> = {
+  welcome: { heading: WELCOME_HEADING, body: WELCOME_BODY },
+  guide: { heading: GUIDE_HEADING, body: GUIDE_BODY },
+  controls: { heading: CONTROLS_HEADING, body: CONTROLS_BODY },
+};
+
+/**
+ * A bare `http(s)://` run in the copy. Stops at whitespace, and trims trailing
+ * `.,;:` so a URL ending a sentence does not swallow the full stop.
+ */
+const URL_RE = /https?:\/\/[^\s]+/g;
+
+/**
+ * Fill `el` with `text`, turning any bare URL in it into a real link.
+ *
+ * The copy stays plain strings -- no markup, no `[label](href)` micro-syntax to
+ * learn -- and the one thing it actually contains, a URL sitting in the middle
+ * of a sentence under "Learn More", becomes clickable. Everything else goes in
+ * as a text node, so the copy can never inject markup.
+ */
+function linkify(el: HTMLElement, text: string): void {
+  URL_RE.lastIndex = 0;
+  let at = 0;
+  for (let m = URL_RE.exec(text); m !== null; m = URL_RE.exec(text)) {
+    // Trailing sentence punctuation belongs to the prose, not the href.
+    const raw = m[0].replace(/[.,;:]+$/, '');
+    const start = m.index;
+    if (start > at) el.append(text.slice(at, start));
+
+    const a = document.createElement('a');
+    a.href = raw;
+    a.textContent = raw;
+    // `noopener` because `_blank` otherwise hands the new tab a live
+    // `window.opener` back into the running simulation.
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.style.cssText = 'color:#7fb2ff;text-decoration:underline;cursor:pointer;';
+    // **The overlay's backdrop IS its dismiss target**, and this link is inside
+    // it -- so without this the splash would tear itself down on the way to
+    // opening the tab. Same exemption the scrollbar gets in `onScrollbar`, and
+    // for the same reason: a press that means something else is not a dismiss.
+    //
+    // `stopPropagation` on `pointerdown` specifically, because that is the
+    // event the root listens on; the `click` that follows still reaches the
+    // anchor and navigates as normal.
+    a.addEventListener('pointerdown', (ev) => {
+      ev.stopPropagation();
+    });
+    el.append(a);
+
+    at = start + raw.length;
+  }
+  if (at < text.length) el.append(text.slice(at));
+}
+
 /** One variant's body as elements, with its heading in front. */
 function render(variant: Variant): HTMLElement[] {
   const welcome = variant === 'welcome';
+  const doc = DOCUMENTS[variant];
 
   // CENTRED ON THE WELCOME ONLY. It is a title above four lines and reads as
-  // one, where the guide's is a section label at the top of a long scrolling
-  // document -- centring that one would leave it floating away from the copy it
-  // heads. `text-align` rather than a flex change, so it centres within the
-  // card's content box and stays put as the card resizes.
+  // one, where the reference documents' is a section label at the top of a long
+  // scrolling document -- centring that one would leave it floating away from
+  // the copy it heads. `text-align` rather than a flex change, so it centres
+  // within the card's content box and stays put as the card resizes.
   const heading = document.createElement('h1');
-  heading.textContent = welcome ? WELCOME_HEADING : GUIDE_HEADING;
+  heading.textContent = doc.heading;
   heading.style.cssText =
     'margin:0 0 12px;font-size:18px;font-weight:600;' +
     (welcome ? 'text-align:center;' : '');
 
   const out: HTMLElement[] = [heading];
 
-  for (const block of welcome ? WELCOME_BODY : GUIDE_BODY) {
+  for (const block of doc.body) {
     if (block === DIVIDER) {
       const hr = document.createElement('hr');
       hr.style.cssText =
@@ -459,7 +587,7 @@ function render(variant: Variant): HTMLElement[] {
 
     if (typeof block === 'string') {
       const p = document.createElement('p');
-      p.textContent = block;
+      linkify(p, block);
       p.style.cssText = SUBHEADINGS.has(block)
         ? 'margin:12px 0 6px;font-weight:600;'
         : 'margin:0 0 10px;opacity:0.85;';
@@ -471,10 +599,9 @@ function render(variant: Variant): HTMLElement[] {
     ul.style.cssText = 'margin:0 0 10px;padding-left:20px;opacity:0.85;';
     for (const item of block) {
       const li = document.createElement('li');
-      li.textContent = item.startsWith('-') ? item.slice(1).trim() : item;
-      li.style.cssText = item.startsWith('-')
-        ? 'margin:2px 0 2px 16px;'
-        : 'margin:2px 0;';
+      const nested = item.startsWith('-');
+      linkify(li, nested ? item.slice(1).trim() : item);
+      li.style.cssText = nested ? 'margin:2px 0 2px 16px;' : 'margin:2px 0;';
       ul.append(li);
     }
     out.push(ul);

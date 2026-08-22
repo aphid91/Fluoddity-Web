@@ -630,6 +630,9 @@ export class Panel {
       onShowGuide: () => {
         this.showGuide();
       },
+      onShowControls: () => {
+        this.showControls();
+      },
       onToggleExportVideo: () => {
         this.setExportVideoShown(!this.exportVideoShown);
       },
@@ -1504,7 +1507,7 @@ export class Panel {
   }
 
   /**
-   * Open the Controls/Guide overlay. The `H` / `?` keys, and Help → Controls.
+   * Open the guide overlay. The `H` key, and Help → Guide.
    *
    * Fronts the splash for the reason `setSplashStatus` does. Safe while the
    * welcome is already up: `show` swaps the document in place rather than
@@ -1513,6 +1516,16 @@ export class Panel {
    */
   showGuide(): void {
     this.splash.show('guide');
+  }
+
+  /**
+   * Open the key and mouse reference. The `?` / `/` keys, and Help → Controls.
+   *
+   * The same surface as `showGuide`, its other document -- and it swaps in
+   * place for the same reason, so `?` works with the guide already up.
+   */
+  showControls(): void {
+    this.splash.show('controls');
   }
 
   /**

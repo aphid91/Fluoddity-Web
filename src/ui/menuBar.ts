@@ -90,13 +90,15 @@ export interface MenuBarOptions {
   /** Re-show the welcome splash. Owned by the panel, like the dialogs. */
   readonly onShowWelcome: () => void;
   /**
-   * Show the in-depth guide -- the same overlay, its other document.
+   * Show the in-depth guide -- the same overlay, another of its documents.
    *
-   * A SECOND callback rather than an argument on `onShowWelcome`, so this menu
-   * never learns that the two share a surface. Which of them the panel puts
+   * A SEPARATE callback rather than an argument on `onShowWelcome`, so this menu
+   * never learns that they share a surface. Which of them the panel puts
    * them on is the panel's business.
    */
   readonly onShowGuide: () => void;
+  /** Show the key and mouse reference. Split from the guide, same reasoning. */
+  readonly onShowControls: () => void;
   /**
    * Show or hide the Recording Controls tab.
    *
@@ -485,18 +487,24 @@ export class MenuBar {
     // `setOpenMenu` -- only File and History gate hover-preview sessions -- so
     // this one is an ordinary menu with nothing to keep in sync.
     this.addMenu('Help', (body) => {
-      // TWO ROWS, one overlay. The welcome is the five-line first-run screen;
-      // the guide is the reference. Splitting them is the whole point -- a
-      // returning user wants the controls, not the pitch.
+      // THREE ROWS, one overlay. The welcome is the five-line first-run screen;
+      // the guide explains what the simulation is doing and the controls list
+      // what to press. Splitting them is the whole point -- a returning user
+      // wants one of the two references, not the pitch, and usually the keys.
       this.addItem(body, 'Welcome...', () => this.opts.onShowWelcome());
-      // The shortcut is READ FROM THE TABLE, so a rebind moves this label with
-      // it. `H` is what comes back (the `Slash` row is second); the guide's own
-      // copy names `?` as well, which a one-key column has no room for.
+      // The shortcuts are READ FROM THE TABLE, so a rebind moves these labels
+      // with them.
       this.addItem(
         body,
-        'Controls / Guide...',
+        'Guide...',
         () => this.opts.onShowGuide(),
         localHotkeyLabel('showGuide'),
+      );
+      this.addItem(
+        body,
+        'Controls...',
+        () => this.opts.onShowControls(),
+        localHotkeyLabel('showControls'),
       );
     });
   }

@@ -207,17 +207,20 @@ test('X is handled locally rather than dispatched', () => {
   assert.equal(hit?.command, undefined, 'hiding the panel is not simulation state');
 });
 
-test('the guide answers to both H and ?, and neither is dispatched', () => {
+test('H opens the guide and ? the controls, and neither is dispatched', () => {
+  // ONE KEY EACH: the overlay's two reference documents are separate, so `H`
+  // and `?` are not synonyms for one screen.
+  //
   // `?` is Shift+`/` on a US layout and `code` cannot tell the two apart, so
   // the row leaves `shift` open. A row demanding Shift would leave bare `/`
   // silently dead -- and `/` is bound to nothing else that could claim it.
-  for (const [code, shift] of [
-    ['KeyH', false],
-    ['Slash', true],
-    ['Slash', false],
+  for (const [code, shift, action] of [
+    ['KeyH', false, 'showGuide'],
+    ['Slash', true, 'showControls'],
+    ['Slash', false, 'showControls'],
   ] as const) {
     const hit = matchHotkey(DEFAULT_HOTKEYS, code, shift);
-    assert.equal(hit?.local, 'showGuide', `${code} (shift=${String(shift)}) should open the guide`);
+    assert.equal(hit?.local, action, `${code} (shift=${String(shift)}) should open ${action}`);
     assert.equal(hit?.command, undefined, 'an overlay is not simulation state');
   }
 });
@@ -275,10 +278,11 @@ test('localHotkeyLabel reaches the bindings that have no command', () => {
   assert.equal(localHotkeyLabel('toggleUi'), 'X');
   assert.equal(localHotkeyLabel('copyShareLink'), 'Shift+C');
   assert.equal(localHotkeyLabel('pasteShareLink'), 'Shift+V');
-  // TWO rows carry `showGuide`; the first wins, and `KeyH` is first on purpose.
-  // `Slash` would render as the literal word "Slash" in the Help menu's
-  // shortcut column, which names nothing a user could press.
   assert.equal(localHotkeyLabel('showGuide'), 'H');
+  // The BARE `code` here is the literal word "Slash", which names nothing a
+  // user could press -- `keyLabel` translates it, so the Help menu's shortcut
+  // column can go on reading the table rather than hard-coding a glyph.
+  assert.equal(localHotkeyLabel('showControls'), '?');
 });
 
 // --- 4. matchHotkey itself ------------------------------------------------

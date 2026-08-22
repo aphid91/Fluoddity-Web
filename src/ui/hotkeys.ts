@@ -68,7 +68,8 @@ export type LocalAction =
   | 'toggleUi'
   | 'copyShareLink'
   | 'pasteShareLink'
-  | 'showGuide';
+  | 'showGuide'
+  | 'showControls';
 
 /** One binding. Exactly one of `command`/`local` is set. */
 export interface Hotkey {
@@ -212,20 +213,21 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   { code: 'KeyC', shift: true, local: 'copyShareLink' },
   { code: 'KeyV', shift: true, local: 'pasteShareLink' },
 
-  // The guide, on the two keys everyone tries. `local` for the same reason as
-  // the rest of this block: the overlay is the panel's, and the Orchestrator
-  // has no DOM in it.
+  // The two reference documents, on the two keys everyone tries. `local` for
+  // the same reason as the rest of this block: the overlay is the panel's, and
+  // the Orchestrator has no DOM in it.
   //
-  // **TWO ROWS, and `KeyH` is listed FIRST on purpose.** `keyLabel` reads the
-  // first match, so `H` is what any generated hint will say -- `Slash` would
-  // render as the literal word. The copy in `splash.ts` names both.
+  // **ONE KEY EACH, not two keys onto one document.** `H` is help-the-prose and
+  // `?` is help-the-keys, matching the split the overlay itself makes -- so
+  // someone after the key list gets it in one press rather than a scroll.
   //
   // `Slash` with `shift: undefined`, so it matches `/` as well as `?`. The two
   // are one physical key on a US layout and `code` cannot tell them apart
   // anyway; demanding Shift would leave `/` doing nothing, and `/` is not bound
-  // to anything else to collide with.
+  // to anything else to collide with. `keyLabel` translates the row to `?` via
+  // `KEY_SYMBOLS`, since the bare `code` is the literal word "Slash".
   { code: 'KeyH', local: 'showGuide' },
-  { code: 'Slash', local: 'showGuide' },
+  { code: 'Slash', local: 'showControls' },
 ];
 
 /**
@@ -273,11 +275,22 @@ export function localHotkeyLabel(
 }
 
 /**
+ * Punctuation `code`s whose name is not the thing you press.
+ *
+ * `Slash` is the only one bound today, and it is exactly the case the plain
+ * rule gets wrong: stripping no prefix leaves the literal word "Slash" in a
+ * shortcut column, naming nothing a user could type. `?` rather than `/`
+ * because that is what the copy has always called this key.
+ */
+const KEY_SYMBOLS: Readonly<Record<string, string>> = { Slash: '?' };
+
+/**
  * One row as a display string.
  *
  * `KeyboardEvent.code` is a physical-key name (`KeyF`, `Digit1`), so the prefix
  * comes off. Anything else is shown verbatim: `Space`, `Home` and the arrows
- * already read correctly.
+ * already read correctly -- except the punctuation keys, whose `code` is a WORD
+ * rather than the glyph, and which `KEY_SYMBOLS` translates.
  *
  * THE SHIFT PREFIX IS NOT COSMETIC. Without it this returned `Z` for both undo
  * and redo, and would now return `C` for both the checkpoint and the share link
@@ -286,7 +299,7 @@ export function localHotkeyLabel(
  * was real but unreachable; the share link reaches it.
  */
 function keyLabel(row: Hotkey): string {
-  const key = row.code.replace(/^(Key|Digit)/, '');
+  const key = KEY_SYMBOLS[row.code] ?? row.code.replace(/^(Key|Digit)/, '');
   return row.shift === true ? `Shift+${key}` : key;
 }
 

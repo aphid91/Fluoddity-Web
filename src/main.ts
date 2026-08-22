@@ -399,6 +399,7 @@ async function start(): Promise<void> {
     pasteShareLink: () => panel?.pasteShareLink(),
     // `?nopanel` takes the splash with the panel, so there is nothing to open.
     showGuide: () => panel?.showGuide(),
+    showControls: () => panel?.showControls(),
   });
 
   // --- first-run calibration -------------------------------------------------
