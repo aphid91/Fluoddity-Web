@@ -237,6 +237,51 @@ export function ruleChanged(before: Project, after: Project): boolean {
 }
 
 /**
+ * Whether moving between these two projects changes HOW THE PARTICLES ARE LAID
+ * OUT -- any config's cohort count or initial conditions.
+ *
+ * **THE SIBLING OF `ruleChanged`, AND IT EXISTS FOR THE SAME REASON.** Undo and
+ * redo are one code path replaying steps of every kind, so the only way to tell
+ * a layout change from a brightness tweak is to look at the two states.
+ *
+ * **WHY THESE TWO FIELDS NEED A RESET AND `ruleChanged`'S DO NOT.** These decide
+ * WHERE PARTICLES ARE PUT, and particles are only ever put anywhere by
+ * `reset()` in `entityUpdate.wgsl` -- `initial_position` has exactly two
+ * callers, that one and the cohort-fence check. So an undo that restores
+ * `initialConditions: RANDOM` moves nothing already on screen: the population
+ * keeps the arrangement it was given at its last restart, and the layout the
+ * user just stepped back to never appears. `setPopulationLayout`'s forward path
+ * resets for exactly this reason; undo and redo of it are the same act reversed.
+ *
+ * (The fence path DOES read `initialConditions` every frame, so with cohort
+ * fences on an undo would visibly retarget the fences while leaving the
+ * particles where they were -- a half-applied layout, which is worse than the
+ * fully-unapplied one and an equally good argument for resetting.)
+ *
+ * The cohort count travels with it because `setPopulationLayout` moves both as
+ * one act, and because the count decides how the grid is divided -- restoring
+ * one without the other would show a grid cut for a population that is no longer
+ * there.
+ *
+ * SEPARATE FROM `ruleChanged` RATHER THAN FOLDED INTO IT, because the two ask
+ * genuinely different questions and one of them is about to get a third caller:
+ * `ruleChanged` means "the particles are chasing something new" and also drives
+ * the highlight clear (a lit cohort names a stale behaviour). A layout change
+ * does not invalidate a highlight's MEANING, so merging them would put out the
+ * highlight on a step that did not change any behaviour.
+ */
+export function layoutChanged(before: Project, after: Project): boolean {
+  if (before === after) return false;
+  if (before.configs.length !== after.configs.length) return true;
+
+  return before.configs.some((a, i) => {
+    const b = after.configs[i]!;
+    if (a === b) return false; // the common case: untouched slots share identity
+    return a.cohorts !== b.cohorts || a.initialConditions !== b.initialConditions;
+  });
+}
+
+/**
  * Change one world setting.
  *
  * A real edit of the project's single `WorldSettings` -- not, as it once was on

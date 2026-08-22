@@ -1349,7 +1349,7 @@ export function hintFor(status: Status): {
       cohort: status.highlightedCohort,
       // The cancel clause is a BUTTON now, so the tail keeps only the advice
       // that has nowhere else to go.
-      tail: ' | Increase Mutation Scale for variations',
+      tail: ' | Increase Mutation Scale for variations. These children are all identical to their parent',
       // NO COMMIT BUTTON HERE, and this is the case that most needs to say so.
       // The commit is REFUSED at mutation scale 0 (`selectionIsNoOp`), so
       // offering a button that declines when pressed would be worse than the
@@ -1403,6 +1403,28 @@ export function hintFor(status: Status): {
   // arrived by keyboard, which matters most here: with a single cohort there is
   // no stepper to arrow through, so the canvas was previously the ONLY way in.
   if (!status.highlightEnabled) {
+    // **THE BUTTON IS WITHDRAWN AT MUTATION SCALE 0**, for the reason the lit
+    // no-op branch above gives: `confirmSelection` is REFUSED there, and a
+    // button that declines when pressed is worse than the sentence it replaced.
+    // The sentence says what to do about it instead.
+    //
+    // `selectionIsNoOp` ALREADY EXEMPTS THE SENTINEL, which is what makes this
+    // one flag rather than two conditions restated here: with a generated rule
+    // the GPU takes its generate branch, every cohort gets a genuinely
+    // different rule regardless of mutation scale, and adopting one is the only
+    // way to capture it -- so the button stays, and stays useful.
+    if (status.selectionIsNoOp) {
+      return {
+        ...none(
+          'Increase Mutation Scale for variations. This child is identical to its parent',
+        ),
+        // THE UNDO BUTTON STAYS. Only the gold button is refused here -- right
+        // click still undoes in this state, exactly as it does in the two
+        // branches either side, and dropping the button because a DIFFERENT
+        // action became unavailable would make it flicker with the slider.
+        undo: status.canUndo ? status.undoLabel : '',
+      };
+    }
     return {
       ...none(''),
       generateChild: true,

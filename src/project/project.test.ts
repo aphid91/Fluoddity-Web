@@ -33,6 +33,7 @@ import {
   editSelected,
   editWorld,
   edited,
+  layoutChanged,
   makeProject,
   renamed,
   ruleChanged,
@@ -42,6 +43,7 @@ import {
 import {
   type SimulationConfig,
   BC,
+  IC,
   makeSimulationConfig,
   makeWorldSettings,
 } from '../particleSystem/config.ts';
@@ -281,4 +283,80 @@ test('ruleChanged compares rules by VALUE, not identity', () => {
   const rule = selectedConfig(before).rule.slice();
   rule[79] = 0.99;
   assert.equal(ruleChanged(before, adoptRule(before, rule)), true);
+});
+
+// ---------------------------------------------------------------------------
+// layoutChanged -- what makes an undo a LAYOUT change
+// ---------------------------------------------------------------------------
+//
+// The sibling of `ruleChanged`, and it exists because initial conditions are
+// read ONLY at restart. Without it, undoing a population-layout change restores
+// a cohort count and a GRID flag that the GPU will not look at again -- the
+// state says one thing and the screen shows another, which reads as undo being
+// broken rather than as a preference being honoured. See
+// `Orchestrator.resetIfLayoutChanged`.
+
+test('layoutChanged is false for a project against itself', () => {
+  const p = project();
+  assert.equal(layoutChanged(p, p), false);
+});
+
+test('layoutChanged sees what setPopulationLayout moves', () => {
+  // THE CASE THE FUNCTION EXISTS FOR: the button moves both fields as one act,
+  // and undoing it has to restore both AND restart to show either.
+  const before = editSelected(
+    editSelected(project(), 'cohorts', 4),
+    'initialConditions',
+    IC.RANDOM,
+  );
+  // Built by hand rather than by calling `setPopulationLayout`: that lives in
+  // the orchestrator layer, and a project test must not reach up into it. What
+  // matters is the SHAPE of the edit it makes -- both fields, one step.
+  const after = editSelected(
+    editSelected(before, 'cohorts', 16),
+    'initialConditions',
+    IC.GRID,
+  );
+  assert.equal(layoutChanged(before, after), true);
+
+  // Each field alone is enough -- they are recorded as one entry, but nothing
+  // stops a future step from moving just one.
+  assert.equal(layoutChanged(before, editSelected(before, 'cohorts', 9)), true);
+  assert.equal(
+    layoutChanged(before, editSelected(before, 'initialConditions', IC.GRID)),
+    true,
+  );
+});
+
+test('layoutChanged ignores edits that are not layout', () => {
+  // Including a RULE change, which is the whole reason these are two functions:
+  // undoing a rule adoption goes through `ruleChanged` and clears the highlight,
+  // and routing it through here as well would claim the population moved when
+  // only its behaviour did.
+  const before = project();
+  assert.equal(layoutChanged(before, editSelected(before, 'sensorGain', 9.5)), false);
+  assert.equal(layoutChanged(before, adoptRule(before, new Array<number>(80).fill(0.75))), false);
+  assert.equal(layoutChanged(before, editSelected(before, 'mutationSeed', 0.875)), false);
+  assert.equal(layoutChanged(before, renamed(before, 'Starcrossedv8')), false);
+});
+
+test('layoutChanged ignores a moved selection but sees an UNSELECTED config', () => {
+  // Slot for slot, for the reason `ruleChanged` compares that way: an undo can
+  // move `selected`, and comparing the selected config would report a layout
+  // change because the user stepped back over a config switch.
+  const before = makeProject({ configs: [config(0), config(1)], selected: 0 });
+  assert.equal(
+    layoutChanged(before, makeProject({ configs: before.configs, selected: 1 })),
+    false,
+  );
+
+  // Those particles are on screen with that cohort count whether or not the
+  // panel is pointed at them.
+  assert.equal(layoutChanged(before, edited(before, 1, 'cohorts', 9)), true);
+});
+
+test('layoutChanged treats a different config count as a change', () => {
+  const before = makeProject({ configs: [config(0), config(1)] });
+  const after = makeProject({ configs: [config(0)] });
+  assert.equal(layoutChanged(before, after), true);
 });

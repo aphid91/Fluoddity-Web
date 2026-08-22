@@ -109,6 +109,7 @@ import {
   type Project,
   adoptRule,
   configCount,
+  layoutChanged,
   makeProject,
   renamed,
   ruleChanged,
@@ -1621,6 +1622,36 @@ export class Orchestrator implements CommandBus {
   }
 
   /**
+   * The undo/redo half of `setPopulationLayout`'s reset.
+   *
+   * **NOT GATED ON `resetOnBehaviorChange`, and that is the difference from
+   * `resetIfRuleChanged` above.** That preference is about behavior changes --
+   * whether retargeting the particles should also restart them -- and someone
+   * who turns it off is asking to keep watching the current picture while its
+   * rule changes underneath. This is not that question. Particles are only ever
+   * PLACED by `reset()` (`entityUpdate.wgsl`), so without a restart the layout
+   * the undo just restored would not appear at all: the state would say GRID
+   * while the screen kept the scattered population from before. That is not a
+   * preference being honoured, it is the undo silently failing.
+   *
+   * The forward path (`setPopulationLayout`) resets unconditionally for exactly
+   * this reason and consults no preference either, so undo and redo of that act
+   * match the act itself.
+   *
+   * **THE HIGHLIGHT GOES OUT TOO, and only because the COUNT can move.** A lit
+   * cohort is an index into a population that a layout change may have resized,
+   * so cohort 12 of 16 means nothing once undo restores a 4-cohort config. This
+   * is the same argument `resetForConfig` makes about a config swap changing the
+   * cohort count -- and it is about the index being stale, not the behaviour,
+   * which is why it does not go through `behaviorChangedElsewhere`.
+   */
+  private resetIfLayoutChanged(before: Project, after: Project): void {
+    if (!layoutChanged(before, after)) return;
+    this.clearHighlight();
+    this.system.reset();
+  }
+
+  /**
    * The state from before any hover-preview began, or `fallback`.
    *
    * A committed load arrives with the project ALREADY moved by the preview that
@@ -1815,6 +1846,11 @@ export class Orchestrator implements CommandBus {
           // asked -- and `reset()` is idempotent, it only sets a sentinel, so
           // the frame where both say yes still resets exactly once.
           this.resetIfRuleChanged(before, previous);
+          // Stepping back over a layout change restores a cohort count and an
+          // initial-conditions mode that only a restart can show. `reset()` is
+          // idempotent, so a step that changed both rule and layout still
+          // resets exactly once.
+          this.resetIfLayoutChanged(before, previous);
         }
         return;
       }
@@ -1835,6 +1871,9 @@ export class Orchestrator implements CommandBus {
           // Redo re-applies the rule change undo just took away, so it is a
           // behavior change by the same argument. See the undo case above.
           this.resetIfRuleChanged(before, next);
+          // Redo re-applies the layout change undo just took back, so it needs
+          // the restart by the same argument. See the undo case above.
+          this.resetIfLayoutChanged(before, next);
         }
         return;
       }

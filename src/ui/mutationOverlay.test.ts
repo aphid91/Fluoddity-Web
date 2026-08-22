@@ -210,15 +210,22 @@ test('the generate-a-child button is the one-click state alone', () => {
   for (const mouseMode of ['select', 'shove', 'draw'] as const) {
     for (const highlightEnabled of [true, false]) {
       for (const highlightedCohort of [NO_COHORT, 2]) {
-        const hint = hintFor(
-          status({ mouseMode, highlightEnabled, highlightedCohort }),
-        );
-        assert.ok(
-          !(hint.generateChild && hint.commit),
-          `${mouseMode}/${String(highlightEnabled)}/${String(highlightedCohort)}`,
-        );
-        if (mouseMode !== 'select') {
-          assert.equal(hint.generateChild, false, `${mouseMode} adopts nothing`);
+        for (const selectionIsNoOp of [false, true]) {
+          const hint = hintFor(
+            status({ mouseMode, highlightEnabled, highlightedCohort, selectionIsNoOp }),
+          );
+          const where = `${mouseMode}/${String(highlightEnabled)}/${String(highlightedCohort)}/${String(selectionIsNoOp)}`;
+          assert.ok(!(hint.generateChild && hint.commit), where);
+          if (mouseMode !== 'select') {
+            assert.equal(hint.generateChild, false, `${mouseMode} adopts nothing`);
+          }
+          // NEITHER GOLD BUTTON SURVIVES A REFUSED COMMIT. Both send
+          // `confirmSelection`, and the Orchestrator declines it at mutation
+          // scale 0 with an authored rule -- so a button offered here would be
+          // one that does nothing when pressed, in either state.
+          if (selectionIsNoOp) {
+            assert.ok(!hint.generateChild && !hint.commit, `refused, so no button: ${where}`);
+          }
         }
       }
     }
@@ -255,13 +262,18 @@ test('the undo button is withheld wherever right click means something else', ()
     );
   }
 
-  // Both unlit Select states DO offer it, including the one-click config: right
-  // click genuinely undoes in both.
-  assert.notEqual(hintFor(status({ mouseMode: 'select' })).undo, null);
-  assert.notEqual(
-    hintFor(status({ mouseMode: 'select', highlightEnabled: false })).undo,
-    null,
-  );
+  // Every unlit Select state DOES offer it -- both highlight modes, and at
+  // either mutation scale. Right click genuinely undoes in all of them, and the
+  // button must not come and go with a slider that has nothing to do with it.
+  for (const highlightEnabled of [true, false]) {
+    for (const selectionIsNoOp of [false, true]) {
+      assert.notEqual(
+        hintFor(status({ mouseMode: 'select', highlightEnabled, selectionIsNoOp })).undo,
+        null,
+        `unlit ${String(highlightEnabled)}/${String(selectionIsNoOp)}`,
+      );
+    }
+  }
 });
 
 test('the undo button never shares the row with the other two reds', () => {
@@ -302,9 +314,47 @@ test('at scale 0 the hint says what to do instead of promising an adoption', () 
     'the hint must not promise an adoption that is refused',
   );
   assert.match(hint.tail, /Mutation Scale/, 'it should say what would enable it');
+  // AND WHAT WOULD HAPPEN IF THEY DID NOT RAISE IT. "Increase Mutation Scale"
+  // alone names the remedy without naming the symptom, which leaves the user to
+  // work out why a commit they can still see offered would be pointless.
+  assert.match(hint.tail, /These children are all identical to their parent/);
   // CANCELLING IS STILL OFFERED, and this is the state that most needs it: the
   // commit is refused here, so backing out is the one action fully available.
   assert.equal(hint.cancelSelection, true, 'cancelling still works');
+});
+
+test('the one-click state withdraws its button at scale 0 and says why', () => {
+  // The same refusal the lit branch above makes, in the state that has no
+  // stepper: `confirmSelection` installs a rule identical to the one already
+  // there, so a button that declines when pressed would be worse than prose.
+  const hint = hintFor(
+    status({ mouseMode: 'select', highlightEnabled: false, selectionIsNoOp: true }),
+  );
+  assert.equal(hint.generateChild, false, 'the button is refused, so it is withdrawn');
+  assert.equal(
+    hint.lead,
+    'Increase Mutation Scale for variations. This child is identical to its parent',
+  );
+  // SINGULAR, against the lit branch's plural: one cohort makes one child, and
+  // the plural would describe a spread this config cannot produce.
+  assert.ok(!/These children/.test(hint.lead), 'one cohort, one child');
+  // THE UNDO BUTTON SURVIVES. Only the gold button is refused -- right click
+  // still undoes here, and dropping it because a different action became
+  // unavailable would make it flicker as the slider crosses zero.
+  assert.notEqual(hint.undo, null, 'undo is unaffected by mutation scale');
+});
+
+test('the sentinel keeps its button at scale 0, because the GPU generates', () => {
+  // `selectionIsNoOp` is FALSE for a generated rule whatever the mutation scale:
+  // the shader takes its generate branch, each cohort gets a genuinely different
+  // rule from the seed, and adopting one is the only way to capture it. The
+  // overlay must not re-derive that exemption -- it reads the one flag, so this
+  // pins that a false flag leaves the button in place.
+  const hint = hintFor(
+    status({ mouseMode: 'select', highlightEnabled: false, selectionIsNoOp: false }),
+  );
+  assert.equal(hint.generateChild, true, 'a generated rule still has a child to give');
+  assert.equal(hint.lead, '', 'the button carries the words');
 });
 
 test('a lit cohort offers the commit BUTTON instead of the click prose', () => {
