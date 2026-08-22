@@ -43,6 +43,7 @@ import { NO_COHORT } from '../selection/cohortHighlight.ts';
 import { bindFocusRelease } from './focusRelease.ts';
 import { hotkeyLabel, localHotkeyLabel } from './hotkeys.ts';
 import {
+  GENERATE_CHILDREN_HELP,
   RANDOMIZE_BEHAVIOR_HELP,
   REROLL_MUTATIONS_HELP,
   RESET_HELP,
@@ -547,6 +548,23 @@ export class MutationOverlay {
       // button is used -- the same answer the gear and the tool select make.
       this.commitButton.blur();
     });
+    // FIXED CONTENT, not a live source: unlike Reroll and Cohort Fences, what
+    // this button does never depends on state the tooltip would have to re-read.
+    // It is only ever shown in one situation, and it does the same thing there
+    // every time. Shared with the Generate A Child button below -- see
+    // `GENERATE_CHILDREN_HELP` for why one string serves both.
+    //
+    // Attached HERE rather than in `refreshHint`, which rewrites these labels:
+    // `attach` adds listeners, so attaching where the text is set would add a
+    // fresh pair on every state change and leak one per repaint.
+    // BELOW, not beside: this button is wide -- its label names three routes to
+    // the act -- so a tooltip off its right edge starts far from the words it
+    // explains. See `TooltipPlacement`.
+    this.tooltip.attach(
+      this.commitButton,
+      { title: 'Generate Children', body: GENERATE_CHILDREN_HELP },
+      'below',
+    );
 
     // Clear All Barriers, the Draw tool's own action on this row.
     //
@@ -623,6 +641,15 @@ export class MutationOverlay {
       // Hands the keys back, like every other button on this bar.
       this.generateChildButton.blur();
     });
+    // THE SAME BODY AS THE COMMIT BUTTON, and deliberately so: these two send
+    // the same command and differ only in which parent is being adopted. The
+    // TITLE is singular to match this button's own label, for the reason the
+    // label itself is singular -- with one cohort there is one thing to vary.
+    this.tooltip.attach(
+      this.generateChildButton,
+      { title: 'Generate A Child', body: GENERATE_CHILDREN_HELP },
+      'below',
+    );
 
     // Undo, on the hint row beside it.
     //

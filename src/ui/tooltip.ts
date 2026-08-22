@@ -65,6 +65,25 @@ export interface TooltipContent {
 export type TooltipSource = TooltipContent | (() => TooltipContent);
 
 /**
+ * Which side of its anchor a tooltip prefers.
+ *
+ * **`'side'` IS THE DEFAULT AND STAYS THAT WAY.** It is right for the ~35 panel
+ * controls this class was written for: they are narrow rows stacked in a 320px
+ * column against the right edge, so the free space is horizontal and a tooltip
+ * below a row would cover the rows under it -- the ones a user comparing
+ * settings is reading.
+ *
+ * `'below'` is for WIDE anchors, where that reasoning inverts. A bar button
+ * spanning several hundred pixels has its free space vertically, and a tooltip
+ * beside it starts far from the label it explains and runs toward the screen
+ * edge. Under the button it sits against the thing it describes.
+ *
+ * Both are PREFERENCES, not commands: each falls back to the other when the
+ * preferred side does not fit, so neither can push the tooltip off screen.
+ */
+export type TooltipPlacement = 'side' | 'below';
+
+/**
  * The shared tooltip element and its hover timer.
  *
  * One per panel. `attach` wires a control's element to it; the element is
@@ -85,7 +104,11 @@ export class Tooltip {
    * Returns nothing to unbind: the listeners live as long as the element does,
    * and a rebuilt pane discards both together.
    */
-  attach(anchor: HTMLElement, content: TooltipSource): void {
+  attach(
+    anchor: HTMLElement,
+    content: TooltipSource,
+    placement: TooltipPlacement = 'side',
+  ): void {
     // ONLY the fixed form can be rejected up front. A function is not called
     // here -- it would be answering about the wrong frame, and a control that
     // has nothing to say on its first frame may well have something to say
@@ -97,7 +120,7 @@ export class Tooltip {
     anchor.addEventListener('mouseenter', () => {
       this.cancel();
       this.timer = setTimeout(() => {
-        this.show(anchor, content);
+        this.show(anchor, content, placement);
       }, DELAY_MS);
     });
 
@@ -125,7 +148,11 @@ export class Tooltip {
     }
   }
 
-  private show(anchor: HTMLElement, source: TooltipSource): void {
+  private show(
+    anchor: HTMLElement,
+    source: TooltipSource,
+    placement: TooltipPlacement = 'side',
+  ): void {
     // Resolved HERE rather than at attach time, so a live control describes the
     // state it is in right now. See `TooltipSource`.
     const content = typeof source === 'function' ? source() : source;
@@ -163,17 +190,8 @@ export class Tooltip {
     const rect = anchor.getBoundingClientRect();
     const size = el.getBoundingClientRect();
 
-    // The panel is on the RIGHT, so the tooltip goes to its left by default and
-    // only crosses over if there is no room -- the opposite of the desktop,
-    // whose Project window sits left of its diagram.
-    let left = rect.left - size.width - GAP_PX;
-    if (left < GAP_PX) left = rect.right + GAP_PX;
-
-    // Keep it on screen vertically without covering the control it describes.
-    let top = rect.top;
-    const overflow = top + size.height - window.innerHeight + GAP_PX;
-    if (overflow > 0) top -= overflow;
-    if (top < GAP_PX) top = GAP_PX;
+    const { left, top } =
+      placement === 'below' ? below(rect, size) : beside(rect, size);
 
     el.style.left = `${left}px`;
     el.style.top = `${top}px`;
@@ -205,4 +223,67 @@ export class Tooltip {
     this.element?.remove();
     this.element = null;
   }
+}
+
+/** A viewport-space position for the tooltip's top-left corner. */
+interface Position {
+  readonly left: number;
+  readonly top: number;
+}
+
+/**
+ * Beside the anchor. The panel default -- see `TooltipPlacement`.
+ *
+ * The panel is on the RIGHT, so this goes to the anchor's left and only crosses
+ * over when there is no room -- the opposite of the desktop, whose Project
+ * window sits left of its diagram.
+ */
+function beside(rect: DOMRect, size: DOMRect): Position {
+  let left = rect.left - size.width - GAP_PX;
+  if (left < GAP_PX) left = rect.right + GAP_PX;
+
+  // Keep it on screen vertically without covering the control it describes.
+  let top = rect.top;
+  const overflow = top + size.height - window.innerHeight + GAP_PX;
+  if (overflow > 0) top -= overflow;
+  if (top < GAP_PX) top = GAP_PX;
+
+  return { left, top };
+}
+
+/**
+ * Under the anchor, left edges aligned. For wide controls.
+ *
+ * LEFT-ALIGNED RATHER THAN CENTRED. The anchors this serves are buttons whose
+ * label starts at their left edge, so an aligned tooltip starts under the words
+ * it explains. Centring a 320px box under a 500px button would leave it floating
+ * between the label and nothing.
+ *
+ * FLIPS ABOVE when there is no room below, which is the case that matters on
+ * this bar: it sits near the top of the window in its usual position, but the
+ * hint row can carry two lines of buttons and a short window puts the bottom of
+ * it close to the edge. Falling back upward keeps the tooltip fully visible
+ * rather than clipping it against the viewport.
+ *
+ * The horizontal clamp is what stops a button near the right edge -- the hint
+ * bar's buttons are laid out from the centre and can sit anywhere -- pushing a
+ * 320px tooltip off screen.
+ */
+function below(rect: DOMRect, size: DOMRect): Position {
+  let top = rect.bottom + GAP_PX;
+  if (top + size.height > window.innerHeight - GAP_PX) {
+    const above = rect.top - size.height - GAP_PX;
+    // Only flip if ABOVE actually fits. When neither side does, staying below
+    // and letting the clamp handle it keeps the top of the text -- the title and
+    // first line -- on screen, which is the half worth seeing.
+    if (above >= GAP_PX) top = above;
+  }
+  if (top < GAP_PX) top = GAP_PX;
+
+  let left = rect.left;
+  const overflow = left + size.width - window.innerWidth + GAP_PX;
+  if (overflow > 0) left -= overflow;
+  if (left < GAP_PX) left = GAP_PX;
+
+  return { left, top };
 }

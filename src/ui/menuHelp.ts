@@ -52,6 +52,25 @@ export const RANDOMIZE_BEHAVIOR_HELP =
 export const REROLL_MUTATIONS_HELP =
   'Generate a new set of children from the same parent.';
 
+/**
+ * The commit action, shared by the hint bar's two buttons that perform it.
+ *
+ * ONE STRING, TWO BUTTONS. "Generate children from selected cohort" and
+ * "Generate a child from current behavior" are two labels for one act -- both
+ * send `confirmSelection` -- and the difference between them is only WHICH
+ * parent is being adopted. What actually happens next is identical, so it is
+ * described once here rather than paraphrased twice in `mutationOverlay.ts`.
+ *
+ * SAYS THE SIMULATION RESETS, which is the part worth hovering for. The labels
+ * promise children; they do not warn that the particles are about to be thrown
+ * back to their initial conditions, and that is the surprise -- someone watching
+ * a pattern they like has no way to learn from the button that pressing it
+ * clears the screen.
+ */
+export const GENERATE_CHILDREN_HELP =
+  'This will set the current parent to the chosen cohort. The simulation will ' +
+  'reset and each cohort will become a (mutated) child of the one you chose.';
+
 /** Simulation > Reset, shared with the bar's Reset button. */
 export const RESET_HELP =
   'Clear the trail map and place particles in their initial conditions';
