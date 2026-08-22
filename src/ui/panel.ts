@@ -97,6 +97,11 @@ import { Tooltip } from './tooltip.ts';
 import { Toast, type ToastTone } from './toast.ts';
 import { copyText, readText } from './clipboard.ts';
 import { fromDocument, sanitizeName } from '../config/persistence.ts';
+import { describeImport, exportFiles, planImport } from '../config/saveTransfer.ts';
+// STATIC, not a dynamic import, and for the reason `recorder/saveFile.ts` is
+// imported statically: `chooseExportFolder` needs the click's user activation,
+// and an `import()` is an await that spends it. This module imports nothing.
+import { chooseExportFolder, readImportFolder, writeFolder } from './saveFolder.ts';
 import {
   SHARE_LINK_WARN_LENGTH,
   SHARED_LINK_NAME,
@@ -114,7 +119,10 @@ import type { RecordingSectionOptions } from './sections/recordingSection.ts';
 // built for every session. `main.ts` supplies the constructed object through
 // `PanelOptions.recording`, so nothing here ever imports the value side.
 import type { RecordingResult, VideoRecorder } from '../recorder/recorder.ts';
-import type { SaveChoice } from '../recorder/saveFile.ts';
+// STATIC. `main.ts` already imports this module statically, so a dynamic import
+// here would split no chunk -- it would only add an await, which is the thing
+// this file must not spend before reaching a picker. See `saveFolder.ts`.
+import { type SaveChoice, downloadRecording } from '../recorder/saveFile.ts';
 import type { RecordingSettings, Resolution } from '../recorder/recordingSettings.ts';
 // VALUE imports, and safe ones -- the distinction the comment above draws.
 // `recordingSettings.ts` is a pure leaf with no mediabunny and no WebGPU (see
@@ -613,6 +621,15 @@ export class Panel {
       },
       onPasteShareLink: () => {
         this.pasteShareLink();
+      },
+      // NOT `void this.exportSaves()` with an await inside before the picker --
+      // see `exportSaves`. The gesture is spent by the first await, so the
+      // picker has to be the first thing that happens.
+      onExportSaves: () => {
+        this.exportSaves();
+      },
+      onImportSaves: () => {
+        this.importSaves();
       },
       onDeleteConfig: (category, name) => {
         this.dialogs.openDelete(category, name);
@@ -1787,7 +1804,6 @@ export class Panel {
         return;
       }
 
-      const { downloadRecording } = await import('../recorder/saveFile.ts');
       // `sanitizeName` rather than a new helper: it exists precisely to make a
       // user-typed name safe to use as a filename, and it CAN return empty (a
       // name of "..." has nothing usable left), which is what the fallback is
@@ -1805,6 +1821,107 @@ export class Panel {
   /** Whether an export is in flight, for `main.ts`'s driver loop. */
   get exportInFlight(): boolean {
     return this.recorder !== null;
+  }
+
+  /**
+   * Write every user save into a folder, as the v8 files they already are.
+   *
+   * ## THE PICKER GOES FIRST, BEFORE ANY AWAIT
+   *
+   * This is why the method is `void`-returning and starts a promise rather than
+   * being `async` itself: `chooseExportFolder` needs the click's transient user
+   * activation, and the first `await` in this handler spends it. Reading the
+   * saves first -- an IndexedDB round trip -- would leave the picker to be
+   * called with a dead gesture, which browsers answer with a `SecurityError`.
+   * That surfaces as `unavailable`, so the app would silently download a ZIP
+   * instead of writing the folder the user asked for, EVERY TIME. See
+   * `saveFolder.ts` and `recorder/saveFile.ts`, which carry the same rule.
+   *
+   * The cost is asking for a folder before knowing whether there is anything to
+   * put in it, so an empty library means a picker that is dismissed with
+   * "nothing to export". That is the lesser of the two: the alternative is a
+   * feature that never once does what it says.
+   */
+  private exportSaves(): void {
+    // FIRST. Nothing may be awaited above this line.
+    const choice = chooseExportFolder();
+
+    void (async () => {
+      const saves = await this.bus.savedDocuments();
+      const files = exportFiles(saves);
+      if (files.length === 0) {
+        this.toast.show('No saved configs to export.', 'error');
+        return;
+      }
+
+      const folder = await choice;
+      // Cancel means cancel -- it must NOT fall through to the ZIP. See
+      // `FolderChoice`, which separates these two outcomes for this reason.
+      if (folder.kind === 'cancelled') return;
+
+      if (folder.kind === 'folder') {
+        try {
+          const written = await writeFolder(folder.handle, files);
+          this.toast.show(
+            `Exported ${String(written)} ${written === 1 ? 'save' : 'saves'} to the folder you chose.`,
+          );
+        } catch (err: unknown) {
+          this.toast.show(`Could not write the folder: ${String(err)}`, 'error');
+          console.warn('Save export failed:', err);
+        }
+        return;
+      }
+
+      // No directory picker here (Firefox, Safari, any non-secure context). One
+      // archive rather than N downloads: a browser that would not let the user
+      // choose a folder also should not drop thirty files into Downloads.
+      // `zip.ts` is lazy -- it is dead weight on the path that has a picker,
+      // which is every browser this app is developed on. `downloadRecording` is
+      // NOT: `main.ts` already imports it statically, so asking for it here
+      // dynamically would split nothing and only add an await.
+      const { buildZip } = await import('./zip.ts');
+      downloadRecording(buildZip(files), 'fluoddity-saves.zip');
+      this.toast.show(
+        `Exported ${String(files.length)} saves as fluoddity-saves.zip.`,
+      );
+    })();
+  }
+
+  /**
+   * Read a folder of v8 files into the save list.
+   *
+   * NO GESTURE PROBLEM HERE, unlike `exportSaves`: this opens an
+   * `<input type="file">`, which needs no activation and no permission. So the
+   * ordering constraint that shapes the export path does not apply, and this can
+   * be a plain async method.
+   *
+   * COLLISIONS AND BAD FILES ARE DECIDED BY `planImport`, not here -- this is
+   * the DOM edge, and the rules are pure. What the toast reports is that plan.
+   */
+  private importSaves(): void {
+    void (async () => {
+      const files = await readImportFolder();
+      if (files.length === 0) return;
+
+      const existing = await this.bus.savedNames();
+      const plan = planImport(files, existing);
+
+      // Every file bounced. Reported as an error tone because the user picked a
+      // folder expecting something to happen, and nothing did -- the counts in
+      // the message are what say why.
+      if (plan.accepted.length === 0) {
+        this.toast.show(describeImport(plan), 'error');
+        return;
+      }
+
+      try {
+        await this.bus.importSaves(plan.accepted);
+        this.toast.show(describeImport(plan));
+      } catch (err: unknown) {
+        this.toast.show(`Could not import: ${String(err)}`, 'error');
+        console.warn('Save import failed:', err);
+      }
+    })();
   }
 
   /**

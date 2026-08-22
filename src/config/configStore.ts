@@ -265,6 +265,38 @@ export class ConfigStore {
   }
 
   /**
+   * Every user save in `Custom`, with its stored document. For folder export.
+   *
+   * RE-READS rather than returning the cache. `saved` is refreshed by `write`
+   * and `remove`, so it is correct almost always -- but "almost" is the wrong
+   * guarantee for the one operation whose entire job is to produce a complete
+   * copy of the library. A missing save here is a save the user believes they
+   * exported and did not.
+   *
+   * DOCUMENTS ARE HANDED OVER UNPARSED, as stored. See `saveTransfer.ts`:
+   * export is a byte copy, and parsing here would make this a second writer of
+   * the format.
+   *
+   * Empty when storage is unavailable, rather than throwing. There is nothing
+   * saved in that state by construction, so "no saves" is the honest answer and
+   * the caller's "nothing to export" is the right message.
+   */
+  async savedDocuments(): Promise<
+    readonly { readonly name: string; readonly document: unknown }[]
+  > {
+    if (this.db === null) return [];
+    this.saved = await idbList(this.db);
+    return this.saved
+      .filter((r) => r.category === CUSTOM_CATEGORY)
+      .map((r) => ({ name: r.name, document: r.document }));
+  }
+
+  /** The names already taken in `Custom`, for import's collision check. */
+  async savedNames(): Promise<readonly string[]> {
+    return (await this.savedDocuments()).map((r) => r.name);
+  }
+
+  /**
    * Save a document under `(category, name)`, replacing any existing one.
    *
    * SILENT OVERWRITE, matching `_cmd_save_config` (`project_commands.py:105-133`),

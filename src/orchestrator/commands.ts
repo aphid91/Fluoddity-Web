@@ -684,4 +684,48 @@ export interface CommandBus {
    * these bytes mean and this is only the thing that carries them.
    */
   projectDocument(): unknown;
+
+  /**
+   * Every user save, as the documents they are stored as. For folder export.
+   *
+   * A PULL for `projectDocument`'s reasons and one of its own. It is not a
+   * `Status` field because `Status` is rebuilt every frame and this copies the
+   * whole save library; it is not a `Command` because the folder picker and the
+   * download are Web APIs, which invariant 10 keeps out of the Orchestrator.
+   *
+   * The documents are handed over UNPARSED, exactly as stored. Export is a byte
+   * copy -- see `saveTransfer.ts` -- so anything that parsed and re-serialized
+   * here would make this a second writer of the format alongside `toDocument`.
+   *
+   * Async because the store's cache is authoritative only just after a write;
+   * this re-reads so an export cannot miss a save made moments earlier.
+   */
+  savedDocuments(): Promise<readonly { readonly name: string; readonly document: unknown }[]>;
+
+  /**
+   * The names already taken in `Custom`, for import's collision check.
+   *
+   * Separate from `savedDocuments` so the import path does not have to pull
+   * every stored document across the boundary to read their names -- import
+   * cares only about which names are free.
+   */
+  savedNames(): Promise<readonly string[]>;
+
+  /**
+   * Write imported saves into storage, returning how many landed.
+   *
+   * The inverse pull. Collision and validation decisions are already made by
+   * `planImport` before anything reaches here: this only writes, and the caller
+   * has already established that each name is free and each document parses.
+   *
+   * NOT a `saveConfig` per file, deliberately. That command renames the live
+   * project and moves `configOrigin` to what it just wrote (`saveConfig`), which
+   * is right when the user saves what they are looking at and wrong here --
+   * importing thirty files would leave the app claiming to be the last one,
+   * having adopted none of them. An import adds to the library; it does not
+   * change what is open.
+   */
+  importSaves(
+    saves: readonly { readonly name: string; readonly document: unknown }[],
+  ): Promise<number>;
 }

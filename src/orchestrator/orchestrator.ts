@@ -2650,6 +2650,59 @@ export class Orchestrator implements CommandBus {
     return toDocument(this.project.configs, this.project.world);
   }
 
+  /** Every user save, unparsed. See `CommandBus.savedDocuments`. */
+  async savedDocuments(): Promise<
+    readonly { readonly name: string; readonly document: unknown }[]
+  > {
+    return this.store.savedDocuments();
+  }
+
+  /** The names already in `Custom`, for import's collision check. */
+  async savedNames(): Promise<readonly string[]> {
+    return this.store.savedNames();
+  }
+
+  /**
+   * Write imported saves. See `CommandBus.importSaves`.
+   *
+   * DOES NOT TOUCH THE LIVE PROJECT -- no rename, no `configOrigin` move, no
+   * undo entry. An import adds to the library; what is open stays open. That is
+   * the whole reason this is not a loop over `saveConfig`.
+   *
+   * WRITES SEQUENTIALLY AND COUNTS WHAT LANDED, so a failure part way through
+   * reports the truth rather than all-or-nothing. Each `write` refreshes the
+   * store's cache, and `refreshCatalog` runs once at the end rather than per
+   * file: the catalog is rebuilt from the store, so thirty rebuilds would
+   * produce the same list thirty times.
+   *
+   * `configBusy` is set for the same reason `saveConfig` sets it -- storage is
+   * async, `dispatch` returns void, and the panel already renders this field.
+   */
+  async importSaves(
+    saves: readonly { readonly name: string; readonly document: unknown }[],
+  ): Promise<number> {
+    if (saves.length === 0) return 0;
+    if (!this.store.writable) {
+      throw new Error('Saving is unavailable: this browser denied local storage.');
+    }
+
+    this.configBusy = `Importing ${String(saves.length)}…`;
+    let written = 0;
+    try {
+      for (const save of saves) {
+        await this.store.write(CUSTOM_CATEGORY, save.name, save.document);
+        written += 1;
+      }
+    } finally {
+      this.configBusy = '';
+      // In `finally` so a partial import still shows the saves that landed. The
+      // alternative leaves records in storage that the menu does not list until
+      // the next reload, which reads as the import having silently failed.
+      this.refreshCatalog();
+    }
+    return written;
+  }
+
   /**
    * The three settings payloads, built only when something reads them.
    *

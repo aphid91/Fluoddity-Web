@@ -72,6 +72,16 @@ export interface MenuBarOptions {
    * inverted, and owned by the panel for the same reason.
    */
   readonly onPasteShareLink: () => void;
+  /**
+   * Write every user save into a folder the user picks. Owned by the panel.
+   *
+   * MUST REACH THE FOLDER PICKER WITHOUT AWAITING FIRST -- see
+   * `ui/saveFolder.ts`. The menu calls this synchronously from the click so the
+   * gesture is still live when the panel opens the picker.
+   */
+  readonly onExportSaves: () => void;
+  /** Read a folder of v8 files into the save list. `onExportSaves` inverted. */
+  readonly onImportSaves: () => void;
   /** Ask to delete a stored config. Opens the confirm dialog. */
   readonly onDeleteConfig: (category: string, name: string) => void;
   /**
@@ -337,6 +347,20 @@ export class MenuBar {
         '',
         () => this.opts.isExportVideoShown(),
       );
+      // A THIRD MEDIUM, and the separator marks it as the rows above do. A link
+      // carries one project, a video carries what it looked like; these carry
+      // the save library itself, as the v8 files it is already stored as -- which
+      // is the form `configs/` takes, so an exported folder can be dropped
+      // straight in as presets.
+      this.addSeparator(body);
+      this.addItem(body, 'Export Saves as JSON...', () => {
+        this.closeMenus();
+        this.opts.onExportSaves();
+      });
+      this.addItem(body, 'Import Saves from JSON...', () => {
+        this.closeMenus();
+        this.opts.onImportSaves();
+      });
     });
 
     // "History" rather than "Edit". Every item under it moves along the undo
