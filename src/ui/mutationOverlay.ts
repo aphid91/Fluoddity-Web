@@ -150,6 +150,10 @@ export class MutationOverlay {
   private readonly clearFieldButton: HTMLButtonElement;
   /** Puts out the highlight. Shown whenever a cohort is lit -- see `hintFor`. */
   private readonly cancelSelectionButton: HTMLButtonElement;
+  /** Commits immediately, with no aiming stage. Highlighting-off only -- see `hintFor`. */
+  private readonly generateChildButton: HTMLButtonElement;
+  /** Takes back the top of the undo stack, and names it. Unlit Select only. */
+  private readonly undoButton: HTMLButtonElement;
 
   /**
    * Last hint written to the DOM, so `refresh` can skip the common case.
@@ -596,15 +600,68 @@ export class MutationOverlay {
       this.cancelSelectionButton.blur();
     });
 
+    // Generate A Child, the one-click state's own action.
+    //
+    // **THE COMMIT BUTTON'S TWIN, AND DELIBERATELY A SECOND ELEMENT.** It sends
+    // the same `confirmSelection`, wears the same gold, and never shares a row
+    // with the commit button -- `hintFor` gives them mutually exclusive states.
+    // They stay separate because the LABELS differ and always will: one names a
+    // cohort you aimed at, the other names the behaviour already running. Fusing
+    // them would mean a single node whose text is rewritten by a branch, which is
+    // the arrangement that goes stale when only one arm is edited.
+    //
+    // SINGULAR "a child" against the commit button's plural, and that is the
+    // real difference between the states rather than a wording accident: with
+    // one cohort there is one thing to vary, and the plural would promise a
+    // spread that a single-cohort config cannot produce.
+    this.generateChildButton = document.createElement('button');
+    this.generateChildButton.type = 'button';
+    this.generateChildButton.style.cssText = COMMIT_BUTTON_CSS;
+    this.generateChildButton.dataset['setting'] = 'transport.confirmSelection';
+    this.generateChildButton.addEventListener('click', () => {
+      opts.send({ kind: 'confirmSelection' });
+      // Hands the keys back, like every other button on this bar.
+      this.generateChildButton.blur();
+    });
+
+    // Undo, on the hint row beside it.
+    //
+    // **RED, AND THE SAME RED AS CANCEL SELECTION**, because it is the same kind
+    // of act: the row's backing-out action. It never shares a row WITH cancel --
+    // `hintFor` offers this only while nothing is lit and that only while
+    // something is -- so the two reds cannot compete for the eye or for the
+    // right mouse button they both name.
+    //
+    // **"(Right click)" IS A LITERAL HERE TOO**, and for the reason the cancel
+    // button spells out: the gesture is decided in `applyCanvasInput`, which
+    // reads the button directly and is not in the hotkey table. `Z` is NOT a
+    // literal -- that one is a real binding, so it comes from `hotkeyLabel` and
+    // a rebind moves it.
+    this.undoButton = document.createElement('button');
+    this.undoButton.type = 'button';
+    this.undoButton.style.cssText = UNDO_BUTTON_CSS;
+    this.undoButton.dataset['setting'] = 'transport.undo';
+    this.undoButton.addEventListener('click', () => {
+      opts.send({ kind: 'undo' });
+      // Hands the keys back, like every other button on this bar.
+      this.undoButton.blur();
+    });
+
     // ORDER IS THE READING ORDER of the row. The cancel button goes LAST, after
     // the tail: the row runs "Currently selected: Cohort <n> | <commit>", and
     // backing out belongs at the end of that sentence rather than between the
     // cohort and the action it offers.
+    //
+    // UNDO SITS AFTER GENERATE-A-CHILD for the same reason, and after the lead:
+    // in the unlit states the row reads "<do the thing> | <take back the last
+    // thing>", which is the order those two are considered in.
     this.hint.append(
       this.hintLead,
       this.stepper,
       this.commitButton,
+      this.generateChildButton,
       this.hintTail,
+      this.undoButton,
       this.cancelSelectionButton,
       this.clearFieldButton,
     );
@@ -868,7 +925,8 @@ export class MutationOverlay {
    * say is the same waste `generatedShown` guards against above.
    */
   private refreshHint(status: Status): void {
-    const { lead, cohort, tail, commit, clearField, cancelSelection } = hintFor(status);
+    const { lead, cohort, tail, commit, clearField, cancelSelection, generateChild, undo } =
+      hintFor(status);
 
     // THE FIELD IS RECONCILED ABOVE THE GUARD, because it can disagree with the
     // state without the STATE having changed. Type "99" over cohort 7 with 8
@@ -906,9 +964,16 @@ export class MutationOverlay {
     // two: it is decided by state the words do not distinguish, and a button
     // left out of the key is a button stuck in whichever state it was first
     // written in.
+    //
+    // `undo` JOINS IT AS A STRING, NOT A BOOLEAN, because its LABEL is state:
+    // the button names what would be taken back, so the same button visible
+    // across two different stack tops has to repaint. `String(null)` is
+    // "null", which no label can collide with, so the hidden case stays
+    // distinct from any wording.
     const key =
       `${lead} ${String(cohort)} ${tail} ${String(commit)} ` +
-      `${String(clearField)} ${String(cancelSelection)}`;
+      `${String(clearField)} ${String(cancelSelection)} ` +
+      `${String(generateChild)} ${String(undo)}`;
     if (this.hintShown === key) return;
     this.hintShown = key;
 
@@ -926,6 +991,39 @@ export class MutationOverlay {
         keySuffix([enter, 'Left click cohort again']);
     }
     this.commitButton.style.display = commit ? 'inline-flex' : 'none';
+
+    // Same construction as the commit button above: the label names EVERY route
+    // to the act, the left click from the canvas and the key from the table.
+    // "Left click" is a literal because the canvas gesture is not rebindable
+    // (`applyCanvasInput` reads the button); Enter comes from `hotkeyLabel`, so
+    // a rebind moves it and an unbind drops it.
+    if (generateChild) {
+      const enter = hotkeyLabel({ kind: 'confirmSelection' });
+      this.generateChildButton.textContent =
+        'Generate a child from current behavior' + keySuffix(['Left click', enter]);
+    }
+    this.generateChildButton.style.display = generateChild ? 'inline-flex' : 'none';
+
+    // NAMES THE STACK TOP, which is the reason this is a button rather than the
+    // sentence it replaced: "undo any action" told you the gesture existed,
+    // never what it would cost you.
+    //
+    // **THE EMPTY STACK STILL SHOWS THE BUTTON, DISABLED AND SAYING SO.** Hiding
+    // it would make the row twitch as the stack empties and refills, and a
+    // control that vanishes teaches nothing about why. `disabled` as well as the
+    // dimming, matching `reroll` above: without it the button still takes the
+    // pointer and the Tab order, and announces itself as pressable to a screen
+    // reader while doing nothing.
+    if (undo !== null) {
+      const empty = undo === '';
+      this.undoButton.textContent = empty
+        ? 'Nothing to undo'
+        : `Undo ${undo}` + keySuffix(['Right click', hotkeyLabel({ kind: 'undo' })]);
+      this.undoButton.disabled = empty;
+      this.undoButton.style.opacity = empty ? '0.45' : '1';
+      this.undoButton.style.cursor = empty ? 'default' : 'pointer';
+    }
+    this.undoButton.style.display = undo !== null ? 'inline-flex' : 'none';
 
     // `inline-flex` RESTATED rather than `''`, for the reason spelled out at the
     // stepper below: this button carries its layout in an inline `style` set
@@ -1186,6 +1284,31 @@ export function hintFor(status: Status): {
    * useful thing to do in the state where committing is not.
    */
   readonly cancelSelection: boolean;
+  /**
+   * Whether to offer the "generate a child from the current behaviour" button.
+   *
+   * The single-cohort / one-click states only. With highlighting off there is no
+   * aiming stage, so `confirmSelection` commits immediately -- the same act the
+   * `commit` button performs once a cohort IS lit, which is why the two are
+   * separate flags rather than one: they are the same command reached from two
+   * different states, and no state offers both.
+   */
+  readonly generateChild: boolean;
+  /**
+   * Whether to offer the undo button, and what it would take back.
+   *
+   * `null` MEANS "NO BUTTON", not "nothing to undo" -- an empty stack still
+   * shows the button, saying so. The distinction is the whole point: this is
+   * offered exactly in the two Select states where right-click undoes, and
+   * withheld everywhere right-click means something else. While a cohort is lit
+   * right-click CANCELS THE AIM (`applyCanvasInput`), and the red cancel button
+   * beside it already claims that gesture -- a second red button promising the
+   * same click did something different would be two answers to one question.
+   *
+   * The string is `undoLabel` verbatim, empty when the stack is empty, so the
+   * caller words the empty case once rather than this function guessing at it.
+   */
+  readonly undo: string | null;
 } {
   const none = (lead: string) => ({
     lead,
@@ -1194,6 +1317,8 @@ export function hintFor(status: Status): {
     commit: false,
     clearField: false,
     cancelSelection: false,
+    generateChild: false,
+    undo: null,
   });
 
   if (status.mouseMode === 'shove') {
@@ -1237,6 +1362,12 @@ export function hintFor(status: Status): {
       // it is the one action this state fully supports, and a user who cannot
       // commit is exactly the user who wants to back out.
       cancelSelection: true,
+      // Highlighting is ON here (a cohort is lit), so the immediate-adopt button
+      // belongs to the other branch entirely.
+      generateChild: false,
+      // NO UNDO BUTTON WHILE A COHORT IS LIT. Right-click cancels the aim in
+      // this state, and the cancel button above already says so.
+      undo: null,
     };
   }
 
@@ -1251,6 +1382,11 @@ export function hintFor(status: Status): {
       commit: true,
       clearField: false,
       cancelSelection: true,
+      // The commit button above IS this act in the lit state; offering both
+      // would put two gold buttons for one command on the same row.
+      generateChild: false,
+      // Withheld for the reason the no-op branch gives: right-click cancels here.
+      undo: null,
     };
   }
 
@@ -1259,13 +1395,28 @@ export function hintFor(status: Status): {
   // two exemptions -- the `oneClickSelection` preference and a single-cohort
   // config -- are already collapsed into this one flag by the Orchestrator, and
   // they produce identical behaviour, so they share a sentence.
+  //
+  // **THE SENTENCE IS NOW A BUTTON**, for the reason the commit button gives one
+  // branch up: the act is reachable three ways -- left click, Enter, and this --
+  // and prose describing two of them is worse than a control that IS the third
+  // and names the others. It also puts the act within reach of someone who
+  // arrived by keyboard, which matters most here: with a single cohort there is
+  // no stepper to arrow through, so the canvas was previously the ONLY way in.
   if (!status.highlightEnabled) {
-    return none('Left click a particle to adopt its behavior [[[TODO]]]');
+    return {
+      ...none(''),
+      generateChild: true,
+      undo: status.canUndo ? status.undoLabel : '',
+    };
   }
 
-  return none(
-    'Left click a particle to select its cohort | Right click to undo any action',
-  );
+  return {
+    ...none('Left click a particle to select its cohort'),
+    // The "| Right click to undo any action" clause is a BUTTON now, so it comes
+    // off the sentence -- and the button says WHAT would be undone, which the
+    // clause never could.
+    undo: status.canUndo ? status.undoLabel : '',
+  };
 }
 
 /**
@@ -1736,6 +1887,18 @@ const CLEAR_FIELD_BUTTON_CSS =
 // The colour is not the only signal here either: the label says "Cancel
 // selection" in words, and names the right-click that does the same thing.
 const CANCEL_SELECTION_BUTTON_CSS = CLEAR_FIELD_BUTTON_CSS;
+
+// Undo, on the hint row under the Select tool with nothing lit.
+//
+// **THE SAME RED AGAIN, ALIASED FOR THE SAME REASON.** It is the third of the
+// row's backing-out actions -- throw away a field, throw away an aim, take back
+// the last act -- and sharing the string is what keeps a tweak to one from
+// leaving the others behind. It never co-occurs with either (see `hintFor`), so
+// the shared colour is never two red buttons competing on one row.
+//
+// The colour is not the only signal: the label says "Undo" and names what would
+// be taken back, so it survives a screenshot and a colour-blind reader alike.
+const UNDO_BUTTON_CSS = CLEAR_FIELD_BUTTON_CSS;
 
 // The `(X)` beside an icon. Dimmed and a size down, so the glyph stays the thing
 // you see first and the shortcut sits behind it.

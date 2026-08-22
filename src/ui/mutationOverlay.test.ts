@@ -35,11 +35,19 @@ function status(over: {
   highlightedCohort?: number;
   highlightEnabled?: boolean;
   selectionIsNoOp?: boolean;
+  canUndo?: boolean;
+  undoLabel?: string;
 }): Status {
   return {
     highlightedCohort: NO_COHORT,
     highlightEnabled: true,
     selectionIsNoOp: false,
+    // THE DEFAULT IS A NON-EMPTY STACK, deliberately, because the interesting
+    // failure is the button going missing rather than it saying the wrong thing:
+    // an empty default would let every test below pass against a `hintFor` that
+    // never read the stack at all.
+    canUndo: true,
+    undoLabel: 'Reroll behavior',
     ...over,
   } as Status;
 }
@@ -122,12 +130,12 @@ test('neither non-select tool offers a stepper, whatever is lit', () => {
 
 test('select with nothing lit promises a cohort selection', () => {
   const hint = hintFor(status({ mouseMode: 'select' }));
-  assert.equal(
-    hint.lead,
-    'Left click a particle to select its cohort | Right click to undo any action',
-  );
+  // The undo half of this sentence is a BUTTON now, so the lead keeps only the
+  // clause that has nowhere else to go.
+  assert.equal(hint.lead, 'Left click a particle to select its cohort');
   assert.equal(hint.cohort, null, 'nothing to step through yet');
   assert.equal(hint.tail, '');
+  assert.equal(hint.undo, 'Reroll behavior', 'and the undo button names the stack top');
 });
 
 // ---------------------------------------------------------------------------
@@ -155,19 +163,20 @@ test('the right-click wording changes with the state, because the binding does',
   // lit and to undo otherwise. The user is told which one is live, so the two
   // have to move together with that branch.
   //
-  // THE LIT HALF IS NOW A BUTTON rather than a sentence -- it carries the words
-  // "Cancel selection (Right click)" -- so this asserts the FLAG and then that
-  // the row does not simultaneously claim right-click undoes. The unlit half is
-  // still prose, because there is no aim to offer a button for.
+  // BOTH HALVES ARE BUTTONS NOW -- "Cancel selection (Right click)" while lit,
+  // and the undo button while not -- so this asserts the two FLAGS are exact
+  // opposites. That is the invariant that keeps one right-click from being
+  // claimed by two controls at once.
   const lit = hintFor(status({ mouseMode: 'select', highlightedCohort: 2 }));
   const unlit = hintFor(status({ mouseMode: 'select' }));
 
   assert.equal(lit.cancelSelection, true);
+  assert.equal(lit.undo, null, 'while a cohort is lit, right click cancels rather than undoing');
   assert.equal(unlit.cancelSelection, false, 'nothing to cancel with none lit');
-  assert.match(unlit.lead, /Right click to undo any action/);
+  assert.notEqual(unlit.undo, null, 'with none lit, right click undoes -- and says what');
   assert.ok(
     !/undo/i.test(lit.lead + lit.tail),
-    'while a cohort is lit, right click cancels rather than undoing',
+    'the lit wording must not claim undo either',
   );
 });
 
@@ -182,15 +191,97 @@ test('with highlighting off, select promises an immediate adoption', () => {
   const hint = hintFor(
     status({ mouseMode: 'select', highlightEnabled: false }),
   );
-  // Matched loosely: this sentence is still being worded, and pinning it
-  // verbatim would mean every rewrite is a test edit. What matters is that it
-  // describes an IMMEDIATE adoption rather than promising a cohort selection.
-  assert.match(hint.lead, /^Left click a particle to/);
-  assert.ok(
-    !/select its cohort/.test(hint.lead),
-    'with highlighting off, the first click adopts -- it does not select a cohort',
-  );
+  // THE SENTENCE IS A BUTTON NOW. What used to be prose about an immediate
+  // adoption is `generateChild`, whose label lives in the overlay -- so what is
+  // asserted here is that this state offers that button and does NOT fall back
+  // to promising a cohort selection that will never appear.
+  assert.equal(hint.generateChild, true, 'the one-click state offers the button');
+  assert.equal(hint.lead, '', 'the button carries the words; nothing is left to say');
+  assert.equal(hint.commit, false, 'the commit button belongs to the lit state, not this one');
   assert.equal(hint.cohort, null, 'no stepper when there is no highlighting');
+});
+
+test('the generate-a-child button is the one-click state alone', () => {
+  // It sends the same `confirmSelection` the commit button does, so a state
+  // offering BOTH would put two gold buttons for one command on a row that must
+  // not wrap. They are mutually exclusive by construction -- one needs
+  // highlighting off, the other needs a cohort lit -- but that falls out of two
+  // separate branches, which is worth pinning rather than assuming.
+  for (const mouseMode of ['select', 'shove', 'draw'] as const) {
+    for (const highlightEnabled of [true, false]) {
+      for (const highlightedCohort of [NO_COHORT, 2]) {
+        const hint = hintFor(
+          status({ mouseMode, highlightEnabled, highlightedCohort }),
+        );
+        assert.ok(
+          !(hint.generateChild && hint.commit),
+          `${mouseMode}/${String(highlightEnabled)}/${String(highlightedCohort)}`,
+        );
+        if (mouseMode !== 'select') {
+          assert.equal(hint.generateChild, false, `${mouseMode} adopts nothing`);
+        }
+      }
+    }
+  }
+});
+
+test('the undo button says so rather than vanishing when the stack is empty', () => {
+  // EMPTY STRING, NOT `null`: `null` hides the button, and a control that
+  // disappears as the stack empties makes the row twitch and teaches nothing
+  // about why. The overlay words the empty case -- what matters here is that the
+  // state stays distinguishable from "no button at all".
+  const empty = hintFor(status({ mouseMode: 'select', canUndo: false, undoLabel: '' }));
+  assert.equal(empty.undo, '', 'offered, with nothing to name');
+
+  // A stack whose top has no label -- entry 0 carries `label: ''` (see
+  // `history.ts`) -- reads the same way, which is correct: there is nothing to
+  // name in either case.
+  const unlabelled = hintFor(status({ mouseMode: 'select', canUndo: true, undoLabel: '' }));
+  assert.equal(unlabelled.undo, '');
+});
+
+test('the undo button is withheld wherever right click means something else', () => {
+  // Draw erases, Shove pulls, and a lit Select cancels the aim. In all three the
+  // button would name a gesture that does something else -- worse than silence,
+  // because it is always on screen and looks correct.
+  for (const mouseMode of ['shove', 'draw'] as const) {
+    assert.equal(hintFor(status({ mouseMode })).undo, null, mouseMode);
+  }
+  for (const selectionIsNoOp of [false, true]) {
+    assert.equal(
+      hintFor(status({ mouseMode: 'select', highlightedCohort: 2, selectionIsNoOp })).undo,
+      null,
+      `lit, no-op ${String(selectionIsNoOp)}`,
+    );
+  }
+
+  // Both unlit Select states DO offer it, including the one-click config: right
+  // click genuinely undoes in both.
+  assert.notEqual(hintFor(status({ mouseMode: 'select' })).undo, null);
+  assert.notEqual(
+    hintFor(status({ mouseMode: 'select', highlightEnabled: false })).undo,
+    null,
+  );
+});
+
+test('the undo button never shares the row with the other two reds', () => {
+  // All three wear `CLEAR_FIELD_BUTTON_CSS`, and the row must not wrap
+  // (`HINT_CSS` is `nowrap`). Two of them side by side would also mean two red
+  // controls both naming the right mouse button.
+  for (const mouseMode of ['select', 'shove', 'draw'] as const) {
+    for (const highlightEnabled of [true, false]) {
+      for (const highlightedCohort of [NO_COHORT, 2]) {
+        const hint = hintFor(
+          status({ mouseMode, highlightEnabled, highlightedCohort }),
+        );
+        const reds = [hint.undo !== null, hint.cancelSelection, hint.clearField];
+        assert.ok(
+          reds.filter(Boolean).length <= 1,
+          `${mouseMode}/${String(highlightEnabled)}/${String(highlightedCohort)}`,
+        );
+      }
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -308,7 +399,10 @@ test('at scale 0 with nothing lit, the hint is the ORDINARY one', () => {
   const noOp = hintFor(status({ mouseMode: 'select', selectionIsNoOp: true }));
   const plain = hintFor(status({ mouseMode: 'select' }));
   assert.equal(noOp.lead, plain.lead);
-  assert.match(noOp.lead, /Right click to undo any action/);
+  // The undo half is a button now, and it is offered here for the same reason:
+  // right-click still undoes in this state, so nothing about it changed.
+  assert.equal(noOp.undo, plain.undo);
+  assert.notEqual(noOp.undo, null);
 });
 
 test('the no-op state does not change the shove or draw wording', () => {
