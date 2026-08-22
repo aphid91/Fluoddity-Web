@@ -31,6 +31,9 @@ import { RECORDING_FPS, driverAction } from './recorder/recordingSettings.ts';
 // pull in neither mediabunny nor the GPU. See `recorder/saveFile.ts`.
 import { chooseRecordingFile } from './recorder/saveFile.ts';
 import { calibrate } from './calibration/calibrate.ts';
+// The tuning phase's worst-case probe count, so the splash's single progress
+// counter can cover both phases. See the `runCalibration` callback.
+import { MAX_PROBES as AUTO_PROBES } from './perf/rateSearch.ts';
 import { ALWAYS_CALIBRATE } from './orchestrator/featureFlags.ts';
 import { bindInput } from './ui/inputBinding.ts';
 import { Panel } from './ui/panel.ts';
@@ -289,9 +292,22 @@ async function start(): Promise<void> {
                 // progress line rather than blanking it -- `onProgress` does
                 // not fire again until the NEXT rung starts.
                 let progress = '';
+                // ONE CONTINUOUS COUNTER ACROSS BOTH PHASES. The ladder's rungs
+                // and the rate tuning's probes are different kinds of step, but
+                // to someone reading a progress line they are one wait -- so the
+                // total is the sum and the second phase carries on where the
+                // first left off. `AUTO_PROBES` is the tuning's WORST case
+                // (`MAX_PROBES`), so the counter never exceeds its own total;
+                // a run that converges early simply skips to the end.
+                let rungs = 0;
                 const rung = await calibrate(orchestrator, {
                   onProgress: (done, total) => {
-                    progress = `Calibrating for your display… (${done}/${total})`;
+                    // The ladder reports its own total; the tuning's probes are
+                    // added to it so the denominator covers both phases.
+                    rungs = total;
+                    progress =
+                      `Calibrating for your display… ` +
+                      `(${String(done)}/${String(total + AUTO_PROBES)})`;
                     panel?.setSplashStatus(progress);
                   },
                   // A hidden tab is throttled hard enough that measuring it
@@ -307,9 +323,42 @@ async function start(): Promise<void> {
                     );
                   },
                 });
+                // --- the final step: tune the rate against REAL frames -------
+                //
+                // The ladder has committed a world size, and with it a physics
+                // rate measured by `probeFrame` -- which renders PHYSICS ONLY,
+                // with no camera, no bloom and no motion blur. That is the right
+                // instrument for comparing rungs (it isolates the two knobs the
+                // ladder varies) and a poor one for choosing a final rate, since
+                // the user's frames pay for all three of those too. `HEADROOM`
+                // exists precisely to guess at what it leaves out.
+                //
+                // So the rate is now re-derived by the same search the
+                // Auto-calibrate button drives, against the same live rAF
+                // frames, starting from the rung the ladder chose. A first-time
+                // visitor gets the measurement a returning one would get by
+                // pressing the button.
+                //
+                // **THIS WORKS BECAUSE THE FRAME LOOP IS ALREADY RUNNING.**
+                // `main.ts` starts rAF immediately and deliberately does not
+                // await calibration -- see the note at the `firstVisit` call
+                // below. The splash pauses the simulation, and `Panel.tuneRate`
+                // unpauses for the duration exactly as the button does.
+                //
+                // AWAITED, so the splash stays locked until the rate settles:
+                // releasing it mid-search would show the user a physics rate
+                // visibly jumping around for no stated reason.
+                await panel?.tuneRate((probe) => {
+                  panel?.setSplashStatus(
+                    `Calibrating for your display… ` +
+                      `(${String(rungs + probe)}/${String(rungs + AUTO_PROBES)})`,
+                  );
+                });
+
                 console.info(
                   `Calibrated to world size ${rung.worldSize}, physics rate ` +
-                    `${rung.physicsSteps}. Change either in Preferences > Simulation.`,
+                    `${orchestrator.status().physicsSteps} (ladder suggested ` +
+                    `${rung.physicsSteps}). Change either in Preferences > Simulation.`,
                 );
               },
             }),

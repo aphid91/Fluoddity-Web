@@ -217,6 +217,15 @@ export interface PanelOptions {
   };
 }
 
+/**
+ * How long `tuneRate` waits for a run to finish before giving up.
+ *
+ * 20 seconds. The search is bounded at `MAX_PROBES` probes of ~20 frames each,
+ * so a machine at 60 fps finishes in ~2s and one limping at 15 fps in ~11s --
+ * this only fires when frames have stopped arriving altogether. See its use.
+ */
+const TUNE_CEILING_MS = 20000;
+
 /** Which side of the screen, and therefore which tier flag governs it. */
 const LEFT = 'left';
 const RIGHT = 'right';
@@ -393,6 +402,23 @@ export class Panel {
    * drives it. `feedCalibration` is the seam -- see `PanelOptions.onCalibrateRate`.
    */
   private rateCalibration: AutoCalibration | null = null;
+
+  /**
+   * Resolved when the run in flight finishes, for the awaiting caller.
+   *
+   * Null for a run the BUTTON started -- nobody is waiting on that one, and the
+   * toast is its own report. Set only by `tuneRateAsync`, which first-run
+   * calibration awaits as its final step.
+   */
+  private rateCalibrationDone: (() => void) | null = null;
+
+  /**
+   * Told which probe the run is on, for the splash's progress counter.
+   *
+   * Null for a button-started run: the button's own label carries the progress,
+   * and the splash is not up.
+   */
+  private rateCalibrationProgress: ((probe: number) => void) | null = null;
 
   /**
    * Whether this calibration was the thing that unpaused the simulation.
@@ -989,17 +1015,88 @@ export class Panel {
     this.unpausedByCalibration = status.paused;
     if (status.paused) this.bus.dispatch({ kind: 'togglePause' });
 
-    const current = status.editPrefs['physicsSteps'];
+    // **FROM THE NAMED `Status` FIELD, NOT FROM `editPrefs`.** That payload is
+    // empty whenever no panel is open (`settingsSources`'s optimization), and
+    // first-run calibration runs with the panels hidden behind the splash -- so
+    // the starting rate would read as `undefined` and fall back to the floor,
+    // throwing away the rung the ladder just measured. See `Status.physicsSteps`.
+    const current = status.physicsSteps;
     this.rateCalibration = new AutoCalibration({
       lo: setting.lo,
       hi: setting.hi,
-      startRate: typeof current === 'number' ? current : setting.lo,
+      startRate: current > 0 ? current : setting.lo,
       // Straight through `editSetting`, exactly as dragging the slider does, so
       // the value persists and the panel's own binding follows it on the next
       // refresh. Nothing about this path is special-cased.
       setRate: (rate) => {
         this.bus.dispatch({ kind: 'editSetting', setting, value: rate });
       },
+      onProgress: (progress) => {
+        this.rateCalibrationProgress?.(progress.probe);
+      },
+    });
+  }
+
+  /**
+   * Run a calibration and resolve when it finishes. First-run's final step.
+   *
+   * **THE SAME `AutoCalibration` THE BUTTON DRIVES**, against the same live rAF
+   * frames, so a first-time visitor is tuned by exactly the measurement a
+   * returning one gets from pressing the button. The alternative -- a second
+   * driver submitting its own frames so this could run inside `calibrate()` --
+   * would measure `probeFrame`'s physics-only render, which omits the camera,
+   * bloom and motion blur that the user's frames actually pay for, and would
+   * therefore commit a rate that is too high.
+   *
+   * **RESOLVES RATHER THAN THROWING**, on every path including a run that could
+   * not start. First-run calibration is best-effort by design (`calibrate.ts`'s
+   * "Everything here is best-effort"), and this is its last step -- a rejection
+   * here would strand the splash locked over an app the user cannot reach.
+   *
+   * `onProbe` is told each probe number so the splash can keep one continuous
+   * counter across both phases.
+   */
+  async tuneRate(onProbe?: (probe: number) => void): Promise<void> {
+    // A run already going -- the button, most likely, since the splash blocks
+    // little else. Leave it alone rather than starting a second.
+    if (this.rateCalibration !== null) return;
+
+    this.rateCalibrationProgress = onProbe ?? null;
+    this.startRateCalibration();
+
+    // `startRateCalibration` refuses when the registry entry is missing. Nothing
+    // is in flight, so there is nothing to await.
+    if (this.rateCalibration === null) {
+      this.rateCalibrationProgress = null;
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      // **A CEILING, FOR THE SAME REASON `calibrate.ts` HAS ONE.** This resolves
+      // when frames arrive, and there are states where they stop arriving --
+      // rAF halts entirely in a backgrounded tab, and a device loss stops the
+      // loop for good. Either would leave the awaiting caller hanging forever
+      // with the splash locked over it, which is the one failure worse than a
+      // badly-tuned physics rate.
+      //
+      // Generous, because it must never fire on a run that was merely slow: the
+      // search is bounded at `MAX_PROBES` probes of ~20 frames, so even a
+      // machine limping at 15 fps finishes inside a third of this.
+      const ceiling = setTimeout(() => {
+        if (this.rateCalibration === null) return;
+        console.warn('Physics-rate tuning timed out; keeping the rate it started from.');
+        // Restores rather than commits -- see `AutoCalibration.cancel`. A run
+        // that never delivered frames has measured nothing worth keeping, and
+        // this calls back into `finishRateCalibration`, which resolves below.
+        this.cancelRateCalibration();
+      }, TUNE_CEILING_MS);
+
+      // Cleared however the run ends, so a finished run never leaves a timer
+      // alive to fire over a later one.
+      this.rateCalibrationDone = () => {
+        clearTimeout(ceiling);
+        resolve();
+      };
     });
   }
 
@@ -1016,15 +1113,26 @@ export class Panel {
     this.finishRateCalibration();
   }
 
-  /** Common teardown: drop the run and hand back a pause we took. */
+  /** Common teardown: drop the run, hand back a pause we took, wake the waiter. */
   private finishRateCalibration(): void {
     this.rateCalibration = null;
-    if (!this.unpausedByCalibration) return;
-    this.unpausedByCalibration = false;
-    // Re-read rather than trusting the flag: pausing stays reachable throughout
-    // (the menu bar and Space both work), so the simulation may already be where
-    // we want it.
-    if (!this.bus.status().paused) this.bus.dispatch({ kind: 'togglePause' });
+    this.rateCalibrationProgress = null;
+
+    if (this.unpausedByCalibration) {
+      this.unpausedByCalibration = false;
+      // Re-read rather than trusting the flag: pausing stays reachable throughout
+      // (the menu bar and Space both work), so the simulation may already be
+      // where we want it.
+      if (!this.bus.status().paused) this.bus.dispatch({ kind: 'togglePause' });
+    }
+
+    // LAST, and unconditionally. `tuneRate` is awaited by first-run calibration,
+    // which holds the splash locked until it returns -- so a path that finished
+    // the run without resolving would leave the user staring at a locked splash
+    // with no way out. Same posture as `Panel.calibrate`'s `finally`.
+    const done = this.rateCalibrationDone;
+    this.rateCalibrationDone = null;
+    done?.();
   }
 
   /**
@@ -1041,8 +1149,14 @@ export class Panel {
     if (!run.finished) return;
 
     const rate = run.result;
+    // Read BEFORE the teardown clears it: a run someone is awaiting is a
+    // first-run one, and that path reports through the splash it is already
+    // holding. A toast there would fire behind the splash, unseen, and then
+    // linger over the app once it closed -- announcing something the user never
+    // asked for on their very first frame.
+    const awaited = this.rateCalibrationDone !== null;
     this.finishRateCalibration();
-    if (rate !== null) {
+    if (rate !== null && !awaited) {
       this.toast.show(`Physics Rate calibrated to ${String(rate)} for this project.`);
     }
   }

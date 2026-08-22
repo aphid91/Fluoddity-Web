@@ -446,6 +446,19 @@ export interface Status {
   readonly showFpsCounter: boolean;
 
   /**
+   * The live physics rate.
+   *
+   * **NOT read from `editPrefs`, for the reason `showFpsCounter` is not:** that
+   * payload is EMPTY whenever no panel is open (`settingsSources`'s
+   * optimization), and first-run calibration runs with the panels hidden behind
+   * the splash. Auto-calibrate needs the rate the ladder just committed as its
+   * starting point, and reading it from the payload there would find `undefined`
+   * and fall back to the slider's floor -- discarding the rung the ladder had
+   * just spent seconds measuring.
+   */
+  readonly physicsSteps: number;
+
+  /**
    * The highlighted cohort, or `NO_COHORT` when none is.
    *
    * Drives the context hint under the mutation slider and the cohort stepper in

@@ -2585,6 +2585,10 @@ export class Orchestrator implements CommandBus {
       // hidden, where that payload is empty. A bare boolean read costs nothing
       // next to the deep copy the closed-panel early-out exists to avoid.
       showFpsCounter: this.prefs.showFpsCounter,
+      // Also outside `settingsSources()`, and for the same reason: auto-calibrate
+      // reads this to seed its search while the panels are hidden behind the
+      // first-run splash, where that payload is empty.
+      physicsSteps: this.prefs.physicsSteps,
       // THROUGH THE SAME GATE THE CLICKS AND THE SHADER USE, so the hint under
       // the slider can never advertise a highlight the clicks would not honour
       // -- with `oneClickSelection` on, or a single-cohort config, this reads
