@@ -30,6 +30,10 @@
           "path": "Core/Diversity.json"
         },
         {
+          "name": "Ladders",
+          "path": "Core/Ladders.json"
+        },
+        {
           "name": "Medley",
           "path": "Core/Medley.json"
         },
