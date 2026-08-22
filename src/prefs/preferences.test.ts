@@ -185,10 +185,18 @@ test('withValue returns the receiver for an unknown or unusable value', () => {
 
 test('withValue returns a new object for a real change', () => {
   const prefs = DEFAULT_PREFERENCES;
-  const next = withValue(prefs, 'brightness', 2.0);
+  // DERIVED FROM THE DEFAULT, for the reason the truncation case above gives.
+  // This test hardcoded `2.0` and asserted the original still read `1.0` -- so
+  // it broke the day the default brightness BECAME 2.0, and it broke by
+  // asserting the opposite of the contract: setting a preference to the value it
+  // already holds is a no-op, and `withValue` correctly returned the receiver.
+  // The probe has to be a value the default is not, whatever the default is.
+  const before = prefs.brightness;
+  const changed = before + 1.0;
+  const next = withValue(prefs, 'brightness', changed);
   assert.notEqual(next, prefs);
-  assert.equal(next.brightness, 2.0);
-  assert.equal(prefs.brightness, 1.0, 'the original must be untouched');
+  assert.equal(next.brightness, changed);
+  assert.equal(prefs.brightness, before, 'the original must be untouched');
 });
 
 // ---------------------------------------------------------------------------
