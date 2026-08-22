@@ -136,7 +136,7 @@ const GUIDE_BODY: readonly Block[] = [
   ["A force which cause the the particle to accelerate/brake/turn.",
     "A so called 'strafe', like a little hop, which direcltly shifts particle position without changing it's velocity."
   ],
-  "Each cohort has a unique mutation of the current parent brain, causing them to apply different ",
+  "Each cohort has a unique mutation of the current parent brain, causing their behaviors to diverge for nonzero Mutation scale.",
   "Learn More:",
   [
   "Fluoddity is an extension of the classic Physarum model which you can read about in this excellent Sage Jenson blog post: https://cargocollective.com/sagejenson/physarum",
