@@ -2924,13 +2924,20 @@ export class Orchestrator implements CommandBus {
    * in the same write, so a machine is never left with tuned settings it will
    * re-derive on the next load, nor with the flag set and the settings not.
    *
-   * **THE RESET IS WHAT THE USER ACTUALLY SEES.** Probing advances the
-   * simulation -- five frames per rung, at up to 20 sub-steps each, across
-   * however many rungs the machine reached. Without this, the first picture
-   * someone gets is a few hundred sub-steps of evolution that happened behind a
-   * splash they were still reading, at world sizes that no longer apply, on a
-   * canvas that was reallocated underneath it. A reset makes the run they watch
-   * start where a run is supposed to start.
+   * **THE RESET LEAVES THE LADDER'S OWN WORK BEHIND**, and it is no longer the
+   * last one. Probing advances the simulation -- five frames per rung, at up to
+   * 20 sub-steps each, across however many rungs the machine reached -- at world
+   * sizes that no longer apply, on a canvas that was reallocated underneath it.
+   * Clearing that here keeps this method's own contract: it commits a rung and
+   * hands back a simulation that has not been aged by the measuring.
+   *
+   * IT IS NOT WHAT THE USER SEES, which it used to be and no longer is. First
+   * run follows this with `tuneRate`, a second phase that drives ~20 live frames
+   * per probe and resets nothing -- so by the time the splash lifts, this reset
+   * has been undone. `Panel.calibrate` resets again once the WHOLE run is over,
+   * and that is the one the user actually gets. Kept here anyway: it is correct
+   * for what this method does, and the two are not redundant -- `calibrate`
+   * covers the splash paths, this covers any caller of `commitCalibration`.
    *
    * LAST, AFTER THE REBUILD. `adoptPreferences` may replace the whole
    * `ParticleSystem`, and resetting the outgoing one would zero a frame counter

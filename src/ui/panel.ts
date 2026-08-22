@@ -1557,6 +1557,30 @@ export class Panel {
    * but a lock that leaked would strand the user behind a screen with no way
    * out and no keyboard escape -- the one failure here worse than a bad world
    * size. So the release is in `finally`, and `calibrating` is cleared with it.
+   *
+   * ## THE RESET, AND WHY IT IS HERE RATHER THAN INSIDE CALIBRATION
+   *
+   * Calibration advances the simulation -- a lot. The ladder probes five frames
+   * per rung at up to 20 sub-steps each, and the rate tuning that follows drives
+   * ~20 REAL frames per probe. Without a reset the first thing someone sees on
+   * dismissing the splash is several hundred sub-steps of evolution that
+   * happened while they were reading it.
+   *
+   * `commitCalibration` already resets, and that is not enough: it is the
+   * LADDER's commit, and `tuneRate` runs afterwards (`main.ts`, the final step
+   * of `runCalibration`) driving live frames with nothing reset after them. So
+   * the ladder's reset is immediately undone by the phase that follows it. This
+   * is the last point where the whole run is known to be over.
+   *
+   * **NOT IN `tuneRate` OR `finishRateCalibration`**, deliberately: those are
+   * shared with the Auto-calibrate Physics Rate button, which measures the piece
+   * the user is looking at and must leave it running. Resetting there would wipe
+   * live work to measure it. This method is only ever reached with the splash
+   * up -- first run, and Reset Editor Preferences -- where there is nothing on
+   * screen worth preserving because the user has not seen it yet.
+   *
+   * IN `finally`, so a calibration that threw or was cut short still hands over
+   * a fresh simulation rather than a half-probed one.
    */
   async calibrate(): Promise<void> {
     if (this.runCalibration === null || this.calibrating) return;
@@ -1566,6 +1590,9 @@ export class Panel {
     try {
       await this.runCalibration();
     } finally {
+      // BEFORE the unlock, so the reset has landed by the time the splash can
+      // be dismissed -- the user must never catch the tail of the probe run.
+      this.bus.dispatch({ kind: 'reset' });
       this.splash.setLocked(false);
       this.splash.setStatus('');
       this.calibrating = false;
