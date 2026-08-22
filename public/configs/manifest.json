@@ -14,12 +14,12 @@
           "path": "Core/Cars.json"
         },
         {
-          "name": "Critters",
-          "path": "Core/Critters.json"
-        },
-        {
           "name": "Crystal",
           "path": "Core/Crystal.json"
+        },
+        {
+          "name": "Crystaloop",
+          "path": "Core/Crystaloop.json"
         },
         {
           "name": "Cyclone",
@@ -28,14 +28,6 @@
         {
           "name": "Diversity",
           "path": "Core/Diversity.json"
-        },
-        {
-          "name": "Krill",
-          "path": "Core/Krill.json"
-        },
-        {
-          "name": "Mayflies",
-          "path": "Core/Mayflies.json"
         },
         {
           "name": "Medley",
@@ -48,18 +40,6 @@
         {
           "name": "Medusa",
           "path": "Core/Medusa.json"
-        },
-        {
-          "name": "Membranes",
-          "path": "Core/Membranes.json"
-        },
-        {
-          "name": "MoreMembranes",
-          "path": "Core/MoreMembranes.json"
-        },
-        {
-          "name": "Moths",
-          "path": "Core/Moths.json"
         },
         {
           "name": "Pebbles",
@@ -82,10 +62,6 @@
           "path": "Core/Segments.json"
         },
         {
-          "name": "Snaky",
-          "path": "Core/Snaky.json"
-        },
-        {
           "name": "Starcrossed",
           "path": "Core/Starcrossed.json"
         },
@@ -96,6 +72,10 @@
         {
           "name": "Tangle",
           "path": "Core/Tangle.json"
+        },
+        {
+          "name": "Tension",
+          "path": "Core/Tension.json"
         },
         {
           "name": "Weave",
