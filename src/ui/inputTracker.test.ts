@@ -212,6 +212,32 @@ test('shift is recorded even when the keystroke went to a text field', () => {
   assert.equal(tracker.freeze(TICK).shift, true);
 });
 
+test('a canvas press records shift too, so Shift+Right can mean redo', () => {
+  // WITHOUT THIS THE GESTURE IS UNRELIABLE: `shift` was written only by the key
+  // handlers, so a right-click would read whatever the last KEY event left
+  // behind. Someone who presses Shift with the pointer already over the canvas
+  // does fire a keydown -- but one swallowed by a focused panel field, or
+  // simply never fired if the modifier was held since before the window had
+  // focus, leaves it false at the click that decides undo from redo.
+  const tracker = new InputTracker();
+  tracker.onPointerDown(RIGHT_BUTTON, false, true);
+  assert.equal(tracker.freeze(TICK).shift, true);
+
+  // And an unmodified press clears it, or one shifted click would make every
+  // later right-click a redo.
+  tracker.onPointerDown(RIGHT_BUTTON, false, false);
+  assert.equal(tracker.freeze(TICK).shift, false);
+});
+
+test('a press captured by the UI records no shift, like everything else', () => {
+  // ASYMMETRY 1 covers the modifier as well: a press that landed on a panel is
+  // not a canvas gesture, so it must not leave state behind that a later canvas
+  // click would read. The early return is what guarantees it.
+  const tracker = new InputTracker();
+  tracker.onPointerDown(RIGHT_BUTTON, true, true);
+  assert.equal(tracker.freeze(TICK).shift, false);
+});
+
 // --- 6. focus loss, which the desktop never had to handle -----------------
 
 test('losing focus clears held keys and drags', () => {

@@ -95,12 +95,18 @@ export interface InputState {
   readonly keysPressed: ReadonlySet<string>;
 
   /**
-   * Shift, from the most recent key event. The trimmed port of `mods`.
+   * Shift, from the most recent key event OR canvas press. Trimmed port of `mods`.
    *
    * Only Shift, because the hotkey table is deliberately Ctrl-free (see
-   * `hotkeys.ts`) and `Shift+Z` is the one binding a modifier discriminates.
+   * `hotkeys.ts`) and Shift is the only modifier any binding discriminates.
    * The desktop carries a full GLFW bitmask; porting one would mean four fields
    * nothing reads.
+   *
+   * **POINTER PRESSES WRITE IT TOO, and that is not redundant with the key
+   * events.** Shift+Right-click is redo (`applyCanvasInput`), and deciding that
+   * from the last KEY event would misread a modifier pressed after the pointer
+   * went down, or one whose keydown was swallowed by a focused text field.
+   * `onPointerDown` records what the browser reports at the click itself.
    */
   readonly shift: boolean;
 }

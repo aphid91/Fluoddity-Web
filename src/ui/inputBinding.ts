@@ -129,7 +129,9 @@ export function bindInput(opts: InputBindingOptions): {
       // browser cooperate rather than relying on the window listeners alone.
       canvas.setPointerCapture(event.pointerId);
     }
-    tracker.onPointerDown(event.button, captured);
+    // `shiftKey` from the pointer event itself: Shift+Right-click is redo, and
+    // the modifier has to be read at the click. See `InputState.shift`.
+    tracker.onPointerDown(event.button, captured, event.shiftKey);
   };
 
   // On WINDOW, and never capture-filtered. See the header.

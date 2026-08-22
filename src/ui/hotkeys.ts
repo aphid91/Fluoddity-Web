@@ -113,6 +113,12 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
 
   // --- history. MOVED off Ctrl; see the file header ------------------------
   // Both rows name `shift` explicitly so neither can match the other.
+  //
+  // **THE MOUSE MIRRORS THIS PAIR AND IS NOT IN THIS TABLE.** Right-click undoes
+  // and Shift+Right-click redoes, decided in `applyCanvasInput` -- the canvas
+  // reads the buttons directly and is not rebindable, so those gestures cannot
+  // be expressed here. The shift convention is deliberately the same, which is
+  // why this note lives beside the rows it copies rather than only there.
   { code: 'KeyZ', shift: false, command: { kind: 'undo' } },
   { code: 'KeyZ', shift: true, command: { kind: 'redo' } },
 

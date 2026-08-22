@@ -972,11 +972,23 @@ export class Orchestrator implements CommandBus {
       // always means undo no matter what is lit -- there is no cancelling
       // gesture to confuse it with, and a modifier-free key that sometimes
       // undoes and sometimes does not would be worse than either behaviour.
+      //
+      // **SHIFT+RIGHT IS REDO, MIRRORING `Z`/`Shift+Z`.** The keyboard pair is
+      // the convention this follows, so the mouse gesture that means undo gains
+      // the modifier that means redo -- one rule to learn rather than two.
+      //
+      // ONLY WHERE PLAIN RIGHT-CLICK ALREADY UNDOES. While a cohort is lit the
+      // gesture cancels the aim, and Shift+Right there must NOT redo: the
+      // unmodified click in that state does not undo either, so a modifier that
+      // jumped the app forward through history from a state about cancelling an
+      // aim would be a large surprise reachable by a slipped finger. It cancels,
+      // exactly as the unmodified click does -- the modifier is inert wherever
+      // the gesture it modifies is.
       if (state.rightPressed) {
         if (this.highlightEnabled && this.highlight.isHighlighted) {
           this.clearHighlight();
         } else {
-          this.dispatch({ kind: 'undo' });
+          this.dispatch({ kind: state.shift ? 'redo' : 'undo' });
         }
       }
     } else if (this.mouseMode === 'draw') {

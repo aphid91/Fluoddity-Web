@@ -107,8 +107,20 @@ export class InputTracker {
    * here because `InputState` has no `anyLeftPressed`, its desktop counterpart
    * having no consumer either.
    */
-  onPointerDown(button: number, capturedByUi: boolean): void {
+  onPointerDown(button: number, capturedByUi: boolean, shift = false): void {
     if (capturedByUi) return;
+    // **RECORDED FROM THE MOUSE EVENT, NOT LEFT TO THE KEYBOARD.** `shift` was
+    // written only by `onKeyDown`/`onKeyUp` when its one consumer was the
+    // `Shift+Z` hotkey pair. Shift+Right-click has no such key event to ride on:
+    // holding Shift does fire a keydown, but a user who presses the modifier
+    // while the pointer is already down -- or whose keydown went to a focused
+    // panel field -- would right-click with `shift` reading false. Taking it
+    // from the pointer event asks the browser what was actually held AT THE
+    // CLICK, which is the only moment that decides undo from redo.
+    //
+    // DEFAULTED so the parameter is optional: `onPointerUp` has no equivalent
+    // and the tests that predate this call it with two arguments.
+    this.shift = shift;
     if (button === LEFT_BUTTON) {
       this.leftPressed = true;
       this.leftDown = true;
