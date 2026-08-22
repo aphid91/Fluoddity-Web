@@ -757,7 +757,7 @@ export const SETTINGS: readonly Setting[] = [
     source: PREFS,
     kind: SLIDER,
     lo: 0.0,
-    hi: 1.0,
+    hi: 0.50,
     help: 'Determines the strength of the bloom effect',
     group: 'Display',
     revealsOn: 'bloomEnabled',

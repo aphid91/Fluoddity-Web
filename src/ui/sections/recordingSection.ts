@@ -173,7 +173,7 @@ export function buildRecordingSection(
   const durationBlade = folder.addBinding(durationProxy, 'value', {
     label: 'Duration (s)',
     min: MIN_DURATION,
-    max: MAX_DURATION,
+    
     step: 1,
   });
   (durationBlade.element as HTMLElement).dataset['setting'] = 'recording.duration';

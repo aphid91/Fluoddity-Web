@@ -47,7 +47,7 @@ const CONTROLS: readonly DrawControl[] = [
   {
     field: 'drawSize',
     label: 'Brush Size',
-    params: { min: 0.01, max: 2.5 },
+    params: { min: 0.01, max: .25 },
     help: 'Determines the radius of the brush reticle',
   },
   {

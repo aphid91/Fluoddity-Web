@@ -227,7 +227,7 @@ export interface Preferences {
 
 /** `preferences.py:35-92`'s dataclass defaults, verbatim. */
 export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
-  brightness: 1.0,
+  brightness: 2.0,
   physicsSteps: 5,
   tonemapSoftness: 2.5,
   motionBlurSamples: 1,
@@ -237,9 +237,9 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   showFpsCounter: true,
   bloomEnabled: true,
   bloomThreshold: 0.2,
-  bloomIntensity: 0.2,
+  bloomIntensity: 0.1,
   bloomRadius: 1.0,
-  drawSize: 0.031,
+  drawSize: 0.01,
   drawPower: 2.5,
   fieldOpacity: 0.10,
   fieldAlwaysShow: false,
