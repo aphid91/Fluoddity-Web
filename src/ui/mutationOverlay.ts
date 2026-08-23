@@ -258,6 +258,14 @@ export class MutationOverlay {
   private topShown: number | null = null;
 
   /**
+   * The bar height last published to CSS, or `null` before the first frame.
+   *
+   * Touch only. The same per-frame write guard `topShown` is, for the same
+   * reason -- see `publishHeight`.
+   */
+  private heightShown: number | null = null;
+
+  /**
    * Teardown for the resize listener.
    *
    * The bar is repositioned per frame from `refresh`, which is enough while the
@@ -1478,7 +1486,13 @@ export class MutationOverlay {
     // there is nothing to collide with -- and setting `style.top` on an element
     // pinned by `bottom/left/right` would over-constrain it and stretch the bar
     // up the screen.
-    if (this.mobile) return;
+    //
+    // What it does INSTEAD is publish how tall the bar is, so the settings sheet
+    // can stop above it rather than running underneath. See `sideContainer`.
+    if (this.mobile) {
+      this.publishHeight();
+      return;
+    }
 
     const menu = document.getElementById('fluoddity-menubar');
     const top = overlayTop(
@@ -1488,6 +1502,35 @@ export class MutationOverlay {
     if (this.topShown === top) return;
     this.topShown = top;
     this.root.style.top = `${String(top)}px`;
+  }
+
+  /**
+   * Publish this bar's height as `--fluoddity-bar-height` on `<html>`.
+   *
+   * The settings sheet is `position:fixed` and stops above the bar, so it needs
+   * a number the bar alone knows: its height changes with the hint row's
+   * contents, with the safe-area inset, and with the font the platform picked.
+   *
+   * **A CSS VARIABLE RATHER THAN SETTING THE SHEET'S `bottom` DIRECTLY**, so the
+   * bar never needs a reference to the panel. It publishes a fact about itself
+   * and whatever cares reads it -- which keeps the dependency one-way, and means
+   * a second element wanting the same clearance costs nothing.
+   *
+   * GUARDED like every other write in this class: `reposition` runs per frame,
+   * and the height only changes when the row's contents do.
+   */
+  private publishHeight(): void {
+    const height = Math.round(this.root.getBoundingClientRect().height);
+    // A zero measurement means the bar is not laid out yet -- before the first
+    // frame, or while the panels are hidden and it is `display:none`. Writing 0
+    // would let the sheet run to the bottom of the screen and put its last rows
+    // under the controls, so the previous good value is kept instead.
+    if (height <= 0 || this.heightShown === height) return;
+    this.heightShown = height;
+    document.documentElement.style.setProperty(
+      '--fluoddity-bar-height',
+      `${String(height)}px`,
+    );
   }
 
   /** One of the stepper's two arrows. */

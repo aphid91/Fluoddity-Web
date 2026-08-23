@@ -92,12 +92,32 @@ const RIGHT_SECTIONS: readonly PanelSection[] = [
   { id: SETTINGS, title: 'Settings', expanded: true },
 ];
 
-/** The left panel's sections, in display order. */
-export function leftSections(): readonly PanelSection[] {
-  return LEFT_SECTIONS;
+/**
+ * The left panel's sections, in display order.
+ *
+ * **EMPTY ON TOUCH, and that is the whole of the mobile panel change here.**
+ * Two 320px columns need 640px plus gutters; a phone is 390px, so the two
+ * overlapped almost completely -- the Project panel sat on top of the settings
+ * panel and neither could be read. There is no arrangement of two side-by-side
+ * columns that fits, so the touch layout has ONE panel and Project becomes a tab
+ * inside it (see `sections/settingsSection.ts`).
+ *
+ * Returning an empty list rather than never calling this is deliberate: the
+ * panel's build loop, refresh, dispose and hidden-state handling all stay
+ * exactly as they are and simply iterate nothing. The alternative -- a `null`
+ * side threaded through every one of those -- would put a branch in each.
+ */
+export function leftSections(mobile = false): readonly PanelSection[] {
+  return mobile ? [] : LEFT_SECTIONS;
 }
 
-/** The right panel's sections, in display order. */
+/**
+ * The right panel's sections, in display order.
+ *
+ * The same single tabbed host either way. What CHANGES on touch is how many
+ * tabs it builds -- Project joins the strip -- and that is decided inside the
+ * section, where the tab list already lives, rather than here.
+ */
 export function rightSections(): readonly PanelSection[] {
   return RIGHT_SECTIONS;
 }

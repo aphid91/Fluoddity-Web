@@ -685,12 +685,12 @@ export class Panel {
     });
 
     this.left = {
-      container: opts.leftContainer ?? sideContainer(LEFT),
+      container: opts.leftContainer ?? sideContainer(LEFT, this.mobile),
       pane: new Pane({ container: document.createElement('div') }),
       sections: [],
     };
     this.right = {
-      container: opts.rightContainer ?? sideContainer(RIGHT),
+      container: opts.rightContainer ?? sideContainer(RIGHT, this.mobile),
       pane: new Pane({ container: document.createElement('div') }),
       sections: [],
     };
@@ -738,7 +738,11 @@ export class Panel {
    */
   private buildBoth(): void {
     const status = this.bus.status();
-    this.left.pane = this.buildSide(this.left, LEFT, leftSections(), status);
+    // EMPTY ON TOUCH -- Project moves into the right panel's tab strip, because
+    // two 320px columns do not fit on a phone. The build loop runs over nothing
+    // rather than being skipped, so refresh, dispose and the hidden-state
+    // handling below all stay exactly as they are. See `panelModel.ts`.
+    this.left.pane = this.buildSide(this.left, LEFT, leftSections(this.mobile), status);
     this.right.pane = this.buildSide(this.right, RIGHT, rightSections(), status);
 
     // Seed every proxy from the real value rather than the zero it was
@@ -801,6 +805,10 @@ export class Panel {
           this.exportVideoShown && this.recording !== null
             ? this.recordingOptions()
             : undefined,
+          // Project becomes a tab here exactly when the left panel is empty --
+          // the same decision `leftSections` makes, read from the same flag, so
+          // the two cannot both claim it and render it twice.
+          this.mobile,
         );
         this.settings = handle;
         side.sections.push(handle);
@@ -2129,10 +2137,48 @@ function numericValue(value: number | boolean | undefined): number {
  * overlay is centred and capped at 420px, so on any window wide enough for two
  * 320px panels there is no overlap.
  */
-function sideContainer(which: Side): HTMLElement {
+function sideContainer(which: Side, mobile = false): HTMLElement {
   const el = document.createElement('div');
   const left = which === LEFT;
   el.id = left ? 'fluoddity-panel-left' : 'fluoddity-panel-right';
+
+  // =====================================================================
+  // TOUCH: one full-width sheet, stopping above the control bar
+  // =====================================================================
+  //
+  // The desktop geometry -- two 320px columns pinned to the left and right
+  // edges -- has nothing to give on a 390px screen: the columns would overlap
+  // almost completely, which is exactly the "project panel badly overlaps the
+  // preferences panel" this work started from.
+  //
+  // So on touch there is ONE panel and it spans the viewport. The LEFT
+  // container is still created and still positioned; it is simply built with no
+  // sections (`panelModel.leftSections`), so it measures zero and shows
+  // nothing. Creating it anyway is what lets `setHidden`, `dispose` and the
+  // build loop stay uniform across both layouts.
+  //
+  // **IT STOPS ABOVE THE CONTROL BAR RATHER THAN FILLING THE SCREEN.** The bar
+  // is bottom-anchored and always visible, so a sheet running to `bottom:0`
+  // would put its last rows underneath the controls -- unreachable, and looking
+  // like the list had been cut off. `bottom` is set from a CSS variable the
+  // overlay measures itself into (`--fluoddity-bar-height`), with a fallback
+  // that is generous rather than tight: too much clearance costs a little
+  // scrolling, too little hides controls.
+  if (mobile) {
+    el.style.cssText =
+      'position:fixed;left:0;right:0;' +
+      `top:${PANEL_TOP_PX}px;` +
+      'bottom:calc(var(--fluoddity-bar-height, 190px) + 8px);' +
+      'overflow-y:auto;-webkit-overflow-scrolling:touch;' +
+      // CONTAINS ITS OWN SCROLL. Without this, flicking past the end of a long
+      // settings list continues into the page behind it -- and the page is the
+      // canvas, which has `touch-action:none` and would simply eat the rest of
+      // the gesture. The list would feel like it had stuck.
+      'overscroll-behavior:contain;z-index:20;padding:0 6px;box-sizing:border-box;';
+    document.body.append(el);
+    return el;
+  }
+
   // Below the menu bar AND the mutation overlay, which is centred at the top and
   // is the taller of the two. The panels are 320px and the overlay is capped so
   // that on any window wide enough for both there is no horizontal overlap --

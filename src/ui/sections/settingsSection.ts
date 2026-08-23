@@ -31,6 +31,7 @@ import type { ControlBinding } from '../controls.ts';
 import { type SectionContext, type SectionHandle } from './section.ts';
 import { buildDrawingSection } from './drawingSection.ts';
 import { buildPreferencesSection } from './preferencesSection.ts';
+import { buildProjectSection } from './projectSection.ts';
 import {
   type RecordingSectionHandle,
   type RecordingSectionOptions,
@@ -38,10 +39,25 @@ import {
 } from './recordingSection.ts';
 import type { RecordingSettings } from '../../recorder/recordingSettings.ts';
 
+/**
+ * The Project tab. **TOUCH ONLY, and first in the strip when it exists.**
+ *
+ * On the desktop Project is a PANEL, not a tab -- it lives in its own column on
+ * the left, because it is a different kind of state from the other three (see
+ * `panelModel.ts`) and the split down the middle of the screen says so. A phone
+ * has no middle to split: two 320px columns do not fit in 390px, so the touch
+ * layout drops the left panel and Project joins this strip instead.
+ *
+ * FIRST because it is what the other three are settings ABOUT -- the project is
+ * the work, and the rest is how the editor is arranged around it. It is also
+ * the tab a user opens the panel to reach most often.
+ */
+export const PROJECT_TAB = 'project';
 export const PREFS_TAB = 'preferences';
 export const DRAWING_TAB = 'drawing';
 export const RECORDING_TAB = 'recording';
 export type SettingsTab =
+  | typeof PROJECT_TAB
   | typeof PREFS_TAB
   | typeof DRAWING_TAB
   | typeof RECORDING_TAB;
@@ -56,6 +72,11 @@ export type SettingsTab =
  * deliberately untouched by loading someone else's work.
  */
 const TAB_HELP: Record<SettingsTab, string> = {
+  // THE ODD ONE OUT, and its help says so: everything on this page DOES travel
+  // with the project, which is exactly what the other three promise not to do.
+  [PROJECT_TAB]:
+    'The project itself: what Save, share links and checkpoints capture. ' +
+    'Unlike the other tabs, everything here travels with the project.',
   [PREFS_TAB]:
     'Editor Settings: automatically tracked between sessions, but not ' +
     'saved/loaded with projects, share-urls or checkpoints',
@@ -90,12 +111,37 @@ export function buildSettingsSection(
    * refresh. A built-but-hidden tab would pay all three costs to show nothing.
    */
   recording?: RecordingSectionOptions,
+  /**
+   * Build the Project page as a fourth tab. Touch layouts only.
+   *
+   * True ONLY when there is no left panel to hold it -- the two are the same
+   * decision seen from opposite ends, and having both would put Project on
+   * screen twice with two sets of live bindings writing the same fields.
+   * `panelModel.leftSections` is the other half.
+   */
+  project?: boolean,
 ): SettingsSectionHandle {
   // The host folder's own header goes too: the tab strip sits directly beneath
   // it and names both pages, so a "Settings" bar above them is a third label for
   // something already labelled twice -- and one the user could collapse, hiding
   // the tabs with no clue why.
   hideFolderTitle(folder);
+
+  // The Project page, FIRST in the strip and touch-only. See `PROJECT_TAB`.
+  //
+  // **ITS TITLE IS NOT SUPPRESSED, unlike every other page here.**
+  // `projectSection` retitles this folder to `Project: <name>` and keeps it
+  // current as the name changes underneath -- which is the only place the loaded
+  // project's name appears now that the left panel is gone. Hiding it to match
+  // the others would cost the user the one label that says what they are
+  // editing.
+  let projectFolder: FolderApi | null = null;
+  let projectSection: SectionHandle | null = null;
+  if (project === true) {
+    projectFolder = folder.addFolder({ title: 'Project', expanded: true });
+    (projectFolder.element as HTMLElement).dataset['section'] = PROJECT_TAB;
+    projectSection = buildProjectSection(projectFolder, status, ctx);
+  }
 
   // Two sub-folders, built in tab order. Their TITLES are suppressed: the tab
   // button already names each one, and a folder header directly under its own
@@ -131,10 +177,10 @@ export function buildSettingsSection(
 
   // Built from the tabs that EXIST, so an untickedRecording leaves two buttons
   // rather than three with one dead.
-  const tabs: (readonly [SettingsTab, string])[] = [
-    [PREFS_TAB, 'Preferences'],
-    [DRAWING_TAB, 'Drawing Controls'],
-  ];
+  const tabs: (readonly [SettingsTab, string])[] = [];
+  // FIRST when it exists -- see `PROJECT_TAB`.
+  if (projectFolder !== null) tabs.push([PROJECT_TAB, 'Project']);
+  tabs.push([PREFS_TAB, 'Preferences'], [DRAWING_TAB, 'Drawing Controls']);
   if (recordingFolder !== null) tabs.push([RECORDING_TAB, 'Recording Controls']);
 
   const buttons = new Map<SettingsTab, HTMLButtonElement>();
@@ -165,8 +211,14 @@ export function buildSettingsSection(
   // a header that this function had just set to `display:none` -- the tabs
   // vanished completely, and the panel looked as if it had never had any.
   // Anchoring on the element we actually placed cannot drift that way.
-  const prefsEl = prefsFolder.element as HTMLElement;
-  prefsEl.parentElement?.insertBefore(strip, prefsEl);
+  //
+  // **THE ANCHOR IS WHICHEVER PAGE IS FIRST, not Preferences by name.** Project
+  // is built ahead of it on touch, so anchoring on `prefsFolder` would leave the
+  // strip BELOW the Project page -- tabs in the middle of the panel, under the
+  // page they switch. The two must stay in step, which is why this reads the
+  // same "is there a project folder" the tab list above reads.
+  const firstEl = (projectFolder ?? prefsFolder).element as HTMLElement;
+  firstEl.parentElement?.insertBefore(strip, firstEl);
 
   function setActiveTab(tab: SettingsTab): void {
     // A tab that does not exist cannot be shown. Reachable in practice: the
@@ -174,6 +226,10 @@ export function buildSettingsSection(
     // while its tab is in front asks for exactly this -- and without the
     // fallback every folder would hide and the panel would go blank.
     active = buttons.has(tab) ? tab : PREFS_TAB;
+    if (projectFolder !== null) {
+      (projectFolder.element as HTMLElement).style.display =
+        active === PROJECT_TAB ? '' : 'none';
+    }
     (prefsFolder.element as HTMLElement).style.display =
       active === PREFS_TAB ? '' : 'none';
     (drawingFolder.element as HTMLElement).style.display =
@@ -193,11 +249,24 @@ export function buildSettingsSection(
     // WHOLE registry rather than per folder, so a binding on the hidden tab
     // still has to be in this list -- it is hidden by its tab, not by its
     // reveal, and the two must not be confused.
-    bindings: [...prefs.bindings, ...drawing.bindings] as readonly ControlBinding[],
+    // Project's bindings JOIN THE LIST when it is a tab here. They are the same
+    // bindings the left panel would have contributed on the desktop, and the
+    // panel resolves reveals and gates across the whole list -- so leaving them
+    // out would make every `revealsOn` and `requires` on a Project control
+    // silently stop working on touch.
+    bindings: [
+      ...(projectSection?.bindings ?? []),
+      ...prefs.bindings,
+      ...drawing.bindings,
+    ] as readonly ControlBinding[],
     refresh: (s, input) => {
       // EVERY tab, including the ones nobody can see. Refreshing only the active
       // tab would mean switching to another showed one frame of stale values,
       // and the cost is a handful of proxy writes.
+      //
+      // Project's refresh is what keeps its folder title reading the CURRENT
+      // project name, which changes under the panel on every load.
+      projectSection?.refresh(s, input);
       prefs.refresh(s, input);
       drawing.refresh(s, input);
       // Recording's refresh drives the export button's progress label, which
@@ -209,6 +278,11 @@ export function buildSettingsSection(
     // nothing outside their folders and define no `dispose`.
     dispose: () => {
       recordingSection?.dispose?.();
+      // Project defines no `dispose` today, and is forwarded anyway: it is a
+      // section like the others, and a host that tears down three of its four
+      // children is the kind of asymmetry that goes unnoticed until the fourth
+      // one grows a window listener.
+      projectSection?.dispose?.();
     },
     setActiveTab,
     activeTab: () => active,
