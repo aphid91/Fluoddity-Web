@@ -221,6 +221,15 @@ export class MutationOverlay {
   private readonly send: (command: Command) => void;
 
   /**
+   * Whether this bar was built for touch. Fixed at construction.
+   *
+   * Most of the layout branches happen ONCE, in the constructor, and need no
+   * field. This exists for the handful of per-frame methods that must also know
+   * -- `reposition` above all, whose entire job is a desktop concern.
+   */
+  private readonly mobile: boolean;
+
+  /**
    * Touch only: whether a one-finger drag imitates the RIGHT mouse button.
    *
    * The push/pull and draw/erase latch, flipped by the context button in Shove
@@ -333,6 +342,7 @@ export class MutationOverlay {
     // Held for `runContextAction`, which has no closure to ride on. Every
     // button below still wires `opts.send` directly, unchanged.
     this.send = opts.send;
+    this.mobile = opts.mobile ?? false;
 
     // Bounds from the registry, never restated. A renamed field degrades to the
     // 0..1 fallback rather than to a slider with no range at all.
@@ -342,7 +352,9 @@ export class MutationOverlay {
 
     this.root = document.createElement('div');
     this.root.id = 'fluoddity-mutation';
-    this.root.style.cssText = ROOT_CSS;
+    // BOTTOM-ANCHORED AND FULL-WIDTH ON TOUCH; the desktop keeps the centred
+    // strip under the menu bar. See `TOUCH_ROOT_CSS`.
+    this.root.style.cssText = opts.mobile === true ? TOUCH_ROOT_CSS : ROOT_CSS;
 
     const bar = document.createElement('div');
     bar.style.cssText = BAR_CSS;
@@ -358,7 +370,10 @@ export class MutationOverlay {
     // Fine enough that the slider is not the limiting factor on a value the
     // shader reads as a continuous float.
     this.slider.step = '0.001';
-    this.slider.style.cssText = SLIDER_CSS;
+    // Fills its own row on touch; a fixed share of the viewport on the desktop,
+    // where it shares a row with eight other controls.
+    this.slider.style.cssText =
+      opts.mobile === true ? TOUCH_SLIDER_CSS : SLIDER_CSS;
     this.slider.dataset['setting'] = 'config.mutationScale';
 
     this.readout = document.createElement('span');
@@ -389,7 +404,7 @@ export class MutationOverlay {
     const rerollKey = hotkeyLabel({ kind: 'randomizeSeed' });
     this.reroll.textContent =
       rerollKey === '' ? 'Reroll Mutations' : `Reroll Mutations (${rerollKey})`;
-    this.reroll.style.cssText = BUTTON_CSS;
+    this.reroll.style.cssText = opts.mobile === true ? TOUCH_CONTROL_CSS : BUTTON_CSS;
     this.reroll.dataset['setting'] = 'config.mutationSeed.randomize';
 
     // Takes the slider's place while the rule is the all-zero sentinel. See
@@ -405,7 +420,16 @@ export class MutationOverlay {
     this.rerollAll.textContent = `Reroll All Behavior${keySuffix([
       hotkeyLabel({ kind: 'randomizeBehavior' }),
     ])}`;
-    this.rerollAll.style.cssText = REROLL_ALL_CSS;
+    // **THE FIXED WIDTH IS A DESKTOP CONCERN AND IS DROPPED ON TOUCH.**
+    // `REROLL_ALL_CSS` matches the slider group's width so that swapping this
+    // button in for it does not change the bar's total width -- which matters
+    // because the desktop bar is CENTRED, so any width change moves both edges
+    // and slides every other control out from under the pointer. The touch bar
+    // spans the viewport and its edges cannot move, so there is nothing to
+    // stabilise; here the button just takes its share of the row like its
+    // neighbours.
+    this.rerollAll.style.cssText =
+      opts.mobile === true ? TOUCH_CONTROL_CSS : REROLL_ALL_CSS;
     this.rerollAll.dataset['setting'] = 'config.rule.randomize';
     // SHARED WITH THE SIMULATION MENU ROW it mirrors, imported rather than
     // restated -- the bar and the menu must not disagree about what an action
@@ -419,7 +443,7 @@ export class MutationOverlay {
     // from the Tools menu and the number keys, and a modal state you can see but
     // not change from where you see it is a worse affordance than either.
     this.tool = document.createElement('select');
-    this.tool.style.cssText = TOOL_CSS;
+    this.tool.style.cssText = opts.mobile === true ? TOUCH_TOOL_CSS : TOOL_CSS;
     this.tool.dataset['setting'] = 'transport.tool';
     for (const mode of MOUSE_MODES) {
       const option = document.createElement('option');
@@ -439,7 +463,7 @@ export class MutationOverlay {
     this.reset = document.createElement('button');
     this.reset.type = 'button';
     this.reset.textContent = `Reset${keySuffix([hotkeyLabel({ kind: 'reset' })])}`;
-    this.reset.style.cssText = BUTTON_CSS;
+    this.reset.style.cssText = opts.mobile === true ? TOUCH_CONTROL_CSS : BUTTON_CSS;
     this.reset.dataset['setting'] = 'transport.reset';
     // Shared with the Simulation menu row, like Reroll All Behavior above.
     this.tooltip.attach(this.reset, { title: 'Reset', body: RESET_HELP });
@@ -569,17 +593,55 @@ export class MutationOverlay {
     // The tool control goes INSIDE the bar, not below it. Floating on its own
     // it read as a stray tooltip over the canvas rather than as part of the UI,
     // and a status line that looks like an error message is worse than none.
-    bar.append(
-      presets,
-      this.label,
-      this.slider,
-      this.readout,
-      this.rerollAll,
-      this.reroll,
-      this.reset,
-      this.tool,
-      this.gear,
-    );
+    // =====================================================================
+    // THE BAR: ONE ROW ON THE DESKTOP, TWO ON TOUCH
+    // =====================================================================
+    //
+    // Same nine controls either way, and the desktop arrangement is untouched:
+    // one flex row, in the order it has always been in.
+    //
+    // A phone cannot hold that row. It is ~900px of controls at a comfortable
+    // desktop size, and every one of them has to GROW rather than shrink to be
+    // usable with a finger -- so it splits by what the controls are FOR:
+    //
+    //   TOP     Mutation Scale and the gear. The slider is the most
+    //           consequential control in the app and the one that most wants
+    //           width, so it gets a row where it can take all of it. The gear
+    //           rides along because it is a fixed-width icon that would waste a
+    //           row of its own.
+    //   BOTTOM  everything that is pressed rather than dragged -- the layout
+    //           presets, the rerolls, Reset and the tool selector.
+    //
+    // The label and readout are DROPPED from the touch layout, not hidden:
+    // `LABEL_CSS` names the slider in words the tooltip also carries, and the
+    // readout duplicates a value the slider position already shows. On a phone
+    // both cost width the slider itself should have.
+    if (opts.mobile === true) {
+      const top = document.createElement('div');
+      top.style.cssText = TOUCH_BAR_ROW_CSS;
+      top.append(this.slider, this.gear);
+
+      const bottom = document.createElement('div');
+      bottom.style.cssText = TOUCH_BAR_ROW_CSS;
+      // `rerollAll` and `reroll` swap places with the state (see `refresh`), so
+      // both live here and the swap continues to work untouched.
+      bottom.append(presets, this.rerollAll, this.reroll, this.reset, this.tool);
+
+      bar.style.cssText = TOUCH_BAR_CSS;
+      bar.append(top, bottom);
+    } else {
+      bar.append(
+        presets,
+        this.label,
+        this.slider,
+        this.readout,
+        this.rerollAll,
+        this.reroll,
+        this.reset,
+        this.tool,
+        this.gear,
+      );
+    }
     // --- the context hint row ----------------------------------------------
     //
     // Inside the same rounded container as the bar, as a second row: it is about
@@ -587,7 +649,7 @@ export class MutationOverlay {
     // would be a second thing to position against the menu bar and the panels.
 
     this.hint = document.createElement('div');
-    this.hint.style.cssText = HINT_CSS;
+    this.hint.style.cssText = opts.mobile === true ? TOUCH_HINT_CSS : HINT_CSS;
     this.hint.dataset['setting'] = 'transport.hint';
 
     this.hintLead = document.createElement('span');
@@ -818,7 +880,18 @@ export class MutationOverlay {
     // above because it does not exist on the desktop.
     if (this.contextButton !== null) this.hint.append(this.contextButton);
 
-    this.root.append(bar, this.hint);
+    // HINT FIRST ON TOUCH, so it sits ABOVE the controls rather than below
+    // them. The desktop reads top-down -- controls, then the sentence about the
+    // tool they select -- and on a phone the whole strip is at the bottom of the
+    // screen, so the same reading order puts the hint nearer the artwork and the
+    // controls nearest the thumb. It also keeps the two big buttons on the hint
+    // row from being the very bottom edge of the screen, where the home
+    // indicator lives.
+    if (opts.mobile === true) {
+      this.root.append(this.hint, bar);
+    } else {
+      this.root.append(bar, this.hint);
+    }
     (opts.container ?? document.body).append(this.root);
     this.releaseFocus = bindFocusRelease(this.root);
 
@@ -1194,8 +1267,30 @@ export class MutationOverlay {
     if (this.hintShown === key) return;
     this.hintShown = key;
 
-    this.hintLead.textContent = lead;
-    this.hintTail.textContent = tail;
+    // =====================================================================
+    // TOUCH: the context button REPLACES the two red ones, it does not join
+    // them
+    // =====================================================================
+    //
+    // `hintFor` decides Cancel and Undo independently, which is right for a
+    // mouse: each is its own button and there is room for whichever is live.
+    // On a phone the context button already IS whichever is live -- that is
+    // what `contextActionFor` computes, from these very states -- so rendering
+    // the desktop pair as well would put two identical red controls on a 390px
+    // row and squeeze the one a finger is meant to hit down to a stub.
+    //
+    // MEASURED, NOT GUESSED: before this, the context button rendered 26px wide
+    // showing "lo (h" while "Nothing to undo" sat beside it taking 200px.
+    //
+    // The PROSE goes too, and for the same reason rather than to save a line.
+    // These sentences name mouse gestures -- "Left click a particle", "Right
+    // click to undo" -- which is advice a touch user cannot act on. What
+    // replaces them is the pair of buttons, whose labels say what the two
+    // gestures that DO exist will do.
+    const suppressForTouch = this.mobile;
+
+    this.hintLead.textContent = suppressForTouch ? '' : lead;
+    this.hintTail.textContent = suppressForTouch ? '' : tail;
 
     // The label names EVERY route to the same act, which is the point of
     // replacing the prose: the button is one way, and it says what the other two
@@ -1203,9 +1298,16 @@ export class MutationOverlay {
     // hotkey table, so a rebind moves it and an unbind drops it cleanly.
     if (commit) {
       const enter = hotkeyLabel({ kind: 'confirmSelection' });
-      this.commitButton.textContent =
-        'Generate children from selected cohort' +
-        keySuffix([enter, 'Left click cohort again']);
+      // SHORT ON TOUCH, and the omissions are deliberate rather than arbitrary
+      // truncation. The desktop label names every route to the act -- the key
+      // and the second click -- which is exactly the part a touch user cannot
+      // use: there is no keyboard and, on this layout, clicking a cohort again
+      // does NOT commit (see `oneClickSelection` handling). Naming routes that
+      // do not exist here is worse than saying less.
+      this.commitButton.textContent = suppressForTouch
+        ? 'Generate children'
+        : 'Generate children from selected cohort' +
+          keySuffix([enter, 'Left click cohort again']);
     }
     this.commitButton.style.display = commit ? 'inline-flex' : 'none';
 
@@ -1216,8 +1318,11 @@ export class MutationOverlay {
     // a rebind moves it and an unbind drops it.
     if (generateChild) {
       const enter = hotkeyLabel({ kind: 'confirmSelection' });
-      this.generateChildButton.textContent =
-        'Generate a child from current behavior' + keySuffix(['Left click', enter]);
+      // Shortened on touch for the reason the commit button above is: the
+      // suffix names a key and a mouse click, neither of which a finger has.
+      this.generateChildButton.textContent = suppressForTouch
+        ? 'Generate a child'
+        : 'Generate a child from current behavior' + keySuffix(['Left click', enter]);
     }
     this.generateChildButton.style.display = generateChild ? 'inline-flex' : 'none';
 
@@ -1240,7 +1345,10 @@ export class MutationOverlay {
       this.undoButton.style.opacity = empty ? '0.45' : '1';
       this.undoButton.style.cursor = empty ? 'default' : 'pointer';
     }
-    this.undoButton.style.display = undo !== null ? 'inline-flex' : 'none';
+    // WITHHELD ON TOUCH: the context button is already whichever of Undo and
+    // Cancel is live in this state. See `suppressForTouch` above.
+    this.undoButton.style.display =
+      undo !== null && !suppressForTouch ? 'inline-flex' : 'none';
 
     // `inline-flex` RESTATED rather than `''`, for the reason spelled out at the
     // stepper below: this button carries its layout in an inline `style` set
@@ -1248,7 +1356,9 @@ export class MutationOverlay {
     this.clearFieldButton.style.display = clearField ? 'inline-flex' : 'none';
 
     // `inline-flex` RESTATED, not `''` -- same reason as the two above.
-    this.cancelSelectionButton.style.display = cancelSelection ? 'inline-flex' : 'none';
+    // WITHHELD ON TOUCH, like the undo button and for the same reason.
+    this.cancelSelectionButton.style.display =
+      cancelSelection && !suppressForTouch ? 'inline-flex' : 'none';
 
     const stepping = cohort !== null;
     // `inline-flex` RESTATED, NOT `''`. Both of these elements carry their
@@ -1362,6 +1472,14 @@ export class MutationOverlay {
    * reads and writes is what turns a per-frame measurement into layout thrash.
    */
   private reposition(): void {
+    // **NOTHING TO POSITION ON TOUCH, AND WRITING `top` WOULD BREAK IT.** The
+    // whole of this method exists to keep a TOP-anchored bar clear of the menu
+    // bar above it. The touch layout is anchored to the BOTTOM instead, where
+    // there is nothing to collide with -- and setting `style.top` on an element
+    // pinned by `bottom/left/right` would over-constrain it and stretch the bar
+    // up the screen.
+    if (this.mobile) return;
+
     const menu = document.getElementById('fluoddity-menubar');
     const top = overlayTop(
       this.root.getBoundingClientRect(),
@@ -2159,6 +2277,88 @@ const LABEL_CSS =
   'font:12px system-ui,sans-serif;color:#e8e8ea;white-space:nowrap;' +
   'user-select:none;';
 
+// =========================================================================
+// TOUCH: the bar moves to the BOTTOM and becomes two rows
+// =========================================================================
+//
+// **BOTTOM, BECAUSE THAT IS WHERE THUMBS REACH.** On a phone held one-handed
+// the top of the screen is the hardest place to touch and the bottom is the
+// easiest, which is the reverse of a desktop window where the menu bar is the
+// natural home for controls. The hint row stays directly above the bar, so the
+// pair reads bottom-up: what the tool does, then the controls that change it.
+//
+// `left:0;right:0` REPLACES THE CENTRING TRANSFORM. The desktop bar is centred
+// with `translateX(-50%)` and sized by its contents; this one spans the
+// viewport, because on a phone there is no spare width to centre within and the
+// controls should use all of it.
+//
+// `padding-bottom` CARRIES THE SAFE-AREA INSET. On a notched phone the bottom
+// of the viewport is behind the home indicator, and a bar flush to `bottom:0`
+// puts its controls under it -- reachable only by a swipe that the OS claims.
+// `env()` resolves to 0 where there is no inset, so this costs nothing
+// elsewhere. It is ARMED by `viewport-fit=cover` in `index.html`; without that
+// meta tag the value is always 0 and this silently does nothing.
+const TOUCH_ROOT_CSS =
+  'position:fixed;bottom:0;left:0;right:0;' +
+  'z-index:30;display:flex;flex-direction:column;align-items:stretch;gap:4px;' +
+  'padding:0 6px calc(6px + env(safe-area-inset-bottom,0px));' +
+  'box-sizing:border-box;pointer-events:none;';
+
+// The two-row container. Column rather than the desktop's single row.
+const TOUCH_BAR_CSS =
+  'display:flex;flex-direction:column;gap:6px;pointer-events:auto;' +
+  'background:rgba(28,28,30,0.92);border:1px solid rgba(255,255,255,0.12);' +
+  'border-radius:10px;padding:8px;box-shadow:0 4px 16px rgba(0,0,0,0.45);';
+
+// One row inside it.
+//
+// `gap:8px` is wider than the desktop's 10px looks, because these controls are
+// bigger and adjacent 44px targets need visible separation to be told apart by
+// touch rather than by sight.
+const TOUCH_BAR_ROW_CSS =
+  'display:flex;align-items:center;gap:8px;width:100%;min-width:0;';
+
+// The hint row, which on touch carries the gold/red button pair.
+//
+// **`max-width:96vw` IS GONE, AND `width:100%` REPLACES IT.** The desktop row
+// shrink-wraps its sentence and is capped so a long one cannot run off screen.
+// Here the row is a container for two buttons that should SPLIT the viewport
+// evenly, so it takes all of it and lets `flex:1` on each button do the
+// division.
+//
+// The prose is still allowed to shrink and ellipsize (`HINT_TEXT_CSS` on the
+// spans), which matters more here than on the desktop: several of these
+// sentences were written for a 1400px bar and this row is 390px wide.
+const TOUCH_HINT_CSS =
+  'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;pointer-events:auto;' +
+  'background:rgba(28,28,30,0.92);border:1px solid rgba(255,255,255,0.12);' +
+  'border-radius:10px;padding:6px;box-shadow:0 4px 16px rgba(0,0,0,0.45);' +
+  'font:12px system-ui,sans-serif;color:#a8a8ad;white-space:nowrap;' +
+  'user-select:none;width:100%;box-sizing:border-box;overflow:hidden;';
+
+// The slider, filling its row rather than taking a fixed share of the viewport.
+//
+// `min-width:0` IS LOAD-BEARING: a flex item defaults to `min-width:auto`,
+// which refuses to shrink below its intrinsic size and would push the gear off
+// the row on a narrow phone.
+//
+// `height:44px` gives the TRACK a finger-sized hit area. The thumb is drawn
+// inside it and stays its natural size, so this widens what can be grabbed
+// without making the control look inflated.
+const TOUCH_SLIDER_CSS =
+  'flex:1;min-width:0;height:44px;accent-color:#8ab4f8;cursor:pointer;';
+
+// The bottom row's buttons and the tool dropdown.
+//
+// `flex:1` with `min-width:0` lets the five controls divide the row evenly and
+// shrink together rather than the last one wrapping. 44px minimum, like
+// everything else a finger has to hit.
+const TOUCH_CONTROL_CSS =
+  'flex:1;min-width:0;min-height:44px;padding:6px 8px;' +
+  'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
+  'border-radius:8px;color:#e8e8ea;font:12px system-ui,sans-serif;' +
+  'cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+
 // The context hint, as a second row in the same container.
 //
 // `pointer-events:auto` because the root turns them off (see ROOT_CSS) and the
@@ -2461,3 +2661,21 @@ const TOOL_CSS =
  * the pale-on-white failure that sent this control light in the first place.
  */
 const TOOL_OPTION_CSS = 'background:#2c2c2e;color:#e8e8ea;';
+
+/**
+ * The tool dropdown at finger size.
+ *
+ * **BUILT ON `TOOL_CSS` RATHER THAN ON `TOUCH_CONTROL_CSS`**, which is the one
+ * departure from how every other touch control here is styled -- and it is
+ * deliberate. `TOOL_CSS` carries `background:#2c2c2e` and `color-scheme:dark`
+ * for a reason the comment above records at length: the option list is drawn by
+ * the PLATFORM, does not reliably inherit, and styling it wrong once already
+ * produced pale-on-white text. Starting from the generic control string would
+ * drop both and reopen exactly that bug.
+ *
+ * So this keeps the colours and overrides only the geometry. The later
+ * declarations win, this being a single `cssText`.
+ */
+const TOUCH_TOOL_CSS =
+  `${TOOL_CSS}flex:1;min-width:0;min-height:44px;` +
+  'border-radius:8px;font:12px system-ui,sans-serif;padding:6px 8px;';
