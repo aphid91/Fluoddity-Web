@@ -63,6 +63,27 @@ export interface InputBindingOptions {
   readonly showControls: () => void;
   /** Defaults to `DEFAULT_HOTKEYS`; a parameter so a test or Step 10 can swap it. */
   readonly hotkeys?: readonly Hotkey[];
+  /**
+   * Ignore touch pointers, because `touchBinding.ts` is handling them.
+   *
+   * **THE ONE PLACE THE TWO INPUT PATHS ARE KEPT APART**, and it has to be
+   * here. Pointer Events deliver a finger and a mouse through the same
+   * `pointerdown`/`pointermove`/`pointerup` on the same canvas, so with the
+   * touch listeners installed a single tap arrives at BOTH files: once as a
+   * gesture and once as an ordinary press. That is two picks per tap, and in
+   * Draw mode a stroke laid down underneath every pan.
+   *
+   * The touch side cannot prevent it. `stopImmediatePropagation` only stops
+   * listeners registered AFTER the one calling it, and `bindInput` runs first
+   * -- so by the time a touch handler could object, the mouse handler has
+   * already fired. Declining the event at the source is the only order-
+   * independent fix.
+   *
+   * DEFAULTS TO FALSE, so the desktop path is exactly what it was: every
+   * existing caller and every test omits this and keeps handling every pointer
+   * it ever handled. `main.ts` passes true only when the touch layout is live.
+   */
+  readonly ignoreTouch?: boolean;
 }
 
 /**
@@ -98,6 +119,22 @@ export function bindInput(opts: InputBindingOptions): {
   const capturedByUi = (event: Event): boolean => event.target !== canvas;
 
   /**
+   * Whether this pointer belongs to the touch path instead of this one.
+   *
+   * Always false on the desktop, where `ignoreTouch` is unset -- so every
+   * pointer is handled exactly as before. See `InputBindingOptions.ignoreTouch`.
+   *
+   * APPLIED TO THE UP AND MOVE HANDLERS TOO, not only to `pointerdown`. Those
+   * two are deliberately never capture-filtered (the file header explains why),
+   * which means a touch that this file declined to press on would still be able
+   * to move the tracker's cursor and clear its buttons -- so filtering only the
+   * press would leave the mouse path half-listening to a gesture it is not
+   * running.
+   */
+  const notOurs = (event: PointerEvent): boolean =>
+    opts.ignoreTouch === true && event.pointerType === 'touch';
+
+  /**
    * CSS pixels to framebuffer pixels.
    *
    * **This conversion is load-bearing and easy to get subtly wrong.**
@@ -125,6 +162,7 @@ export function bindInput(opts: InputBindingOptions): {
   // --- pointer -------------------------------------------------------------
 
   const onPointerDown = (event: PointerEvent): void => {
+    if (notOurs(event)) return;
     // Position first: a click that arrives before any movement (a tap, or the
     // very first interaction after load) must still pick at the right place.
     tracker.onPointerMove(...toFramebuffer(event));
@@ -144,11 +182,13 @@ export function bindInput(opts: InputBindingOptions): {
 
   // On WINDOW, and never capture-filtered. See the header.
   const onPointerUp = (event: PointerEvent): void => {
+    if (notOurs(event)) return;
     tracker.onPointerMove(...toFramebuffer(event));
     tracker.onPointerUp(event.button);
   };
 
   const onPointerMove = (event: PointerEvent): void => {
+    if (notOurs(event)) return;
     tracker.onPointerMove(...toFramebuffer(event));
   };
 
@@ -160,6 +200,7 @@ export function bindInput(opts: InputBindingOptions): {
    * is still a drag that must end, so it routes to the same place.
    */
   const onPointerCancel = (event: PointerEvent): void => {
+    if (notOurs(event)) return;
     tracker.onPointerUp(event.button);
   };
 

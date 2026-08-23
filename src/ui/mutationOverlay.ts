@@ -71,6 +71,15 @@ export interface MutationOverlayOptions {
    * required argument they have to invent.
    */
   readonly onToggleUi?: () => void;
+  /**
+   * Build the touch layout. Defaults to false, which is the desktop bar.
+   *
+   * **THE ONLY THING THAT SWITCHES THIS FILE'S LAYOUT**, and it is read at
+   * CONSTRUCTION rather than per frame: the two arrangements differ in which
+   * elements exist, not merely in how they are styled, so this decides what is
+   * built and then never changes. See `ui/mobile.ts` on why that is latched.
+   */
+  readonly mobile?: boolean;
 }
 
 /** Human-readable tool names. Keyed so a new MOUSE_MODES member fails to compile. */
@@ -157,6 +166,32 @@ export class MutationOverlay {
   private readonly undoButton: HTMLButtonElement;
 
   /**
+   * Touch only: the red context button, and `null` on the desktop.
+   *
+   * **IT REPLACES THREE BUTTONS RATHER THAN JOINING THEM.** A mouse has a right
+   * button, so the desktop can afford one red button per meaning -- Cancel in
+   * the lit states, Undo in the unlit ones, and nothing at all in Shove and
+   * Draw, where right-click is real work rather than backing out. A finger has
+   * no second button, so the touch bar carries ONE red control whose meaning
+   * follows the state, which is what `contextActionFor` decides.
+   *
+   * Null rather than hidden on the desktop: the element is never created, so
+   * there is nothing to leave stale and no chance of it appearing through a
+   * styling mistake.
+   */
+  private readonly contextButton: HTMLButtonElement | null = null;
+
+  /**
+   * The context button's last rendered label, or `null` before the first frame.
+   *
+   * The same bargain as `hintShown` and `activeShown`: guarded on the RENDERED
+   * string rather than on the state behind it, so two states that produce the
+   * same words cause no write. `null` rather than an empty string so the first
+   * frame always paints.
+   */
+  private contextShown: string | null = null;
+
+  /**
    * Last hint written to the DOM, so `refresh` can skip the common case.
    *
    * Keyed on the RENDERED STRINGS plus the cohort, not on the Status fields
@@ -174,6 +209,34 @@ export class MutationOverlay {
 
   /** True between pointerdown and pointerup on the slider. See the header. */
   private dragging = false;
+
+  /**
+   * The command sink, kept as a field rather than only captured in closures.
+   *
+   * Every button here wires `opts.send` into its own listener at construction,
+   * which is all they need. `runContextAction` is different: it is called from
+   * OUTSIDE -- by a canvas long press, through the panel -- so it has no
+   * closure to ride on and needs the sink available on the instance.
+   */
+  private readonly send: (command: Command) => void;
+
+  /**
+   * Touch only: whether a one-finger drag imitates the RIGHT mouse button.
+   *
+   * The push/pull and draw/erase latch, flipped by the context button in Shove
+   * and Draw. Held here rather than in `touchBinding.ts` because it is a piece
+   * of UI STATE with a control that displays it -- the binding asks for the
+   * current answer through a callback and stores nothing.
+   *
+   * **SESSION-ONLY, AND NOT A PREFERENCE.** Which way the brush is pointing is
+   * a moment-to-moment choice like the active tool, not a lasting statement
+   * about how someone works, and persisting it would mean a reload could put a
+   * user in Erase without their having chosen it this session.
+   *
+   * Always false on the desktop, where nothing reads or writes it: the mouse
+   * has both buttons and needs no stand-in.
+   */
+  private dragIsRight = false;
 
   /**
    * The `top` last written to the root, or `null` before the first placement.
@@ -267,6 +330,10 @@ export class MutationOverlay {
   private readonly releaseFocus: () => void;
 
   constructor(opts: MutationOverlayOptions) {
+    // Held for `runContextAction`, which has no closure to ride on. Every
+    // button below still wires `opts.send` directly, unchanged.
+    this.send = opts.send;
+
     // Bounds from the registry, never restated. A renamed field degrades to the
     // 0..1 fallback rather than to a slider with no range at all.
     const setting = settingFor(CONFIG, 'mutationScale');
@@ -560,9 +627,15 @@ export class MutationOverlay {
     // Built once and shown by `display`, like the stepper beside it: rebuilding
     // per frame would drop the listener and re-create the node sixty times a
     // second.
+    // THE GOLD HALF OF THE TOUCH PAIR. On the desktop this is a button sized to
+    // sit in a line of prose; on touch it is one of the two controls pressed
+    // most often, and it grows to a 44px target beside the red one. The
+    // BEHAVIOUR is identical -- only the geometry differs -- which is why this
+    // is a CSS swap rather than a second element.
     this.commitButton = document.createElement('button');
     this.commitButton.type = 'button';
-    this.commitButton.style.cssText = COMMIT_BUTTON_CSS;
+    this.commitButton.style.cssText =
+      opts.mobile === true ? TOUCH_COMMIT_BUTTON_CSS : COMMIT_BUTTON_CSS;
     this.commitButton.dataset['setting'] = 'transport.confirmSelection';
     this.commitButton.addEventListener('click', () => {
       opts.send({ kind: 'confirmSelection' });
@@ -656,7 +729,11 @@ export class MutationOverlay {
     // spread that a single-cohort config cannot produce.
     this.generateChildButton = document.createElement('button');
     this.generateChildButton.type = 'button';
-    this.generateChildButton.style.cssText = COMMIT_BUTTON_CSS;
+    // The commit button's twin, and it grows on touch for the same reason --
+    // these two never share a row, so between them they are always the gold
+    // half of the pair.
+    this.generateChildButton.style.cssText =
+      opts.mobile === true ? TOUCH_COMMIT_BUTTON_CSS : COMMIT_BUTTON_CSS;
     this.generateChildButton.dataset['setting'] = 'transport.confirmSelection';
     this.generateChildButton.addEventListener('click', () => {
       opts.send({ kind: 'confirmSelection' });
@@ -696,6 +773,27 @@ export class MutationOverlay {
       this.undoButton.blur();
     });
 
+    // The touch context button. Built ONLY on touch -- see its declaration for
+    // why it is null rather than hidden on the desktop.
+    //
+    // **BIGGER THAN THE DESKTOP BUTTONS, AND DELIBERATELY SO.** This and the
+    // gold commit button beside it are the two controls a touch session presses
+    // constantly, and they are the two that must never be mis-tapped: one
+    // commits a selection and the other undoes. `TOUCH_ACTION_BUTTON_CSS` gives
+    // them a 44px minimum, which is the smallest target a finger hits reliably.
+    if (opts.mobile === true) {
+      const context = document.createElement('button');
+      context.type = 'button';
+      context.style.cssText = TOUCH_ACTION_BUTTON_CSS;
+      context.dataset['setting'] = 'transport.contextAction';
+      context.addEventListener('click', () => {
+        this.runContextAction();
+        // Hands the keys back, like every other button on this bar.
+        context.blur();
+      });
+      this.contextButton = context;
+    }
+
     // ORDER IS THE READING ORDER of the row. The cancel button goes LAST, after
     // the tail: the row runs "Currently selected: Cohort <n> | <commit>", and
     // backing out belongs at the end of that sentence rather than between the
@@ -714,6 +812,11 @@ export class MutationOverlay {
       this.cancelSelectionButton,
       this.clearFieldButton,
     );
+    // LAST, so it sits at the right end of the row -- gold on the left, red on
+    // the right, which is the arrangement the two most-used touch controls
+    // keep in every state. Appended separately rather than added to the list
+    // above because it does not exist on the desktop.
+    if (this.contextButton !== null) this.hint.append(this.contextButton);
 
     this.root.append(bar, this.hint);
     (opts.container ?? document.body).append(this.root);
@@ -992,9 +1095,55 @@ export class MutationOverlay {
    * the words, and re-writing four nodes every frame to say what they already
    * say is the same waste `generatedShown` guards against above.
    */
+  /**
+   * Repaint the touch context button. A no-op on the desktop, where it is null.
+   *
+   * GUARDED ON THE RENDERED LABEL, exactly as `refreshHint` guards on its key
+   * and for the same reason: this runs every frame, and writing the same string
+   * sixty times a second is the waste every other guard in this file avoids.
+   * The label is a function of both the action and the latch, so it is the one
+   * value that changes precisely when something visible has.
+   */
+  private refreshContextButton(status: Status): void {
+    const button = this.contextButton;
+    if (button === null) return;
+
+    const action = contextActionFor(status);
+    const label = contextLabelFor(action, this.dragIsRight);
+    if (this.contextShown === label) return;
+    this.contextShown = label;
+
+    button.textContent = label;
+    // Never hidden. Unlike the desktop's three red buttons -- which appear and
+    // vanish with the state -- this one is always live, because every state has
+    // SOME context action. A control that came and went under the thumb would
+    // also move the gold button beside it, which is the last thing a
+    // frequently-pressed pair should do.
+    button.style.display = 'inline-flex';
+    // The label alone does not say a latch IS one, so the pressed state is
+    // announced rather than left to the wording.
+    if (action === 'toggleDragButton') {
+      button.setAttribute('aria-pressed', String(this.dragIsRight));
+    } else {
+      button.removeAttribute('aria-pressed');
+    }
+    button.setAttribute('aria-label', label);
+  }
+
   private refreshHint(status: Status): void {
     const { lead, cohort, tail, commit, clearField, cancelSelection, generateChild, undo } =
       hintFor(status);
+
+    // OUTSIDE THE GUARD BELOW, and it has to be. The context button's label
+    // depends on `dragIsRight`, which is UI state the Orchestrator never sees
+    // and which therefore never appears in `hintFor`'s output or in the key
+    // built from it. Inside the guard, flipping the latch in Shove would repaint
+    // nothing -- the hint words are identical in both positions -- and the
+    // button would keep claiming to be in the state it just left.
+    //
+    // It carries its own guard instead, so this is still one comparison per
+    // frame in the common case.
+    this.refreshContextButton(status);
 
     // THE FIELD IS RECONCILED ABOVE THE GUARD, because it can disagree with the
     // state without the STATE having changed. Type "99" over cohort 7 with 8
@@ -1318,6 +1467,54 @@ export class MutationOverlay {
     this.gear.setAttribute('aria-pressed', String(!hidden));
   }
 
+  // --- the touch context control -------------------------------------------
+  //
+  // Three small methods rather than one exposed flag, so the LATCH cannot be
+  // written from outside: `touchBinding.ts` reads which button to imitate, the
+  // canvas long-press asks for the action to be run, and only this class
+  // decides what either of those means in the current state.
+
+  /**
+   * Which mouse button a one-finger drag should imitate.
+   *
+   * `false` -- meaning LEFT -- on the desktop and in Select, where the latch is
+   * never flipped and a drag is navigation rather than a button anyway.
+   */
+  get touchDragIsRight(): boolean {
+    return this.dragIsRight;
+  }
+
+  /**
+   * Run the context action for the state the bar is in.
+   *
+   * Called by the red button and by a canvas long press, which is why it takes
+   * no argument saying which: the two routes are deliberately the same act, and
+   * a parameter distinguishing them would be an invitation to make them differ.
+   *
+   * DEGRADES TO NOTHING before the first refresh. `lastStatus` is null until
+   * then, and there is no sensible action to guess at without knowing the tool
+   * or what is lit -- doing nothing is strictly better than undoing something
+   * because the bar had not been told what state it was in yet.
+   */
+  runContextAction(): void {
+    const status = this.lastStatus;
+    if (status === null) return;
+
+    const action = contextActionFor(status);
+    if (action === 'toggleDragButton') {
+      this.dragIsRight = !this.dragIsRight;
+      // Repaint at once rather than waiting for the next `refresh`. The latch
+      // is the one control here whose label depends on state the Orchestrator
+      // never sees, so nothing else would move it -- and a toggle that looks
+      // unchanged until the next frame reads as a press that did not register.
+      this.refreshContextButton(status);
+      return;
+    }
+    // The other two are ordinary commands, and deliberately THE SAME ones the
+    // red buttons send in those states -- see `contextActionFor`.
+    this.send({ kind: action === 'cancel' ? 'cancelSelection' : 'undo' });
+  }
+
   dispose(): void {
     this.releaseFocus();
     // The listener is on `window`, not inside `root`, so removing the bar does
@@ -1538,6 +1735,85 @@ export function hintFor(status: Status): {
     // clause never could.
     undo: status.canUndo ? status.undoLabel : '',
   };
+}
+
+/**
+ * What the touch layout's context button does right now.
+ *
+ * =============================================================================
+ * ONE BUTTON, BECAUSE ONE GESTURE IS MISSING
+ * =============================================================================
+ *
+ * The desktop reaches four different acts through the RIGHT MOUSE BUTTON, and a
+ * touchscreen has no such button. `hintFor` already knows which of them is live
+ * in a given state -- it decides whether to offer the red Cancel button or the
+ * red Undo button -- so this reads the same states and names the act, rather
+ * than inventing a second opinion about them.
+ *
+ * PURE AND MODULE-LEVEL, for the reason `hintFor` above is: the mapping from
+ * state to action is the whole of the feature and it should be assertable
+ * without a DOM.
+ *
+ * ## The three actions, and why Shove and Draw differ from Select
+ *
+ *   CANCEL   a cohort is lit. Right-click cancels the aim on the desktop, so
+ *            this does. The gold commit button beside it is the other half.
+ *   UNDO     Select with nothing lit -- the desktop's plain right-click undo.
+ *   TOGGLE   Shove and Draw. These two tools use BOTH mouse buttons for real
+ *            work (push/pull, draw/erase) rather than for backing out, so
+ *            there is nothing to cancel and no undo to reach; what a finger
+ *            lacks here is the second button itself. The context control
+ *            becomes a latch that says which button a drag imitates.
+ *
+ * **THE TOGGLE IS DELIBERATELY NOT REACHABLE BY LONG PRESS.** `touchBinding`
+ * polls for long presses in Select only, and `touchGestures` refuses one on a
+ * dragging finger -- two independent guards for the same hazard, which is that
+ * resting mid-stroke is normal and flipping draw into erase underneath a stroke
+ * in progress would erase what was just drawn. The button is the only route.
+ */
+export type ContextAction = 'cancel' | 'undo' | 'toggleDragButton';
+
+export function contextActionFor(status: Status): ContextAction {
+  // SHOVE AND DRAW FIRST, because the question they answer is different in kind:
+  // the other two branches ask "what would backing out do here", and these two
+  // have no backing-out to offer at all.
+  if (status.mouseMode === 'shove' || status.mouseMode === 'draw') {
+    return 'toggleDragButton';
+  }
+  // READ THROUGH THE SAME GATE `applyCanvasInput` USES. `highlightedCohort`
+  // arrives already gated by the Orchestrator, so `NO_COHORT` covers both
+  // "nothing lit" and "highlighting is off" -- and in both of those right-click
+  // undoes rather than cancelling. Testing the raw cohort without that gate
+  // would offer Cancel in a state where nothing is lit to cancel.
+  if (status.highlightedCohort !== NO_COHORT) return 'cancel';
+  return 'undo';
+}
+
+/**
+ * What the context button should be LABELLED, given what it will do.
+ *
+ * Split from the action so the wording can be revised without touching the
+ * behaviour, and so a test can pin the two independently. The label names the
+ * long-press shortcut where one exists -- which is exactly the Select states,
+ * since that is where `touchBinding` polls for it.
+ */
+export function contextLabelFor(action: ContextAction, dragIsRight: boolean): string {
+  switch (action) {
+    case 'cancel':
+      return 'Cancel (hold)';
+    case 'undo':
+      return 'Undo (hold)';
+    case 'toggleDragButton':
+      // NAMES THE STATE IT IS IN, not the state it would move to. A latch
+      // labelled with its destination reads as a description of the present to
+      // anyone who has not just pressed it, which is the classic way to make a
+      // toggle ambiguous. No "(hold)": long press is refused in these tools.
+      return dragIsRight ? 'Erase / Pull' : 'Draw / Push';
+    default: {
+      const unreachable: never = action;
+      throw new Error(`Unhandled context action: ${String(unreachable)}`);
+    }
+  }
 }
 
 /**
@@ -2106,6 +2382,44 @@ const CANCEL_SELECTION_BUTTON_CSS = CLEAR_FIELD_BUTTON_CSS;
 // The colour is not the only signal: the label says "Undo" and names what would
 // be taken back, so it survives a screenshot and a colour-blind reader alike.
 const UNDO_BUTTON_CSS = CLEAR_FIELD_BUTTON_CSS;
+
+// =========================================================================
+// TOUCH: the two big hint-row buttons
+// =========================================================================
+//
+// **44px MINIMUM, WHICH IS WHY THESE ARE NOT THE DESKTOP STRINGS.** The buttons
+// above are sized to sit inside a line of prose -- 11px text, 2px of vertical
+// padding, about 22px tall -- which a mouse hits precisely and a fingertip does
+// not. 44px is the smallest target that is reliably hit without looking, and
+// these two are the controls a touch session presses most: one commits a
+// selection, the other undoes or cancels. A mis-tap between them is expensive
+// in both directions.
+//
+// SHARED GEOMETRY, DIFFERING ONLY IN COLOUR, for the reason the desktop's three
+// red buttons share a string: they are a matched pair and must stay one.
+// `flex:1` rather than `flex:none` is the other departure -- on a phone the row
+// has width to give and two buttons that fill it are easier to hit than two that
+// shrink-wrap their labels.
+const TOUCH_BUTTON_BASE_CSS =
+  'display:none;align-items:center;justify-content:center;' +
+  'min-height:44px;padding:8px 12px;margin:0 4px;flex:1;' +
+  'border-radius:8px;cursor:pointer;font:13px system-ui,sans-serif;' +
+  'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+
+// RED, and the same red the desktop's backing-out buttons wear -- this is the
+// touch layout's single replacement for all three of them, so it inherits their
+// colour rather than introducing a fourth meaning. See `contextButton`.
+const TOUCH_ACTION_BUTTON_CSS =
+  `${TOUCH_BUTTON_BASE_CSS}` +
+  'background:rgba(208,96,96,0.16);border:1px solid rgba(208,96,96,0.5);' +
+  'color:#d06060;';
+
+// GOLD, matching the desktop commit button it enlarges. Gold on this row means
+// "the active cohort", which is exactly what this button acts on.
+const TOUCH_COMMIT_BUTTON_CSS =
+  `${TOUCH_BUTTON_BASE_CSS}` +
+  'background:rgba(232,193,74,0.16);border:1px solid rgba(232,193,74,0.5);' +
+  'color:#e8c14a;';
 
 // The `(X)` beside an icon. Dimmed and a size down, so the glyph stays the thing
 // you see first and the shortcut sits behind it.

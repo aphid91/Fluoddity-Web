@@ -2825,9 +2825,32 @@ export class Orchestrator implements CommandBus {
     };
   }
 
-  /** The camera, for `main.ts`'s startup URL overrides only. */
+  /**
+   * The camera, for `main.ts`'s startup URL overrides and the touch gestures.
+   *
+   * **THE TOUCH PATH DRIVES THIS DIRECTLY, AND THAT IS DELIBERATE.** Pan and
+   * zoom are navigation rather than edits: they change nothing about the
+   * project, push nothing onto history, and the desktop reaches them the same
+   * way -- `applyCanvasInput` calls `zoomAtPixel` on this very object rather
+   * than dispatching a command. Routing a pinch through the command bus would
+   * make navigation the one gesture that took a different road to the same
+   * place, at sixty updates a second.
+   */
   get cameraState(): CameraState {
     return this.camera.state;
+  }
+
+  /**
+   * World dimensions, which every screen-to-world conversion needs.
+   *
+   * Exposed for the touch gestures, whose pan and zoom both go through
+   * `coords.ts` and so need the canvas size the desktop path reads straight off
+   * `this.system`. `Status.canvasSize` is a formatted STRING for the panel to
+   * print and deliberately not this -- parsing it back would be a second, lossy
+   * copy of a number that is right here.
+   */
+  get canvasDimensions(): readonly [number, number] {
+    return this.system.canvasSize;
   }
 
   /** Current preferences, for the panel to render. Immutable. */

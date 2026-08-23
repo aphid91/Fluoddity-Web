@@ -18,7 +18,13 @@ import assert from 'node:assert/strict';
 
 import type { Status } from '../orchestrator/commands.ts';
 import { NO_COHORT } from '../selection/cohortHighlight.ts';
-import { hintFor, overlayTop, type Rect } from './mutationOverlay.ts';
+import {
+  contextActionFor,
+  contextLabelFor,
+  hintFor,
+  overlayTop,
+  type Rect,
+} from './mutationOverlay.ts';
 
 /**
  * A Status with only the fields `hintFor` reads.
@@ -565,5 +571,108 @@ test('an unmeasurable menu bar falls back to clearing it', () => {
   assert.ok(
     dropped(overlayTop(centred(900, 1920), { left: 0, right: 0, bottom: 0 })),
     'a zero-width rect means it has not been laid out yet',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The touch context button
+//
+// WHY THESE EXIST. A finger has no right mouse button, so one control stands in
+// for all four things right-click does -- and which one it means is decided
+// entirely by `contextActionFor`. Getting that wrong is silent and expensive:
+// the button keeps working, it just does the wrong act. Undoing when the user
+// meant to cancel an aim throws away a completed edit rather than a selection.
+//
+// The mapping is deliberately READ OFF `hintFor`'S OWN STATES, so the pair
+// cannot disagree about what right-click means where. These tests pin that
+// agreement rather than the wording.
+// ---------------------------------------------------------------------------
+
+test('a lit cohort makes the context button cancel, not undo', () => {
+  // THE EXPENSIVE CONFUSION. Right-click cancels the aim while a cohort is lit
+  // (`applyCanvasInput`), and undoing here would step back through a COMPLETED
+  // edit instead of dropping the selection the user is still aiming.
+  assert.equal(
+    contextActionFor(status({ mouseMode: 'select', highlightedCohort: 3 })),
+    'cancel',
+  );
+  // And `hintFor` agrees about that state, which is the invariant that keeps
+  // the touch button and the desktop button from meaning different things.
+  assert.equal(
+    hintFor(status({ mouseMode: 'select', highlightedCohort: 3 })).cancelSelection,
+    true,
+  );
+});
+
+test('select with nothing lit undoes', () => {
+  assert.equal(
+    contextActionFor(status({ mouseMode: 'select', highlightedCohort: NO_COHORT })),
+    'undo',
+  );
+});
+
+test('highlighting switched off still undoes, because nothing is lit to cancel', () => {
+  // `highlightedCohort` arrives ALREADY GATED, so this state reports NO_COHORT
+  // even though a cohort number exists behind it. Reading a raw cohort instead
+  // would offer Cancel where there is no visible selection to cancel.
+  assert.equal(
+    contextActionFor(
+      status({
+        mouseMode: 'select',
+        highlightEnabled: false,
+        highlightedCohort: NO_COHORT,
+      }),
+    ),
+    'undo',
+  );
+});
+
+test('shove and draw toggle the drag button instead', () => {
+  // These two tools use BOTH mouse buttons for real work, so there is nothing to
+  // back out of -- what a finger lacks is the second button itself.
+  for (const mode of ['shove', 'draw'] as const) {
+    assert.equal(
+      contextActionFor(status({ mouseMode: mode })),
+      'toggleDragButton',
+      `${mode} must offer the latch`,
+    );
+    // `hintFor` offers NEITHER red button in these tools, which is what leaves
+    // the context control free to mean something else here.
+    const hint = hintFor(status({ mouseMode: mode }));
+    assert.equal(hint.cancelSelection, false, `${mode} has no aim to cancel`);
+    assert.equal(hint.undo, null, `${mode} does not undo on right click`);
+  }
+});
+
+test('a lit cohort in shove/draw does NOT hijack the latch', () => {
+  // The tool is checked FIRST, deliberately. A cohort can still be lit from a
+  // previous Select session, and if that were tested first the latch would
+  // vanish mid-draw and the button would start cancelling a selection the user
+  // cannot even see from here.
+  assert.equal(
+    contextActionFor(status({ mouseMode: 'draw', highlightedCohort: 5 })),
+    'toggleDragButton',
+    'a stale highlight must not steal the draw/erase toggle',
+  );
+});
+
+test('the latch label names the state it is IN, not the one it moves to', () => {
+  // A toggle labelled with its destination reads as a description of the
+  // present to anyone who has not just pressed it, which is the classic way to
+  // make a latch ambiguous.
+  assert.equal(contextLabelFor('toggleDragButton', false), 'Draw / Push');
+  assert.equal(contextLabelFor('toggleDragButton', true), 'Erase / Pull');
+});
+
+test('only the Select labels advertise the long press', () => {
+  // Long press is polled in Select ONLY (`touchBinding.pump`) and refused on a
+  // dragging finger (`touchGestures`), because resting mid-stroke is normal and
+  // flipping the tool under it would erase what was just drawn. A label
+  // promising "hold" where no hold is listened for would be a lie.
+  assert.ok(contextLabelFor('cancel', false).includes('hold'));
+  assert.ok(contextLabelFor('undo', false).includes('hold'));
+  assert.ok(
+    !contextLabelFor('toggleDragButton', false).includes('hold'),
+    'the latch has no long-press route and must not claim one',
   );
 });

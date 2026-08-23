@@ -63,6 +63,9 @@ import { GateState } from './gateState.ts';
 import { showsSlider } from './gatedControl.ts';
 import { MenuBar } from './menuBar.ts';
 import { MutationOverlay } from './mutationOverlay.ts';
+// The two button constants, so `touchDragButton` names them rather than
+// returning a bare 0 or 2 that the caller has to decode.
+import { LEFT_BUTTON, RIGHT_BUTTON } from './inputTracker.ts';
 import { RecordingBar } from './recordingBar.ts';
 import { FpsCounter } from './fpsCounter.ts';
 import { paintPerfLabels, watchPerfDrag } from './perfLabels.ts';
@@ -183,6 +186,15 @@ export interface PanelOptions {
    * and its gear as the way back to the controls.
    */
   readonly startHidden?: boolean;
+  /**
+   * Build the touch layout. Defaults to false, which is the desktop UI.
+   *
+   * Resolved once by `main.ts` and handed down, never re-detected here -- see
+   * `ui/mobile.ts` on why the answer is latched. Read at CONSTRUCTION, because
+   * the two layouts differ in which elements exist rather than in how they are
+   * styled.
+   */
+  readonly mobile?: boolean;
   /**
    * Video recording, injected because the panel cannot reach either half itself.
    *
@@ -341,6 +353,15 @@ export class Panel {
    * for why it is not a control in a pane.
    */
   private readonly overlay: MutationOverlay;
+
+  /**
+   * Whether this panel was built for touch. Fixed at construction.
+   *
+   * Held rather than passed straight through because several build steps
+   * consult it -- the overlay below, and the container and tab decisions that
+   * follow. See `PanelOptions.mobile`.
+   */
+  private readonly mobile: boolean;
 
   /**
    * The export progress strip.
@@ -530,6 +551,9 @@ export class Panel {
 
   constructor(opts: PanelOptions) {
     this.bus = opts.bus;
+    // FIRST, because the build steps below branch on it -- the overlay, the
+    // containers and the tab list all ask which layout they are building.
+    this.mobile = opts.mobile ?? false;
     this.lastMouseMode = this.bus.status().mouseMode;
     this.runCalibration = opts.runCalibration ?? null;
     this.onHiddenChange = opts.onHiddenChange ?? null;
@@ -568,6 +592,10 @@ export class Panel {
       onToggleUi: () => {
         this.setHidden(!this.hiddenFlag);
       },
+      // Passed through rather than re-detected: `main.ts` resolves this once
+      // and hands it down, so every part of the UI agrees about which layout it
+      // is building. See `ui/mobile.ts`.
+      mobile: this.mobile,
     });
     // Cancel through the same path the tab's button uses, so there is one
     // meaning of cancelling however it is reached.
@@ -1543,6 +1571,35 @@ export class Panel {
    */
   showControls(): void {
     this.splash.show('controls');
+  }
+
+  // --- touch -----------------------------------------------------------------
+  //
+  // Two thin forwards to the bar, which owns both the state and the meaning.
+  // They exist because `main.ts` holds the touch binding and the panel, but not
+  // the overlay -- that is deliberately private here (see `overlay`), and
+  // exposing it wholesale to reach two methods would be a much wider opening
+  // than either needs.
+
+  /**
+   * Which mouse button a one-finger drag should imitate, for `touchBinding`.
+   *
+   * LEFT unless the context latch has been flipped in Shove or Draw, which is
+   * also what it always reports on the desktop -- nothing there ever flips it.
+   */
+  touchDragButton(): typeof LEFT_BUTTON | typeof RIGHT_BUTTON {
+    return this.overlay.touchDragIsRight ? RIGHT_BUTTON : LEFT_BUTTON;
+  }
+
+  /**
+   * Run the hint bar's context action -- what a canvas long press asks for.
+   *
+   * The SAME call the red button makes, deliberately: the button and the
+   * gesture are two routes to one act, and routing them through one method is
+   * what keeps them from drifting apart.
+   */
+  runContextAction(): void {
+    this.overlay.runContextAction();
   }
 
   /**

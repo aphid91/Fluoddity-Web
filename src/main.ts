@@ -36,7 +36,9 @@ import { calibrate } from './calibration/calibrate.ts';
 import { MAX_PROBES as AUTO_PROBES } from './perf/rateSearch.ts';
 import { ALWAYS_CALIBRATE } from './orchestrator/featureFlags.ts';
 import { bindInput } from './ui/inputBinding.ts';
+import { LEFT_BUTTON } from './ui/inputTracker.ts';
 import { detectMobile, mobileModeFromValue, resolveMobile } from './ui/mobile.ts';
+import { bindTouch } from './ui/touchBinding.ts';
 import { Panel } from './ui/panel.ts';
 import { fpsFrom, startBand, stepBand } from './perf/fpsBand.ts';
 
@@ -270,6 +272,8 @@ async function start(): Promise<void> {
         // worth reaching for while watching, including the gear that brings
         // these back.
         startHidden: true,
+        // The layout, resolved once above and handed down. See `ui/mobile.ts`.
+        mobile,
         // Follows every route that hides the panels, not just `X`: the Editor
         // menu item and the corner gear go through `setHidden` too, and
         // before this the menu route left `panelOpen` true and the Orchestrator
@@ -432,7 +436,42 @@ async function start(): Promise<void> {
     // `?nopanel` takes the splash with the panel, so there is nothing to open.
     showGuide: () => panel?.showGuide(),
     showControls: () => panel?.showControls(),
+    // Hands every touch pointer to `touchBinding.ts` below. False on the
+    // desktop, where this file handles the pointer exactly as it always has.
+    ignoreTouch: mobile,
   });
+
+  // --- touch ----------------------------------------------------------------
+  //
+  // **ONLY ON TOUCH, AND ONLY EVER ADDITIVE.** On a desktop `touch` stays null
+  // and not one of its listeners is installed, so the mouse path above is what
+  // runs -- unchanged, and unaware that any of this exists.
+  //
+  // THE DOUBLE-DELIVERY HAZARD IS SOLVED AT THE OTHER END, not here. Pointer
+  // Events deliver touch and mouse through the same event names on the same
+  // element, so a finger would otherwise be read twice -- once as a gesture and
+  // once as a mouse press, giving every tap a pick from each. Registration
+  // order cannot fix that: `bindInput` binds first, so nothing registered here
+  // can stop what has already run. `inputBinding.ts` therefore IGNORES touch
+  // pointers itself, which is the only place with the standing to do it. See
+  // `isTouch` there.
+  const touch = mobile
+    ? bindTouch({
+        surface,
+        tracker: input.tracker,
+        camera: () => orchestrator.cameraState,
+        canvasSize: () => orchestrator.canvasDimensions,
+        mouseMode: () => orchestrator.status().mouseMode,
+        // The push/pull, draw/erase toggle. Wired to the hint bar's context
+        // button; until that exists it reports LEFT, which is the desktop's
+        // unmodified drag and so the safe default.
+        dragButton: () => (panel?.touchDragButton() ?? LEFT_BUTTON),
+        // Long press on the canvas. SELECT ONLY -- `bindTouch` enforces that,
+        // for the reason its header gives. The action is the same one the hint
+        // bar's red button performs, so both routes converge here.
+        onLongPress: () => panel?.runContextAction(),
+      })
+    : null;
 
   // --- first-run calibration -------------------------------------------------
   //
@@ -647,6 +686,13 @@ async function start(): Promise<void> {
         ? 1 / RECORDING_FPS
         : elapsed / 1000;
     firstFrame = false;
+
+    // BEFORE the freeze, so a long press that came due this frame is acted on
+    // in the same frame it fired rather than the next one. A long press is the
+    // one gesture with no event behind it -- nothing fires when a finger simply
+    // keeps resting -- so it has to be polled, and the frame loop already owns
+    // the clock. Null on the desktop, where there is no touch binding at all.
+    touch?.pump(now);
 
     // Frozen ONCE and handed to both, so the panel's readout and the physics
     // cannot disagree about where the mouse was -- which is the whole reason
