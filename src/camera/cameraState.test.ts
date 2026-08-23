@@ -97,6 +97,82 @@ test('zoomAtPixel with zero notches is a no-op', () => {
 });
 
 // ---------------------------------------------------------------------------
+// panByPixels: the touch-drag pan
+// ---------------------------------------------------------------------------
+
+// THE ONE PROPERTY THAT MATTERS, and the reason this method differences two
+// `screenToWorld` calls instead of scaling the delta by something. A finger drag
+// must keep the content under the finger: if the world point under the touch
+// moves, the map slides against the hand and the gesture feels like ice.
+//
+// Swept across zooms because the pixel-to-world scale depends on zoom -- an
+// implementation that got the conversion right at 1x and wrong elsewhere is
+// exactly what this catches, and is what any hand-rolled arithmetic would give.
+test('panByPixels keeps the world point under a dragging finger fixed', () => {
+  const deltas: Vec2[] = [[40, 0], [0, -30], [-25, 55], [200, 120]];
+  const starts: Array<{ pan: Vec2; zoom: number }> = [
+    { pan: [0, 0], zoom: 1 },
+    { pan: [0.5, -0.3], zoom: 2.5 },
+    { pan: [-1.25, 0.75], zoom: 0.5 },
+    { pan: [0.1, 0.2], zoom: 12 },
+  ];
+  const grab: Vec2 = [700, 400];
+
+  for (const delta of deltas) {
+    for (const start of starts) {
+      const camera = new CameraState({ pan: start.pan, zoom: start.zoom });
+      // The world point the finger grabbed, before the drag.
+      const before = screenToWorld(grab, WINDOW, CANVAS, camera.pan, camera.zoom);
+      camera.panByPixels(delta, WINDOW, CANVAS);
+      // After the drag that same world point must sit under the finger's NEW
+      // screen position -- which is the grab point plus the delta.
+      const movedGrab: Vec2 = [grab[0] + delta[0], grab[1] + delta[1]];
+      const after = screenToWorld(movedGrab, WINDOW, CANVAS, camera.pan, camera.zoom);
+      assertCloseVec2(
+        after,
+        before,
+        `content slipped under the finger: delta=${delta} start=${JSON.stringify(start)}`,
+        1e-9,
+      );
+    }
+  }
+});
+
+// Sign, not magnitude. Dragging is GRABBING THE WORLD, so a finger moving right
+// pulls content right and the CAMERA moves left. Dropping the negation gives an
+// inverted map, which reads as the gesture being backwards rather than as a
+// sign error -- and would still pass a test that only checked distance.
+test('panByPixels moves the camera opposite to the finger', () => {
+  const camera = new CameraState({ pan: [0, 0], zoom: 1 });
+  camera.panByPixels([50, 0], WINDOW, CANVAS);
+  assert.ok(camera.pan[0] < 0, 'dragging right must move the camera left');
+
+  const vertical = new CameraState({ pan: [0, 0], zoom: 1 });
+  // Screen y is DOWN and world y is UP, so a downward drag raises world y.
+  vertical.panByPixels([0, 50], WINDOW, CANVAS);
+  assert.ok(vertical.pan[1] > 0, 'screen-down must move the camera world-up');
+});
+
+// Zoomed in, the same finger travel covers less world -- the counterpart of
+// `panByFraction scales as 1/zoom`, arrived at through the coordinate chain
+// rather than through an explicit division.
+test('panByPixels covers less world distance when zoomed in', () => {
+  const atOne = new CameraState({ pan: [0, 0], zoom: 1 });
+  atOne.panByPixels([100, 0], WINDOW, CANVAS);
+  const atFour = new CameraState({ pan: [0, 0], zoom: 4 });
+  atFour.panByPixels([100, 0], WINDOW, CANVAS);
+  assertClose(atFour.pan[0], atOne.pan[0] / 4, 'zoomed in 4x should cover 1/4 as much');
+});
+
+test('panByPixels early-outs on a zero delta, compared by value', () => {
+  // The same by-value trap `panByFraction` documents: `delta === [0, 0]`
+  // compiles and is always false.
+  const camera = new CameraState({ pan: [0.25, 0.75], zoom: 2 });
+  camera.panByPixels([0, 0], WINDOW, CANVAS);
+  assert.deepEqual(camera.pan, [0.25, 0.75]);
+});
+
+// ---------------------------------------------------------------------------
 // panByFraction
 // ---------------------------------------------------------------------------
 

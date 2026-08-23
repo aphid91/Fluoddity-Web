@@ -121,6 +121,9 @@ test('the registry has the same 35 entries the desktop does, plus the web-only o
     'oneClickSelection',
     // No desktop equivalent: the desktop has no frame-rate counter.
     'showFpsCounter',
+    // No desktop equivalent: the desktop has one layout and no touch input, so
+    // there is nothing for it to choose between.
+    'mobileMode',
   ];
   const ported = SETTINGS.filter((s) => !WEB_ONLY.includes(s.field));
   assert.equal(ported.length, 35);

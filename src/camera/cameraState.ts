@@ -178,6 +178,52 @@ export class CameraState {
   }
 
   /**
+   * Pan by a screen-pixel delta, so the world tracks a dragging finger exactly.
+   *
+   * **THE THIRD PAN ENTRY POINT, AND THE ONLY PIXEL-EXACT ONE.**
+   * `panByFraction` is for the keyboard, where the input is a rate and "a
+   * comfortable amount of screen per second" is the right unit. A touch drag has
+   * no such freedom: the content under the finger must stay under the finger, or
+   * the map slides relative to the hand and every drag feels like ice. That is a
+   * conversion, not a tuning choice, which is why there is no speed constant
+   * here to get wrong.
+   *
+   * IMPLEMENTED BY DIFFERENCING TWO `screenToWorld` CALLS rather than by scaling
+   * the delta, and that is what makes it correct at every zoom and aspect. The
+   * pixel-to-world scale depends on zoom, on the canvas/window aspect mismatch
+   * and on the letterbox -- all of which `screenToWorld` already resolves. Any
+   * arithmetic here that did not go through it would be a second, divergent copy
+   * of that chain, and it would drift the moment either aspect changed.
+   *
+   * NEGATED, because dragging is GRABBING THE WORLD: a finger moving right pulls
+   * the content right, which means the camera moves LEFT. Dropping the negation
+   * gives an inverted-drag map, which reads as the gesture being backwards
+   * rather than as a sign error.
+   */
+  panByPixels(
+    deltaPixels: Vec2,
+    windowSize: WindowSize,
+    canvasSize: CanvasSize,
+  ): void {
+    if (vec2Equals(deltaPixels, [0.0, 0.0])) return;
+    // Two points one delta apart, measured through the full inverse chain at the
+    // CURRENT pan and zoom. Their difference is what that delta is worth in
+    // world units right now.
+    const origin = screenToWorld([0.0, 0.0], windowSize, canvasSize, this.pan, this.zoom);
+    const moved = screenToWorld(
+      [deltaPixels[0], deltaPixels[1]],
+      windowSize,
+      canvasSize,
+      this.pan,
+      this.zoom,
+    );
+    this.pan = [
+      this.pan[0] - (moved[0] - origin[0]),
+      this.pan[1] - (moved[1] - origin[1]),
+    ];
+  }
+
+  /**
    * Zoom about the CENTER of the view, leaving pan untouched.
    *
    * Distinct from `zoomAtPixel`, which anchors on the cursor: a keyboard zoom

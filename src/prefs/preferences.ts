@@ -197,6 +197,30 @@ export interface Preferences {
   readonly advancedPreferences: boolean;
   readonly advancedDrawing: boolean;
 
+  /**
+   * Which layout to build: 0 auto, 1 always touch, 2 always desktop.
+   *
+   * **AN INDEX RATHER THAN A STRING**, matching `boundaryConditions` and every
+   * other CHOICE in the registry. `PREFERENCE_KINDS` has no string kind and this
+   * is not the setting to add one for: the panel renders a dropdown from
+   * `options` and stores the index, so an index is what round-trips through
+   * `localStorage` and through `coerce` with no new machinery. `MOBILE_MODES` in
+   * `ui/mobile.ts` is the matching label list, and the two are tied together by
+   * `mobileModeFromValue`.
+   *
+   * **READ ONCE, AT STARTUP, AND NOT LIVE.** Everything else in this file takes
+   * effect on the next frame; this one does not, because the layout is BUILT
+   * from it rather than styled by it -- panels mount different containers and
+   * the menu binds different events. Changing it asks for a reload, which is
+   * what the registry entry's help text says.
+   *
+   * `AUTO` defers to `detectMobile`. The two overrides exist because detection
+   * will be wrong for somebody -- a hybrid device, an unusual window -- and
+   * being stuck in a layout whose only fix lives inside that layout is a dead
+   * end. It is also how the touch layout gets tested from a desktop.
+   */
+  readonly mobileMode: number;
+
   // --- calibration ----------------------------------------------------------
   /**
    * Whether first-run GPU calibration has already run.
@@ -252,6 +276,9 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   advancedProject: false,
   advancedPreferences: false,
   advancedDrawing: false,
+  // AUTO. Detection is right for almost everyone, and the two overrides are
+  // there for when it is not -- see the interface.
+  mobileMode: 0,
   // False is what MAKES someone a first-run user -- see the interface.
   calibrated: false,
 });
@@ -296,6 +323,10 @@ export const PREFERENCE_KINDS = {
   advancedProject: 'bool',
   advancedPreferences: 'bool',
   advancedDrawing: 'bool',
+  // An INDEX into `MOBILE_MODES`, so 'int' -- see the interface for why this is
+  // not a string. `coerce` truncates, and an out-of-range index degrades to
+  // AUTO at the one place that reads it (`mobileModeFromValue`).
+  mobileMode: 'int',
   calibrated: 'bool',
 } as const satisfies Record<keyof Preferences, 'float' | 'int' | 'bool'>;
 

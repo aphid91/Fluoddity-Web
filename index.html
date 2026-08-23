@@ -2,7 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- `viewport-fit=cover` lets the page paint into the display cutout and
+         home-indicator areas, which is what a full-bleed canvas wants. It is
+         also what ARMS `env(safe-area-inset-*)`: without it those all report 0
+         and the mobile control bar would sit under the home indicator. The two
+         go together -- see `#fluoddity-mobile-bar` in `mutationOverlay.ts`.
+
+         `maximum-scale`/`user-scalable=no` are deliberately ABSENT. Pinch-zoom
+         on the PAGE is suppressed by `touch-action` on the canvas (below), which
+         is scoped to the element that handles its own gestures; disabling it
+         document-wide would also block the browser's accessibility zoom, which
+         is a real assistive feature and not ours to take away. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
     <!-- Favicon paths are RELATIVE, matching `base: './'` in vite.config.ts:
          GitHub Pages serves this app from a subpath, so a leading-slash href
          would resolve against the domain root and 404.
@@ -24,18 +38,45 @@
       html, body {
         margin: 0;
         padding: 0;
+        /* `100%` FIRST, THEN `100dvh` -- the order is the fallback chain, and a
+           browser too old for `dvh` simply keeps the first declaration.
+
+           On mobile, `100vh` is the viewport with the URL bar RETRACTED, which
+           is taller than what is actually visible when the bar is showing. A
+           bottom-anchored control bar measured against it starts life underneath
+           the browser chrome. `dvh` is the DYNAMIC viewport height: it tracks
+           the visible area as the URL bar collapses and expands, which is
+           exactly the quantity a full-screen app wants.
+
+           This costs desktop nothing -- there `dvh` and `vh` are the same
+           number, because there is no retracting chrome. */
         height: 100%;
+        height: 100dvh;
         overflow: hidden;
         background: #000;
       }
 
       /* The canvas fills the viewport in CSS pixels; its backing store is sized
          in device pixels by src/app/surface.ts. The two are not the same thing
-         and must not be conflated -- see that file's header. */
+         and must not be conflated -- see that file's header.
+
+         `touch-action: none` IS LOAD-BEARING ON TOUCH, not a nicety. By default
+         the browser claims one-finger drags for scrolling and two-finger for
+         page zoom, and it does so by CANCELLING the pointer stream mid-gesture
+         -- so every pan, pinch and draw stroke would die partway through as a
+         `pointercancel`. Taking the gestures here is what lets
+         `touchGestures.ts` interpret them instead.
+
+         Scoped to the canvas ALONE. The panels must keep their native
+         scrolling, which is why this is not on `body`.
+
+         It also removes the ~300ms click delay that browsers hold taps for
+         while waiting to see a double-tap-to-zoom. */
       #app {
         display: block;
         width: 100%;
         height: 100%;
+        touch-action: none;
       }
 
       #gpu-error {
@@ -55,6 +96,50 @@
 
       #gpu-error h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
       #gpu-error p  { margin: 0; max-width: 44rem; color: #bbb; }
+
+      /* ===================================================================
+         TOUCH: long-press must not select text or raise the callout menu.
+         ===================================================================
+
+         Applied only under `.fluoddity-touch`, which `main.ts` puts on <html>
+         when the touch layout is resolved. **DESKTOP NEVER MATCHES THIS
+         BLOCK** -- the class is absent there, so every rule below is inert and
+         requirement B holds by construction rather than by review.
+
+         Long-press is how a touch user reaches a tooltip (`tooltip.ts`) and the
+         canvas context action. The OS reads the same gesture as "select this
+         word / show me a callout", so without this a user asking for help gets
+         a blue selection highlight and a Copy/Look Up bubble on top of the
+         thing they were trying to read. Both halves are needed: `user-select`
+         kills the highlight, `-webkit-touch-callout` kills the iOS bubble.
+
+         `input`/`textarea` ARE EXEMPTED, and the exemption is the reason this
+         is scoped rather than global. Suppressing selection there would make
+         every text field in the panel impossible to edit -- no caret placement,
+         no selecting a value to overwrite it. The `user-select: text` below is
+         what hands those two elements their normal behaviour back. */
+      .fluoddity-touch,
+      .fluoddity-touch body {
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        /* Stops iOS inflating font sizes in landscape, which would silently
+           break every hand-tuned px dimension in the mobile bar. */
+        -webkit-text-size-adjust: 100%;
+      }
+
+      .fluoddity-touch input,
+      .fluoddity-touch textarea {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+
+      /* Removes the grey flash the browser paints over a tapped element. The
+         app draws its own press feedback, and the default rectangle ignores
+         border-radius, so it reads as a rendering glitch on rounded buttons. */
+      .fluoddity-touch * {
+        -webkit-tap-highlight-color: transparent;
+      }
     </style>
   </head>
   <body>

@@ -212,6 +212,13 @@ function setting(init: SettingInit): Setting {
 export const DROPDOWN_MODES = {
   boundaryConditions: ['Bounce', 'Wrap', 'Reset'],
   initialConditions: ['Grid', 'Random', 'Center', 'Ring'],
+  // THE LABELS ONLY. `ui/mobile.ts` derives its `MobileMode` union from this
+  // tuple rather than declaring its own, so the stored index and the dropdown
+  // cannot drift -- the same lockstep the two above keep with `common.wgsl`,
+  // and the reason this list lives here rather than there: this file has no
+  // imports, so the dependency runs one way (mobile -> registry) and a UI module
+  // can never end up upstream of the registry.
+  mobileMode: ['Auto', 'Always Touch', 'Always Desktop'],
 } as const;
 
 // Bounds are fixed and generous rather than user-editable (adjustable slider
@@ -798,6 +805,25 @@ export const SETTINGS: readonly Setting[] = [
       'Allow a single click to bypass cohort selection and generate children ' +
       'immediately',
     group: 'Behavior',
+  }),
+  setting({
+    field: 'mobileMode',
+    label: 'Touch Layout',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: CHOICE,
+    lo: 0,
+    hi: DROPDOWN_MODES.mobileMode.length - 1,
+    // NAMES THE RELOAD, because this is the only control in the panel that does
+    // not take effect on the next frame -- the layout is BUILT from this rather
+    // than styled by it. A dropdown that appears to do nothing is worse than one
+    // that says when it will.
+    help:
+      'Which layout to build: Auto picks the touch layout on phones. Change ' +
+      'this only if the automatic choice is wrong for your device -- it takes ' +
+      'effect after you reload the page.',
+    group: 'Behavior',
+    options: DROPDOWN_MODES.mobileMode,
   }),
 ];
 
