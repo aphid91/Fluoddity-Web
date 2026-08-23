@@ -119,6 +119,14 @@ export interface MenuBarOptions {
   readonly onToggleExportVideo: () => void;
   /** Whether the Recording Controls tab is showing, for the checkmark. */
   readonly isExportVideoShown: () => boolean;
+  /**
+   * Build for touch. Defaults to false.
+   *
+   * Today this only reaches the tooltip, whose affordance is per instance --
+   * hover on a mouse, long press on a finger. The menu's own hover-to-open
+   * behaviour is deliberately left alone.
+   */
+  readonly mobile?: boolean;
 }
 
 /** One entry in the Load menu, flattened out of `configCategories`. */
@@ -250,10 +258,15 @@ export class MenuBar {
    * `position:fixed` at the top-left and its dropdowns hang below it, so the
    * tooltip has to be free to sit outside the menu's own subtree.
    */
-  private readonly tooltip = new Tooltip();
+  private readonly tooltip: Tooltip;
 
   constructor(opts: MenuBarOptions) {
     this.opts = opts;
+    // On touch, menu-row help becomes long-press-to-show in a bottom strip
+    // rather than hover -- which matters more here than anywhere else, because
+    // a synthesized `mouseenter` fires on every menu row a finger touches on its
+    // way to the one it wants. See `tooltip.ts`.
+    this.tooltip = new Tooltip(document.body, opts.mobile ?? false);
 
     // Each surface has its OWN session, so browsing one cannot clobber the
     // other's snapshot. The `surface` token on the commands is what carries that

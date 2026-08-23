@@ -311,7 +311,7 @@ export class Panel {
    * screen at a time and it must outlive a tier rebuild -- it is attached to
    * `document.body`, not to the pane, so a `pane.dispose()` cannot orphan it.
    */
-  private readonly tooltip = new Tooltip();
+  private readonly tooltip: Tooltip;
 
   /**
    * Transient messages, for actions that change nothing on screen.
@@ -554,6 +554,9 @@ export class Panel {
     // FIRST, because the build steps below branch on it -- the overlay, the
     // containers and the tab list all ask which layout they are building.
     this.mobile = opts.mobile ?? false;
+    // With it, since every section's `attach` call goes through this one object
+    // and the affordance is decided per instance. See `tooltip.ts`.
+    this.tooltip = new Tooltip(document.body, this.mobile);
     this.lastMouseMode = this.bus.status().mouseMode;
     this.runCalibration = opts.runCalibration ?? null;
     this.onHiddenChange = opts.onHiddenChange ?? null;
@@ -640,6 +643,7 @@ export class Panel {
     });
     this.menuBar = new MenuBar({
       send,
+      mobile: this.mobile,
       status: () => this.bus.status(),
       onSave: () => {
         this.dialogs.openSave(this.bus.status().projectName);

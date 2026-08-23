@@ -31,8 +31,50 @@
  * appearing mid-drag steals focus and imgui drops the drag.
  */
 
-/** Milliseconds of hover before the tooltip appears. imgui's `delay_normal`. */
+import { TAP_SLOP_PX } from './touchGestures.ts';
+
+/**
+ * Milliseconds of hover before the tooltip appears. imgui's `delay_normal`.
+ *
+ * DOUBLES AS THE LONG-PRESS DURATION on touch, deliberately: that gesture is
+ * what REPLACES hover there, so the wait before help arrives should be the same
+ * either way. `touchGestures.LONG_PRESS_MS` is the same number for the same
+ * reason, and the two are independent only because one is about a UI affordance
+ * and the other about a canvas gesture.
+ */
 const DELAY_MS = 500;
+
+/**
+ * The touch presentation: a fixed strip across the bottom of the screen.
+ *
+ * **NOT NEAR THE ANCHOR, WHICH IS THE WHOLE POINT.** A hover tooltip sits beside
+ * the control because the cursor is there and the control is small. A
+ * long-pressed one cannot: the finger is ON the control, and a box beside it
+ * would be under the hand -- or under the palm, which is worse because the user
+ * cannot tell it appeared at all.
+ *
+ * A fixed position also means it is always in the same place, so a user who has
+ * done this once knows where to look, and it can be full-width rather than
+ * capped at `WRAP_PX`, which matters because these help strings were written for
+ * a 320px desktop column and read better across a phone.
+ *
+ * `bottom` CLEARS THE CONTROL BAR via the same variable the settings sheet uses
+ * (`--fluoddity-bar-height`, published by `mutationOverlay.reposition`), so help
+ * about a bar control never covers the control it describes.
+ *
+ * `pointer-events:none` is as load-bearing here as in the hover case -- see the
+ * file header -- and additionally makes the dismiss listener simple: the tooltip
+ * can never be the target of the tap that closes it.
+ */
+const TOUCH_TOOLTIP_CSS =
+  'position:fixed;display:none;z-index:40;pointer-events:none;' +
+  'left:8px;right:8px;bottom:calc(var(--fluoddity-bar-height, 190px) + 16px);' +
+  'max-height:40vh;overflow:hidden;' +
+  'padding:12px 14px;border-radius:8px;' +
+  'background:rgba(28,28,30,0.97);color:#e8e8ea;' +
+  'font:13px/1.5 system-ui,sans-serif;' +
+  'box-shadow:0 4px 16px rgba(0,0,0,0.5);' +
+  'border:1px solid rgba(255,255,255,0.12);';
 
 /** Wrap width, matching the desktop's `push_text_wrap_pos(320.0)`. */
 const WRAP_PX = 320;
@@ -94,8 +136,45 @@ export class Tooltip {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly parent: HTMLElement;
 
-  constructor(parent: HTMLElement = document.body) {
+  /**
+   * Whether to use the touch affordance: long press to show, tap to dismiss.
+   *
+   * =====================================================================
+   * WHY HOVER CANNOT SIMPLY BE LEFT ALONE ON TOUCH
+   * =====================================================================
+   *
+   * A touchscreen browser synthesizes `mouseenter` on tap, so the hover path
+   * does not merely fail to fire -- it fires on every press, which is how the
+   * tooltips came to "frequently show up and block the screen". And because
+   * there is no cursor to move away, no `mouseleave` follows: the tooltip
+   * appears over the control you just pressed and stays there.
+   *
+   * So on touch this becomes a DELIBERATE gesture with a DELIBERATE dismissal.
+   * A long press asks for help; a tap anywhere puts it away.
+   *
+   * The position changes with the trigger. A hover tooltip belongs beside its
+   * anchor, because the cursor is there and the anchor is small. A long-pressed
+   * one must NOT be near the anchor: the finger is on top of the anchor and
+   * would cover the very text it just asked for. It goes to a fixed strip at
+   * the bottom instead, which is always in the same place, never under the
+   * hand, and can be as wide as the screen.
+   */
+  private readonly touch: boolean;
+
+  /**
+   * Cleanup for the document-level dismiss listener, or `null` when hidden.
+   *
+   * Bound only WHILE A TOOLTIP IS UP, rather than once for the object's life:
+   * a listener on `document` that runs on every tap for the whole session, to
+   * do nothing in almost all of them, is exactly the kind of thing that makes a
+   * touch UI feel heavy. It also cannot then race with a press that is opening
+   * a tooltip, since it is attached after that press has finished.
+   */
+  private releaseDismiss: (() => void) | null = null;
+
+  constructor(parent: HTMLElement = document.body, touch = false) {
     this.parent = parent;
+    this.touch = touch;
   }
 
   /**
@@ -114,6 +193,11 @@ export class Tooltip {
     // has nothing to say on its first frame may well have something to say
     // later. `show` re-checks, so an empty result still displays nothing.
     if (typeof content !== 'function' && content.body === '' && content.title === '') {
+      return;
+    }
+
+    if (this.touch) {
+      this.attachTouch(anchor, content);
       return;
     }
 
@@ -141,10 +225,138 @@ export class Tooltip {
     });
   }
 
+  /**
+   * The touch affordance: long press to show, tap anywhere to dismiss.
+   *
+   * **THE MOVEMENT CANCEL IS NOT OPTIONAL.** Without it every drag that starts
+   * on a control -- every slider adjustment, every scroll of the settings sheet
+   * that happens to begin on a row -- raises a tooltip mid-gesture, over the
+   * thing being dragged. `TAP_SLOP_PX` is the same threshold `touchGestures.ts`
+   * uses to promote a press to a drag, imported rather than restated so a
+   * finger that is "still holding" means one thing across the app.
+   *
+   * `pointerup` cancels too: a press shorter than the delay was a tap, and a tap
+   * on a control is a press of that control, not a request for help.
+   */
+  private attachTouch(anchor: HTMLElement, content: TooltipSource): void {
+    let origin: { x: number; y: number } | null = null;
+
+    anchor.addEventListener('pointerdown', (ev) => {
+      // TOUCH ONLY, even here. A hybrid device with both a mouse and a
+      // touchscreen resolves to the touch LAYOUT, and a mouse user on that
+      // device should not have every click arm a long-press timer.
+      if (ev.pointerType !== 'touch') return;
+      origin = { x: ev.clientX, y: ev.clientY };
+      this.cancel();
+      this.timer = setTimeout(() => {
+        this.showAtBottom(content);
+      }, DELAY_MS);
+    });
+
+    anchor.addEventListener('pointermove', (ev) => {
+      if (origin === null) return;
+      if (Math.hypot(ev.clientX - origin.x, ev.clientY - origin.y) <= TAP_SLOP_PX) {
+        return;
+      }
+      // Travelled: this is a drag, not a hold.
+      origin = null;
+      this.cancel();
+    });
+
+    const finish = (): void => {
+      origin = null;
+      this.cancel();
+    };
+    anchor.addEventListener('pointerup', finish);
+    anchor.addEventListener('pointercancel', finish);
+  }
+
+  /**
+   * Show `source` in the fixed bottom strip. The touch presentation.
+   *
+   * Positioned by CSS rather than measured, unlike `show`: there is no anchor to
+   * sit beside, which is the point -- see the `touch` field. That also means no
+   * `getBoundingClientRect` and no flip logic, so this cannot put itself off
+   * screen.
+   */
+  private showAtBottom(source: TooltipSource): void {
+    const content = typeof source === 'function' ? source() : source;
+    if (content.body === '' && content.title === '') {
+      this.hide();
+      return;
+    }
+
+    const el = this.ensure();
+    this.fill(el, content);
+    el.style.cssText = TOUCH_TOOLTIP_CSS;
+    el.style.display = 'block';
+
+    // ARMED ONLY NOW, and on the NEXT tap rather than this one. The gesture that
+    // opened this is still in progress -- the finger has not lifted -- and a
+    // listener bound synchronously here would receive that same finger's
+    // `pointerup` and close the tooltip before it had been read.
+    this.armDismiss();
+  }
+
+  /**
+   * Dismiss on the next tap anywhere. Touch only.
+   *
+   * ON `document`, IN THE CAPTURE PHASE, so a tap on any control puts the
+   * tooltip away even if that control stops propagation -- the tooltip is
+   * `pointer-events:none` and can never be the target itself, so there is no tap
+   * that should leave it up.
+   *
+   * **IT DOES NOT SWALLOW THE TAP.** The press that dismisses also does whatever
+   * it was going to do, which is right: the tooltip is an overlay the user has
+   * finished with, not a modal they must close first. Making the first tap after
+   * help "free" would mean pressing a button twice for no visible reason.
+   */
+  private armDismiss(): void {
+    this.releaseDismiss?.();
+    const onDown = (): void => {
+      this.hide();
+    };
+    document.addEventListener('pointerdown', onDown, { capture: true });
+    this.releaseDismiss = (): void => {
+      document.removeEventListener('pointerdown', onDown, { capture: true });
+      this.releaseDismiss = null;
+    };
+  }
+
   private cancel(): void {
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
+    }
+  }
+
+  /**
+   * Render `content` into `el`, replacing whatever was there.
+   *
+   * Shared by the hover and touch presentations, which differ in WHERE the box
+   * goes and not in what is in it. Extracted when the second caller arrived
+   * rather than duplicated: the paragraph splitting below is the whole reason
+   * this is not a `title` attribute, and two copies of it would be two places
+   * for the help text to start rendering differently.
+   */
+  private fill(el: HTMLElement, content: TooltipContent): void {
+    el.textContent = '';
+
+    const title = document.createElement('div');
+    title.textContent = content.title;
+    title.style.cssText =
+      'font-weight:600;opacity:0.75;margin-bottom:4px;' +
+      'border-bottom:1px solid rgba(255,255,255,0.15);padding-bottom:4px;';
+    el.append(title);
+
+    // The help strings use blank lines as paragraph breaks. Rendering them as
+    // real paragraphs is the whole reason this is not a `title` attribute.
+    for (const paragraph of content.body.split('\n\n')) {
+      if (paragraph === '') continue;
+      const p = document.createElement('div');
+      p.textContent = paragraph;
+      p.style.marginTop = '6px';
+      el.append(p);
     }
   }
 
@@ -165,24 +377,7 @@ export class Tooltip {
     }
 
     const el = this.ensure();
-    el.textContent = '';
-
-    const title = document.createElement('div');
-    title.textContent = content.title;
-    title.style.cssText =
-      'font-weight:600;opacity:0.75;margin-bottom:4px;' +
-      'border-bottom:1px solid rgba(255,255,255,0.15);padding-bottom:4px;';
-    el.append(title);
-
-    // The help strings use blank lines as paragraph breaks. Rendering them as
-    // real paragraphs is the whole reason this is not a `title` attribute.
-    for (const paragraph of content.body.split('\n\n')) {
-      if (paragraph === '') continue;
-      const p = document.createElement('div');
-      p.textContent = paragraph;
-      p.style.marginTop = '6px';
-      el.append(p);
-    }
+    this.fill(el, content);
 
     // Measured after filling, so the flip below sees the real height.
     el.style.visibility = 'hidden';
@@ -199,6 +394,10 @@ export class Tooltip {
   }
 
   private hide(): void {
+    // BEFORE the display change, and unconditionally: the listener outlives the
+    // element's visibility and would otherwise keep running on every tap for
+    // the rest of the session, hiding something already hidden.
+    this.releaseDismiss?.();
     if (this.element !== null) this.element.style.display = 'none';
   }
 
@@ -220,6 +419,10 @@ export class Tooltip {
 
   dispose(): void {
     this.cancel();
+    // The dismiss listener is on `document`, so removing the element does not
+    // take it with it -- a tap after teardown would call `hide` on a tooltip
+    // that has left the page.
+    this.releaseDismiss?.();
     this.element?.remove();
     this.element = null;
   }

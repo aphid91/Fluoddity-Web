@@ -297,7 +297,7 @@ export class MutationOverlay {
    * bar is deliberately outside both panel containers and outlives their
    * rebuilds.
    */
-  private readonly tooltip = new Tooltip();
+  private readonly tooltip: Tooltip;
 
   /**
    * The last `Status` seen by `refresh`, for the live tooltip sources to read.
@@ -351,6 +351,9 @@ export class MutationOverlay {
     // button below still wires `opts.send` directly, unchanged.
     this.send = opts.send;
     this.mobile = opts.mobile ?? false;
+    // BEFORE any `attach` call below. On touch this switches the whole affordance
+    // to long-press-to-show / tap-to-dismiss in a bottom strip -- see `tooltip.ts`.
+    this.tooltip = new Tooltip(document.body, this.mobile);
 
     // Bounds from the registry, never restated. A renamed field degrades to the
     // 0..1 fallback rather than to a slider with no range at all.
