@@ -669,10 +669,14 @@ test('only the Select labels advertise the long press', () => {
   // dragging finger (`touchGestures`), because resting mid-stroke is normal and
   // flipping the tool under it would erase what was just drawn. A label
   // promising "hold" where no hold is listened for would be a lie.
-  assert.ok(contextLabelFor('cancel', false).includes('hold'));
-  assert.ok(contextLabelFor('undo', false).includes('hold'));
+  // MATCHED CASE-INSENSITIVELY on the word rather than on the exact suffix, so
+  // the wording can be revised without editing this -- the assertion is about
+  // WHICH labels advertise the gesture, not about how it is phrased.
+  const claimsLongPress = (label: string): boolean => /long press/i.test(label);
+  assert.ok(claimsLongPress(contextLabelFor('cancel', false)));
+  assert.ok(claimsLongPress(contextLabelFor('undo', false)));
   assert.ok(
-    !contextLabelFor('toggleDragButton', false).includes('hold'),
+    !claimsLongPress(contextLabelFor('toggleDragButton', false)),
     'the latch has no long-press route and must not claim one',
   );
 });

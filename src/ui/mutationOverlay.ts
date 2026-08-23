@@ -151,6 +151,18 @@ export class MutationOverlay {
   private readonly hintTail: HTMLElement;
   /** The stepper: `< [n] >`, shown only while a cohort is highlighted. */
   private readonly stepper: HTMLElement;
+  /**
+   * Touch only: the stepper wrapped with a caption above it, or `null`.
+   *
+   * **THIS IS WHAT `refreshHint` SHOWS AND HIDES on touch**, rather than the
+   * stepper itself -- toggling the inner control would leave "Selected cohort:"
+   * on screen naming a stepper that is not there. `null` on the desktop, where
+   * the stepper is a direct child of the hint row and the prose beside it
+   * already says what it is.
+   */
+  private readonly stepperGroup: HTMLElement | null = null;
+  /** The caption inside `stepperGroup`. Touch only. */
+  private stepperLabel: HTMLElement | null = null;
   private readonly stepDown: HTMLButtonElement;
   private readonly stepUp: HTMLButtonElement;
   private readonly cohortInput: HTMLInputElement;
@@ -623,14 +635,39 @@ export class MutationOverlay {
     //   BOTTOM  everything that is pressed rather than dragged -- the layout
     //           presets, the rerolls, Reset and the tool selector.
     //
-    // The label and readout are DROPPED from the touch layout, not hidden:
-    // `LABEL_CSS` names the slider in words the tooltip also carries, and the
-    // readout duplicates a value the slider position already shows. On a phone
-    // both cost width the slider itself should have.
+    // **THE LABEL SITS ABOVE THE SLIDER, NOT BESIDE IT**, which is the whole
+    // reason it can be here at all. Beside it -- the desktop arrangement -- it
+    // costs ~110px of a 390px row, and the slider is the control that most wants
+    // that width. Above it costs one line of vertical space in a bar that has
+    // more of that to give.
+    //
+    // An unlabelled slider was the wrong trade. It is the single most
+    // consequential control in the app, and on touch it had NOTHING naming it:
+    // the desktop's fallback is the tooltip, which here needs a deliberate long
+    // press to reach, so a user who does not already know what the slider does
+    // has no way to find out by looking.
+    //
+    // The READOUT comes back with it, on the same line, right-aligned. It is the
+    // one thing a slider position genuinely cannot tell you -- the actual number
+    // -- and sharing the label's line means it costs no extra height.
     if (opts.mobile === true) {
+      // The label line: name on the left, value on the right.
+      const caption = document.createElement('div');
+      caption.style.cssText = TOUCH_CAPTION_CSS;
+      this.label.style.cssText = TOUCH_LABEL_CSS;
+      this.readout.style.cssText = TOUCH_READOUT_CSS;
+      caption.append(this.label, this.readout);
+
+      // Caption over slider, as one column. The GEAR stays outside it so it
+      // centres against the whole group rather than against the slider alone --
+      // beside a two-line stack, an icon aligned to one line reads as misplaced.
+      const sliderGroup = document.createElement('div');
+      sliderGroup.style.cssText = TOUCH_SLIDER_GROUP_CSS;
+      sliderGroup.append(caption, this.slider);
+
       const top = document.createElement('div');
       top.style.cssText = TOUCH_BAR_ROW_CSS;
-      top.append(this.slider, this.gear);
+      top.append(sliderGroup, this.gear);
 
       const bottom = document.createElement('div');
       bottom.style.cssText = TOUCH_BAR_ROW_CSS;
@@ -689,6 +726,27 @@ export class MutationOverlay {
     this.cohortInput.setAttribute('aria-label', 'Highlighted cohort');
 
     this.stepper.append(this.stepDown, this.cohortInput, this.stepUp);
+
+    // **THE STEPPER GETS A CAPTION TOO, for the reason the slider does.** `‹ 3 ›`
+    // is compact enough to have earned its place on a 390px row, and compact
+    // enough to be meaningless on its own -- three glyphs and a number, naming
+    // nothing. The desktop says "Currently selected cohort:" beside it; that
+    // sentence is ~180px and was dropped for the width. Above the control it
+    // costs one short line instead.
+    //
+    // SHOWN AND HIDDEN WITH THE STEPPER, never on its own: `refreshHint` toggles
+    // this wrapper rather than the stepper directly, so the label cannot outlive
+    // the control it names. See the `stepping` branch there.
+    if (opts.mobile === true) {
+      this.stepperLabel = document.createElement('div');
+      this.stepperLabel.textContent = 'Selected cohort:';
+      this.stepperLabel.style.cssText = TOUCH_LABEL_CSS;
+
+      const group = document.createElement('div');
+      group.style.cssText = TOUCH_STEPPER_GROUP_CSS;
+      group.append(this.stepperLabel, this.stepper);
+      this.stepperGroup = group;
+    }
 
     // The commit button, in place of the "left click it to apply" prose.
     //
@@ -878,7 +936,9 @@ export class MutationOverlay {
     // thing>", which is the order those two are considered in.
     this.hint.append(
       this.hintLead,
-      this.stepper,
+      // The WRAPPER on touch, the bare stepper on the desktop -- see
+      // `stepperGroup` for why the two cannot be toggled interchangeably.
+      this.stepperGroup ?? this.stepper,
       this.commitButton,
       this.generateChildButton,
       this.hintTail,
@@ -1385,7 +1445,21 @@ export class MutationOverlay {
     // to be right for it -- stated explicitly anyway, because the difference
     // between these two lines is otherwise invisible and the next person to
     // copy one onto the other reintroduces the bug.
-    this.stepper.style.display = stepping ? 'inline-flex' : 'none';
+    // THE WRAPPER ON TOUCH, and its own `display` value -- `TOUCH_STEPPER_GROUP_CSS`
+    // is `display:flex` (a column), so restoring it as `inline-flex` like the bare
+    // stepper below would change what it IS, not just whether it shows. The
+    // caption and stepper would lay out side by side instead of stacked.
+    //
+    // The inner stepper is left permanently `inline-flex` in that case: it is the
+    // GROUP that comes and goes, so toggling both would be two answers to one
+    // question -- and the one that hid the label independently is how "Selected
+    // cohort:" ends up on screen naming nothing.
+    if (this.stepperGroup !== null) {
+      this.stepperGroup.style.display = stepping ? 'flex' : 'none';
+      this.stepper.style.display = 'inline-flex';
+    } else {
+      this.stepper.style.display = stepping ? 'inline-flex' : 'none';
+    }
     this.hintTail.style.display = stepping ? 'inline' : 'none';
   }
 
@@ -1965,9 +2039,9 @@ export function contextActionFor(status: Status): ContextAction {
 export function contextLabelFor(action: ContextAction, dragIsRight: boolean): string {
   switch (action) {
     case 'cancel':
-      return 'Cancel (hold)';
+      return 'Cancel (Long Press)';
     case 'undo':
-      return 'Undo (hold)';
+      return 'Undo (Long Press)';
     case 'toggleDragButton':
       // NAMES THE STATE IT IS IN, not the state it would move to. A latch
       // labelled with its destination reads as a description of the present to
@@ -2365,6 +2439,55 @@ const TOUCH_BAR_CSS =
 const TOUCH_BAR_ROW_CSS =
   'display:flex;align-items:center;gap:8px;width:100%;min-width:0;';
 
+// The slider and its caption, stacked. See the assembly for why the gear is
+// deliberately NOT inside this.
+//
+// `min-width:0` for the reason the slider itself needs it: a flex item defaults
+// to `min-width:auto` and refuses to shrink below its content, which would push
+// the gear off a narrow row.
+const TOUCH_SLIDER_GROUP_CSS =
+  'display:flex;flex-direction:column;flex:1;min-width:0;gap:2px;';
+
+// The stepper and its caption, stacked. `flex:none` because this sits in the
+// hint ROW beside two buttons that DO stretch (`flex:1` each) -- without it the
+// stepper would be squeezed by them, which is the same squeeze that made the
+// context button 26px wide before the desktop red buttons were withheld.
+//
+// `align-items:flex-start` keeps the caption hard against the stepper's left
+// edge rather than centring it over a control narrower than the words above it.
+const TOUCH_STEPPER_GROUP_CSS =
+  'display:flex;flex-direction:column;align-items:flex-start;gap:2px;flex:none;';
+
+// The label line. `space-between` puts the name left and the value right, which
+// is the arrangement every settings row in the panel already uses -- so the bar
+// reads as the same kind of control rather than as a special case.
+const TOUCH_CAPTION_CSS =
+  'display:flex;align-items:baseline;justify-content:space-between;gap:8px;' +
+  'min-width:0;';
+
+// **DIMMER AND SMALLER THAN THE BAR'S BUTTONS, deliberately.** This is a name,
+// not a control: it should be findable when looked for and quiet when not. At
+// full contrast a label directly above the app's most-used slider competes with
+// the thing it describes.
+//
+// `pointer-events:none` because the tooltip is attached to this element and, on
+// touch, tooltips open on a long press -- without this, a press that begins on
+// the label would arm the tooltip instead of reaching the slider track beneath
+// the finger's centre. The tooltip is still reachable from the slider itself,
+// which carries the same attachment.
+const TOUCH_LABEL_CSS =
+  'font:11px system-ui,sans-serif;color:rgba(232,232,234,0.65);' +
+  'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' +
+  'user-select:none;pointer-events:none;';
+
+// The value, right-aligned on the label's line. Tabular figures and a fixed
+// width so the number does not shuffle its own line as digits change under a
+// drag -- the same reason `READOUT_CSS` fixes a width on the desktop.
+const TOUCH_READOUT_CSS =
+  'font:11px ui-monospace,monospace;color:rgba(232,232,234,0.8);' +
+  'font-variant-numeric:tabular-nums;flex:none;user-select:none;' +
+  'pointer-events:none;';
+
 // The hint row, which on touch carries the gold/red button pair.
 //
 // **`max-width:96vw` IS GONE, AND `width:100%` REPLACES IT.** The desktop row
@@ -2392,8 +2515,23 @@ const TOUCH_HINT_CSS =
 // `height:44px` gives the TRACK a finger-sized hit area. The thumb is drawn
 // inside it and stays its natural size, so this widens what can be grabbed
 // without making the control look inflated.
+// **`flex:none` AND `min-height`, NOT `flex:1` AND `height`**, and the reason is
+// a trap worth naming: `flex` governs the MAIN axis, and the main axis changed.
+//
+// The slider was a direct child of a flex ROW, where `flex:1` meant "take the
+// free WIDTH". Adding the caption above it put it inside a flex COLUMN, where
+// the same `flex:1` means "take the free HEIGHT" -- so it started sharing the
+// column's height with the caption and collapsed from 44px to 16px.
+//
+// That is a tap-target failure that LOOKS FINE: the control renders normally and
+// drags correctly with a mouse. It was caught by measuring the element, not by
+// looking at it.
+//
+// `width:100%` now carries the horizontal fill, and `flex:none` with a
+// `min-height` floor keeps the target size out of the column's distribution.
 const TOUCH_SLIDER_CSS =
-  'flex:1;min-width:0;height:44px;accent-color:#8ab4f8;cursor:pointer;';
+  'flex:none;width:100%;min-width:0;min-height:44px;height:44px;' +
+  'margin:0;accent-color:#8ab4f8;cursor:pointer;';
 
 // The bottom row's buttons and the tool dropdown.
 //
