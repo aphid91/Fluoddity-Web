@@ -55,6 +55,11 @@
  * nothing per keystroke and can never swallow a key meant for the simulation.
  */
 
+// The one threshold that says what counts as "held still", shared with the
+// canvas gestures and the tooltips rather than restated -- see the dismiss
+// handler below.
+import { TAP_SLOP_PX } from './touchGestures.ts';
+
 /** A `<divider>` in the source copy: a hairline rule between blocks. */
 const DIVIDER = Symbol('divider');
 
@@ -141,7 +146,8 @@ const GUIDE_BODY: readonly Block[] = [
   [
   "Fluoddity is an extension of the classic Physarum model which you can read about in this excellent Sage Jenson blog post: https://cargocollective.com/sagejenson/physarum",
   "This github readme page contains many more details on how this system expands on traditional Physarum simulations:"+
-  " https://github.com/aphid91/Fluoddity"
+  " https://github.com/aphid91/Fluoddity",
+  "This website was written almost entirely by Claude 5 Opus. It is open source at https://github.com/aphid91/Fluoddity-Web"
   ]
 
 ];
@@ -228,7 +234,18 @@ const SUBHEADINGS: ReadonlySet<string> = new Set([
  * that says "click anywhere to close" and then ignores the click reads as
  * broken, which is a worse first impression than the wait it is covering.
  */
+/**
+ * The dismiss hint, in its mouse and touch wordings.
+ *
+ * **THE TOUCH ONE IS NOT JUST "TAP" FOR "CLICK".** It also has to say that
+ * dragging is safe, because on touch dragging is how you read past the fold and
+ * a hint promising that any contact closes the overlay would make scrolling look
+ * like a risk. The mouse wording stays exactly as it was: there a drag on the
+ * copy is not a scroll, and mentioning it would describe a gesture that does
+ * nothing.
+ */
 const HINT_FREE = 'Click anywhere to close';
+const HINT_FREE_TOUCH = 'Drag to scroll · tap anywhere to close';
 const HINT_LOCKED = 'One moment — measuring what your hardware can handle…';
 
 export interface SplashOptions {
@@ -252,6 +269,15 @@ export interface SplashOptions {
    * balance by a redundant call.
    */
   readonly onVisibilityChange?: (visible: boolean) => void;
+  /**
+   * Word the dismiss hint for touch. Defaults to false.
+   *
+   * Only the WORDING: the dismiss rule itself branches on `pointerType` at the
+   * event, so a mouse plugged into a touch device still dismisses on press. This
+   * is about which sentence is more useful to the person most likely to be
+   * reading it, not about which input is possible.
+   */
+  readonly mobile?: boolean;
 }
 
 export class Splash {
@@ -284,7 +310,17 @@ export class Splash {
    */
   private locked = false;
 
+  /**
+   * The unlocked hint's wording, chosen once from `opts.mobile`.
+   *
+   * A FIELD RATHER THAN A CONSTANT read at each site, because `setLocked` also
+   * writes this text -- and two places picking the wording independently is how
+   * one of them ends up saying "click" on a phone after a calibration finishes.
+   */
+  private readonly hintFree: string;
+
   constructor(opts: SplashOptions = {}) {
+    this.hintFree = opts.mobile === true ? HINT_FREE_TOUCH : HINT_FREE;
     this.container = opts.container ?? document.body;
     this.onVisibilityChange = opts.onVisibilityChange ?? ((): void => {});
     this.variant = opts.variant ?? 'welcome';
@@ -305,12 +341,20 @@ export class Splash {
     this.card.style.cssText =
       'max-width:640px;min-height:0;overflow-y:auto;box-sizing:border-box;' +
       'padding:24px 28px;border:1px solid rgba(255,255,255,0.15);' +
-      'border-radius:6px;background:rgba(28,28,30,0.98);cursor:auto;';
+      'border-radius:6px;background:rgba(28,28,30,0.98);cursor:auto;' +
+      // TOUCH SCROLLING, and harmless on a mouse. `touch-action:pan-y` tells the
+      // browser this element owns vertical drags -- without it the drag can be
+      // claimed as a page gesture and arrive as a `pointercancel` partway
+      // through, which reads as the copy sticking. `overscroll-behavior:contain`
+      // stops a flick past the end continuing into the canvas underneath, which
+      // has `touch-action:none` and would swallow the rest of the gesture.
+      'touch-action:pan-y;overscroll-behavior:contain;' +
+      '-webkit-overflow-scrolling:touch;';
     this.card.append(...render(this.variant));
 
     // OUTSIDE the card, so it stays visible no matter how far the copy scrolls.
     const hint = document.createElement('div');
-    hint.textContent = HINT_FREE;
+    hint.textContent = this.hintFree;
     hint.style.cssText = 'flex:none;opacity:0.65;font-size:11px;';
     this.hint = hint;
 
@@ -342,9 +386,56 @@ export class Splash {
     // is why this only has the scrollbar to test: an anchor is a real element
     // and can stop the event before it bubbles here, where the scrollbar is
     // drawn inside the card and has no node to bind to.
+    // =====================================================================
+    // A TOUCH DISMISS IS DECIDED ON THE LIFT, NOT THE PRESS
+    // =====================================================================
+    //
+    // The `pointerdown` rule above is right for a mouse and unusable with a
+    // finger. A mouse scrolls this card with a wheel or the scrollbar -- neither
+    // of which is a press on the content -- so "any press dismisses" never
+    // collides with reading. A finger scrolls by DRAGGING THE TEXT ITSELF, which
+    // is a press on the content, so under the same rule the overlay closes the
+    // instant anyone tries to read past the fold. That is requirement 6.
+    //
+    // `onScrollbar` is the desktop's version of this same problem -- grabbing
+    // the scrollbar must not dismiss -- and it does not help here, because a
+    // touch scroll never goes near a scrollbar.
+    //
+    // So on touch: remember where the finger went down, and dismiss on lift ONLY
+    // if it stayed within the tap slop. A drag scrolls and closes nothing.
+    // `TAP_SLOP_PX` is shared with `touchGestures.ts` so that "a tap" means one
+    // thing everywhere.
+    //
+    // **THE MOUSE PATH IS UNTOUCHED**, deliberately, rather than moved to the
+    // same lift-based rule for symmetry. `pointerdown` is what the app binds and
+    // what this file's own comment above defends: `click` would not fire when a
+    // press drifts a few pixels, leaving the splash up. Touch needs the drift
+    // test precisely because a drift is meaningful there; on a mouse it is noise.
+    let touchOrigin: { x: number; y: number } | null = null;
+
     this.root.addEventListener('pointerdown', (ev) => {
       if (this.onScrollbar(ev)) return;
+      if (ev.pointerType === 'touch') {
+        touchOrigin = { x: ev.clientX, y: ev.clientY };
+        return;
+      }
       this.dismiss();
+    });
+
+    this.root.addEventListener('pointerup', (ev) => {
+      if (ev.pointerType !== 'touch') return;
+      const origin = touchOrigin;
+      touchOrigin = null;
+      if (origin === null) return;
+      const moved = Math.hypot(ev.clientX - origin.x, ev.clientY - origin.y);
+      if (moved <= TAP_SLOP_PX) this.dismiss();
+    });
+
+    // The browser can take the pointer away mid-scroll (a gesture becoming a
+    // system one). That is not a tap and must not dismiss, so the origin is
+    // dropped rather than left to be measured against a later, unrelated lift.
+    this.root.addEventListener('pointercancel', () => {
+      touchOrigin = null;
     });
     // A splash that eats the first keystroke would be worse than one that
     // lingers: `X`, `Space` and `R` are the things a new user reaches for after
@@ -459,7 +550,7 @@ export class Splash {
    */
   setLocked(locked: boolean): void {
     this.locked = locked;
-    this.hint.textContent = locked ? HINT_LOCKED : HINT_FREE;
+    this.hint.textContent = locked ? HINT_LOCKED : this.hintFree;
     // `default` rather than `pointer` while locked: the cursor should not
     // promise a click that will not work.
     this.root.style.cursor = locked ? 'default' : 'pointer';

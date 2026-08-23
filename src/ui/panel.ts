@@ -628,6 +628,9 @@ export class Panel {
     // two disagreed.
     this.splash = new Splash({
       showNow: opts.showSplash !== false,
+      // Wording only -- the dismiss rule itself branches per event. See
+      // `SplashOptions.mobile`.
+      mobile: this.mobile,
       onVisibilityChange: (visible) => {
         if (visible) {
           this.pausedBySplash = !this.bus.status().paused;
