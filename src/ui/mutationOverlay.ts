@@ -1361,7 +1361,23 @@ export class MutationOverlay {
     // gestures that DO exist will do.
     const suppressForTouch = this.mobile;
 
-    this.hintLead.textContent = suppressForTouch ? '' : lead;
+    // **EXCEPT WHEN THE PROSE IS ALL THERE IS.** Suppressing it unconditionally
+    // left one state completely blank: a single-cohort config at Mutation Scale
+    // 0. There `highlightEnabled` is false (nothing to aim at) and
+    // `selectionIsNoOp` is true (every child would be identical), so `hintFor`
+    // withholds the gold button -- correctly, since `confirmSelection` would be
+    // refused -- and offers a SENTENCE explaining how to leave the state
+    // instead. Dropping that sentence on touch left an empty row and no way
+    // forward: no button, no explanation, and a canvas that cannot be tapped to
+    // select because there is only one cohort.
+    //
+    // The rule is therefore about the ROW, not about the words: keep the lead
+    // when nothing else would be shown. It is the states with buttons whose
+    // prose is redundant, and this is the one state with neither.
+    const hasTouchButton = commit || generateChild || clearField;
+    const keepLead = !suppressForTouch || !hasTouchButton;
+
+    this.hintLead.textContent = keepLead ? lead : '';
     this.hintTail.textContent = suppressForTouch ? '' : tail;
 
     // The label names EVERY route to the same act, which is the point of
