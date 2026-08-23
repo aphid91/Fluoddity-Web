@@ -321,7 +321,7 @@ export class Panel {
    * is attached outside both containers, and someone who has hidden the UI can
    * still press Shift+C and deserves to be told whether it worked.
    */
-  private readonly toast = new Toast();
+  private readonly toast: Toast;
 
   /**
    * Gate and session state, for the derived checkboxes and (10d) the
@@ -557,6 +557,9 @@ export class Panel {
     // With it, since every section's `attach` call goes through this one object
     // and the affordance is decided per instance. See `tooltip.ts`.
     this.tooltip = new Tooltip(document.body, this.mobile);
+    // Both move to the TOP on touch, where the bottom edge now holds the control
+    // bar -- see `toast.ts` and `recordingBar.ts` for why that inverts.
+    this.toast = new Toast(document.body, this.mobile);
     this.lastMouseMode = this.bus.status().mouseMode;
     this.runCalibration = opts.runCalibration ?? null;
     this.onHiddenChange = opts.onHiddenChange ?? null;
@@ -604,7 +607,7 @@ export class Panel {
     // meaning of cancelling however it is reached.
     this.recordingBar = new RecordingBar(() => {
       this.recorder?.cancel();
-    });
+    }, this.mobile);
     // The click does what Export Video's menu item does for its own tab: reveal
     // the panels if they are hidden and bring the right tab to the front. See
     // `showPerformanceSettings`.

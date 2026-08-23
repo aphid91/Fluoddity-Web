@@ -2869,6 +2869,25 @@ export class Orchestrator implements CommandBus {
   }
 
   /**
+   * The active tool.
+   *
+   * **EXISTS SO THE TOUCH PATH DOES NOT HAVE TO CALL `status()`, WHICH IS
+   * DESTRUCTIVE.** `status()` drains the pending notice (`takeNotice`), on the
+   * understanding that exactly one consumer reads it per frame and puts it on
+   * the toast. `touchBinding` needs only the tool -- but it asks per pointer
+   * event and once per frame from `pump`, so routing that through `status()`
+   * silently ate every notice before `Panel.refresh` could see it, and the toast
+   * stopped appearing on touch entirely.
+   *
+   * That bug is invisible from the type system and from the desktop, and it is
+   * the reason this getter exists rather than the caller reaching for the whole
+   * status object: a narrow read cannot consume anything.
+   */
+  get activeMouseMode(): MouseMode {
+    return this.mouseMode;
+  }
+
+  /**
    * World dimensions, which every screen-to-world conversion needs.
    *
    * Exposed for the touch gestures, whose pan and zoom both go through

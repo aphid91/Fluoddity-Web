@@ -57,8 +57,18 @@ export class Toast {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly parent: HTMLElement;
 
-  constructor(parent: HTMLElement = document.body) {
+  /**
+   * Put messages at the TOP rather than the bottom. Touch layouts only.
+   *
+   * The bottom is where the touch control bar and hint row live, so the position
+   * that is clearest on a desktop is the most obstructive on a phone. See
+   * `ensure`.
+   */
+  private readonly mobile: boolean;
+
+  constructor(parent: HTMLElement = document.body, mobile = false) {
     this.parent = parent;
+    this.mobile = mobile;
   }
 
   /**
@@ -90,11 +100,21 @@ export class Toast {
     if (this.element !== null) return this.element;
     const el = document.createElement('div');
     el.id = 'fluoddity-toast';
-    // BOTTOM CENTRE: the panel owns the right edge, the menu bar the top, and
-    // the mutation overlay the bottom left. This is the one place a strip can
-    // appear without covering something a user might be reading.
+    // BOTTOM CENTRE ON THE DESKTOP: the panel owns the right edge, the menu bar
+    // the top, and the mutation overlay the bottom left. This is the one place a
+    // strip can appear without covering something a user might be reading.
+    //
+    // **THAT REASONING INVERTS ON TOUCH**, which is why this is not merely a
+    // nicer position but a necessary one. The touch layout moves the control bar
+    // and the hint row to the BOTTOM, spanning the full width -- so the one spot
+    // that was free is now the busiest part of the screen, and a toast there
+    // would cover the two buttons a user presses most. The top is what is empty
+    // instead: the menu bar is a short strip in the corner and everything below
+    // it is canvas.
     el.style.cssText =
-      'position:fixed;left:50%;bottom:28px;transform:translateX(-50%);' +
+      (this.mobile
+        ? 'position:fixed;left:50%;top:34px;transform:translateX(-50%);'
+        : 'position:fixed;left:50%;bottom:28px;transform:translateX(-50%);') +
       'z-index:40;pointer-events:none;opacity:0;' +
       `transition:opacity ${FADE_MS}ms ease;` +
       'max-width:min(560px,calc(100vw - 32px));padding:8px 14px;' +

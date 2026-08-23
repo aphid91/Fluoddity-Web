@@ -47,8 +47,12 @@ export class RecordingBar {
   private label: HTMLElement | null = null;
   private readonly onCancel: () => void;
 
-  constructor(onCancel: () => void) {
+  /** Place the bar at the top instead of the bottom. See `TOUCH_ROOT_CSS`. */
+  private readonly mobile: boolean;
+
+  constructor(onCancel: () => void, mobile = false) {
     this.onCancel = onCancel;
+    this.mobile = mobile;
   }
 
   /**
@@ -92,7 +96,7 @@ export class RecordingBar {
     const root = document.createElement('div');
     root.id = 'fluoddity-recording-bar';
     root.dataset['recording'] = 'bar';
-    root.style.cssText = ROOT_CSS;
+    root.style.cssText = this.mobile ? TOUCH_ROOT_CSS : ROOT_CSS;
 
     const label = document.createElement('span');
     label.style.cssText = 'flex:0 0 auto;white-space:nowrap;';
@@ -158,6 +162,30 @@ export class RecordingBar {
 const ROOT_CSS =
   'position:fixed;bottom:12px;left:50%;transform:translateX(-50%);' +
   'display:none;align-items:center;gap:10px;z-index:40;pointer-events:none;' +
+  'padding:8px 12px;border-radius:6px;' +
+  'background:rgba(28,28,30,0.94);border:1px solid rgba(255,255,255,0.12);' +
+  'box-shadow:0 6px 20px rgba(0,0,0,0.5);' +
+  'font:11px system-ui,sans-serif;color:#e8e8ea;';
+
+/**
+ * The same bar at the TOP, for the touch layout.
+ *
+ * **THE PARAGRAPH ABOVE INVERTS ON A PHONE.** There the bottom edge is not empty
+ * -- it holds the control bar and the hint row, full width -- and the top is
+ * what is free, since the menu bar is a short strip in one corner. So the
+ * argument is unchanged and the answer moves: ambient status goes wherever the
+ * picture is not, and that is a different edge on each layout.
+ *
+ * **`pointer-events:none` MATTERS MORE HERE**, because this now sits over the
+ * canvas rather than over a control bar that was already claiming its own
+ * presses. Without it a strip across the top would silently eat taps meant for
+ * the simulation -- `inputBinding.ts` decides capture by target identity, so an
+ * element that CAN be a target is an element that blocks the canvas.
+ */
+const TOUCH_ROOT_CSS =
+  'position:fixed;top:34px;left:50%;transform:translateX(-50%);' +
+  'display:none;align-items:center;gap:10px;z-index:40;pointer-events:none;' +
+  'max-width:calc(100vw - 16px);box-sizing:border-box;' +
   'padding:8px 12px;border-radius:6px;' +
   'background:rgba(28,28,30,0.94);border:1px solid rgba(255,255,255,0.12);' +
   'box-shadow:0 6px 20px rgba(0,0,0,0.5);' +

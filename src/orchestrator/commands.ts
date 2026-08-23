@@ -523,6 +523,22 @@ export interface Status {
    * on read means whoever calls first gets the notice -- which is fine, because
    * they all funnel into the same `Panel.refresh`, but it is the reason this is
    * documented as one-shot rather than as "the panel's to read".
+   *
+   * ## THE TRAP, WHICH HAS BEEN SPRUNG ONCE
+   *
+   * "They all funnel into `Panel.refresh`" is an invariant about the CALLERS,
+   * not a property of this field -- and the moment something calls `status()`
+   * for a reason unrelated to rendering the panel, it silently eats notices.
+   *
+   * That happened: the touch input binding read the active tool as
+   * `status().mouseMode`, from a callback running on every pointer event and
+   * once per frame. Perfectly reasonable-looking code, no type error, no
+   * warning -- and toasts stopped appearing on touch entirely, while remaining
+   * fine on the desktop where that binding does not exist.
+   *
+   * **So: if you want ONE field and you are not the panel, add a narrow getter
+   * to the Orchestrator and read that instead.** `activeMouseMode` is the one
+   * that came out of this. A narrow read cannot consume anything.
    */
   readonly notice: string;
 

@@ -471,7 +471,12 @@ async function start(): Promise<void> {
         tracker: input.tracker,
         camera: () => orchestrator.cameraState,
         canvasSize: () => orchestrator.canvasDimensions,
-        mouseMode: () => orchestrator.status().mouseMode,
+        // **`activeMouseMode`, NOT `status().mouseMode`.** `status()` DRAINS the
+        // pending notice, and this callback runs on every pointer event and once
+        // per frame from `pump` -- so reading the tool through it consumed every
+        // notice before `Panel.refresh` could put it on the toast, and toasts
+        // stopped appearing on touch altogether. See the getter.
+        mouseMode: () => orchestrator.activeMouseMode,
         // The push/pull, draw/erase toggle. Wired to the hint bar's context
         // button; until that exists it reports LEFT, which is the desktop's
         // unmodified drag and so the safe default.
