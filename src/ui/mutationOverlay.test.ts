@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 
 import type { Status } from '../orchestrator/commands.ts';
 import { NO_COHORT } from '../selection/cohortHighlight.ts';
-import { hintFor } from './mutationOverlay.ts';
+import { hintFor, overlayTop, type Rect } from './mutationOverlay.ts';
 
 /**
  * A Status with only the fields `hintFor` reads.
@@ -463,4 +463,107 @@ test('the no-op state does not change the shove or draw wording', () => {
     const noOp = hintFor(status({ mouseMode, selectionIsNoOp: true }));
     assert.equal(noOp.lead, plain.lead, `${mouseMode} wording must not change`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Where the bar sits
+// ---------------------------------------------------------------------------
+//
+// WHY THESE EXIST. The bar is centred and the menu bar is a left-anchored strip,
+// so on a wide window they never meet -- and the bar used to clear the menu bar
+// unconditionally anyway, spending vertical space on a collision that was not
+// happening. The rule that replaced it is a rectangle comparison, which is
+// exactly the kind of thing that is right in the case you looked at and wrong at
+// the boundary. `overlayTop` is pure so the boundary is testable; `reposition`
+// needs a DOM and is not covered here, the same split `hintFor` above draws.
+//
+// ## NOTHING HERE PINS A DISTANCE, deliberately
+//
+// `MENU_BAR_GAP_PX` and `TOP_MARGIN_PX` are being tuned by eye, which is the
+// right way to settle a margin and the wrong thing to write an assertion about:
+// a test that hard-codes "top is 2" fails on every nudge and teaches nothing
+// when it does. What these check is WHICH ARM FIRED -- did the bar go to the
+// top, or did it drop below the menu bar -- which is the actual rule and is
+// invariant under any spacing either constant is given.
+//
+// `dropped` is the discriminator. The two arms are separated by the menu bar's
+// height (~26px), so "at least as low as the menu bar's bottom edge" tells them
+// apart for any sane gap without naming one.
+
+/** The menu bar as it actually measures: top-left, ~26px tall. */
+const MENU: Rect = { left: 0, right: 300, bottom: 26 };
+
+/** A centred bar of `width`, on a viewport of `viewport`. */
+function centred(width: number, viewport: number): Rect {
+  const left = (viewport - width) / 2;
+  return { left, right: left + width, bottom: 0 };
+}
+
+/**
+ * Whether `top` is the below-the-menu-bar arm rather than the top arm.
+ *
+ * SPACING-AGNOSTIC by construction: the top arm cannot reach the menu bar's
+ * bottom edge without the top margin growing past the menu bar's whole height,
+ * at which point "at the top" would have stopped being true anyway.
+ */
+const dropped = (top: number, menu: Rect = MENU): boolean => top >= menu.bottom;
+
+test('a wide window puts the bar at the very top', () => {
+  // The whole point of the change: 1920px wide, a 900px bar, so it starts at
+  // 510 -- well clear of a menu bar that ends at 300.
+  const top = overlayTop(centred(900, 1920), MENU);
+  assert.ok(!dropped(top), `no collision, so no clearance to pay for (got ${String(top)})`);
+});
+
+test('a narrow window drops the bar below the menu bar', () => {
+  // 1000px wide with a 900px bar starts at 50, which is under `File`.
+  const top = overlayTop(centred(900, 1000), MENU);
+  assert.ok(dropped(top), `an overlap has to clear the menu bar (got ${String(top)})`);
+});
+
+test('touching edges are not a collision', () => {
+  // A bar starting at exactly the menu bar's right edge clears it, so the
+  // comparison has to be strict. One pixel either side of this is the whole
+  // difference between the two arms, which is what makes it worth a test.
+  assert.ok(
+    !dropped(overlayTop({ left: 300, right: 900, bottom: 0 }, MENU)),
+    'starting exactly at the right edge is clear',
+  );
+  assert.ok(
+    dropped(overlayTop({ left: 299, right: 900, bottom: 0 }, MENU)),
+    'one pixel of overlap is an overlap',
+  );
+});
+
+test('the drop tracks the menu bar rather than assuming its height', () => {
+  // The clearance used to be a constant that happened to match a ~26px bar. A
+  // menu bar that grows -- a bigger font, another row -- has to push this down
+  // with it, or the thing the constant was protecting against comes back.
+  //
+  // Checks the RELATIONSHIP, not the number: the answer moves with `bottom`, and
+  // by exactly as much as `bottom` moved. That holds for any gap.
+  const short = { left: 0, right: 300, bottom: 26 };
+  const tall = { left: 0, right: 300, bottom: 40 };
+  const bar = centred(900, 1000);
+  assert.equal(
+    overlayTop(bar, tall) - overlayTop(bar, short),
+    tall.bottom - short.bottom,
+    'a taller menu bar pushes the overlay down by its own growth',
+  );
+  assert.ok(dropped(overlayTop(bar, tall), tall), 'and still clears it');
+});
+
+test('an unmeasurable menu bar falls back to clearing it', () => {
+  // Both degradations pick the arm that CANNOT overlap: a bar sitting on top of
+  // File and Share is unusable, and a bar lower than it needed to be is merely
+  // not as good as it could have been. The wide viewport is the trap -- these
+  // inputs would take the TOP arm if the fallback were decided by the overlap
+  // test rather than short-circuited ahead of it.
+  //
+  // Asserts the arm, not the constant, like everything above.
+  assert.ok(dropped(overlayTop(centred(900, 1920), null)), 'no menu bar found');
+  assert.ok(
+    dropped(overlayTop(centred(900, 1920), { left: 0, right: 0, bottom: 0 })),
+    'a zero-width rect means it has not been laid out yet',
+  );
 });

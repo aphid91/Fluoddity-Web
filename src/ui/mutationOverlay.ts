@@ -176,6 +176,28 @@ export class MutationOverlay {
   private dragging = false;
 
   /**
+   * The `top` last written to the root, or `null` before the first placement.
+   *
+   * Guards the write the same way `hintShown` and `activeShown` guard theirs:
+   * `reposition` runs every frame, the answer changes only when the window is
+   * resized or the bar changes width, and assigning an identical `style.top`
+   * sixty times a second is the waste every other guard here avoids.
+   */
+  private topShown: number | null = null;
+
+  /**
+   * Teardown for the resize listener.
+   *
+   * The bar is repositioned per frame from `refresh`, which is enough while the
+   * app is drawing -- but a resize is exactly the event that changes the answer,
+   * and `Panel.refresh` skips the overlay's own refresh when the panels are
+   * hidden. Without this, dragging the window narrow with the panels hidden
+   * would leave the bar wherever the last visible frame put it, which is the
+   * state that overlaps the menu bar.
+   */
+  private readonly releaseResize: () => void;
+
+  /**
    * The bar's help tooltips.
    *
    * The same styled element the panels use, rather than the `title` attribute
@@ -697,6 +719,18 @@ export class MutationOverlay {
     (opts.container ?? document.body).append(this.root);
     this.releaseFocus = bindFocusRelease(this.root);
 
+    // AFTER the mount, or the bar measures as a zero rect and every frame until
+    // the first refresh would place it at the fallback clearance -- a visible
+    // drop on load in the common non-overlapping case.
+    this.reposition();
+    const onResize = (): void => {
+      this.reposition();
+    };
+    window.addEventListener('resize', onResize);
+    this.releaseResize = (): void => {
+      window.removeEventListener('resize', onResize);
+    };
+
     // --- events ------------------------------------------------------------
 
     // `input`, not `change`: `change` fires only on release, so the simulation
@@ -858,6 +892,13 @@ export class MutationOverlay {
     }
 
     this.refreshHint(status);
+
+    // LAST, after everything that can change the bar's WIDTH. The sentinel swap
+    // above hides three items and shows one, and the hint row's buttons come and
+    // go -- both move this bar's edges, which is the input to the overlap test.
+    // Measuring first would decide against the previous frame's geometry and
+    // leave the bar one frame behind at exactly the moments it changes size.
+    this.reposition();
   }
 
   /**
@@ -1155,6 +1196,33 @@ export class MutationOverlay {
     this.fences.setAttribute('aria-pressed', String(this.fencesOn));
   }
 
+  /**
+   * Put the bar at the top, or below the menu bar if it would run into it.
+   *
+   * The decision is `overlayTop`'s; this is the part that needs a DOM. Called
+   * per frame from `refresh` and on `resize` -- see `releaseResize` for why both.
+   *
+   * **THE MENU BAR IS LOOKED UP BY ID EVERY TIME, not cached.** `MenuBar` owns
+   * that element, mounts it on `document.body` and removes it in its own
+   * `dispose`, and the two classes are constructed in an order this file does
+   * not get to assume -- a reference taken once here could be captured before it
+   * exists or held after it is gone. The lookup is one `getElementById` per
+   * frame against a document with a handful of top-level nodes.
+   *
+   * READS BOTH RECTS BEFORE WRITING, and writes at most one property: mixing
+   * reads and writes is what turns a per-frame measurement into layout thrash.
+   */
+  private reposition(): void {
+    const menu = document.getElementById('fluoddity-menubar');
+    const top = overlayTop(
+      this.root.getBoundingClientRect(),
+      menu === null ? null : menu.getBoundingClientRect(),
+    );
+    if (this.topShown === top) return;
+    this.topShown = top;
+    this.root.style.top = `${String(top)}px`;
+  }
+
   /** One of the stepper's two arrows. */
   private stepButton(glyph: string, label: string): HTMLButtonElement {
     const button = document.createElement('button');
@@ -1252,6 +1320,10 @@ export class MutationOverlay {
 
   dispose(): void {
     this.releaseFocus();
+    // The listener is on `window`, not inside `root`, so removing the bar does
+    // not take it with it -- a resize after teardown would measure an element
+    // that has left the document.
+    this.releaseResize();
     // Its element is on `document.body`, not inside `root` -- removing the bar
     // would strand it, and a pending show timer would fire against an anchor
     // that has left the document.
@@ -1696,6 +1768,14 @@ function keyCaption(text: string): HTMLSpanElement {
 // **`top` clears the menu bar.** The bar is fixed at `top:0` and runs about
 // 26px tall (`menuBar.ts`); at `top:8px` this overlay ran straight through it.
 //
+// **THE `top` HERE IS ONLY THE STARTING VALUE.** `reposition` overwrites it
+// from the first frame onward, and `overlayTop` decides what it becomes: the
+// clearance only when the two bars actually overlap horizontally, and 8px when
+// they do not. What this declaration is for is the frame before the first
+// measurement -- it starts in the arm that cannot overlap the menu bar, so a
+// bar that is never measured is merely lower than it needs to be rather than
+// sitting on top of File and Share.
+//
 // MENU_BAR_CLEARANCE POSITIONS THIS OVERLAY ONLY. `panel.ts` does not import it
 // -- its `PANEL_TOP_PX` is a hand-computed literal that has to clear the menu
 // bar AND this bar's full height, and the two are related by intent rather than
@@ -1709,7 +1789,85 @@ function keyCaption(text: string): HTMLSpanElement {
 // `X`. The bar visibly jumped. Anchoring the LEFT EDGE at 50% and pulling back
 // by half the bar's own width centres it against a fixed reference instead, so
 // nothing about the panels can move it.
+// **THE CLEARANCE IS NOW A FALLBACK, NOT THE POSITION.** It is what the bar
+// uses before it has been measured (a hidden or not-yet-laid-out element
+// measures as a zero rect) and whenever the menu bar cannot be found at all.
+// `overlayTop` is what decides the real number, per frame -- see it for why the
+// static value was costing vertical space in the common case.
 const MENU_BAR_CLEARANCE = 34;
+
+// **BOTH OF THESE ARE DELIBERATELY TINY**, and they were 8px each when this
+// rule was first written. 8px is the ordinary spacing constant in this file and
+// it is the wrong one here: the whole point of measuring the collision is to
+// stop spending vertical space that buys nothing, and a margin large enough to
+// read as a deliberate gap is that same waste in a smaller denomination. 2px is
+// enough to keep the two borders from appearing to merge into one thick rule,
+// which is the only thing separation has to achieve here.
+
+/** Breathing room between the menu bar's bottom edge and the mutation bar. */
+const MENU_BAR_GAP_PX = 2;
+
+/** Where the bar sits when nothing is in its way: hard against the top. */
+const TOP_MARGIN_PX = 2;
+
+/**
+ * A rectangle, as much of one as `overlayTop` reads.
+ *
+ * Structurally compatible with `DOMRect`, so callers hand one straight in. Its
+ * own type so the geometry can be tested under `node --test`, where `DOMRect`
+ * does not exist.
+ */
+export interface Rect {
+  readonly left: number;
+  readonly right: number;
+  readonly bottom: number;
+}
+
+/**
+ * How far down the mutation bar has to start, given who is beside it.
+ *
+ * ## Why this is measured rather than a constant
+ *
+ * The bar used to sit at a fixed `MENU_BAR_CLEARANCE`, which cleared the menu
+ * bar unconditionally -- and the menu bar is a strip at the TOP LEFT that is
+ * only as wide as its six titles, while this bar is CENTRED. On any window wide
+ * enough for both, they do not overlap horizontally at all, so the clearance was
+ * buying nothing and spending ~26px of the picture to buy it. That cost is worst
+ * exactly where it hurts most: the two rows here are already the tallest chrome
+ * on screen.
+ *
+ * So the rule is the one a human would apply by eye. If the two rectangles
+ * OVERLAP HORIZONTALLY, drop below the menu bar. If they do not, go to the top.
+ *
+ * ## Why the test is horizontal only
+ *
+ * Both elements are `position:fixed` near `top:0`, so they are always at the
+ * same height -- vertical overlap is a given and testing for it would make the
+ * condition self-referential (the bar is only clear of the menu bar BECAUSE this
+ * function moved it, so a two-axis test would flip back and forth every frame).
+ * Horizontal separation is decided by widths this function does not control,
+ * which is what makes it a stable input.
+ *
+ * ## Degrading
+ *
+ * `menu` is null when the menu bar is absent, and a zero-width rect (`left ===
+ * right`) is what an unlaid-out or hidden element measures as. Both fall back to
+ * the static clearance rather than to the top: overlapping the menu bar is the
+ * failure that makes controls unclickable, and this is the arm that cannot cause
+ * it.
+ */
+export function overlayTop(bar: Rect, menu: Rect | null): number {
+  if (menu === null) return MENU_BAR_CLEARANCE;
+  // An unmeasured rect. Not `bar`, which is allowed to be zero-width on the
+  // very first frame -- a bar with no width overlaps nothing, and the next
+  // frame corrects it.
+  if (menu.right <= menu.left) return MENU_BAR_CLEARANCE;
+  // STRICT INEQUALITIES, so edges that merely touch are not an overlap: a bar
+  // starting at exactly the menu bar's right edge clears it.
+  const overlaps = bar.left < menu.right && menu.left < bar.right;
+  if (!overlaps) return TOP_MARGIN_PX;
+  return Math.round(menu.bottom) + MENU_BAR_GAP_PX;
+}
 
 const ROOT_CSS =
   `position:fixed;top:${MENU_BAR_CLEARANCE}px;left:50%;transform:translateX(-50%);` +
