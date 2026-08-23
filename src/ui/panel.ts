@@ -860,6 +860,10 @@ export class Panel {
       status: () => this.bus.status(),
       advanced: this.tierOf(field),
       advancedFor: (f: ViewPrefField) => this.tierOf(f),
+      // Read by `addInput` alone, so that a typed value survives the keyboard
+      // being dismissed -- on a phone there is often no Enter key to commit
+      // with. See `controls.ts`.
+      mobile: this.mobile,
       requestRebuild: () => {
         // Deferred: disposing a pane from inside its own event handler reenters
         // Tweakpane's own teardown. A microtask is enough.

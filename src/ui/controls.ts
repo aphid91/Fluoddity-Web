@@ -111,6 +111,15 @@ export interface ControlContext {
    * goes through here.
    */
   readonly status: () => Status;
+  /**
+   * Whether this panel was built for touch. Defaults to false.
+   *
+   * ONE CONTROL READS IT TODAY: `addInput`, where leaving the field commits on
+   * touch instead of discarding. See the reasoning there -- a phone's numeric
+   * keyboard frequently has no Enter key to commit with, and dismissing the
+   * keyboard is not a cancel gesture.
+   */
+  readonly mobile?: boolean;
 }
 
 /**
@@ -480,15 +489,20 @@ function addInput(
 
   const field = (blade.element as HTMLElement).querySelector('input');
   if (field !== null) {
-    field.addEventListener('keydown', (ev) => {
-      if ((ev as KeyboardEvent).key !== 'Enter') return;
+    /**
+     * Take what is typed, or put the live value back if it will not parse.
+     *
+     * Extracted when the second caller arrived (see `commitOnBlur` below), and
+     * returns whether it committed so the blur path can tell the two apart.
+     */
+    const commit = (): boolean => {
       const parsed = parseInput(setting, field.value);
       if (parsed === null) {
         // Reject silently by restoring the live value: a typo must not reset
         // the simulation.
         text.value = formatCompact(live);
         field.value = text.value;
-        return;
+        return false;
       }
       text.value = formatCompact(parsed);
       field.value = text.value;
@@ -502,11 +516,47 @@ function addInput(
       // silent rejection above.
       live = parsed;
       ctx.send({ kind: 'editSetting', setting, value: parsed });
+      return true;
+    };
+
+    field.addEventListener('keydown', (ev) => {
+      if ((ev as KeyboardEvent).key !== 'Enter') return;
+      commit();
     });
 
-    // Leaving the field without committing discards the edit, for the same
-    // reason: the commit gesture is Enter, and anything else is an abandonment.
+    // =====================================================================
+    // ON TOUCH, LEAVING THE FIELD **COMMITS** RATHER THAN DISCARDING
+    // =====================================================================
+    //
+    // On a desktop the commit gesture is Enter and anything else is an
+    // abandonment, which is a real distinction: the keyboard is always there,
+    // Enter costs nothing, and clicking away to cancel an edit is a gesture
+    // people expect to work.
+    //
+    // A phone has neither half of that. The on-screen keyboard's action key is
+    // labelled Go/Done/Search depending on the platform and the `inputmode`,
+    // and for `inputmode=decimal` -- which is what a numeric field asks for --
+    // several keyboards show a plain decimal pad with NO action key at all. So
+    // there is frequently no way to produce the `Enter` this listener waits
+    // for. And "click away" is not a deliberate cancel on a phone; it is how
+    // the keyboard gets dismissed, which is a thing users do constantly.
+    //
+    // Together those made World Size and Canvas Aspect impossible to change on
+    // a phone: every edit reverted the instant the keyboard closed, which is
+    // exactly the report this fixes.
+    //
+    // **THE DESKTOP KEEPS DISCARD-ON-BLUR**, unchanged. These two behaviours
+    // are genuinely right for their own input, and unifying them would take
+    // away a working cancel gesture from the desktop to fix a phone.
+    const commitOnBlur = ctx.mobile === true;
+
     field.addEventListener('blur', () => {
+      if (commitOnBlur) {
+        // `commit` restores the live value itself when the text will not parse,
+        // so an abandoned or garbled edit still ends up showing the truth.
+        commit();
+        return;
+      }
       text.value = formatCompact(live);
       field.value = text.value;
     });
