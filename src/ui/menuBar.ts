@@ -177,6 +177,23 @@ export class MenuBar {
   private hoveredConfig: ConfigRow | null = null;
   private hoveredCheckpoint: number | null = null;
 
+  /**
+   * Touch only: the config tapped for preview but not yet committed.
+   *
+   * Two fields for one fact because both forms are needed and neither derives
+   * cheaply from the other: the KEY compares against the next tap (is this the
+   * same row again?) and the ROW carries the category and name the commit
+   * sends. Cleared together, always.
+   *
+   * `null` means nothing has been tapped this visit, so closing the menu commits
+   * nothing and leaves the project where it was.
+   */
+  private pendingTouchPreview: string | null = null;
+  private pendingTouchRow: ConfigRow | null = null;
+
+  /** Whether this bar was built for touch. See the tap-preview in `browserRow`. */
+  private readonly mobile: boolean;
+
   private readonly loadPreview: PreviewSession<ConfigRow, string>;
   private readonly checkpointPreview: PreviewSession<number, number>;
 
@@ -266,7 +283,8 @@ export class MenuBar {
     // rather than hover -- which matters more here than anywhere else, because
     // a synthesized `mouseenter` fires on every menu row a finger touches on its
     // way to the one it wants. See `tooltip.ts`.
-    this.tooltip = new Tooltip(document.body, opts.mobile ?? false);
+    this.mobile = opts.mobile ?? false;
+    this.tooltip = new Tooltip(document.body, this.mobile);
 
     // Each surface has its OWN session, so browsing one cannot clobber the
     // other's snapshot. The `surface` token on the commands is what carries that
@@ -299,9 +317,46 @@ export class MenuBar {
     this.build();
 
     // Clicking anywhere else closes the open menu, the way a real menu bar does.
-    document.addEventListener('pointerdown', (ev) => {
-      if (!this.root.contains(ev.target as Node)) this.closeMenus();
-    });
+    //
+    // =====================================================================
+    // THE DISMISSING PRESS MUST NOT ALSO REACH THE CANVAS
+    // =====================================================================
+    //
+    // On a mouse this was already true by accident: the app binds `pointerdown`
+    // on the canvas, so a click on the canvas to dismiss a menu DOES select a
+    // particle -- which is a real wart, but a mouse user aims precisely and can
+    // dismiss by clicking the menu title again instead.
+    //
+    // On touch it is not a wart, it is a trap. The menus cover a large share of
+    // a 390px screen, "somewhere else" is almost always the canvas, and the
+    // stray gesture is not a harmless click: in Draw it paints a stroke, and in
+    // Select it re-aims the cohort. Closing a menu must not edit the project.
+    //
+    // **CAPTURE PHASE, AND `stopPropagation` ON THE WAY DOWN.** The canvas
+    // listeners are on the canvas itself and on `window` at the BUBBLE phase, so
+    // a capture-phase listener on `document` runs strictly before all of them
+    // and can take the event out of play. Doing this at the bubble phase would
+    // be too late -- the canvas would already have handled it.
+    //
+    // ONLY WHEN A MENU IS ACTUALLY OPEN, which is what keeps this from being a
+    // document-wide input filter. With nothing open the branch falls through and
+    // every press behaves exactly as it did before this existed.
+    document.addEventListener(
+      'pointerdown',
+      (ev) => {
+        if (this.openMenu === null) return;
+        if (this.root.contains(ev.target as Node)) return;
+        this.closeMenus();
+        // The press has done its job -- it dismissed the menu. Letting it
+        // continue would spend the same gesture twice.
+        ev.stopPropagation();
+        // `preventDefault` too, so the browser does not synthesize the
+        // `mousedown`/`click` pair that would otherwise follow this touch and
+        // arrive at the canvas after the fact.
+        ev.preventDefault();
+      },
+      { capture: true },
+    );
   }
 
   // -- structure ------------------------------------------------------------
@@ -884,6 +939,47 @@ export class MenuBar {
         const element = this.browserRow(
           name,
           () => {
+            // =============================================================
+            // TOUCH: A TAP PREVIEWS. CLOSING THE MENU COMMITS.
+            // =============================================================
+            //
+            // Hover-preview has no touch equivalent -- there is no "hover
+            // none", so there is nothing to restore ON, and a finger cannot
+            // audition a row without also choosing it. Rather than drop the
+            // feature on touch, the two gestures are re-split: TAPPING a row
+            // previews it (exactly the same `previewConfig` the mouse uses,
+            // so it costs no history), and the menu CLOSING is what commits
+            // whatever was last tapped.
+            //
+            // What that gives up is "unhover to restore": once a row has been
+            // tapped there is no way back to the original inside the menu.
+            // What it costs to recover is ONE undo, because the whole browse
+            // produces a single history entry at the commit -- which is the
+            // trade the user asked for, and a good one: browsing twenty
+            // presets on a phone leaves the stack exactly one deep.
+            //
+            // Tapping the SAME row twice is a deliberate second gesture on a
+            // row already previewed, so it means "yes, this one" and closes.
+            if (this.mobile) {
+              if (this.pendingTouchPreview === configKey(row)) {
+                // Second tap on the row already showing: commit and close.
+                // `closeMenus` performs the commit -- see `setOpenMenu`.
+                this.closeMenus();
+                return;
+              }
+              this.pendingTouchPreview = configKey(row);
+              this.pendingTouchRow = row;
+              // The SAME preview command the hover path sends, so this stays
+              // off the undo stack while browsing.
+              this.opts.send({
+                kind: 'previewConfig',
+                category,
+                name,
+                surface: 'load',
+              });
+              return;
+            }
+
             // Commit: drop the snapshot so closing does not undo this.
             this.loadPreview.commit(configKey(row));
             this.opts.send({ kind: 'loadConfig', category, name });
@@ -1093,6 +1189,26 @@ export class MenuBar {
     // menu closed while the cursor sat on a row never receives that row's
     // `mouseleave`, so reopening would otherwise re-preview a stale entry.
     if (title !== 'File') {
+      // **TOUCH: CLOSING IS THE COMMIT.** The tap that previewed a row left it
+      // applied but unrecorded (`previewConfig` touches no history), so this is
+      // where the browse turns into one real load and one undo entry. It runs
+      // BEFORE `loadPreview.end()` deliberately -- `end` would restore the
+      // snapshot and undo the very config being committed.
+      //
+      // Cleared before the send, not after: `loadConfig` can rebuild and
+      // re-enter, and a pending row left set through that would commit twice.
+      const pending = this.pendingTouchRow;
+      this.pendingTouchPreview = null;
+      this.pendingTouchRow = null;
+      if (pending !== null) {
+        this.loadPreview.commit(configKey(pending));
+        this.opts.send({
+          kind: 'loadConfig',
+          category: pending.category,
+          name: pending.name,
+        });
+      }
+
       this.hoveredConfig = null;
       this.loadPreview.end();
       // RE-FOLD THE ARCHIVE as File closes, so the next visit starts folded
@@ -1142,7 +1258,20 @@ export class MenuBar {
     for (const check of this.checks) check();
 
     // NOT cleared afterwards -- see `hoveredConfig`. `mouseleave` clears it.
-    this.loadPreview.sync(this.hoveredConfig);
+    //
+    // **SKIPPED ENTIRELY ON TOUCH, and it has to be.** `hoveredConfig` is only
+    // ever written by `mouseenter`/`mouseleave`, which a finger does not
+    // meaningfully produce -- so on touch it is permanently null, and
+    // `sync(null)` means "nothing is hovered, restore the snapshot". That would
+    // undo the tap-preview on the very next frame, every frame, and the tapped
+    // config would flash and vanish.
+    //
+    // The touch path drives previews from the tap handler instead
+    // (`browserRow`), so there is nothing for the per-frame reconciler to do.
+    // The checkpoint list keeps hover on both layouts -- it has no tap-preview,
+    // and passing null there is honest rather than destructive, since nothing
+    // has been applied.
+    if (!this.mobile) this.loadPreview.sync(this.hoveredConfig);
     this.checkpointPreview.sync(this.hoveredCheckpoint);
   }
 
