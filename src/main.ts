@@ -37,6 +37,7 @@ import { MAX_PROBES as AUTO_PROBES } from './perf/rateSearch.ts';
 import { ALWAYS_CALIBRATE } from './orchestrator/featureFlags.ts';
 import { bindInput } from './ui/inputBinding.ts';
 import { LEFT_BUTTON } from './ui/inputTracker.ts';
+import { loadPreferences } from './prefs/preferences.ts';
 import { detectMobile, mobileModeFromValue, resolveMobile } from './ui/mobile.ts';
 import { bindTouch } from './ui/touchBinding.ts';
 import { Panel } from './ui/panel.ts';
@@ -136,6 +137,44 @@ async function start(): Promise<void> {
     console.warn(`Ignoring the share link in the URL: ${shareLinkError}`);
   }
 
+  // --- the layout ------------------------------------------------------------
+  //
+  // **RESOLVED ONCE, HERE, AND HANDED DOWN.** Every object that differs on touch
+  // takes this as a constructor argument; nothing re-reads `matchMedia` and
+  // nothing listens for a resize. The layout is BUILT from this rather than
+  // styled by it -- panels mount a different number of containers, the bar
+  // builds different rows -- so re-deciding mid-session would mean tearing all
+  // of that down and rebuilding it, in response to a phone being rotated or a
+  // URL bar collapsing. See `ui/mobile.ts`.
+  //
+  // **BEFORE THE ORCHESTRATOR, WHICH IS WHY THE PREFERENCE IS READ DIRECTLY.**
+  // `Orchestrator.create` needs the flag -- it decides whether a pick can commit
+  // (`CohortHighlight`) -- so this cannot wait for `orchestrator.preferences`.
+  // `loadPreferences` is synchronous and side-effect free, and the Orchestrator
+  // calls it too; reading it twice is cheaper than either threading the value in
+  // or deferring the decision.
+  //
+  // `?mobile=1` / `?mobile=0` OVERRIDES BOTH, and exists for the reason every
+  // other query parameter in this file does: `browserCheck.mjs` drives the page
+  // by URL, and the touch layout is otherwise unreachable from an automated run.
+  // It beats the preference because it is the more explicit request -- someone
+  // typing it has said what they want about THIS load.
+  const mobileParam = params.get('mobile');
+  const mobile =
+    mobileParam === '1' || mobileParam === '0'
+      ? mobileParam === '1'
+      : resolveMobile(
+          mobileModeFromValue(loadPreferences().mobileMode),
+          detectMobile(),
+        );
+
+  // ON <html>, NOT <body>, and set before any UI is constructed. The CSS in
+  // `index.html` hangs the touch-only rules off this class, so a desktop session
+  // never matches any of them -- which is what keeps the desktop layout
+  // untouched by construction rather than by review. `<html>` because the
+  // `height:100dvh` rule and the selection suppression both target it.
+  if (mobile) document.documentElement.classList.add('fluoddity-touch');
+
   const orchestrator = await Orchestrator.create({
     device,
     surface,
@@ -144,6 +183,8 @@ async function start(): Promise<void> {
     // preset without synthesizing a click on a panel button.
     ...(params.has('preset') ? { presetName: params.get('preset') ?? undefined } : {}),
     ...(openWith !== undefined ? { openWith } : {}),
+    // Governs ONE rule in there: whether a pick commits or only re-aims.
+    mobile,
   });
 
   // --- startup camera overrides ---------------------------------------------
@@ -198,37 +239,6 @@ async function start(): Promise<void> {
         `canvas=${d.canvasSize.join('x')} physicsSteps=${d.physicsSteps}`,
     );
   }
-
-  // --- the layout ------------------------------------------------------------
-  //
-  // **RESOLVED ONCE, HERE, AND HANDED DOWN.** Every UI object that differs on
-  // touch takes this as a constructor argument; nothing re-reads `matchMedia`
-  // and nothing listens for a resize. The layout is BUILT from this rather than
-  // styled by it -- panels mount a different number of containers, the bar
-  // builds different rows -- so re-deciding mid-session would mean tearing all
-  // of that down and rebuilding it, in response to a phone being rotated or a
-  // URL bar collapsing. See `ui/mobile.ts`.
-  //
-  // `?mobile=1` / `?mobile=0` OVERRIDES BOTH, and exists for the reason every
-  // other query parameter in this file does: `browserCheck.mjs` drives the page
-  // by URL, and screenshotting the touch layout is otherwise unreachable from an
-  // automated run. It beats the preference because it is the more explicit
-  // request -- someone typing it has said what they want about THIS load.
-  const mobileParam = params.get('mobile');
-  const mobile =
-    mobileParam === '1' || mobileParam === '0'
-      ? mobileParam === '1'
-      : resolveMobile(
-          mobileModeFromValue(orchestrator.preferences.mobileMode),
-          detectMobile(),
-        );
-
-  // ON <html>, NOT <body>, and set before any UI is constructed. The CSS in
-  // `index.html` hangs the touch-only rules off this class, so a desktop session
-  // never matches any of them -- which is what keeps the desktop layout
-  // untouched by construction rather than by review. `<html>` because the
-  // `height:100dvh` rule and the selection suppression both target it.
-  if (mobile) document.documentElement.classList.add('fluoddity-touch');
 
   // --- the UI ---------------------------------------------------------------
   // `?nopanel` suppresses it. `browserCheck.mjs` takes screenshots for the

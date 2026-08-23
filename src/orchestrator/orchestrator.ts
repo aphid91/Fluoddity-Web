@@ -150,6 +150,19 @@ export interface OrchestratorOptions {
   /** Overridden by tests and by `?prefs=default`; normally `localStorage`. */
   readonly preferences?: Preferences;
   /**
+   * Whether input comes from a finger. Defaults to false.
+   *
+   * **THE ONLY THING THE SIMULATION SIDE KNOWS ABOUT THE TOUCH LAYOUT**, and it
+   * governs exactly one rule: whether a pick inside the lit cohort commits or
+   * merely re-aims (`CohortHighlight`). Everything else about touch is a UI
+   * concern and stays in `ui/`.
+   *
+   * It is here rather than in the UI because the rule belongs to the selection
+   * state machine, which the Orchestrator owns -- and putting it anywhere else
+   * would mean the UI reaching in to change how a pick is interpreted.
+   */
+  readonly mobile?: boolean;
+  /**
    * Open with this project instead of one from the catalog. For the share link.
    *
    * INJECTED HERE RATHER THAN LOADED AFTERWARDS, and the alternative is worse in
@@ -310,8 +323,16 @@ export class Orchestrator implements CommandBus {
   // out. See `selection/cohortHighlight.ts` for the three outcomes, and
   // `frame()` for where the transition is applied.
 
-  /** Which cohort is lit, and what each landed pick does to it. */
-  private readonly highlight = new CohortHighlight();
+  /**
+   * Which cohort is lit, and what each landed pick does to it.
+   *
+   * **CONSTRUCTED WITH `!mobile`**, so on touch a pick can only ever re-aim and
+   * the commit lives on the gold hint-bar button instead. A fingertip landing on
+   * a member of the already-lit cohort is a near miss rather than a
+   * confirmation, and under the desktop rule that near miss silently adopts a
+   * rule and resets the simulation. See `CohortHighlight.canCommit`.
+   */
+  private readonly highlight: CohortHighlight;
 
   /**
    * Whether the pick being resolved RIGHT NOW is a commit.
@@ -394,6 +415,7 @@ export class Orchestrator implements CommandBus {
     catalog: PresetCatalog;
     presetName: string;
     configOrigin: { readonly category: string; readonly name: string } | null;
+    mobile: boolean;
   }) {
     this.device = opts.device;
     this.surface = opts.surface;
@@ -409,6 +431,11 @@ export class Orchestrator implements CommandBus {
     this.presetName = opts.presetName;
     this.configOrigin = opts.configOrigin;
     this.presetIndex = Math.max(0, this.catalog.order.indexOf(opts.presetName));
+
+    // NOT a field initializer, because it depends on an option. On touch the
+    // commit is withheld and moves to the hint bar's gold button -- see the
+    // field's own comment.
+    this.highlight = new CohortHighlight(!opts.mobile);
 
     this.history.seed(this.project);
     this.selection = new SelectionController(this.selectionHost());
@@ -518,6 +545,7 @@ export class Orchestrator implements CommandBus {
       catalog,
       presetName,
       configOrigin,
+      mobile: opts.mobile ?? false,
     });
     // No camera is applied from the startup preset -- the view starts where the
     // camera's own defaults put it. See the note above `adoptPreset`.

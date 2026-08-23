@@ -680,7 +680,8 @@ export class MutationOverlay {
     // it, and the arrows are the affordance being asked for here. `inputMode`
     // still brings up a numeric keypad on a touch device.
     this.cohortInput.inputMode = 'numeric';
-    this.cohortInput.style.cssText = COHORT_INPUT_CSS;
+    this.cohortInput.style.cssText =
+      opts.mobile === true ? TOUCH_COHORT_INPUT_CSS : COHORT_INPUT_CSS;
     this.cohortInput.dataset['setting'] = 'transport.cohort';
     this.cohortInput.setAttribute('aria-label', 'Highlighted cohort');
 
@@ -1538,7 +1539,7 @@ export class MutationOverlay {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = glyph;
-    button.style.cssText = STEP_BUTTON_CSS;
+    button.style.cssText = this.mobile ? TOUCH_STEP_BUTTON_CSS : STEP_BUTTON_CSS;
     // The glyph is a chevron, which a screen reader reads as punctuation or not
     // at all -- so the name has to be stated.
     button.setAttribute('aria-label', label);
@@ -2448,6 +2449,37 @@ const COHORT_INPUT_CSS =
   'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
   'border-radius:3px;color:#e8e8ea;font:11px ui-monospace,monospace;' +
   'width:2.6em;height:16px;padding:0 2px;text-align:center;box-sizing:border-box;';
+
+// =========================================================================
+// TOUCH: the stepper, at finger size
+// =========================================================================
+//
+// **KEPT, NOT DROPPED, AND THAT WAS A DECISION.** The plan was to hide the
+// stepper along with the "Currently selected cohort:" label, to buy width. The
+// label goes; the stepper stays, because on touch it is the ONLY way to correct
+// a mis-aimed selection without tapping a particle again -- and tapping a
+// particle precisely is exactly what a fingertip is bad at. Dropping it would
+// mean the one recovery path from a bad aim is the gesture that produced it.
+//
+// What buys the width instead is the LABEL. "Currently selected cohort:" is
+// ~180px of a 390px row saying something the lit cohort already shows; the
+// compact `‹ 3 ›` says it in 110px and stays operable.
+//
+// 36px rather than the 44px the buttons use: these two sit inside a row that
+// also carries a full-width button, they are a nudge rather than a commit, and
+// the cost of a mis-tap is one step in a wrapping cycle. Still more than double
+// the desktop's 16px.
+const TOUCH_STEP_BUTTON_CSS =
+  'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
+  'border-radius:6px;color:#e8e8ea;font:18px system-ui,sans-serif;line-height:1;' +
+  'padding:0;width:36px;height:36px;cursor:pointer;display:flex;' +
+  'align-items:center;justify-content:center;flex:none;';
+
+const TOUCH_COHORT_INPUT_CSS =
+  'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
+  'border-radius:6px;color:#e8e8ea;font:14px ui-monospace,monospace;' +
+  'width:3em;height:36px;padding:0 2px;text-align:center;box-sizing:border-box;' +
+  'flex:none;';
 
 // Wide enough to be worth having left the pane for, capped so it does not run
 // under either panel on a narrow window.

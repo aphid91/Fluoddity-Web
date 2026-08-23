@@ -101,6 +101,48 @@ export type ClickOutcome = 'commit' | 'highlight' | 'unhighlight';
 export class CohortHighlight {
   private highlighted: number = NO_COHORT;
 
+  /**
+   * Whether a pick can ever COMMIT, or only ever re-aim.
+   *
+   * =====================================================================
+   * FALSE ON TOUCH, AND IT IS THE POINT OF THIS FLAG
+   * =====================================================================
+   *
+   * On a mouse, "click again inside the cohort to commit" is a good
+   * confirmation: the pointer is precise, the first click showed you what the
+   * second would take, and clicking the same scattered cohort twice is a
+   * deliberate act.
+   *
+   * A fingertip is about 10mm across and the particles are a few pixels. Tapping
+   * to aim at a cohort and landing on a MEMBER OF THE ONE ALREADY LIT is not a
+   * confirmation there -- it is a near miss, and under the two-stage rule a near
+   * miss silently adopts a rule, resets the simulation and pushes an undo entry.
+   * The user asked to look at a different cohort and got a committed edit.
+   *
+   * So on touch every pick re-aims, and the commit moves to the gold hint-bar
+   * button -- a 44px target that says what it will do. That makes the two stages
+   * "aim with the canvas" and "confirm with the button" rather than two taps on
+   * the same small target, which is the distinction a finger can actually make.
+   *
+   * **NOT THE SAME AS `oneClickSelection`, and close enough to be worth saying
+   * so.** That preference turns the highlight OFF and makes the first click
+   * adopt immediately -- fewer clicks, no aiming. This keeps the highlight and
+   * removes the commit, which is the opposite trade: more deliberate, not less.
+   * The two are independent, and on touch the preference still does what it says.
+   */
+  private readonly canCommit: boolean;
+
+  /**
+   * @param canCommit false to make every pick re-aim. See the field.
+   *
+   * DEFAULTS TO TRUE, so the desktop behaviour and every existing test are
+   * exactly what they were -- this class is constructed with no arguments
+   * everywhere except the one touch call site.
+   */
+  constructor(canCommit = true) {
+    this.canCommit = canCommit;
+  }
+
   /** The highlighted cohort, or `NO_COHORT`. */
   get cohort(): number {
     return this.highlighted;
@@ -126,7 +168,13 @@ export class CohortHighlight {
     // THE COMMIT: a hit inside the cohort the user was already shown. Note this
     // is a COHORT test, not an entity test -- any member confirms, which is what
     // makes the scattered highlight a usable target.
-    if (this.isHighlighted && sample.cohort === this.highlighted) return 'commit';
+    //
+    // WITHHELD WHEN `canCommit` IS FALSE, where this same pick falls through to
+    // `'highlight'` and merely re-aims at the cohort it is already on -- a
+    // no-op, which is exactly right for a fingertip that missed. See the field.
+    if (this.canCommit && this.isHighlighted && sample.cohort === this.highlighted) {
+      return 'commit';
+    }
     // A hit on anything else aims at it, replacing whatever was lit.
     return 'highlight';
   }

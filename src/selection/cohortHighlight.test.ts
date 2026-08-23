@@ -272,3 +272,69 @@ test('wrapCohort refuses a non-positive count or a non-finite cohort', () => {
   assert.equal(wrapCohort(Number.NaN, 8), NO_COHORT);
   assert.equal(wrapCohort(Number.POSITIVE_INFINITY, 8), NO_COHORT);
 });
+
+// ---------------------------------------------------------------------------
+// The touch commit rule
+//
+// WHY THESE EXIST. On a mouse, "click again inside the lit cohort" is a good
+// confirmation. On a fingertip -- ~10mm against particles a few pixels wide --
+// landing on a member of the cohort already lit is a NEAR MISS, and under the
+// desktop rule a near miss silently adopts a rule, resets the simulation and
+// pushes an undo entry. The user asked to look at another cohort and got a
+// committed edit.
+//
+// The failure is invisible from a desktop and expensive on a phone, which is
+// exactly the shape of thing that needs pinning here rather than by hand.
+// ---------------------------------------------------------------------------
+
+test('with commits disabled, a pick inside the lit cohort RE-AIMS instead', () => {
+  // THE ASSERTION THIS FLAG EXISTS FOR.
+  const h = new CohortHighlight(false);
+  h.apply({ index: 5, cohort: 3 });
+  assert.equal(h.cohort, 3, 'the first pick still aims');
+
+  assert.equal(
+    h.apply({ index: 9, cohort: 3 }),
+    'highlight',
+    'a second pick in the same cohort must not commit on touch',
+  );
+  assert.equal(h.cohort, 3, 'and the cohort stays lit, ready for the button');
+});
+
+test('the default still commits, so the desktop is untouched', () => {
+  // The flag defaults to true and every existing call site omits it. If this
+  // ever fails, the touch rule has leaked into the mouse path.
+  const h = new CohortHighlight();
+  h.apply({ index: 5, cohort: 3 });
+  assert.equal(h.apply({ index: 9, cohort: 3 }), 'commit');
+  assert.equal(h.cohort, NO_COHORT, 'a commit puts the highlight out');
+});
+
+test('with commits disabled, aiming at a DIFFERENT cohort still works', () => {
+  // The flag must remove only the commit. If it disabled re-aiming too, the
+  // highlight would stick on the first cohort tapped and the stepper would be
+  // the only way to move it.
+  const h = new CohortHighlight(false);
+  h.apply({ index: 5, cohort: 3 });
+  assert.equal(h.apply({ index: 7, cohort: 6 }), 'highlight');
+  assert.equal(h.cohort, 6);
+});
+
+test('with commits disabled, a MISS still clears the highlight', () => {
+  // Tapping empty space is how an aim is cancelled, and that is unrelated to
+  // committing -- withholding it would leave a cohort lit with no way to put it
+  // out but the context button.
+  const h = new CohortHighlight(false);
+  h.apply({ index: 5, cohort: 3 });
+  assert.equal(h.apply({ index: -1, cohort: 0 }), 'unhighlight');
+  assert.equal(h.cohort, NO_COHORT);
+});
+
+test('classify agrees with apply about the withheld commit', () => {
+  // The Orchestrator calls `classify` BEFORE `apply` to decide whether a commit
+  // is refused (the mutation-scale-zero path). The two disagreeing would mean a
+  // pick classified one way and applied another.
+  const h = new CohortHighlight(false);
+  h.apply({ index: 5, cohort: 3 });
+  assert.equal(h.classify({ index: 9, cohort: 3 }), 'highlight');
+});
