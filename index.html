@@ -5,7 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- Favicon paths are RELATIVE, matching `base: './'` in vite.config.ts:
          GitHub Pages serves this app from a subpath, so a leading-slash href
-         would resolve against the domain root and 404. -->
+         would resolve against the domain root and 404.
+
+         The manifest deliberately omits `display`. With it, mobile Chrome
+         meets its installability bar and nags with an "Install Fluoddity"
+         banner. Favicon generators emit `"display": "standalone"` by default,
+         so drop it again after any regeneration. -->
     <link rel="icon" type="image/png" href="./favicon-96x96.png" sizes="96x96" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link rel="shortcut icon" href="./favicon.ico" />
