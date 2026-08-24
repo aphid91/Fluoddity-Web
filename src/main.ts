@@ -867,6 +867,38 @@ async function start(): Promise<void> {
   };
 
   requestAnimationFrame(frame);
+
+  // --- the unsaved-work guard -----------------------------------------------
+  //
+  // **BOTH LAYOUTS, and it matters more on touch.** A phone reloads a background
+  // tab on its own to reclaim memory, back-swipes are easy to trigger by
+  // accident, and there is no window to leave open -- so a session's work can
+  // vanish without the user having asked for anything. A desktop user is not
+  // immune either: Ctrl+R and a stray click on a link do the same.
+  //
+  // `canUndo` IS THE DIRTY FLAG, and it is the honest one available: the project
+  // has no `modified` bit, and history depth answers exactly the question this
+  // dialog is about -- has anything happened that would be lost. It is false on
+  // a fresh load and after undoing back to the start, so opening the app and
+  // closing it again never prompts.
+  //
+  // **THE BROWSER OWNS THE WORDING.** Every current browser ignores the string
+  // and shows its own ("Changes you made may not be saved" in Chrome, which is
+  // where that phrasing comes from) precisely so a page cannot write something
+  // coercive here. `returnValue` is still set because that is what marks the
+  // event as handled in the older API, and Safari has needed it most recently.
+  //
+  // NOT VIA `status()`, which DRAINS THE PENDING NOTICE -- see `Status.notice`.
+  // This fires outside the frame loop, so a notice consumed here would never
+  // reach the toast. `canUndoNow` is a narrow getter for the same reason
+  // `activeMouseMode` is.
+  window.addEventListener('beforeunload', (event) => {
+    if (!orchestrator.canUndoNow) return;
+    event.preventDefault();
+    // Legacy form. Assigning any non-empty string is what triggers the prompt in
+    // browsers predating `preventDefault` support here.
+    event.returnValue = '';
+  });
 }
 
 /** `#index (x, y) d=distance`, or `-`/`miss`. As `ui.py:385-391` renders it. */

@@ -2937,6 +2937,24 @@ export class Orchestrator implements CommandBus {
   }
 
   /**
+   * Whether anything has happened that an undo could take back.
+   *
+   * **THE CLOSEST THING TO A DIRTY FLAG THIS APP HAS**, and it answers the
+   * question the unload guard actually asks: is there work here that leaving
+   * would lose. A project carries no `modified` bit -- editing is continuous and
+   * every change is already an undo entry -- so history depth is the signal
+   * rather than a second one invented alongside it.
+   *
+   * A NARROW GETTER for the reason `activeMouseMode` is one: `status()` drains
+   * the pending notice, and `beforeunload` fires outside the frame loop, so
+   * reading the whole status there could eat a notice that never reaches the
+   * toast. See `Status.notice`.
+   */
+  get canUndoNow(): boolean {
+    return this.history.canUndo;
+  }
+
+  /**
    * World dimensions, which every screen-to-world conversion needs.
    *
    * Exposed for the touch gestures, whose pan and zoom both go through

@@ -1409,8 +1409,28 @@ export class MutationOverlay {
     const hasTouchButton = commit || generateChild || clearField;
     const keepLead = !suppressForTouch || (!hasTouchButton && !namesAMouseGesture);
 
-    this.hintLead.textContent = keepLead ? lead : '';
+    const leadText = keepLead ? lead : '';
+    this.hintLead.textContent = leadText;
     this.hintTail.textContent = suppressForTouch ? '' : tail;
+
+    // **AN EMPTY SPAN MUST NOT CLAIM A SHARE OF THE ROW.** Both text spans are
+    // `flex:1 1 0` on touch, so that a long sentence yields to the buttons
+    // rather than crushing them. The cost of a zero basis is that an EMPTY span
+    // still divides the free space equally with everything else: with a cohort
+    // lit, `hintFor` returns no lead and no tail, and the two blank spans were
+    // taking 46px each -- 92px of the 378px row -- while the gold and red
+    // buttons sat at 68px with visible gaps around them.
+    //
+    // `display:none` rather than a width of 0, because a zero-width flex item is
+    // still an item: it participates in the row's `gap`, so three of those would
+    // leave 12px of stray spacing that reads as a broken alignment.
+    //
+    // Restored as `inline` rather than `''` for the reason `refreshHint` spells
+    // out below: these carry their layout in an inline style, and `''` REMOVES
+    // the property rather than reverting it.
+    if (suppressForTouch) {
+      this.hintLead.style.display = leadText === '' ? 'none' : 'inline';
+    }
 
     // The label names EVERY route to the same act, which is the point of
     // replacing the prose: the button is one way, and it says what the other two
@@ -1512,7 +1532,15 @@ export class MutationOverlay {
     } else {
       this.stepper.style.display = stepping ? 'inline-flex' : 'none';
     }
-    this.hintTail.style.display = stepping ? 'inline' : 'none';
+    // GATED ON THE TEXT ON TOUCH, not on `stepping`. The tail is always empty
+    // there (`refreshHint` suppresses the mouse prose), so keying its visibility
+    // to the stepper meant it appeared as a blank `flex:1` item in exactly the
+    // lit state -- taking a full share of the row while showing nothing. See the
+    // empty-span note in `refreshHint`.
+    this.hintTail.style.display =
+      stepping && (!this.mobile || this.hintTail.textContent !== '')
+        ? 'inline'
+        : 'none';
   }
 
   /**
