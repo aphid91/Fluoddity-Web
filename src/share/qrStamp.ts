@@ -101,12 +101,45 @@ export interface StampOptions {
  * resize ratio tested; 2-4px fail selectively depending on where the phase
  * lands, which is the worst kind of failure because it looks like luck.
  *
- * A 646px stamp on a 1080-wide canvas is large, and that is the accepted trade:
- * the feature is "this image IS the project", and an unreadable stamp makes the
- * whole thing worthless while a big one merely makes it less pretty.
+ * A stamp this size on a 1080-wide canvas is large, and that is the accepted
+ * trade: the feature is "this image IS the project", and an unreadable stamp
+ * makes the whole thing worthless while a big one merely makes it less pretty.
+ * There is a limit to that argument, though, and the block below is where it
+ * bit -- a stamp can be too large to SELECT, at which point robustness has
+ * bought nothing.
+ */
+/**
+ * ## 4px RATHER THAN 6px, AND WHY THE SWEEP'S WINNER DID NOT SHIP
+ *
+ * The harness's favourite was 6px at ECC M -- the only setting that decoded
+ * as-is on every simulated platform. It is not the default, because a second
+ * measurement contradicted it: a 6px stamp is 646px square, which puts the
+ * minimum crop at 886px, and a 1280x720 browser window CANNOT PRODUCE a
+ * selection that large. The most robust stamp in the sweep was one most users
+ * could not make.
+ *
+ * 4px at ECC M is 436px, a 676px minimum, and it fits.
+ *
+ * IT IS NOT AS ROBUST, and the difference is measured rather than hand-waved:
+ * 4px FAILS the harness's `harsh 900 q60` case -- a downscale from 1080 to 900,
+ * a 0.83 ratio, which is squarely in the aliasing band -- where 6px survives it.
+ * It passes everything else, including both double-JPEG cases and the awkward
+ * 0.94 resample.
+ *
+ * So this is a real trade with a real cost, taken because the alternative is not
+ * a more robust feature but NO feature. The mitigation is the canvas: staying at
+ * or under 1080 wide is what keeps a platform from resizing at all, and the
+ * whole finding above is that an un-resized stamp is never in danger. The 900px
+ * case models a platform that resizes anyway.
+ *
+ * `modulePx` is a parameter precisely so this can be revisited once the
+ * real-upload results are in. If 4px turns out to fail somewhere real, the right
+ * answer is a SHORTER PAYLOAD -- see the base32 note on `buildQrMatrix`, which
+ * would cut the version and let the modules grow without growing the stamp --
+ * not a bigger stamp, which is the thing that was already unaffordable.
  */
 export const DEFAULT_STAMP: StampOptions = {
-  modulePx: 6,
+  modulePx: 4,
   ecc: 'M',
   quietModules: 4,
   padPx: 8,
@@ -190,20 +223,36 @@ export function buildQrMatrix(
 }
 
 /**
- * The smallest screenshot a stamp will fit inside, in device pixels.
+ * Headroom around the stamp in a minimum-sized crop, in device pixels.
  *
- * WHY A MULTIPLE RATHER THAN THE STAMP ITSELF. A stamp that fills its
- * screenshot is not a screenshot, and -- more practically -- a crop barely
- * larger than the stamp gives the drag rectangle no room to be a picture of
- * anything. The factor is the smallest that leaves the artwork legible beside
- * the code.
+ * ## WHY THIS IS AN ADDITION AND NOT A MULTIPLE
+ *
+ * It was `sizePx * 2`, and that was unusable. The reasoning sounded right -- a
+ * stamp should not fill its own screenshot -- but a 646px stamp then demanded a
+ * 1292x1292 crop, which is TALLER THAN A 1080p SCREEN. On an ordinary display
+ * there was no drag the user could make that satisfied it, so the feature could
+ * not be operated at all. The multiple compounded the very thing that was
+ * already large.
+ *
+ * An addition does not compound. The minimum is the stamp plus enough room for
+ * the picture to be a picture, which is a FIXED amount of artwork rather than a
+ * proportion of a number that is itself in flux. 240px is roughly a thumbnail's
+ * worth on each axis -- visibly a screenshot with a code in the corner, not a
+ * code with a border.
+ *
+ * The lesson generalizes and is worth stating: anything derived from `sizePx` by
+ * multiplication inherits its growth, and `sizePx` grows with the payload. A
+ * two-config project would have demanded a 1724px crop under the old rule.
+ */
+export const MIN_CROP_HEADROOM = 240;
+
+/**
+ * The smallest screenshot a stamp will fit inside, in device pixels.
  *
  * This is what the drag overlay clamps against, so it is exported rather than
  * recomputed there: the minimum and the stamp it exists for must come from one
  * calculation or they will drift apart the moment a default changes.
  */
-export const MIN_CROP_FACTOR = 2;
-
 export function minimumCropSize(matrix: QrMatrix): number {
-  return Math.ceil(matrix.sizePx * MIN_CROP_FACTOR);
+  return matrix.sizePx + MIN_CROP_HEADROOM;
 }

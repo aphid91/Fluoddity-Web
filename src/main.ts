@@ -275,6 +275,10 @@ async function start(): Promise<void> {
     ? null
     : new Panel({
         bus: orchestrator,
+        // What a share image is captured from. The element this file already
+        // holds, rather than one the panel looks up for itself -- see
+        // `PanelOptions.canvas`.
+        canvas,
         showSplash: firstVisit && !params.has('nosplash'),
         // THE APP OPENS ON THE PICTURE. The panels are two 320px columns of
         // controls over a piece whose whole point is being looked at, and the
@@ -898,6 +902,44 @@ async function start(): Promise<void> {
     // Legacy form. Assigning any non-empty string is what triggers the prompt in
     // browsers predating `preventDefault` support here.
     event.returnValue = '';
+  });
+
+  // --- native paste ---------------------------------------------------------
+  //
+  // **Ctrl+V MEANS "LOAD WHAT I COPIED".** `Shift+V` exists and is documented,
+  // but someone who has just copied a stamped screenshot off a timeline has no
+  // reason to guess that this app wants a special key -- so the ordinary gesture
+  // has to work, for both an image and a URL.
+  //
+  // THE EVENT IS USED RATHER THAN THE CLIPBOARD API, and that is the whole
+  // reason this is a listener instead of another hotkey. A `paste` event carries
+  // its data with it: no `clipboard-read` permission prompt, and it works on
+  // Firefox, where `navigator.clipboard.read` does not exist for page script at
+  // all. The menu items still go through the API because they have no event.
+  //
+  // ## IT MUST NOT STEAL A PASTE MEANT FOR A TEXT FIELD
+  //
+  // The project-name box, the notes field and every Tweakpane input are real
+  // paste targets, and hijacking them would be invisible to the user -- they
+  // would press Ctrl+V and simply get nothing, with no way to see what took it.
+  // So an editable target is left entirely alone, and `handlePasteEvent` further
+  // declines anything that is not ours (see its header).
+  window.addEventListener('paste', (event: ClipboardEvent) => {
+    if (panel === null) return;
+    const target = event.target;
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    ) {
+      return;
+    }
+    // NOT AWAITED, and `preventDefault` is NOT called up front. Whether this
+    // event is ours cannot be known without decoding, which is asynchronous --
+    // so the default is left in place and the handler simply does nothing when
+    // the paste turns out to belong to someone else. There is no default action
+    // on the document here to suppress anyway.
+    void panel.handlePasteEvent(event);
   });
 }
 

@@ -73,6 +73,15 @@ export interface MenuBarOptions {
    */
   readonly onPasteShareLink: () => void;
   /**
+   * Crop a region of the canvas and copy it with the project stamped into it.
+   *
+   * The ellipsis on the menu row is load-bearing: this one does not act on
+   * click, it opens a drag gesture, and the row has to say so.
+   */
+  readonly onCopyShareImage: () => void;
+  /** Load a project from a stamped image on the clipboard. Its inverse. */
+  readonly onPasteShareImage: () => void;
+  /**
    * Write every user save into a folder the user picks. Owned by the panel.
    *
    * MUST REACH THE FOLDER PICKER WITHOUT AWAITING FIRST -- see
@@ -416,6 +425,20 @@ export class MenuBar {
         },
         localHotkeyLabel('pasteShareLink'),
       );
+      // THE IMAGE PAIR, kept adjacent to the link pair rather than in a section
+      // of its own. They are the same two verbs -- put this project somewhere,
+      // take one from somewhere -- differing only in what the project is wrapped
+      // in, and a user looking for either is looking under Share for a row that
+      // says copy or load.
+      this.addSeparator(body);
+      this.addItem(body, 'Copy Screenshot with QR Code…', () => {
+        this.closeMenus();
+        this.opts.onCopyShareImage();
+      });
+      this.addItem(body, 'Load Project from Clipboard Image', () => {
+        this.closeMenus();
+        this.opts.onPasteShareImage();
+      });
       // UNDER SHARE, with a separator. The two rows above put a project in
       // someone else's hands as a link; this puts it in their hands as a video.
       // That is the same intent -- getting the work OUT -- and a different

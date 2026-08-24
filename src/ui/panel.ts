@@ -111,6 +111,25 @@ import {
   buildShareUrl,
   decodeShareText,
 } from '../config/shareLink.ts';
+import type { RgbaImage } from '../share/qrRender.ts';
+import { QrCapacityError } from '../share/qrStamp.ts';
+import {
+  STAMP_INSET,
+  ShareImageError,
+  minimumCropFor,
+  readShareImage,
+  stampShareImage,
+  stampSizeFor,
+} from '../share/shareImage.ts';
+import { pickCropRegion } from './cropOverlay.ts';
+import {
+  blobToImage,
+  captureRegion,
+  copyImage,
+  downloadImage,
+  imageFromPasteEvent,
+  readClipboardImage,
+} from './shareCapture.ts';
 import { bindFocusRelease } from './focusRelease.ts';
 import { buildDebugSection } from './sections/debugSection.ts';
 import { buildDrawingSection } from './sections/drawingSection.ts';
@@ -235,6 +254,19 @@ export interface PanelOptions {
     /** Detach the recorder, finalize, and report what became of the file. */
     readonly finish: (recorder: VideoRecorder) => Promise<RecordingResult>;
   };
+  /**
+   * The canvas a share image is captured from.
+   *
+   * PASSED IN rather than found with `getElementById`, matching how `bus` and
+   * `recording` arrive: the panel is constructed against a canvas `main.ts`
+   * already holds, and reaching back into the document for it would give the
+   * panel a second way to be wrong about which canvas is live.
+   *
+   * Optional so every existing test that builds a bare `Panel` keeps compiling.
+   * The share-image commands report that they cannot run rather than throwing
+   * when it is absent -- see `copyShareImage`.
+   */
+  readonly canvas?: HTMLCanvasElement;
 }
 
 /**
@@ -269,6 +301,8 @@ const BRUSH_TOOLS: ReadonlySet<MouseMode> = new Set<MouseMode>(['shove', 'draw']
 
 export class Panel {
   private readonly bus: CommandBus;
+  /** The canvas share images are captured from, or `null`. See `PanelOptions`. */
+  private readonly canvas: HTMLCanvasElement | null;
   private readonly left: PanelSide;
   private readonly right: PanelSide;
 
@@ -551,6 +585,7 @@ export class Panel {
 
   constructor(opts: PanelOptions) {
     this.bus = opts.bus;
+    this.canvas = opts.canvas ?? null;
     // FIRST, because the build steps below branch on it -- the overlay, the
     // containers and the tab list all ask which layout they are building.
     this.mobile = opts.mobile ?? false;
@@ -659,6 +694,12 @@ export class Panel {
       },
       onPasteShareLink: () => {
         this.pasteShareLink();
+      },
+      onCopyShareImage: () => {
+        void this.copyShareImage();
+      },
+      onPasteShareImage: () => {
+        void this.pasteShareImage();
       },
       // NOT `void this.exportSaves()` with an await inside before the picker --
       // see `exportSaves`. The gesture is spent by the first await, so the
@@ -1487,6 +1528,208 @@ export class Panel {
     void copyText(url).then((ok) => {
       this.showShareResult(ok, url);
     });
+  }
+
+  /**
+   * Capture a region of the canvas and copy it with the project stamped in.
+   *
+   * ## THE IMAGE IS THE PROJECT
+   *
+   * The point of the feature: post the picture anywhere that carries pictures,
+   * and anyone who can save it can load what made it. No link to keep beside it
+   * and nothing for a chat client to truncate -- which is the failure
+   * `shareLink.ts` warns about at 8000 characters and cannot otherwise prevent.
+   *
+   * ## THE ORDER OF OPERATIONS IS FORCED
+   *
+   * The payload has to exist BEFORE the crop overlay opens, because the stamp's
+   * size -- and therefore the minimum selectable region -- depends on how long
+   * the link is, which depends on how many configs the project holds. So the
+   * document is serialized first, the minimum is computed from it, and only then
+   * does the user get to drag. Doing it the other way round would mean telling
+   * someone their perfectly good selection was too small AFTER they made it.
+   *
+   * ## CAPTURE HAPPENS AFTER THE OVERLAY IS GONE
+   *
+   * `pickCropRegion` resolves once it has removed its own elements, and the
+   * capture reads the canvas underneath. If the overlay were still mounted the
+   * read would be unaffected -- it is a separate element, not a canvas filter --
+   * but the dimming would be on screen while the browser encoded, which reads as
+   * a freeze. Sequencing it after is free and looks deliberate.
+   */
+  async copyShareImage(): Promise<void> {
+    if (this.canvas === null) {
+      this.toast.show('Screenshot sharing is not available in this view.', 'error');
+      return;
+    }
+
+    const url = buildShareUrl(window.location, this.bus.projectDocument());
+
+    // CAPACITY IS CHECKED FIRST, because a project too big for a QR is a real
+    // and reachable state -- a stamp gives out after two or three configs, far
+    // below the link's own limit -- and the honest answer is to say so and offer
+    // the link instead, not to open an overlay that cannot end in success.
+    let minDevicePx: number;
+    let stampDevicePx: number;
+    try {
+      minDevicePx = minimumCropFor(url);
+      // ASKED FOR DIRECTLY, never inferred from the minimum. These were related
+      // by a factor of two when the minimum was a multiple; it is an addition
+      // now, and a derived value would have silently drawn the preview square at
+      // the wrong size the moment that changed.
+      stampDevicePx = stampSizeFor(url);
+    } catch (err: unknown) {
+      if (err instanceof QrCapacityError) {
+        this.toast.show(
+          'This project is too large to fit in a QR code. Use Copy Share Link ' +
+            'instead — the link has no such limit.',
+          'error',
+        );
+        return;
+      }
+      throw err;
+    }
+
+    const region = await pickCropRegion({
+      minDevicePx,
+      stampDevicePx,
+      insetDevicePx: STAMP_INSET,
+    });
+    if (region === null) return; // Cancelled; say nothing.
+
+    try {
+      const shot = captureRegion(this.canvas, region);
+      const stamped = stampShareImage(shot, url);
+      const copied = await copyImage(stamped.image);
+
+      if (copied) {
+        this.toast.show(
+          `Image copied — ${stamped.image.width}x${stamped.image.height}, ` +
+            `QR v${stamped.version}. Paste it anywhere; Ctrl+V here loads it back.`,
+        );
+        return;
+      }
+
+      // THE FALLBACK IS A DOWNLOAD, not a prompt. `copyShareLink` can offer its
+      // text in a `window.prompt` when the clipboard refuses; an image has no
+      // equivalent, and a download needs no permission and no secure origin --
+      // which are exactly the conditions that made the copy fail.
+      await downloadImage(stamped.image, 'fluoddity-share.png');
+      this.toast.show('Could not reach the clipboard — the image was downloaded instead.');
+    } catch (err: unknown) {
+      if (err instanceof ShareImageError) {
+        // Should be unreachable: the overlay grows an undersized selection
+        // before returning it. Reported rather than thrown because the third
+        // layer of that guard exists to be a message, not a crash.
+        this.toast.show('That area was too small to hold the code.', 'error');
+        return;
+      }
+      this.toast.show('Could not build the share image.', 'error');
+      console.warn(`Share image failed: ${String(err)}`);
+    }
+  }
+
+  /**
+   * Load a project from a stamped image on the clipboard.
+   *
+   * The image half of `pasteShareLink`, and it ends in the same place: whatever
+   * the QR decodes to is handed to `applyShareText`, which is the single reader
+   * for "text that might be a share link". A stamped image is not a second
+   * format -- it is a second envelope around the first.
+   */
+  async pasteShareImage(): Promise<void> {
+    const image = await readClipboardImage();
+    if (image === null) {
+      this.toast.show(
+        'No image on the clipboard. Copy a stamped screenshot first, or use ' +
+          'Paste Share Link for a URL.',
+        'error',
+      );
+      return;
+    }
+    this.applyShareImage(image);
+  }
+
+  /**
+   * Decode a stamped image and adopt what it carries.
+   *
+   * Split out so the three arrival routes -- the menu item, the Ctrl+V event,
+   * and `pasteShareImage` -- cannot drift. Each finds an image its own way and
+   * they all land here.
+   */
+  private applyShareImage(image: RgbaImage): boolean {
+    const text = readShareImage(image);
+    if (text === null) {
+      this.toast.show(
+        'No Fluoddity code found in that image. It may have been cropped or ' +
+          'resized too far.',
+        'error',
+      );
+      return false;
+    }
+    this.applyShareText(text);
+    return true;
+  }
+
+  /**
+   * Handle a native paste. Returns whether the event was consumed.
+   *
+   * ## WHY NATIVE PASTE IS WORTH INTERCEPTING AT ALL
+   *
+   * Ctrl+V is what everyone will actually press. `Shift+V` exists and is
+   * documented, but a user who has just copied a stamped image from a timeline
+   * has no reason to think this app wants a special key for it -- so the
+   * gesture has to be the ordinary one.
+   *
+   * ## THE EVENT PATH IS BETTER THAN THE API, NOT A FALLBACK FOR IT
+   *
+   * A `paste` event carries its data directly, so it needs no `clipboard-read`
+   * permission and works on Firefox, where `navigator.clipboard.read` does not
+   * exist for page script at all. The menu item has no event and must use the
+   * API; this path should be preferred wherever there is one.
+   *
+   * ## IT MUST NOT EAT A PASTE MEANT FOR A TEXT FIELD
+   *
+   * The caller checks the event target before delegating here -- see `main.ts`.
+   * Pasting into the project-name box, the notes field or any Tweakpane input
+   * has to keep working, and silently hijacking it would be the kind of bug a
+   * user cannot report because they cannot see what took their keystroke.
+   */
+  async handlePasteEvent(event: ClipboardEvent): Promise<boolean> {
+    const image = await imageFromPasteEvent(event);
+    if (image !== null) return this.applyShareImage(image);
+
+    // No image, so try text -- a pasted URL is the commoner case and arrives
+    // through the same gesture. Read from the event rather than the clipboard
+    // API for the permission reason above.
+    const text = event.clipboardData?.getData('text/plain') ?? '';
+    if (text.trim() === '') return false;
+    // ONLY CONSUMED IF IT IS OURS. `decodeShareText` returns null for text that
+    // is not a share link, and swallowing an unrelated paste would be the same
+    // hijack the header warns about, one level further in.
+    try {
+      if (decodeShareText(text) === null) return false;
+    } catch {
+      // Ours but damaged. `applyShareText` gives the better message.
+    }
+    this.applyShareText(text);
+    return true;
+  }
+
+  /**
+   * Load a project from an image file the user picked or dropped.
+   *
+   * The route that needs no clipboard at all, which matters because saving an
+   * image off a timeline and re-copying it is two steps a file picker does in
+   * one.
+   */
+  async loadShareImageFile(file: Blob): Promise<void> {
+    try {
+      this.applyShareImage(await blobToImage(file));
+    } catch (err: unknown) {
+      this.toast.show('That file could not be read as an image.', 'error');
+      console.warn(`Share image file failed: ${String(err)}`);
+    }
   }
 
   /**
