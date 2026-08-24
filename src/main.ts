@@ -446,7 +446,10 @@ async function start(): Promise<void> {
     // `?nopanel` takes the toast with the panel, so there would be nowhere to
     // report the result. Copying silently is worse than not copying.
     copyShareLink: () => panel?.copyShareLink(),
-    pasteShareLink: () => panel?.pasteShareLink(),
+    // `void`: this reads the clipboard and may open a prompt, so it resolves
+    // long after the keydown. Nothing here to await into -- the panel reports
+    // its own outcome through the toast.
+    pasteShareLink: () => void panel?.pasteShareLink(),
     // Both open a drag overlay and resolve long after the keydown; `void` for
     // the same reason the menu rows use it -- there is nothing here to await
     // into, and the panel reports its own outcome through the toast.

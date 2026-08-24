@@ -420,7 +420,10 @@ export class MenuBar {
       );
       this.addItem(
         body,
-        'Load Project from Clipboard URL',
+        // NOT "...URL" any more: this command takes a stamped screenshot too,
+        // and a row promising one of the two would send someone holding the
+        // other to a command they do not need.
+        'Load Project from Clipboard',
         () => {
           this.closeMenus();
           this.opts.onPasteShareLink();

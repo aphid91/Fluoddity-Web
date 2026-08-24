@@ -693,7 +693,7 @@ export class Panel {
         this.copyShareLink();
       },
       onPasteShareLink: () => {
-        this.pasteShareLink();
+        void this.pasteShareLink();
       },
       onCopyScreenshot: () => {
         void this.copyScreenshot();
@@ -1684,13 +1684,23 @@ export class Panel {
    * the QR decodes to is handed to `applyShareText`, which is the single reader
    * for "text that might be a share link". A stamped image is not a second
    * format -- it is a second envelope around the first.
+   *
+   * KEPT AS ITS OWN COMMAND even though `pasteShareLink` now accepts images too.
+   * The menu row says "from Clipboard Image", so it should say something useful
+   * when there is no image -- where the general command would silently move on
+   * to text and then a prompt, which is right for a general command and wrong
+   * for a specific promise.
    */
   async pasteShareImage(): Promise<void> {
     const image = await readClipboardImage();
     if (image === null) {
+      // NAMES THE GENERAL COMMAND, not "Paste Share Link for a URL" as it did:
+      // that phrasing drew a line between links and images which no longer
+      // exists, and would send someone holding a link to a command that also
+      // would have taken their image.
       this.toast.show(
-        'No image on the clipboard. Copy a stamped screenshot first, or use ' +
-          'Paste Share Link for a URL.',
+        'No image on the clipboard. Load Project from Clipboard takes either a ' +
+          'link or a stamped screenshot.',
         'error',
       );
       return;
@@ -1781,11 +1791,25 @@ export class Panel {
   }
 
   /**
-   * Load the project from a share URL on the clipboard.
+   * Load the project from whatever is on the clipboard -- a link OR an image.
    *
    * `copyShareLink` inverted, and deliberately forgiving about what it is given:
    * `decodeShareText` takes a whole URL, a bare fragment, or either wrapped in
    * the whitespace a hard-wrapping mail client leaves behind.
+   *
+   * ## TEXT AND IMAGES BOTH, BECAUSE "PASTE" MEANS ONE THING TO A USER
+   *
+   * This used to read only text, so a stamped screenshot on the clipboard fell
+   * through to the "Paste a Fluoddity share link:" prompt -- asking for
+   * something the user did not have, when what they DID have was sitting right
+   * there and perfectly readable. Shift+V and Ctrl+V now accept the same two
+   * things, because the distinction between them was never one anybody outside
+   * this file could see.
+   *
+   * ORDER: TEXT FIRST, THEN IMAGE. A link is cheaper to decode than a QR scan
+   * over a full-size screenshot, and a clipboard holding both almost always got
+   * the text from a copied URL -- so the cheap, likely case goes first and the
+   * image work only happens when it has to.
    *
    * THE PROMPT IS NOT A LAST RESORT HERE, it is the Firefox path. Reading the
    * clipboard is gated behind a permission prompt in Chrome and is not
@@ -1793,16 +1817,27 @@ export class Panel {
    * the fallback is rare, this one is the ONLY route for a whole browser engine.
    * Asking for the link directly costs one dialog and works everywhere.
    */
-  pasteShareLink(): void {
-    void readText().then((clip) => {
-      // `null` is "could not read", which is not the same as "read nothing" --
-      // an empty clipboard is a real answer and gets the same prompt, since
-      // either way there is no link to work with.
-      const text = clip !== null && clip.trim() !== ''
-        ? clip
-        : window.prompt('Paste a Fluoddity share link:') ?? '';
-      this.applyShareText(text);
-    });
+  async pasteShareLink(): Promise<void> {
+    const clip = await readText();
+    // `null` is "could not read", which is not the same as "read nothing". Both
+    // fall through to the image attempt below, because neither means the
+    // clipboard is empty -- only that it holds no text we can see.
+    if (clip !== null && clip.trim() !== '') {
+      this.applyShareText(clip);
+      return;
+    }
+
+    // No usable text. Before giving up on the clipboard and asking, look for a
+    // stamped image -- which is the case that used to produce a prompt for a
+    // link the user was not holding.
+    const image = await readClipboardImage();
+    if (image !== null) {
+      this.applyShareImage(image);
+      return;
+    }
+
+    const typed = window.prompt('Paste a Fluoddity share link:') ?? '';
+    this.applyShareText(typed);
   }
 
   /**

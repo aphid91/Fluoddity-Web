@@ -193,7 +193,11 @@ const CONTROLS_BODY: readonly Block[] = [
   ],
   [
     'Shift-C: copy a shareable url link to this project to your clipboard',
-    'Shift-V: load a project from a share link in your clipboard',
+    'Shift-V: load a project from your clipboard — either a share link or a ' +
+      'screenshot with a QR code in it (Ctrl-V does the same)',
+    'P: copy a screenshot of any part of the screen to your clipboard',
+    'Shift-P: the same, with a QR code stamped in the corner that carries the ' +
+      'whole project — post the picture and anyone can load what made it',
   ],
   DIVIDER,
   'Mouse controls',
