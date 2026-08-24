@@ -821,8 +821,14 @@ exclusions are the default: a new command records only if it asks to.
 
 A slider drag fires an edit per frame; without merging, two seconds of dragging
 would be a hundred entries. Records sharing a `coalesce_key` within
-`COALESCE_WINDOW` (0.5s) collapse into one � the entry's *end* state updates in
-place while its start stays put, so undo jumps the whole gesture.
+`COALESCE_WINDOW` (1.5s on the web; the Python's 0.5s) collapse into one � the
+entry's *end* state updates in place while its start stays put, so undo jumps
+the whole gesture. The window is measured from the last edit rather than the
+start of the drag, so it bounds how long a PAUSE may be, not how long a gesture
+may run. The web port widened it because nothing on its slider path calls
+`breakCoalescing` � a timeout is the only way a gesture ends there, and at 0.5s
+hesitating mid-drag to look at the result split one adjustment into several
+undo steps.
 
 Keying on `(source, field)` means moving to a different slider starts a new
 entry, and so does pausing. One-shot acts pass no key and never merge:

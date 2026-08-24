@@ -23,7 +23,7 @@
  *
  * A slider drag fires an edit per frame; without merging, two seconds of
  * dragging would be a hundred entries. Consecutive records sharing a
- * `coalesceKey` within `COALESCE_WINDOW` seconds collapse into one: the entry's
+ * `coalesceKey` within `COALESCE_WINDOW_MS` collapse into one: the entry's
  * END state is updated in place while its start state stays put, so undo jumps
  * over the whole gesture.
  *
@@ -42,7 +42,7 @@
  *
  * `time.monotonic()` becomes `performance.now()`, which is milliseconds where
  * the Python is seconds. `COALESCE_WINDOW` is therefore stated in MILLISECONDS
- * here (500, not 0.5). Getting that wrong does not error -- it makes every edit
+ * here (1500, not 1.5). Getting that wrong does not error -- it makes every edit
  * coalesce forever, or none of them, and both read as "undo is behaving oddly"
  * rather than as a unit bug. `now` is injectable for exactly that reason: the
  * tests drive the window explicitly instead of sleeping.
@@ -59,9 +59,22 @@ export const MAX_HISTORY = 100;
 /**
  * Milliseconds within which same-key records merge. Long enough to bridge the
  * gaps in a slider drag, short enough that a deliberate second adjustment is
- * its own undo step. The Python's 0.5 seconds.
+ * its own undo step.
+ *
+ * **MEASURED FROM THE LAST EDIT, NOT THE START OF THE DRAG.** `record` refreshes
+ * `lastTime` on every merge, so a continuous drag coalesces for as long as it
+ * lasts and this bound only decides how long a PAUSE may be before the gesture
+ * is considered over.
+ *
+ * Raised from the Python's 0.5 s because nothing on the slider path calls
+ * `breakCoalescing` -- Tweakpane's `ev.last` release is consumed by the gate
+ * hold in `controls.ts` and never reaches history -- so a timeout is the ONLY
+ * way a gesture ends. At 500 ms, hesitating on a value mid-drag to look at the
+ * result, which is the normal way these sliders get used, split one adjustment
+ * into several undo steps. 1.5 s covers that hesitation; a considered second
+ * adjustment takes longer than this and still earns its own step.
  */
-export const COALESCE_WINDOW_MS = 500;
+export const COALESCE_WINDOW_MS = 1500;
 
 /** A project state and what the user did to leave it. */
 export interface HistoryEntry {
