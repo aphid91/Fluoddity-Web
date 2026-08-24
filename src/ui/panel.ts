@@ -1614,14 +1614,21 @@ export class Panel {
   }
 
   /**
-   * Run the hint bar's context action -- what a canvas long press asks for.
+   * Cancel the current cohort selection. What a canvas long press asks for.
    *
-   * The SAME call the red button makes, deliberately: the button and the
-   * gesture are two routes to one act, and routing them through one method is
-   * what keeps them from drifting apart.
+   * **DELIBERATELY NARROWER THAN THE CONTEXT BUTTON**, which it used to mirror
+   * exactly. The button is context-dependent -- Cancel, Undo, or the draw latch
+   * -- and routing a long press to it meant the gesture undid whenever nothing
+   * was lit. A long press is easy to produce by accident, and an accidental undo
+   * discards real work with no visible cause; an accidental cancel costs a
+   * re-tap. See `TouchBindingOptions.onLongPress`.
+   *
+   * A no-op when nothing is lit: `cancelSelection` refuses in that state
+   * (`orchestrator.ts`), so the gesture is simply inert rather than doing
+   * something else.
    */
-  runContextAction(): void {
-    this.overlay.runContextAction();
+  cancelSelection(): void {
+    this.overlay.cancelSelection();
   }
 
   /**

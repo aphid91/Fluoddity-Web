@@ -481,10 +481,11 @@ async function start(): Promise<void> {
         // button; until that exists it reports LEFT, which is the desktop's
         // unmodified drag and so the safe default.
         dragButton: () => (panel?.touchDragButton() ?? LEFT_BUTTON),
-        // Long press on the canvas. SELECT ONLY -- `bindTouch` enforces that,
-        // for the reason its header gives. The action is the same one the hint
-        // bar's red button performs, so both routes converge here.
-        onLongPress: () => panel?.runContextAction(),
+        // Long press on the canvas. SELECT ONLY -- `bindTouch` enforces that --
+        // and it CANCELS A SELECTION rather than mirroring the whole context
+        // button. An accidental long press must not undo real work; see
+        // `Panel.cancelSelection`.
+        onLongPress: () => panel?.cancelSelection(),
       })
     : null;
 

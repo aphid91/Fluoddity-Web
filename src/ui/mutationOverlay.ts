@@ -700,10 +700,14 @@ export class MutationOverlay {
     this.hint.style.cssText = opts.mobile === true ? TOUCH_HINT_CSS : HINT_CSS;
     this.hint.dataset['setting'] = 'transport.hint';
 
+    // On touch the prose YIELDS to the buttons beside it -- see
+    // `TOUCH_HINT_TEXT_CSS`. On the desktop it keeps its content-sized basis,
+    // which is right there: the row is wide enough for both.
+    const hintTextCss = opts.mobile === true ? TOUCH_HINT_TEXT_CSS : HINT_TEXT_CSS;
     this.hintLead = document.createElement('span');
-    this.hintLead.style.cssText = HINT_TEXT_CSS;
+    this.hintLead.style.cssText = hintTextCss;
     this.hintTail = document.createElement('span');
-    this.hintTail.style.cssText = HINT_TEXT_CSS;
+    this.hintTail.style.cssText = hintTextCss;
 
     // The stepper: `< [n] >`. Present in the DOM always, shown only while a
     // cohort is lit -- building it once and toggling `display` keeps the
@@ -1254,7 +1258,10 @@ export class MutationOverlay {
     if (button === null) return;
 
     const action = contextActionFor(status);
-    const label = contextLabelFor(action, this.dragIsRight);
+    // `undoLabel` is empty when the stack is empty, which `contextLabelFor`
+    // words as "Nothing to undo" -- so the button says why it is inert rather
+    // than showing a bare "Undo:" with nothing after it.
+    const label = contextLabelFor(action, this.dragIsRight, status.undoLabel);
     if (this.contextShown === label) return;
     this.contextShown = label;
 
@@ -1265,6 +1272,16 @@ export class MutationOverlay {
     // also move the gold button beside it, which is the last thing a
     // frequently-pressed pair should do.
     button.style.display = 'inline-flex';
+
+    // GREYED AND INERT WITH AN EMPTY STACK, matching what the desktop undo
+    // button does rather than inventing a second answer: the control stays put
+    // so the pair does not shuffle, and says why it cannot act. `disabled` as
+    // well as the dimming, or it still takes the press and announces itself as
+    // pressable to a screen reader while doing nothing.
+    const inert = action === 'undo' && status.undoLabel === '';
+    button.disabled = inert;
+    button.style.opacity = inert ? '0.45' : '1';
+    button.style.cursor = inert ? 'default' : 'pointer';
     // The label alone does not say a latch IS one, so the pressed state is
     // announced rather than left to the wording.
     if (action === 'toggleDragButton') {
@@ -1374,8 +1391,20 @@ export class MutationOverlay {
     // The rule is therefore about the ROW, not about the words: keep the lead
     // when nothing else would be shown. It is the states with buttons whose
     // prose is redundant, and this is the one state with neither.
+    //
+    // **EXCEPT THE MOUSE SENTENCES, WHICH ARE NEVER KEPT.** "Left click a
+    // particle to select its cohort" survived the rule above -- the unlit Select
+    // state has no gold button -- and it is precisely the advice a touch user
+    // cannot follow, sitting where a useful sentence would go. The states worth
+    // rescuing are the ones explaining a REFUSAL ("Increase Mutation Scale...");
+    // the ones describing a gesture are what the buttons already replace.
+    //
+    // Tested on the wording rather than on the state because that is what makes
+    // it a rule about the SENTENCE: any lead that tells a user to click is wrong
+    // here, however it came to be chosen.
+    const namesAMouseGesture = /click/i.test(lead);
     const hasTouchButton = commit || generateChild || clearField;
-    const keepLead = !suppressForTouch || !hasTouchButton;
+    const keepLead = !suppressForTouch || (!hasTouchButton && !namesAMouseGesture);
 
     this.hintLead.textContent = keepLead ? lead : '';
     this.hintTail.textContent = suppressForTouch ? '' : tail;
@@ -1751,6 +1780,17 @@ export class MutationOverlay {
    * or what is lit -- doing nothing is strictly better than undoing something
    * because the bar had not been told what state it was in yet.
    */
+  /**
+   * Cancel the lit cohort, whatever the context button currently offers.
+   *
+   * The canvas long press's action, split off from `runContextAction` -- see
+   * `Panel.cancelSelection` for why the gesture is narrower than the button.
+   * Inert when nothing is lit, because `cancelSelection` refuses there.
+   */
+  cancelSelection(): void {
+    this.send({ kind: 'cancelSelection' });
+  }
+
   runContextAction(): void {
     const status = this.lastStatus;
     if (status === null) return;
@@ -2052,12 +2092,35 @@ export function contextActionFor(status: Status): ContextAction {
  * long-press shortcut where one exists -- which is exactly the Select states,
  * since that is where `touchBinding` polls for it.
  */
-export function contextLabelFor(action: ContextAction, dragIsRight: boolean): string {
+export function contextLabelFor(
+  action: ContextAction,
+  dragIsRight: boolean,
+  /**
+   * What undo would take back, for the second line. Empty means nothing to undo.
+   *
+   * Passed in rather than read from a Status here so this stays pure -- the same
+   * reason `hintFor` takes one argument and returns a description.
+   */
+  undoLabel = '',
+): string {
   switch (action) {
     case 'cancel':
+      // THE ONLY LABEL THAT STILL NAMES THE GESTURE. A long press cancels the
+      // selection and no longer undoes, so this is the one state where the
+      // canvas offers a second route to what the button does.
       return 'Cancel (Long Press)';
     case 'undo':
-      return 'Undo (Long Press)';
+      // TWO LINES: the act, then WHAT IT WOULD TAKE BACK. The second line is the
+      // whole value of this button over a bare "Undo" -- the desktop's version
+      // has said so since it replaced the "right click to undo" prose, and on
+      // touch there is a 44px-tall button with room to say it without crowding.
+      //
+      // NO "(Long Press)" ANY MORE. The gesture no longer undoes, and a label
+      // promising a route that does something else is worse than one that names
+      // only the button. `\n` rather than a `<br>`: the caller renders this into
+      // `textContent` and the CSS carries `white-space:pre-line`, which is one
+      // less thing that can inject markup into a label built from state.
+      return undoLabel === '' ? 'Nothing to undo' : `Undo:\n${undoLabel}`;
     case 'toggleDragButton':
       // NAMES THE STATE IT IS IN, not the state it would move to. A latch
       // labelled with its destination reads as a description of the present to
@@ -2455,14 +2518,29 @@ const TOUCH_BAR_CSS =
 const TOUCH_BAR_ROW_CSS =
   'display:flex;align-items:center;gap:8px;width:100%;min-width:0;';
 
-// The slider and its caption, stacked. See the assembly for why the gear is
-// deliberately NOT inside this.
+// The slider and its caption, OVERLAID rather than stacked.
+//
+// **THE CAPTION COSTS NO HEIGHT, WHICH IS THE POINT.** Stacking it above the
+// slider added its own line to the bar, and the bar is the thing a phone has
+// least of -- it already claims the bottom fifth of the screen. But a 44px
+// slider only draws a ~16px track: the rest is invisible padding that exists to
+// make the control finger-sized. That padding is free real estate directly
+// above the track, and the caption fits in it exactly.
+//
+// So this is `position:relative` with the caption absolutely positioned into the
+// slider's top gutter. The slider keeps its full 44px hit area and the group is
+// no taller than the slider alone.
+//
+// The caption is `pointer-events:none` (see `TOUCH_LABEL_CSS`), so the region it
+// covers still belongs to the slider -- a press that lands on the words drags
+// the track underneath. The user's own framing was that the labelled strip could
+// be hard to press; it turns out it does not have to be.
 //
 // `min-width:0` for the reason the slider itself needs it: a flex item defaults
 // to `min-width:auto` and refuses to shrink below its content, which would push
 // the gear off a narrow row.
 const TOUCH_SLIDER_GROUP_CSS =
-  'display:flex;flex-direction:column;flex:1;min-width:0;gap:2px;';
+  'position:relative;display:flex;flex:1;min-width:0;';
 
 // The stepper and its caption, stacked. `flex:none` because this sits in the
 // hint ROW beside two buttons that DO stretch (`flex:1` each) -- without it the
@@ -2471,15 +2549,35 @@ const TOUCH_SLIDER_GROUP_CSS =
 //
 // `align-items:flex-start` keeps the caption hard against the stepper's left
 // edge rather than centring it over a control narrower than the words above it.
+// **`width:100%` FORCES ITS OWN LINE**, which is what makes the wrap
+// deterministic rather than dependent on how wide the buttons happen to be. The
+// row wraps (see `TOUCH_HINT_CSS`); a full-width item guarantees the two buttons
+// land beneath it as a pair rather than one of them squeezing up alongside.
+//
+// `align-items:flex-start` keeps the caption hard against the stepper's left
+// edge rather than centring it over a control narrower than the words above it.
 const TOUCH_STEPPER_GROUP_CSS =
-  'display:flex;flex-direction:column;align-items:flex-start;gap:2px;flex:none;';
+  'display:flex;flex-direction:column;align-items:flex-start;gap:2px;' +
+  'flex:none;width:100%;';
 
-// The label line. `space-between` puts the name left and the value right, which
-// is the arrangement every settings row in the panel already uses -- so the bar
-// reads as the same kind of control rather than as a special case.
+// The label line, sitting IN the slider's top padding rather than above it.
+//
+// `space-between` puts the name left and the value right, which is the
+// arrangement every settings row in the panel already uses -- so the bar reads
+// as the same kind of control rather than as a special case.
+//
+// `top:0` with `left/right` inset to match the slider's own end padding, so the
+// text lines up with the track's ends rather than with the element's box. A
+// range input reserves half a thumb-width at each end for the thumb to sit in,
+// and text flush to the element edge reads as misaligned against the track.
+//
+// **NO `height`, and no vertical centring.** The caption is deliberately pinned
+// to the TOP of the gutter: the track is centred in the 44px box, so anything
+// that split the difference would land on top of it.
 const TOUCH_CAPTION_CSS =
+  'position:absolute;top:0;left:2px;right:2px;z-index:1;' +
   'display:flex;align-items:baseline;justify-content:space-between;gap:8px;' +
-  'min-width:0;';
+  'min-width:0;pointer-events:none;';
 
 // **DIMMER AND SMALLER THAN THE BAR'S BUTTONS, deliberately.** This is a name,
 // not a control: it should be findable when looked for and quiet when not. At
@@ -2515,8 +2613,22 @@ const TOUCH_READOUT_CSS =
 // The prose is still allowed to shrink and ellipsize (`HINT_TEXT_CSS` on the
 // spans), which matters more here than on the desktop: several of these
 // sentences were written for a 1400px bar and this row is 390px wide.
+// **`flex-wrap:wrap`, WHERE THE DESKTOP ROW IS `nowrap`.** That reversal is
+// deliberate and is the only way three things fit. In the lit state this row
+// carries the labelled stepper (~180px, and it cannot shrink -- the arrows are
+// tap targets) plus the gold and red buttons at 44px each. On 390px that is one
+// component too many: forced onto a single line they were squeezed to 65px and
+// both labels clipped mid-word.
+//
+// Wrapping puts the stepper on its own line and the button pair beneath it, at
+// the cost of one extra row of height in the one state that needs it -- and only
+// in that state, since the unlit states have nothing to wrap.
+//
+// The desktop keeps `nowrap` for the reason its own comment gives: that row
+// mixes long prose with a three-part control, and wrapping there is the failure
+// mode rather than the fix.
 const TOUCH_HINT_CSS =
-  'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;pointer-events:auto;' +
+  'display:flex;align-items:center;gap:6px;flex-wrap:wrap;pointer-events:auto;' +
   'background:rgba(28,28,30,0.92);border:1px solid rgba(255,255,255,0.12);' +
   'border-radius:10px;padding:6px;box-shadow:0 4px 16px rgba(0,0,0,0.45);' +
   'font:12px system-ui,sans-serif;color:#a8a8ad;white-space:nowrap;' +
@@ -2545,8 +2657,19 @@ const TOUCH_HINT_CSS =
 //
 // `width:100%` now carries the horizontal fill, and `flex:none` with a
 // `min-height` floor keeps the target size out of the column's distribution.
+// **`padding-top` PUSHES THE TRACK BELOW THE CAPTION** without changing the hit
+// area. A range input centres its track in its content box, so a 44px slider
+// draws the track across the middle -- right where the caption now sits. Adding
+// top padding moves the CONTENT box down while `box-sizing:border-box` keeps the
+// element 44px overall, so the track ends up in the lower half and the gutter
+// above it is clear.
+//
+// The full 44px remains pressable: padding is inside the element, and a range
+// input accepts a press anywhere in its box. This is what lets the labelled
+// strip stay draggable rather than being the dead zone it could have been.
 const TOUCH_SLIDER_CSS =
   'flex:none;width:100%;min-width:0;min-height:44px;height:44px;' +
+  'box-sizing:border-box;padding-top:14px;' +
   'margin:0;accent-color:#8ab4f8;cursor:pointer;';
 
 // The bottom row's buttons and the tool dropdown.
@@ -2580,6 +2703,25 @@ const HINT_CSS =
 // row runs out of room, and losing the tail of a sentence to `overflow:hidden`
 // is better than deforming the control the sentence is about.
 const HINT_TEXT_CSS = 'min-width:0;overflow:hidden;text-overflow:ellipsis;';
+
+// The same span on touch, but YIELDING TO THE BUTTONS beside it.
+//
+// **`flex:1 1 0` IS THE WHOLE DIFFERENCE, and it is not cosmetic.** The desktop
+// string has `min-width:0` so it CAN shrink, but no `flex-basis`, so its basis
+// is its content -- a ~60-character sentence. Against a button asking for
+// `flex:1` from a basis of 0, the sentence wins nearly all the free space and
+// the button collapses to a sliver: this is the same failure that once rendered
+// the context button 26px wide showing "lo (h", reappearing in the one state
+// that still shows prose.
+//
+// A basis of 0 puts the sentence and the button on equal terms, so the row
+// divides between them and the sentence ellipsizes instead of the button
+// vanishing. It is the right thing to sacrifice: a truncated sentence still
+// reads, and its full text is one long press away on the tooltip, whereas a
+// 26px button cannot be hit at all.
+const TOUCH_HINT_TEXT_CSS =
+  'flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;' +
+  'white-space:nowrap;';
 
 // `‹ [n] ›`, tight enough to read as one control rather than three.
 //
@@ -2832,11 +2974,24 @@ const UNDO_BUTTON_CSS = CLEAR_FIELD_BUTTON_CSS;
 // `flex:1` rather than `flex:none` is the other departure -- on a phone the row
 // has width to give and two buttons that fill it are easier to hit than two that
 // shrink-wrap their labels.
+// **`white-space:pre-line` AND NO `nowrap`**, which is what lets the undo label
+// put its two lines on two lines. `contextLabelFor` returns "Undo:\n<what>", and
+// `pre-line` is the one value that honours an explicit `\n` while still
+// collapsing ordinary runs of whitespace -- so the newline is meaningful and a
+// stray double space in a history label is not.
+//
+// `text-overflow:ellipsis` is dropped with `nowrap`, since the two only work
+// together. A long history label now WRAPS instead of truncating, which is the
+// better failure here: the button is 44px tall with room for a second line, and
+// "generate children from cohort 12" is worth reading in full.
+//
+// `line-height:1.25` rather than the default, so two lines fit inside the button
+// without pushing its height past the row.
 const TOUCH_BUTTON_BASE_CSS =
-  'display:none;align-items:center;justify-content:center;' +
-  'min-height:44px;padding:8px 12px;margin:0 4px;flex:1;' +
-  'border-radius:8px;cursor:pointer;font:13px system-ui,sans-serif;' +
-  'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  'display:none;align-items:center;justify-content:center;text-align:center;' +
+  'min-height:44px;padding:6px 10px;margin:0 4px;flex:1;' +
+  'border-radius:8px;cursor:pointer;font:12px/1.25 system-ui,sans-serif;' +
+  'white-space:pre-line;overflow:hidden;';
 
 // RED, and the same red the desktop's backing-out buttons wear -- this is the
 // touch layout's single replacement for all three of them, so it inherits their

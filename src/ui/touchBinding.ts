@@ -89,9 +89,17 @@ export interface TouchBindingOptions {
   /**
    * A long press landed on the canvas. Select tool only -- see the header.
    *
-   * The caller decides what it does (undo, or cancel a selection); this file
-   * only decides WHEN, because the timing is a gesture question and the meaning
-   * is an application one.
+   * The caller decides what it does; this file only decides WHEN, because the
+   * timing is a gesture question and the meaning is an application one.
+   *
+   * **IT CANCELS A SELECTION AND NOTHING ELSE.** It used to mirror the context
+   * button exactly, which meant it also undid whenever no cohort was lit -- and
+   * in use that was wrong: a long press is easy to produce by accident (a finger
+   * resting while deciding where to tap), and an accidental UNDO throws away
+   * real work with no visible cause. An accidental cancel costs a re-tap.
+   *
+   * So the gesture keeps the recoverable half. Undo stays on the button, where
+   * it is deliberate and names what it will take back.
    */
   readonly onLongPress: () => void;
 }

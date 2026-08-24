@@ -664,19 +664,43 @@ test('the latch label names the state it is IN, not the one it moves to', () => 
   assert.equal(contextLabelFor('toggleDragButton', true), 'Erase / Pull');
 });
 
-test('only the Select labels advertise the long press', () => {
-  // Long press is polled in Select ONLY (`touchBinding.pump`) and refused on a
-  // dragging finger (`touchGestures`), because resting mid-stroke is normal and
-  // flipping the tool under it would erase what was just drawn. A label
-  // promising "hold" where no hold is listened for would be a lie.
-  // MATCHED CASE-INSENSITIVELY on the word rather than on the exact suffix, so
+test('ONLY the cancel label advertises the long press', () => {
+  // THE GESTURE CANCELS AND NOTHING ELSE. It used to mirror the whole context
+  // button, which meant an accidental long press -- a finger resting while the
+  // user decides where to tap -- would UNDO real work with no visible cause. It
+  // now cancels only, which costs a re-tap when triggered by accident.
+  //
+  // So Cancel is the one label with a second route to name. A label promising
+  // "long press" on a button the gesture no longer reaches would send people
+  // holding the canvas and watching nothing happen.
+  //
+  // MATCHED CASE-INSENSITIVELY on the phrase rather than on the exact suffix, so
   // the wording can be revised without editing this -- the assertion is about
   // WHICH labels advertise the gesture, not about how it is phrased.
   const claimsLongPress = (label: string): boolean => /long press/i.test(label);
   assert.ok(claimsLongPress(contextLabelFor('cancel', false)));
-  assert.ok(claimsLongPress(contextLabelFor('undo', false)));
+  assert.ok(
+    !claimsLongPress(contextLabelFor('undo', false, 'reroll behavior')),
+    'the long press no longer undoes, so the undo button must not claim it',
+  );
   assert.ok(
     !claimsLongPress(contextLabelFor('toggleDragButton', false)),
     'the latch has no long-press route and must not claim one',
   );
+});
+
+test('the undo label names what it would take back, on a second line', () => {
+  // The second line is the whole value of this button over a bare "Undo" -- it
+  // says what pressing it costs. The newline is load-bearing: the CSS carries
+  // `white-space:pre-line` so it renders as two lines inside a 44px button.
+  const label = contextLabelFor('undo', false, 'reroll behavior');
+  assert.equal(label, 'Undo:\nreroll behavior');
+  assert.ok(label.includes('\n'), 'the two lines must be separated by a newline');
+});
+
+test('an empty undo stack says so rather than showing a bare "Undo:"', () => {
+  // `undoLabel` is empty exactly when there is nothing to take back. Without
+  // this the button would read "Undo:" with nothing after the colon, which
+  // looks like a label that failed to load rather than an empty history.
+  assert.equal(contextLabelFor('undo', false, ''), 'Nothing to undo');
 });

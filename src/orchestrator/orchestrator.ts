@@ -348,6 +348,22 @@ export class Orchestrator implements CommandBus {
   private pickCommits = false;
 
   /**
+   * Whether the pick in flight came from `confirmSelection` rather than a click.
+   *
+   * **THE ONE THING THAT DISTINGUISHES A DELIBERATE CONFIRM FROM A TAP**, which
+   * matters only on touch: there `CohortHighlight` refuses to commit so that a
+   * mistimed finger cannot adopt a rule, and without this the gold button --
+   * whose entire job is to commit -- was refused along with it and did nothing.
+   *
+   * Set immediately before `selection.select(...)` and cleared when the pick
+   * lands, because a pick is asynchronous: it is requested in one frame and
+   * retrieved in a later one, so the flag has to survive that gap and must not
+   * survive past it. Clearing it at retrieval rather than at dispatch is what
+   * keeps a subsequent canvas tap from inheriting the confirmation.
+   */
+  private confirmingPick = false;
+
+  /**
    * This frame's landed pick, held between the classify and the resolve.
    *
    * `ParticleSystem.retrievePick` is DESTRUCTIVE -- it unmaps the staging buffer
@@ -611,6 +627,10 @@ export class Orchestrator implements CommandBus {
       if (landed !== null) {
         this.landedPick = landed;
         this.pickCommits = this.applyPickToHighlight(landed);
+        // AFTER the classification that reads it, and unconditionally: the
+        // confirmation applies to THIS pick only, and leaving it set would let
+        // the next ordinary canvas tap commit on touch. See `confirmingPick`.
+        this.confirmingPick = false;
       }
     }
 
@@ -1268,6 +1288,31 @@ export class Orchestrator implements CommandBus {
 
     if (!this.highlightEnabled) return isHit(result) && !noOp;
 
+    // **AN EXPLICIT CONFIRM COMMITS EVEN WHERE A TAP WOULD NOT.**
+    //
+    // On touch `CohortHighlight` is built with `canCommit: false`, so every
+    // landed pick re-aims -- which is right for a finger on the CANVAS, where a
+    // near miss inside the lit cohort must not silently adopt a rule.
+    //
+    // But `confirmSelection` reaches this through the same path: it fires a pick
+    // from the centre of the screen and lets the verdict decide. With commits
+    // withheld that verdict was always 'highlight', so the gold button lit the
+    // cohort it was already showing and did nothing else. The button appeared
+    // completely dead -- which is exactly what it was.
+    //
+    // The distinction is the GESTURE, not the pick: a tap is ambiguous and a
+    // press of a button labelled "Generate children" is not. `confirmingPick`
+    // marks the second kind, so the rule that protects the canvas cannot also
+    // disarm the control that exists to replace it.
+    if (this.confirmingPick) {
+      // Still refused when the commit would change nothing -- `hintFor` hides
+      // the button in that state, so this is belt and braces rather than a
+      // reachable path, and it keeps the no-op rule in ONE place.
+      if (noOp) return false;
+      this.highlight.clear();
+      return isHit(result);
+    }
+
     // ASKED BEFORE THE TRANSITION, not after. `apply` CLEARS the highlight on a
     // 'commit' verdict -- so letting it run and then refusing the adoption would
     // put the cohort out while changing nothing: the lit cohort would go dark on
@@ -1788,6 +1833,10 @@ export class Orchestrator implements CommandBus {
         // give Enter the 15px cursor radius with no cursor behind it -- a
         // keyboard shortcut that usually works is worse than one that always
         // does.
+        // MARKS THE PICK AS A CONFIRMATION, which is what lets it commit on
+        // touch where an ordinary tap deliberately would not. Cleared when the
+        // pick lands -- see `confirmingPick`.
+        this.confirmingPick = true;
         this.selection.select([w / 2, h / 2], true);
         return;
       }
