@@ -701,9 +701,6 @@ export class Panel {
       onCopyShareImage: () => {
         void this.copyShareImage();
       },
-      onPasteShareImage: () => {
-        void this.pasteShareImage();
-      },
       // NOT `void this.exportSaves()` with an await inside before the picker --
       // see `exportSaves`. The gesture is spent by the first await, so the
       // picker has to be the first thing that happens.
@@ -1678,42 +1675,11 @@ export class Panel {
   }
 
   /**
-   * Load a project from a stamped image on the clipboard.
-   *
-   * The image half of `pasteShareLink`, and it ends in the same place: whatever
-   * the QR decodes to is handed to `applyShareText`, which is the single reader
-   * for "text that might be a share link". A stamped image is not a second
-   * format -- it is a second envelope around the first.
-   *
-   * KEPT AS ITS OWN COMMAND even though `pasteShareLink` now accepts images too.
-   * The menu row says "from Clipboard Image", so it should say something useful
-   * when there is no image -- where the general command would silently move on
-   * to text and then a prompt, which is right for a general command and wrong
-   * for a specific promise.
-   */
-  async pasteShareImage(): Promise<void> {
-    const image = await readClipboardImage();
-    if (image === null) {
-      // NAMES THE GENERAL COMMAND, not "Paste Share Link for a URL" as it did:
-      // that phrasing drew a line between links and images which no longer
-      // exists, and would send someone holding a link to a command that also
-      // would have taken their image.
-      this.toast.show(
-        'No image on the clipboard. Load Project from Clipboard takes either a ' +
-          'link or a stamped screenshot.',
-        'error',
-      );
-      return;
-    }
-    this.applyShareImage(image);
-  }
-
-  /**
    * Decode a stamped image and adopt what it carries.
    *
-   * Split out so the three arrival routes -- the menu item, the Ctrl+V event,
-   * and `pasteShareImage` -- cannot drift. Each finds an image its own way and
-   * they all land here.
+   * Split out so the arrival routes cannot drift -- the Ctrl+V event, the
+   * clipboard read behind Shift+V, and a dropped or picked file. Each finds an
+   * image its own way and they all land here.
    */
   private applyShareImage(image: RgbaImage): boolean {
     const text = readShareImage(image);

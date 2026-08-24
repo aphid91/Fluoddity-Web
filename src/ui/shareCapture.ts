@@ -266,8 +266,9 @@ export async function readClipboardImage(): Promise<RgbaImage | null> {
  * THE ROUTE THAT NEEDS NO PERMISSION, and therefore the important one. A real
  * Ctrl+V hands the page its data directly, so this works on Firefox and works
  * in Chrome without a prompt -- which makes the event path strictly better than
- * `readClipboardImage` wherever it is available. The async version exists for
- * the button, which has no event to read.
+ * `readClipboardImage` wherever it is available. That one exists for Shift+V and
+ * the menu row, which are keypress and click rather than a paste, and so have no
+ * event to read.
  */
 export async function imageFromPasteEvent(event: ClipboardEvent): Promise<RgbaImage | null> {
   const items = event.clipboardData?.items;

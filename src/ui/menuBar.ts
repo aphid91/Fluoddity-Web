@@ -81,8 +81,6 @@ export interface MenuBarOptions {
   readonly onCopyShareImage: () => void;
   /** Crop a region and copy it as an ordinary picture, with no stamp. */
   readonly onCopyScreenshot: () => void;
-  /** Load a project from a stamped image on the clipboard. Its inverse. */
-  readonly onPasteShareImage: () => void;
   /**
    * Write every user save into a folder the user picks. Owned by the panel.
    *
@@ -430,11 +428,13 @@ export class MenuBar {
         },
         localHotkeyLabel('pasteShareLink'),
       );
-      // THE IMAGE PAIR, kept adjacent to the link pair rather than in a section
-      // of its own. They are the same two verbs -- put this project somewhere,
-      // take one from somewhere -- differing only in what the project is wrapped
-      // in, and a user looking for either is looking under Share for a row that
-      // says copy or load.
+      // THE PICTURES, below the two rows that deal in links.
+      //
+      // There is no "load from an image" row to pair these with, deliberately:
+      // the load row above takes a stamped screenshot as readily as a URL, so a
+      // second one would have been the same command wearing a narrower label --
+      // and a user holding an image would have had to guess which of the two
+      // wanted it. One inbox, two outboxes.
       this.addSeparator(body);
       // THE PLAIN ONE FIRST. It is the commoner want -- people screenshot to
       // show someone a picture far more often than to hand over a project -- and
@@ -458,10 +458,6 @@ export class MenuBar {
         },
         localHotkeyLabel('copyShareImage'),
       );
-      this.addItem(body, 'Load Project from Clipboard Image', () => {
-        this.closeMenus();
-        this.opts.onPasteShareImage();
-      });
       // UNDER SHARE, with a separator. The two rows above put a project in
       // someone else's hands as a link; this puts it in their hands as a video.
       // That is the same intent -- getting the work OUT -- and a different
