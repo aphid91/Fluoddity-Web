@@ -59,8 +59,34 @@
  * ## Usage
  *
  *   node tools/qrSurvival.mjs                 # the default sweep
- *   node tools/qrSurvival.mjs --emit out/     # also write the JPEGs for real uploads
- *   node tools/qrSurvival.mjs --configs 4     # a bigger project = a bigger payload
+ *   node tools/qrSurvival.mjs --emit out/     # write images to test by hand
+ *   node tools/qrSurvival.mjs --configs 2     # a bigger project = a bigger payload
+ *
+ * THROUGH npm THE FLAGS NEED `--` FIRST, and this is worth stating because the
+ * failure is silent: `npm run qr:survival --emit out/` does NOT pass `--emit` to
+ * this script. npm parses it as one of its own options, the script sees no
+ * arguments, writes nothing, and still exits 0 -- so it looks like it worked and
+ * there is simply no directory. The form that works is:
+ *
+ *   npm run qr:survival -- --emit out/
+ *
+ * ## WHAT `--emit` WRITES, AND WHICH ONES TO UPLOAD
+ *
+ * Two kinds of file, named so they cannot be confused:
+ *
+ *   `upload-me__*.png`          -- the PRISTINE stamped screenshot, one per
+ *                                  configuration. THESE are what you post. They
+ *                                  have been through no simulation at all, so
+ *                                  whatever damage they come back with is the
+ *                                  platform's alone. PNG, because handing a
+ *                                  platform a JPEG makes its re-encode a SECOND
+ *                                  generation and measures the wrong thing.
+ *   `simulated-failure__*.jpg`  -- only the cases this harness could not decode,
+ *                                  kept so the breakage can be looked at rather
+ *                                  than just counted.
+ *
+ * The workflow is: post the `upload-me` files, save them back down, and drop
+ * them on `tools/qrDecodeImage.mjs` to see which still read.
  *
  * Exits non-zero if nothing in the sweep survived, so it can gate a change to
  * the defaults.
@@ -70,6 +96,7 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as zlib from 'node:zlib';
 
 import jpeg from 'jpeg-js';
 
@@ -243,12 +270,6 @@ function jpegGeneration(image, quality) {
  * One platform's treatment of an upload.
  *
  * `maxWidth: null` means "no resize", which is the case worth testing precisely
- * because it is the one users can arrange for themselves -- keep the screenshot
- * under the platform's threshold and only the JPEG step applies.
- *
- * The numbers are best-effort from public behaviour and are deliberately on the
- * harsh side; see the header on why a pass here is weak evidence.
- */
 /**
  * The cases are chosen around the finding, not around brand names.
  *
@@ -289,6 +310,66 @@ function runPlatform(image, platform) {
     result = jpegGeneration(result.image, platform.quality);
   }
   return result;
+}
+
+/**
+ * Write an RGBA image as a PNG, using nothing but `node:zlib`.
+ *
+ * HAND-ROLLED RATHER THAN A DEPENDENCY because PNG's container is genuinely
+ * trivial once deflate is available -- four chunks and a CRC -- and the
+ * alternative is adding a package to a dev tool for thirty lines. `jpeg-js` is
+ * already here under protest; a second image library for the LOSSLESS direction
+ * would be harder to justify.
+ *
+ * Filter byte 0 (None) on every row: the images are written once, read by an
+ * upload dialog, and never stored, so trading a larger file for simpler code is
+ * the right way round here.
+ */
+function writePng(file, image) {
+  const { width, height, data } = image;
+
+  const raw = Buffer.alloc(height * (width * 4 + 1));
+  for (let y = 0; y < height; y += 1) {
+    const at = y * (width * 4 + 1);
+    raw[at] = 0; // filter: None
+    Buffer.from(data.buffer, data.byteOffset + y * width * 4, width * 4).copy(raw, at + 1);
+  }
+
+  const chunk = (type, body) => {
+    const out = Buffer.alloc(body.length + 12);
+    out.writeUInt32BE(body.length, 0);
+    out.write(type, 4, 'ascii');
+    body.copy(out, 8);
+    // CRC-32 over type+body, computed inline -- zlib exposes `crc32` only in
+    // newer Node, and this keeps the tool running on whatever is installed.
+    let crc = 0xffffffff;
+    for (let i = 4; i < 8 + body.length; i += 1) {
+      crc ^= out[i];
+      for (let bit = 0; bit < 8; bit += 1) {
+        crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+      }
+    }
+    out.writeUInt32BE((crc ^ 0xffffffff) >>> 0, 8 + body.length);
+    return out;
+  };
+
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // colour type: RGBA
+  // 10..12 are compression, filter and interlace methods; 0 is the only legal
+  // value for each, and `Buffer.alloc` has already zeroed them.
+
+  fs.writeFileSync(
+    file,
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      chunk('IHDR', ihdr),
+      chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
+      chunk('IEND', Buffer.alloc(0)),
+    ]),
+  );
 }
 
 // --- the sweep --------------------------------------------------------------
@@ -353,6 +434,18 @@ for (const ecc of ECC_LEVELS) {
     const at = stampOrigin(shot.width, shot.height, matrix, 16);
     drawQrStamp(shot, matrix, at.x, at.y);
 
+    // THE PRISTINE ORIGINAL, which is what a real upload test actually needs.
+    // The simulated outputs below have already been downscaled and requantized;
+    // posting one of those measures OUR pipeline plus the platform's, and the
+    // whole question is what the PLATFORM alone does. PNG so that nothing is
+    // lost before the upload -- handing a platform a JPEG means it re-encodes an
+    // image that already has ringing in it, which is a second generation, not a
+    // first.
+    if (args.emit) {
+      const slug = `${ecc}-${modulePx}px-v${matrix.version}-${matrix.sizePx}px`;
+      writePng(path.join(args.emit, `upload-me__${slug}.png`), shot);
+    }
+
     const results = [];
     for (const platform of PLATFORMS) {
       const { image, bytes } = runPlatform(shot, platform);
@@ -360,9 +453,12 @@ for (const ecc of ECC_LEVELS) {
       const ok = decoded !== null && decoded.text === payload;
       results.push({ platform: platform.name, ok, strategy: decoded?.strategy ?? '-' });
 
-      if (args.emit) {
+      // The simulated results are emitted too, but only for the configurations
+      // that FAILED -- those are the ones worth looking at by eye to see how the
+      // stamp actually broke. Writing all 88 buries the interesting six.
+      if (args.emit && !ok) {
         const slug = `${ecc}-${modulePx}px-${platform.name.replace(/[^a-z0-9]+/gi, '_')}`;
-        fs.writeFileSync(path.join(args.emit, `${slug}.jpg`), bytes);
+        fs.writeFileSync(path.join(args.emit, `simulated-failure__${slug}.jpg`), bytes);
       }
     }
     rows.push({ ecc, modulePx, matrix, tooBig: false, results });
@@ -408,7 +504,12 @@ console.log(
       : ''),
 );
 if (args.emit) {
-  console.log(`\nJPEGs written to ${args.emit}/ -- upload the failures by hand to confirm.`);
+  console.log(
+    `\nwritten to ${args.emit}/\n` +
+      `  upload-me__*.png          post these, save them back, then:\n` +
+      `                              node tools/qrDecodeImage.mjs <the saved files>\n` +
+      `  simulated-failure__*.jpg  how the failures above actually broke`,
+  );
 }
 
 // A sweep where nothing survives is a real result and should be loud.

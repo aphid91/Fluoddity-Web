@@ -17,6 +17,11 @@ build/
 # desktop app's user saves. The browser's equivalent is IndexedDB.
 configs/custom/
 
+# `tools/qrSurvival.mjs --emit` output. Regenerable in seconds, and it is
+# megabytes of near-identical 1080p images -- the kind of thing that is only
+# ever committed by accident.
+qr-samples/
+
 # IDE
 .vscode/
 .idea/
