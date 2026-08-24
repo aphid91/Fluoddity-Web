@@ -127,6 +127,21 @@ test('the checkpoint restore and the share paste are discriminated by shift', ()
   assert.equal(paste?.command, undefined);
 });
 
+test('the two screenshots are discriminated by shift', () => {
+  // SAME SHAPE AS THE PAIRS ABOVE, and the same reason for testing it: both
+  // actions open an identical-looking drag overlay, so a P that stamped when it
+  // should not have would only be noticed once the picture was already posted --
+  // with a QR code in the corner the user did not ask for and did not want.
+  const plain = matchHotkey(DEFAULT_HOTKEYS, 'KeyP', false);
+  const stamped = matchHotkey(DEFAULT_HOTKEYS, 'KeyP', true);
+
+  assert.equal(plain?.local, 'copyScreenshot');
+  assert.equal(stamped?.local, 'copyShareImage');
+  // Neither is simulation state, so neither carries a command.
+  assert.equal(plain?.command, undefined);
+  assert.equal(stamped?.command, undefined);
+});
+
 // --- 3. what did NOT move keeps its desktop key ---------------------------
 
 test('the uncollided desktop bindings are unchanged', () => {

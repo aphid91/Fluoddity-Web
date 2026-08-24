@@ -223,6 +223,26 @@ export function buildQrMatrix(
 }
 
 /**
+ * Warn about a share image larger than this on either side, in device pixels.
+ *
+ * ## 1080 IS WHERE PLATFORMS START RESIZING
+ *
+ * The sweep's central finding is that JPEG quality barely touches a stamp and
+ * DOWNSCALING is what destroys it -- and the corollary is that an image a
+ * platform does not resize is never in danger at all. Most of them leave uploads
+ * at or under about 1080 on the long edge alone and resample anything above it,
+ * so this is the line between "the code arrives intact" and "the code takes its
+ * chances".
+ *
+ * A WARNING, NEVER A LIMIT, exactly as `SHARE_LINK_WARN_LENGTH` is: the image is
+ * valid at any size, several routes never resize it, and someone posting to a
+ * service that leaves originals alone should not be overruled by our guess. It
+ * lives here rather than in the UI because it is a fact about stamp survival,
+ * which is this file's subject -- the overlay only renders it.
+ */
+export const DOWNSCALE_WARN_PX = 1080;
+
+/**
  * Headroom around the stamp in a minimum-sized crop, in device pixels.
  *
  * ## WHY THIS IS AN ADDITION AND NOT A MULTIPLE

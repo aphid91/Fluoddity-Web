@@ -68,6 +68,8 @@ export type LocalAction =
   | 'toggleUi'
   | 'copyShareLink'
   | 'pasteShareLink'
+  | 'copyScreenshot'
+  | 'copyShareImage'
   | 'showGuide'
   | 'showControls';
 
@@ -212,6 +214,17 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   // out -- which is a mnemonic worth more than either key on its own.
   { code: 'KeyC', shift: true, local: 'copyShareLink' },
   { code: 'KeyV', shift: true, local: 'pasteShareLink' },
+
+  // P for picture, and the shifted pair follows the SAME RULE as C and V above:
+  // bare is the ordinary thing, shifted is the sharing thing. `P` is a plain
+  // screenshot; `Shift+P` is a screenshot that carries the project with it.
+  //
+  // THE BARE KEY IS THE UNSHIFTED ONE ON PURPOSE. A picture of what is on screen
+  // is the commoner want by far -- people screenshot to show something, not to
+  // hand over a project -- so the cheaper gesture goes to the cheaper action,
+  // matching how C and V put the in-session operation on the bare key.
+  { code: 'KeyP', shift: false, local: 'copyScreenshot' },
+  { code: 'KeyP', shift: true, local: 'copyShareImage' },
 
   // The two reference documents, on the two keys everyone tries. `local` for
   // the same reason as the rest of this block: the overlay is the panel's, and

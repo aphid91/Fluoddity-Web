@@ -112,7 +112,7 @@ import {
   decodeShareText,
 } from '../config/shareLink.ts';
 import type { RgbaImage } from '../share/qrRender.ts';
-import { QrCapacityError } from '../share/qrStamp.ts';
+import { DOWNSCALE_WARN_PX, QrCapacityError } from '../share/qrStamp.ts';
 import {
   STAMP_INSET,
   ShareImageError,
@@ -694,6 +694,9 @@ export class Panel {
       },
       onPasteShareLink: () => {
         this.pasteShareLink();
+      },
+      onCopyScreenshot: () => {
+        void this.copyScreenshot();
       },
       onCopyShareImage: () => {
         void this.copyShareImage();
@@ -1531,6 +1534,50 @@ export class Panel {
   }
 
   /**
+   * Capture a region of the canvas and copy it as an ordinary picture.
+   *
+   * ## NO STAMP, NO MINIMUM, NO WARNING
+   *
+   * All three restrictions on `copyShareImage` exist to protect the QR code, and
+   * there is no QR code here. A plain screenshot of any size is a perfectly good
+   * screenshot, so the overlay is given a zero minimum and a zero warning
+   * threshold and simply gets out of the way -- see `CropOverlayOptions`, where
+   * zero is the documented way to say "no opinion" for both.
+   *
+   * Sharing the overlay rather than writing a second one is the point: the drag,
+   * the dimming, the readout and the Escape handling are identical, and the only
+   * real difference between the two commands is what happens to the pixels
+   * afterwards.
+   */
+  async copyScreenshot(): Promise<void> {
+    if (this.canvas === null) {
+      this.toast.show('Screenshots are not available in this view.', 'error');
+      return;
+    }
+
+    const region = await pickCropRegion({
+      minDevicePx: 0,
+      stampDevicePx: 0,
+      insetDevicePx: 0,
+      warnAboveDevicePx: 0,
+    });
+    if (region === null) return;
+
+    try {
+      const shot = captureRegion(this.canvas, region);
+      if (await copyImage(shot)) {
+        this.toast.show(`Screenshot copied — ${shot.width}x${shot.height}.`);
+        return;
+      }
+      await downloadImage(shot, 'fluoddity.png');
+      this.toast.show('Could not reach the clipboard — the screenshot was downloaded instead.');
+    } catch (err: unknown) {
+      this.toast.show('Could not capture the screenshot.', 'error');
+      console.warn(`Screenshot failed: ${String(err)}`);
+    }
+  }
+
+  /**
    * Capture a region of the canvas and copy it with the project stamped in.
    *
    * ## THE IMAGE IS THE PROJECT
@@ -1594,6 +1641,7 @@ export class Panel {
       minDevicePx,
       stampDevicePx,
       insetDevicePx: STAMP_INSET,
+      warnAboveDevicePx: DOWNSCALE_WARN_PX,
     });
     if (region === null) return; // Cancelled; say nothing.
 

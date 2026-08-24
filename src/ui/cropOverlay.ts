@@ -56,12 +56,38 @@ export interface CropOverlayOptions {
    * Passed in rather than computed here because it depends on the payload, and
    * the payload depends on the live project -- the overlay must not have an
    * opinion about either.
+   *
+   * ZERO FOR A PLAIN SCREENSHOT, which has no stamp to make room for and so no
+   * minimum worth enforcing. Zero rather than a separate `mode` flag because
+   * every comparison below is already `>= minDevicePx`, and zero makes them all
+   * true without a single branch -- a mode would have to be threaded through
+   * the drawing, the clamping and the readout, and would be the same thing said
+   * three more times.
    */
   readonly minDevicePx: number;
-  /** Stamp side in DEVICE pixels, for the preview square. */
+  /** Stamp side in DEVICE pixels, for the preview square. Zero to draw none. */
   readonly stampDevicePx: number;
   /** Stamp inset in DEVICE pixels, so the preview sits where the stamp will. */
   readonly insetDevicePx: number;
+  /**
+   * Warn above this many device pixels on either side, or `0` to never warn.
+   *
+   * ## WHY A WARNING AND NOT A LIMIT
+   *
+   * Past this size a platform is likely to DOWNSCALE the upload, and
+   * `qrStamp.ts` records the finding that downscaling -- not JPEG quality -- is
+   * what actually destroys a stamp. So a large selection is a genuine risk to
+   * the thing the image is FOR.
+   *
+   * It is still only a warning, for the same reason `SHARE_LINK_WARN_LENGTH` is:
+   * the image is perfectly valid, plenty of routes never resize it, and a user
+   * who knows where they are posting should not be overruled by our guess about
+   * it. Refusing would trade a probable annoyance for a certain one.
+   *
+   * Zero for a plain screenshot, where there is no stamp to damage and the size
+   * is nobody's business but the user's.
+   */
+  readonly warnAboveDevicePx: number;
 }
 
 const ROOT_CSS = `
@@ -124,6 +150,21 @@ const BANNER_CSS = `
 /** Refusing red, for a selection that is currently too small to stamp. */
 const TOO_SMALL = 'rgba(255, 96, 96, 0.95)';
 
+/** Cautioning yellow, for one that is large enough to invite a downscale. */
+const TOO_LARGE = 'rgba(255, 214, 82, 0.95)';
+
+/**
+ * The note shown alongside an oversized selection.
+ *
+ * Stated as a CONSEQUENCE rather than a rule -- "will be downscaled, which
+ * damages the code" says why the user should care, where "too large" only says
+ * that we disapprove. They are about to post this somewhere we cannot see, so
+ * the only useful thing to give them is the reason.
+ */
+const LARGE_NOTE =
+  'Large screenshots are more likely to be downscaled by social media, ' +
+  'increasing the chance that a QR code will be damaged.';
+
 /**
  * Run one crop gesture.
  *
@@ -160,10 +201,17 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
     hint.style.cssText = HINT_CSS;
     hint.style.display = 'none';
 
+    // The resting message. Kept in a const because `draw` swaps the banner to
+    // the size caution and has to be able to put this back -- rebuilding the
+    // string there would be the same sentence written twice.
+    const instruction =
+      minCss > 0
+        ? `Drag to choose the shareable area — at least ${Math.ceil(minCss)}px on each side. Esc to cancel.`
+        : 'Drag to choose the area to capture. Esc to cancel.';
+
     const banner = document.createElement('div');
     banner.style.cssText = BANNER_CSS;
-    banner.textContent =
-      `Drag to choose the shareable area — at least ${Math.ceil(minCss)}px on each side. Esc to cancel.`;
+    banner.textContent = instruction;
 
     root.append(box, stamp, hint);
     document.body.append(root, banner);
@@ -181,42 +229,65 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
     });
 
     const draw = (rect: CropSelection): void => {
-      const fits = rect.width >= minCss && rect.height >= minCss;
+      // In DEVICE pixels, which is what the resulting image will actually be --
+      // quoting CSS pixels would understate the capture on a HiDPI screen and
+      // make the number disagree with the file the user ends up with. Both
+      // thresholds are device-pixel quantities, so the comparison happens here
+      // rather than against the CSS rectangle.
+      const dw = Math.round(rect.width * ratio);
+      const dh = Math.round(rect.height * ratio);
+
+      const tooSmall = rect.width < minCss || rect.height < minCss;
+      const tooLarge =
+        options.warnAboveDevicePx > 0 &&
+        (dw > options.warnAboveDevicePx || dh > options.warnAboveDevicePx);
+
+      // TOO SMALL OUTRANKS TOO LARGE, because only one of them is actionable at
+      // this instant: an undersized box is about to be changed by the overlay
+      // itself, while an oversized one is a choice the user is allowed to make.
+      // Showing the caution over the correction would describe the wrong future.
+      const accent = tooSmall ? TOO_SMALL : tooLarge ? TOO_LARGE : '#fff';
 
       box.style.display = 'block';
       box.style.left = `${rect.x}px`;
       box.style.top = `${rect.y}px`;
       box.style.width = `${rect.width}px`;
       box.style.height = `${rect.height}px`;
-      box.style.borderColor = fits ? '#fff' : TOO_SMALL;
+      box.style.borderColor = accent;
 
       // The preview only appears once it would actually fit, because a stamp
       // square larger than the box it sits in would misrepresent the result --
-      // the honest signal at that size is the red border and the readout.
-      const room = rect.width >= stampCss + insetCss && rect.height >= stampCss + insetCss;
+      // the honest signal at that size is the red border and the readout. A
+      // zero-size stamp (a plain screenshot) draws none at all.
+      const room =
+        stampCss > 0 &&
+        rect.width >= stampCss + insetCss &&
+        rect.height >= stampCss + insetCss;
       stamp.style.display = room ? 'block' : 'none';
       if (room) {
         stamp.style.left = `${rect.x + rect.width - stampCss - insetCss}px`;
         stamp.style.top = `${rect.y + rect.height - stampCss - insetCss}px`;
         stamp.style.width = `${stampCss}px`;
         stamp.style.height = `${stampCss}px`;
-        stamp.style.borderColor = fits ? 'rgba(255,255,255,0.9)' : TOO_SMALL;
+        stamp.style.borderColor = accent;
       }
 
       hint.style.display = 'block';
-      // In DEVICE pixels, which is what the resulting image will actually be --
-      // quoting CSS pixels would understate the capture on a HiDPI screen and
-      // make the number disagree with the file the user ends up with.
-      const dw = Math.round(rect.width * ratio);
-      const dh = Math.round(rect.height * ratio);
-      hint.textContent = fits
-        ? `${dw} x ${dh}`
-        : `${dw} x ${dh} — too small, will grow to ${options.minDevicePx}`;
-      hint.style.color = fits ? '#fff' : TOO_SMALL;
+      hint.textContent = tooSmall
+        ? `${dw} x ${dh} — too small, will grow to ${options.minDevicePx}`
+        : `${dw} x ${dh}`;
+      hint.style.color = accent;
       // Above the box, unless that would put it off the top of the window.
       const above = rect.y - 24;
       hint.style.left = `${rect.x}px`;
       hint.style.top = `${above < 4 ? rect.y + rect.height + 6 : above}px`;
+
+      // THE NOTE LIVES IN THE BANNER, not beside the box. It is two lines of
+      // prose and the readout is a number that has to stay next to the corner
+      // the user is dragging; putting them together would either crowd the
+      // pointer or drag a paragraph around the screen.
+      banner.textContent = tooLarge ? LARGE_NOTE : instruction;
+      banner.style.color = tooLarge ? TOO_LARGE : '#fff';
     };
 
     /** Grow an undersized rectangle around its centre, then clamp to the window. */

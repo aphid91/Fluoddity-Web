@@ -447,6 +447,11 @@ async function start(): Promise<void> {
     // report the result. Copying silently is worse than not copying.
     copyShareLink: () => panel?.copyShareLink(),
     pasteShareLink: () => panel?.pasteShareLink(),
+    // Both open a drag overlay and resolve long after the keydown; `void` for
+    // the same reason the menu rows use it -- there is nothing here to await
+    // into, and the panel reports its own outcome through the toast.
+    copyScreenshot: () => void panel?.copyScreenshot(),
+    copyShareImage: () => void panel?.copyShareImage(),
     // `?nopanel` takes the splash with the panel, so there is nothing to open.
     showGuide: () => panel?.showGuide(),
     showControls: () => panel?.showControls(),

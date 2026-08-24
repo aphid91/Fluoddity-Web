@@ -52,6 +52,10 @@ export interface InputBindingOptions {
   readonly copyShareLink: () => void;
   /** Handle the `pasteShareLink` local action -- `Shift+V`. */
   readonly pasteShareLink: () => void;
+  /** Handle the `copyScreenshot` local action -- `P`. A plain picture. */
+  readonly copyScreenshot: () => void;
+  /** Handle the `copyShareImage` local action -- `Shift+P`. One with the project in it. */
+  readonly copyShareImage: () => void;
   /** Handle the `showGuide` local action -- `H`. Opens the guide overlay. */
   readonly showGuide: () => void;
   /**
@@ -101,7 +105,17 @@ export function bindInput(opts: InputBindingOptions): {
   readonly tracker: InputTracker;
   dispose(): void;
 } {
-  const { surface, dispatch, toggleUi, copyShareLink, pasteShareLink, showGuide, showControls } =
+  const {
+    surface,
+    dispatch,
+    toggleUi,
+    copyShareLink,
+    pasteShareLink,
+    copyScreenshot,
+    copyShareImage,
+    showGuide,
+    showControls,
+  } =
     opts;
   const canvas = surface.canvas;
   const tracker = new InputTracker();
@@ -274,6 +288,12 @@ export function bindInput(opts: InputBindingOptions): {
           break;
         case 'pasteShareLink':
           pasteShareLink();
+          break;
+        case 'copyScreenshot':
+          copyScreenshot();
+          break;
+        case 'copyShareImage':
+          copyShareImage();
           break;
         case 'showGuide':
           showGuide();

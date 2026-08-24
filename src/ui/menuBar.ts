@@ -79,6 +79,8 @@ export interface MenuBarOptions {
    * click, it opens a drag gesture, and the row has to say so.
    */
   readonly onCopyShareImage: () => void;
+  /** Crop a region and copy it as an ordinary picture, with no stamp. */
+  readonly onCopyScreenshot: () => void;
   /** Load a project from a stamped image on the clipboard. Its inverse. */
   readonly onPasteShareImage: () => void;
   /**
@@ -431,10 +433,28 @@ export class MenuBar {
       // in, and a user looking for either is looking under Share for a row that
       // says copy or load.
       this.addSeparator(body);
-      this.addItem(body, 'Copy Screenshot with QR Code…', () => {
-        this.closeMenus();
-        this.opts.onCopyShareImage();
-      });
+      // THE PLAIN ONE FIRST. It is the commoner want -- people screenshot to
+      // show someone a picture far more often than to hand over a project -- and
+      // it is the row that needs no explanation, so it reads as the default and
+      // the stamped one as the special case.
+      this.addItem(
+        body,
+        'Copy Screenshot…',
+        () => {
+          this.closeMenus();
+          this.opts.onCopyScreenshot();
+        },
+        localHotkeyLabel('copyScreenshot'),
+      );
+      this.addItem(
+        body,
+        'Copy Screenshot with QR Code…',
+        () => {
+          this.closeMenus();
+          this.opts.onCopyShareImage();
+        },
+        localHotkeyLabel('copyShareImage'),
+      );
       this.addItem(body, 'Load Project from Clipboard Image', () => {
         this.closeMenus();
         this.opts.onPasteShareImage();
