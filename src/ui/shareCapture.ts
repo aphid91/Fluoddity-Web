@@ -16,12 +16,29 @@
  * claimed. The route that works is `drawImage` onto a SEPARATE 2D canvas, which
  * the browser services from the same compositor surface.
  *
- * That imposes the one hard constraint in this file: **the canvas must be
- * readable at the moment we ask.** A WebGPU canvas is only guaranteed to hold
- * its contents until the frame ends, so a capture scheduled at an arbitrary
- * moment can come back empty or one frame stale. Callers capture in response to
- * a user gesture, immediately, which is when the last presented frame is still
- * there.
+ * That imposes the one hard constraint in this file: **the canvas must be read
+ * inside a frame, not between frames.**
+ *
+ * ## THE BLACK-SCREENSHOT BUG, AND WHY THE STAMP SURVIVED IT
+ *
+ * This was got wrong the first time and the symptom was precise: the QR stamp
+ * appeared correctly and everything around it was pure black. That combination
+ * is the whole diagnosis. The stamp is drawn by `drawQrStamp` into an array we
+ * own, so it was never in doubt; the artwork comes from `drawImage(canvas, …)`,
+ * and THAT is what returned nothing.
+ *
+ * The reason is that a WebGPU canvas's contents are only guaranteed to exist
+ * until the end of the frame that drew them. The texture from
+ * `getCurrentTexture()` is presented and released; between frames there is no
+ * promise that anything is readable, and Chrome returns transparent black
+ * rather than the last image. The capture ran from a click handler -- after an
+ * `await` on the crop overlay, several frames later -- so it read a surface
+ * that had already been handed back.
+ *
+ * `captureRegion` therefore does the read INSIDE a `requestAnimationFrame`
+ * callback, which is the same thing `main.ts`'s recorder does and for the same
+ * reason: the app's own rAF loop draws in one, so a callback registered from
+ * here lands in the same frame slot, immediately after a fresh present.
  */
 
 import type { RgbaImage } from '../share/qrRender.ts';
@@ -59,7 +76,24 @@ export interface CssRect {
  * real pixels, so a capture that quietly halved them on a 2x display would
  * produce an image that fails for a reason nobody could see.
  */
-export function captureRegion(canvas: HTMLCanvasElement, rect: CssRect): RgbaImage {
+export async function captureRegion(
+  canvas: HTMLCanvasElement,
+  rect: CssRect,
+): Promise<RgbaImage> {
+  // INSIDE A FRAME. See the file header: reading between frames yields
+  // transparent black, which is the black-screenshot bug. Two callbacks deep
+  // rather than one -- the first may land BEFORE the app's own rAF callback in
+  // the same frame (callbacks run in registration order, and the app's loop
+  // registered first), which would read the previous frame's released surface.
+  // Waiting one more guarantees the app has drawn and presented.
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+  return readRegionNow(canvas, rect);
+}
+
+/** The synchronous read. Split out so the frame-timing rule has one enforcer. */
+function readRegionNow(canvas: HTMLCanvasElement, rect: CssRect): RgbaImage {
   const box = canvas.getBoundingClientRect();
   // The canvas is letterboxed inside its element, so the backing store maps onto
   // the BOX rather than onto the element's padding edge. Both ratios are

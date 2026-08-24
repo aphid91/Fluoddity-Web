@@ -1564,7 +1564,7 @@ export class Panel {
     if (region === null) return;
 
     try {
-      const shot = captureRegion(this.canvas, region);
+      const shot = await captureRegion(this.canvas, region);
       if (await copyImage(shot)) {
         this.toast.show(`Screenshot copied — ${shot.width}x${shot.height}.`);
         return;
@@ -1646,7 +1646,7 @@ export class Panel {
     if (region === null) return; // Cancelled; say nothing.
 
     try {
-      const shot = captureRegion(this.canvas, region);
+      const shot = await captureRegion(this.canvas, region);
       const stamped = stampShareImage(shot, url);
       const copied = await copyImage(stamped.image);
 
