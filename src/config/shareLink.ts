@@ -10,10 +10,22 @@
  * `persistence.ts` says there is "exactly one interpreter of these bytes,
  * whether they came off the network or out of a database". A link is the third
  * place bytes can come from, and it changes nothing about that claim: this file
- * compresses and decompresses, and `fromDocument` remains the only thing that
- * decides what a document MEANS. So a link made by a future version fails in
- * `fromDocument` with its version message, not here with a vaguer one -- and
- * `decodeShareLink` deliberately returns `unknown` to keep it that way.
+ * chooses a TRANSPORT, `shareCodec.ts` chooses a REPRESENTATION, and
+ * `fromDocument` remains the only thing that decides what a document MEANS. So a
+ * link made by a future version fails in `fromDocument` with its version
+ * message, not here with a vaguer one -- and `decodeShareLink` deliberately
+ * returns `unknown` to keep it that way.
+ *
+ * ## TWO PAYLOAD FORMATS, ONE OF THEM WRITE-ONLY
+ *
+ * `#b=` is base64url over `shareCodec.ts`'s bytes and is what every link written
+ * from now on carries. `#c=` is JSON through lz-string, is still READ, and is
+ * never written -- links in chat histories and bookmarks outlive a refactor, and
+ * the keyed fragment was designed for exactly this (see `SHARE_HASH_KEY`).
+ *
+ * The binary form is roughly a THIRD the length: ~530 characters for the
+ * one-config project that took ~1800 before. `shareCodec.ts`'s header explains
+ * where that comes from and why no compressor is stacked on top of it.
  *
  * ## WHY THE FRAGMENT AND NOT THE QUERY
  *
@@ -38,6 +50,11 @@
  *    the way out: the compressor's alphabet is already URI-component-safe by
  *    construction -- that is the entire difference between it and plain
  *    `compress` -- and double-encoding would break the round trip.
+ *
+ *    THE BINARY PAYLOAD INHERITS THIS, which is why it is base64URL rather than
+ *    base64: standard base64's `+` is the very character above, and `/` and `=`
+ *    are two more that do not belong in a fragment unescaped. See
+ *    `bytesToBase64Url`.
  *
  * 2. **A TRUNCATED PAYLOAD RETURNS `''`, IT DOES NOT THROW.** Decompressing half
  *    a payload yields an empty string rather than raising. Truncation is the
@@ -71,6 +88,8 @@
 // below goes through the two consts.
 import * as LZStringNS from 'lz-string';
 
+import { ShareCodecError, decodeDocument, encodeDocument } from './shareCodec.ts';
+
 type LZStringApi = {
   compressToEncodedURIComponent(input: string): string;
   decompressFromEncodedURIComponent(compressed: string): string | null;
@@ -82,7 +101,11 @@ const LZString: LZStringApi =
   (LZStringNS as unknown as { default?: LZStringApi }).default ??
   (LZStringNS as unknown as LZStringApi);
 
-const { compressToEncodedURIComponent, decompressFromEncodedURIComponent } = LZString;
+// `compressToEncodedURIComponent` IS DELIBERATELY NOT DESTRUCTURED. Nothing
+// writes the old format any more -- `#c=` is a read-only path now -- and leaving
+// the compressor bound here would make it a one-character mistake to start
+// emitting links this app's own decoder treats as legacy.
+const { decompressFromEncodedURIComponent } = LZString;
 
 /**
  * What a project opened from a link is called.
@@ -102,7 +125,7 @@ const { compressToEncodedURIComponent, decompressFromEncodedURIComponent } = LZS
 export const SHARED_LINK_NAME = 'Shared Link';
 
 /**
- * The fragment key this feature owns.
+ * The fragment key the JSON-and-lz-string payload owns. READ-ONLY NOW.
  *
  * KEYED (`#c=...`) RATHER THAN BARE (`#...`), which costs a few characters and
  * buys two things. The fragment stays a namespace, so a later `#about` or a v2
@@ -114,11 +137,29 @@ export const SHARED_LINK_NAME = 'Shared Link';
  * `#section-2` from a copied anchor straight into the decompressor, turning
  * someone else's link into OUR corrupt-link error. With a key, a fragment
  * without it is simply not addressed to us and is ignored in silence.
+ *
+ * **THIS IS THE FORESIGHT PAYING OFF.** The binary payload below took the next
+ * key rather than redefining this one, so every `#c=` link already in someone's
+ * chat history still opens. Nothing writes `#c=` any more; everything reads it.
  */
 export const SHARE_HASH_KEY = 'c';
 
-/** The literal prefix, assembled once so encode and decode cannot disagree. */
+/**
+ * The fragment key the BINARY payload owns, and what `encodeShareLink` writes.
+ *
+ * A SECOND KEY RATHER THAN A SECOND MEANING FOR THE FIRST. The two payloads are
+ * not distinguishable by inspection -- base64url and lz-string's alphabet
+ * overlap almost entirely, so `#c=` bytes fed to the binary decoder would not
+ * reliably fail, they would sometimes decode to a WRONG DOCUMENT full of
+ * plausible floats. Sniffing was the alternative and this is why it was not
+ * taken: the key makes the format explicit, and an old link is routed by what it
+ * says it is rather than by a guess about its bytes.
+ */
+export const SHARE_HASH_KEY_BINARY = 'b';
+
+/** The literal prefixes, assembled once so encode and decode cannot disagree. */
 const PREFIX = `${SHARE_HASH_KEY}=`;
+const PREFIX_BINARY = `${SHARE_HASH_KEY_BINARY}=`;
 
 /**
  * Above this, warn -- never refuse.
@@ -129,9 +170,14 @@ const PREFIX = `${SHARE_HASH_KEY}=`;
  * hard-wrap at 78 columns, forum software that truncates. 8000 sits well under
  * where any of those start biting.
  *
- * Measured, so the number is not a guess: one config encodes to ~1800
- * characters and every one of the 175 shipped presets holds exactly one, so a
- * project has to reach roughly seven configs before this triggers at all.
+ * Measured, so the number is not a guess: one config encodes to ~530 characters
+ * under the binary payload and every one of the shipped presets holds exactly
+ * one, so a project has to reach roughly FIFTEEN configs before this triggers --
+ * up from seven, because the same threshold now buys three times the project.
+ *
+ * THE NUMBER DID NOT MOVE WHEN THE PAYLOAD SHRANK, deliberately. It is a claim
+ * about what survives a chat client, not about what this app produces, and
+ * nothing about those clients changed.
  *
  * A WARNING, because the link is still perfectly valid and still works when
  * pasted whole. A user who knows their channel is fine should not be stopped by
@@ -148,14 +194,52 @@ export class ShareLinkError extends Error {
 }
 
 /**
+ * base64url, hand-rolled over `btoa`/`atob`.
+ *
+ * NOT PLAIN BASE64: the standard alphabet's `+` and `/` are exactly the two
+ * characters trap 1 is about, and `=` padding is a third. Substituting `-`/`_`
+ * and dropping the padding leaves an alphabet that is URI-component-safe by
+ * construction, which is the same property lz-string's encoded variant has and
+ * the reason neither payload is wrapped in `encodeURIComponent`.
+ *
+ * THE CHUNKING IS NOT DECORATION. `String.fromCharCode(...bytes)` on a whole
+ * payload spreads one argument per byte, and a multi-config project is tens of
+ * thousands of them -- past the engine's argument limit it throws
+ * `RangeError: Maximum call stack size exceeded`. That is a crash that appears
+ * only for large projects, which are precisely the ones a share link is most
+ * valuable for, so it is avoided rather than discovered.
+ */
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** The inverse. Throws for anything `atob` will not take. */
+function base64UrlToBytes(text: string): Uint8Array {
+  const binary = atob(text.replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/**
  * A document as a URL fragment, INCLUDING the leading `#`.
  *
  * The `#` is included so callers concatenate rather than remember to add it;
  * `decodeShareLink` accepts it either way, so nothing has to strip it back off.
+ *
+ * BINARY SINCE THE CODEC LANDED, and roughly a third the length: the same
+ * one-config project that made an ~1800-character link as JSON-then-lz-string
+ * makes a ~530-character one as bytes. `shareCodec.ts`'s header has the
+ * measurements and the reason compression was not stacked on top.
  */
 export function encodeShareLink(document: unknown): string {
   // No `encodeURIComponent` here. See trap 1 in the file header.
-  return `#${PREFIX}${compressToEncodedURIComponent(JSON.stringify(document))}`;
+  return `#${PREFIX_BINARY}${bytesToBase64Url(encodeDocument(document))}`;
 }
 
 /**
@@ -176,7 +260,38 @@ export function encodeShareLink(document: unknown): string {
  */
 export function decodeShareLink(hash: string): unknown | null {
   const body = hash.startsWith('#') ? hash.slice(1) : hash;
+
   // `startsWith`/`slice`, NEVER `URLSearchParams`. See trap 1 in the header.
+  //
+  // THE BINARY KEY IS TRIED FIRST because it is the only one anything writes
+  // now; `#c=` below is the compatibility path for links already in circulation.
+  if (body.startsWith(PREFIX_BINARY)) {
+    const payload = body.slice(PREFIX_BINARY.length);
+    if (payload === '') {
+      throw new ShareLinkError('the share link carries no data');
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = base64UrlToBytes(payload);
+    } catch {
+      // `atob` throws for a character outside the alphabet or a bad length --
+      // both of which are what a link mangled in transit looks like.
+      throw new ShareLinkError(
+        'the share link is damaged or incomplete -- it was most likely truncated ' +
+          'somewhere between being copied and being opened',
+      );
+    }
+    try {
+      return decodeDocument(bytes);
+    } catch (err: unknown) {
+      // The codec's own messages are better than anything that could be said
+      // here -- it can tell "truncated" from "written by a newer build" -- so
+      // they are passed through rather than flattened into one sentence.
+      if (err instanceof ShareCodecError) throw new ShareLinkError(err.message);
+      throw err;
+    }
+  }
+
   if (!body.startsWith(PREFIX)) return null;
   const payload = body.slice(PREFIX.length);
   if (payload === '') {
@@ -220,13 +335,14 @@ export function decodeShareLink(hash: string): unknown | null {
  * `location.hash`. All of these are things people really paste:
  *
  *   - a whole URL, which is the normal case
- *   - a bare `#c=...`, from someone who selected only the fragment
- *   - a bare `c=...`, from a selection that missed the `#` too
+ *   - a bare `#b=...`, from someone who selected only the fragment
+ *   - a bare `b=...`, from a selection that missed the `#` too
  *   - any of the above wrapped in whitespace or newlines, which is what a
  *     mail client that hard-wrapped the link leaves behind
+ *   - any of the above with the legacy `c=` key, which still opens
  *
  * Splits on the FIRST `#`, so a URL whose query somehow contains one still
- * yields the right tail, and returns `null` when there is no `c=` anywhere --
+ * yields the right tail, and returns `null` when there is no key anywhere --
  * "this is not a share link" being a different answer from "it is damaged", the
  * same three-way distinction `decodeShareLink` draws and for the same reason.
  *
