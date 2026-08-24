@@ -2697,19 +2697,24 @@ const TOUCH_HINT_CSS =
 //
 // `width:100%` now carries the horizontal fill, and `flex:none` with a
 // `min-height` floor keeps the target size out of the column's distribution.
-// **NO PADDING, AND THAT IS THE FIX RATHER THAN AN OMISSION.** An earlier
-// version used `padding-top` to push the track clear of the caption above it.
-// That works for the TRACK, which is laid out in the content box -- but the
-// THUMB is positioned against the element, so the two stopped agreeing and the
-// knob rode visibly below its own groove.
+// **SYMMETRY IS WHAT KEEPS THE KNOB ON ITS TRACK; THE HEIGHT IS FREE.** An
+// earlier version used `padding-top` to push the track clear of the caption
+// above it. That works for the TRACK, which lays out in the content box -- but
+// the THUMB is positioned against the ELEMENT, so the two stopped agreeing and
+// the knob rode visibly below its own groove.
 //
-// The track and thumb only stay aligned when nothing shifts the content box, so
-// the slider is left symmetric and the CAPTION is moved instead: it is
-// absolutely positioned and pulled above the slider's own box entirely (see
-// `TOUCH_CAPTION_CSS`), which costs the group a few pixels of height and keeps
-// the control internally consistent.
+// The lesson is about the asymmetry, not the size: with nothing shifting the
+// content box, track and thumb are both centred in the element and agree at ANY
+// height. So this can be trimmed freely, and is -- 44px made the bar noticeably
+// tall once the caption had claimed its own line above.
+//
+// 32px MATCHES THE STEPPER ARROWS, which is the same judgement made there: a
+// slider is DRAGGED rather than tapped, so the finger arrives already moving and
+// tracks the thumb wherever it goes. It does not need the 44px a discrete tap
+// target does, and the two controls sharing a size makes the bar read as one
+// scale rather than two.
 const TOUCH_SLIDER_CSS =
-  'flex:none;width:100%;min-width:0;min-height:44px;height:44px;' +
+  'flex:none;width:100%;min-width:0;min-height:32px;height:32px;' +
   'box-sizing:border-box;margin:0;accent-color:#8ab4f8;cursor:pointer;';
 
 // The bottom row's buttons and the tool dropdown.
