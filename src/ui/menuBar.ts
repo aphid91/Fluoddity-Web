@@ -149,6 +149,17 @@ const SUBMENU_MAX_VIEWPORT_FRACTION = 0.7;
 const SUBMENU_MARGIN_PX = 8;
 
 /**
+ * Where a touch submenu sheet starts, in px from the top of the viewport.
+ *
+ * Clears the menu bar, which is `position:fixed` at the top-left and about 28px
+ * tall. HAND-COMPUTED rather than measured, matching `PANEL_TOP_PX` in
+ * `panel.ts`, and related to that constant by intent only: the sheet is opened
+ * from the bar and should sit directly under it, where the panels deliberately
+ * sit lower to clear the mutation overlay as well.
+ */
+const MOBILE_SUBMENU_TOP_PX = 30;
+
+/**
  * How long a submenu stays open after the cursor leaves it.
  *
  * Long enough to cross the corner between the parent row and a flyout entry far
@@ -344,7 +355,15 @@ export class MenuBar {
     document.addEventListener(
       'pointerdown',
       (ev) => {
-        if (this.openMenu === null) return;
+        // **AN OPEN TOUCH SHEET COUNTS AS AN OPEN MENU**, even though
+        // `openMenu` is null while one is up: opening it deliberately clears
+        // that field so the dropdown behind it goes away (see `addSubmenu`).
+        // Without this second test the sheet would have no dismissal at all --
+        // the top-level guard would return early and the tap would fall through
+        // to the canvas, which is the exact edit-by-accident this listener
+        // exists to prevent.
+        const sheetOpen = this.mobile && this.openSubmenu();
+        if (this.openMenu === null && !sheetOpen) return;
         if (this.root.contains(ev.target as Node)) return;
         this.closeMenus();
         // The press has done its job -- it dismissed the menu. Letting it
@@ -778,10 +797,43 @@ export class MenuBar {
     // flyout shrink-wraps its longest preset name on its own. The declaration
     // has to come AFTER the base string -- this is one `cssText`, so the later
     // one wins.
-    inner.style.cssText =
-      `${MENU_BODY_CSS}left:100%;top:0;min-width:0;` +
-      `max-height:${Math.round(SUBMENU_MAX_VIEWPORT_FRACTION * 100)}vh;` +
-      'overflow-y:auto;overscroll-behavior:contain;';
+    // =====================================================================
+    // TOUCH: A LEFT-ANCHORED SHEET, NOT A FLYOUT
+    // =====================================================================
+    //
+    // `left:100%` puts the list beside the row that opened it, which is the
+    // right shape for a cursor -- it appears where the pointer already is and
+    // the pointer travels into it. There is no pointer on a phone, so all that
+    // geometry buys is a list starting a third of the way across a 390px screen
+    // with its long preset names running off the right edge.
+    //
+    // On touch it becomes a panel pinned to the LEFT EDGE of the viewport
+    // instead: `position:fixed` takes it out of the row's coordinate space
+    // entirely, so it no longer inherits the offset that put it mid-screen.
+    // Anchored under the menu bar and given the full height it can use, since a
+    // phone has vertical room where it has no horizontal room.
+    //
+    // `min-width:0` on the desktop lets a flyout shrink-wrap its longest name.
+    // Here the width is stated instead: a shrink-wrapped list on a narrow screen
+    // is a ragged column whose width changes with whichever preset happens to
+    // have the longest name.
+    //
+    // **NARROW ON PURPOSE.** An earlier version took 78vw, which fit the longest
+    // preset name and covered most of the canvas to do it -- and the canvas is
+    // what the list is FOR, since every tap previews onto it. At ~31vw the sheet
+    // takes a strip down one side and leaves the artwork visible beside it, which
+    // is what makes tap-to-preview worth having. The handful of names longer than
+    // the column ellipsize (`MENU_ITEM_CSS` is `nowrap`), which costs the tail of
+    // a name that is still identifiable from its head.
+    inner.style.cssText = this.mobile
+      ? `${MENU_BODY_CSS}position:fixed;left:0;top:${String(MOBILE_SUBMENU_TOP_PX)}px;` +
+        'width:min(31vw,128px);min-width:0;border-radius:0 6px 6px 0;' +
+        `max-height:calc(100dvh - ${String(MOBILE_SUBMENU_TOP_PX)}px - 12px);` +
+        'overflow-y:auto;overscroll-behavior:contain;' +
+        '-webkit-overflow-scrolling:touch;'
+      : `${MENU_BODY_CSS}left:100%;top:0;min-width:0;` +
+        `max-height:${Math.round(SUBMENU_MAX_VIEWPORT_FRACTION * 100)}vh;` +
+        'overflow-y:auto;overscroll-behavior:contain;';
 
     // The pending close from `mouseleave`, or `null`. See `SUBMENU_CLOSE_DELAY_MS`.
     let closeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -799,7 +851,34 @@ export class MenuBar {
     // after the whole menu reopened would hide a submenu the user just asked for.
     this.submenuClosers.push(closeNow);
 
+    // TOUCH: THE ROW IS A BUTTON, and opening the list DISMISSES the dropdown it
+    // came from. On the desktop the parent menu stays up because the flyout sits
+    // beside it and the two read as one surface; on a phone the sheet covers most
+    // of the screen, so leaving the dropdown behind it is a second layer nobody
+    // can see or reach. Closing it also frees the whole viewport for the list.
+    //
+    // `setOpenMenu(null)` is NOT used here, and that is the subtle part: it runs
+    // `submenuClosers`, which would shut this sheet a moment after opening it.
+    // Only the top-level bodies are hidden, leaving the fixed-position sheet --
+    // which is no longer a visual child of any of them -- on screen.
+    if (this.mobile) {
+      row.addEventListener('click', (ev) => {
+        // The row is inside the dropdown being hidden; without this the click
+        // continues to the document listener that closes menus on an outside
+        // press, which would immediately shut the sheet as well.
+        ev.stopPropagation();
+        this.hideMenuBodies(null);
+        this.openMenu = null;
+        inner.style.display = 'block';
+        inner.scrollTop = 0;
+      });
+    }
+
     row.addEventListener('mouseenter', () => {
+      // TOUCH DOES NOT OPEN ON HOVER. A tap synthesizes `mouseenter`, so without
+      // this the flyout would open here -- before the click handler above ran --
+      // and then be hidden by `hideMenuBodies` a moment later.
+      if (this.mobile) return;
       // BEFORE anything else: re-entering within the grace period means the
       // cursor never really left, and the half-open state must not be finished.
       cancelClose();
@@ -816,6 +895,12 @@ export class MenuBar {
       this.fitSubmenu(row, inner);
     });
     row.addEventListener('mouseleave', (ev) => {
+      // TOUCH NEVER CLOSES ON LEAVE. The sheet is `position:fixed` and no longer
+      // overlaps its own row, so a finger moving into it leaves the row -- which
+      // under the desktop rule would schedule the close that this whole grace
+      // period exists to avoid. The sheet is dismissed by a tap outside it
+      // instead; see `armMobileSubmenuDismiss`.
+      if (this.mobile) return;
       // NOT WHILE THE CURSOR IS ON THE SCROLLBAR. The bar sits inside `inner`'s
       // padding box but outside its content, and dragging it puts the pointer
       // over the scrollbar itself -- which fires `mouseleave` on the row and
@@ -834,7 +919,22 @@ export class MenuBar {
       closeTimer = setTimeout(closeNow, SUBMENU_CLOSE_DELAY_MS);
     });
 
-    row.append(inner);
+    // **THE TOUCH SHEET IS REPARENTED OUT OF THE ROW**, and it has to be.
+    // `position:fixed` escapes the row's COORDINATE space but not its
+    // VISIBILITY: `display:none` on any ancestor hides every descendant however
+    // it is positioned. Since opening the sheet also hides the dropdown the row
+    // lives in, a sheet left inside that row rendered at 0x0 -- present in the
+    // DOM, correctly styled, and invisible.
+    //
+    // Moved to `root` rather than to `document.body` so it stays inside the
+    // element `contains` is tested against: the outside-tap dismissal asks
+    // whether the press landed within the bar, and a sheet outside it would
+    // dismiss itself on every tap on its own rows.
+    if (this.mobile) {
+      this.root.append(inner);
+    } else {
+      row.append(inner);
+    }
     body.append(row);
     return inner;
   }
@@ -1170,6 +1270,37 @@ export class MenuBar {
     }, SUBMENU_CLOSE_DELAY_MS);
   }
 
+  /**
+   * Show the dropdown named `title` and hide the rest. `null` hides them all.
+   *
+   * Split out of `setOpenMenu` because the touch submenu needs exactly this and
+   * nothing else around it: `setOpenMenu(null)` also runs `submenuClosers`,
+   * which would shut the sheet it is trying to open. Naming the narrow operation
+   * is better than a flag on the broad one -- the caller wanting only half of a
+   * method is a sign the half deserves a name.
+   */
+  /**
+   * Whether any submenu sheet is currently showing. Touch only, in practice.
+   *
+   * Asked of the DOM rather than tracked in a field because the sheets are
+   * opened and closed from several places -- the row's own click, the
+   * `submenuClosers`, and `setOpenMenu` -- and a mirror field would be one more
+   * thing each of them had to remember to update. The query runs on a handful of
+   * elements and only on a press that has already passed the cheap tests.
+   */
+  private openSubmenu(): boolean {
+    for (const body of this.root.querySelectorAll<HTMLElement>('[data-submenu-body]')) {
+      if (body.style.display === 'block') return true;
+    }
+    return false;
+  }
+
+  private hideMenuBodies(title: string | null): void {
+    for (const body of this.root.querySelectorAll<HTMLElement>('[data-menu-body]')) {
+      body.style.display = body.dataset['menuBody'] === title ? 'block' : 'none';
+    }
+  }
+
   private setOpenMenu(title: string | null): void {
     this.openMenu = title;
     // The BAR's own pending close, for the same reason the submenu closers run
@@ -1181,9 +1312,7 @@ export class MenuBar {
     // `submenuClosers`. Must run whether opening or closing: a submenu left
     // showing under a dropdown that is now hidden would reappear with it.
     for (const close of this.submenuClosers) close();
-    for (const body of this.root.querySelectorAll<HTMLElement>('[data-menu-body]')) {
-      body.style.display = body.dataset['menuBody'] === title ? 'block' : 'none';
-    }
+    this.hideMenuBodies(title);
     // A closed menu is a closed browse: restore whatever was being previewed,
     // unless a click committed it. The sticky hover is cleared with it -- a
     // menu closed while the cursor sat on a row never receives that row's
