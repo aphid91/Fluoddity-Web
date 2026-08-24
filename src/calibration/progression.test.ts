@@ -55,7 +55,7 @@ test('the path runs from the specified floor to the specified ceiling', () => {
   // The endpoints are the whole agreement about what calibration may hand
   // someone automatically: nothing lighter than the floor is worth running, and
   // nothing heavier than the ceiling should be chosen without the user asking.
-  assert.deepEqual({ ...PROGRESSION[0] }, { worldSize: 0.05, physicsSteps: 1 });
+  assert.deepEqual({ ...PROGRESSION[0] }, { worldSize: 0.1, physicsSteps: 1 });
   assert.deepEqual({ ...PROGRESSION.at(-1) }, { worldSize: 1.0, physicsSteps: 20 });
 });
 

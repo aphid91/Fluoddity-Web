@@ -15,7 +15,7 @@
  * That collapses a 2-D search into "walk until it hurts".
  *
  * THE ORDER ENCODES A PREFERENCE. The path alternates which knob it raises --
- * world 0.05 -> 0.25, physics 1 -> 10, world 0.25 -> 0.6, physics 10 -> 15,
+ * world 0.1 -> 0.25, physics 1 -> 10, world 0.25 -> 0.6, physics 10 -> 15,
  * world 0.6 -> 1.0, physics 15 -> 20. Spatial extent comes first because a tiny
  * world reads as a broken app no matter how smoothly it simulates; past a
  * usable size, temporal fidelity buys more than more area does.
@@ -34,7 +34,7 @@ export interface Rung {
 
 /**
  * The path, ascending. Index 0 is the floor and is never probed -- if a machine
- * cannot manage 30k particles at one sub-step there is nothing lighter to fall
+ * cannot manage 60k particles at one sub-step there is nothing lighter to fall
  * back to, so it is accepted unconditionally rather than tested.
  *
  * Every rung sits inside the `settingsSpec` bounds for its field (world size
@@ -49,7 +49,7 @@ export interface Rung {
  * hand someone automatically -- going beyond it stays a deliberate choice.
  */
 export const PROGRESSION: readonly Rung[] = Object.freeze([
-  Object.freeze({ worldSize: 0.05, physicsSteps: 1 }),
+  Object.freeze({ worldSize: 0.1, physicsSteps: 1 }),
   Object.freeze({ worldSize: 0.25, physicsSteps: 1 }),
   Object.freeze({ worldSize: 0.25, physicsSteps: 10 }),
   Object.freeze({ worldSize: 0.6, physicsSteps: 10 }),
