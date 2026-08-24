@@ -744,7 +744,10 @@ export class MutationOverlay {
     if (opts.mobile === true) {
       this.stepperLabel = document.createElement('div');
       this.stepperLabel.textContent = 'Selected cohort:';
-      this.stepperLabel.style.cssText = TOUCH_LABEL_CSS;
+      // ABSOLUTE, like the slider's caption and for the same two reasons: it
+      // costs the row no WIDTH (which is what lets all three components share
+      // one line) and no HEIGHT (the group reserves its line with padding).
+      this.stepperLabel.style.cssText = `${TOUCH_LABEL_CSS}position:absolute;top:0;left:0;`;
 
       const group = document.createElement('div');
       group.style.cssText = TOUCH_STEPPER_GROUP_CSS;
@@ -1421,8 +1424,12 @@ export class MutationOverlay {
       // use: there is no keyboard and, on this layout, clicking a cohort again
       // does NOT commit (see `oneClickSelection` handling). Naming routes that
       // do not exist here is worse than saying less.
+      // TWO LINES ON TOUCH, for the reason the cancel button beside it stacks:
+      // in the lit state this shares a row with the stepper and the red button,
+      // and "Generate children" on one line takes width neither neighbour can
+      // spare. Broken at the natural phrase boundary rather than by ellipsis.
       this.commitButton.textContent = suppressForTouch
-        ? 'Generate children'
+        ? 'Generate\nchildren'
         : 'Generate children from selected cohort' +
           keySuffix([enter, 'Left click cohort again']);
     }
@@ -2108,7 +2115,23 @@ export function contextLabelFor(
       // THE ONLY LABEL THAT STILL NAMES THE GESTURE. A long press cancels the
       // selection and no longer undoes, so this is the one state where the
       // canvas offers a second route to what the button does.
-      return 'Cancel (Long Press)';
+      //
+      // TWO LINES, like the undo label beside it -- and here it is what makes
+      // the row fit. This button shares its line with the stepper AND the gold
+      // button; on one line "Cancel (Long Press)" needed ~140px and squeezed
+      // both neighbours.
+      //
+      // **THE GESTURE HINT IS DROPPED HERE, AND THAT IS A REVERSAL WORTH
+      // NAMING.** "(Long Press)" is two words; inside a ~68px button they wrap
+      // AGAIN, giving three lines and a control visibly taller than the gold
+      // button beside it. Naming the shortcut is not worth a misaligned pair in
+      // the state a user sees most.
+      //
+      // The gesture is still discoverable: long-pressing the canvas is the
+      // natural thing to try when a selection is unwanted, it is documented in
+      // Help > Controls, and the button itself is right there. A shortcut that
+      // goes unnamed is a smaller cost than a row that looks broken.
+      return 'Cancel\nselection';
     case 'undo':
       // TWO LINES: the act, then WHAT IT WOULD TAKE BACK. The second line is the
       // whole value of this button over a bare "Undo" -- the desktop's version
@@ -2539,8 +2562,13 @@ const TOUCH_BAR_ROW_CSS =
 // `min-width:0` for the reason the slider itself needs it: a flex item defaults
 // to `min-width:auto` and refuses to shrink below its content, which would push
 // the gear off a narrow row.
+// `padding-top` RESERVES THE CAPTION'S LINE. The caption is absolutely
+// positioned and so contributes no height of its own; without this the slider
+// would start at the group's top edge and the caption would sit outside the bar
+// altogether. 15px is the caption's 11px text at its line height, plus a hair of
+// separation from the track.
 const TOUCH_SLIDER_GROUP_CSS =
-  'position:relative;display:flex;flex:1;min-width:0;';
+  'position:relative;display:flex;flex:1;min-width:0;padding-top:15px;';
 
 // The stepper and its caption, stacked. `flex:none` because this sits in the
 // hint ROW beside two buttons that DO stretch (`flex:1` each) -- without it the
@@ -2549,16 +2577,23 @@ const TOUCH_SLIDER_GROUP_CSS =
 //
 // `align-items:flex-start` keeps the caption hard against the stepper's left
 // edge rather than centring it over a control narrower than the words above it.
-// **`width:100%` FORCES ITS OWN LINE**, which is what makes the wrap
-// deterministic rather than dependent on how wide the buttons happen to be. The
-// row wraps (see `TOUCH_HINT_CSS`); a full-width item guarantees the two buttons
-// land beneath it as a pair rather than one of them squeezing up alongside.
+// **COLINEAR WITH THE TWO BUTTONS, NOT ON ITS OWN LINE.** An earlier version
+// gave this `width:100%` to force a wrap, because three components at their
+// natural widths did not fit and both buttons were being crushed to 65px. The
+// row is back on one line and the space comes from the parts instead: the
+// caption is `position:absolute` so it costs no width, and the stepper's own
+// controls tightened (see `TOUCH_STEP_BUTTON_CSS`).
+//
+// `flex:none` because the arrows are TAP TARGETS and must not shrink -- the
+// buttons beside it are `flex:1` and absorb the give. That is the right
+// division: a squeezed button label ellipsizes and still reads, a squeezed
+// 36px arrow becomes unhittable.
 //
 // `align-items:flex-start` keeps the caption hard against the stepper's left
 // edge rather than centring it over a control narrower than the words above it.
 const TOUCH_STEPPER_GROUP_CSS =
-  'display:flex;flex-direction:column;align-items:flex-start;gap:2px;' +
-  'flex:none;width:100%;';
+  'position:relative;display:flex;align-items:center;gap:2px;' +
+  'flex:none;padding-top:15px;';
 
 // The label line, sitting IN the slider's top padding rather than above it.
 //
@@ -2566,14 +2601,20 @@ const TOUCH_STEPPER_GROUP_CSS =
 // arrangement every settings row in the panel already uses -- so the bar reads
 // as the same kind of control rather than as a special case.
 //
-// `top:0` with `left/right` inset to match the slider's own end padding, so the
-// text lines up with the track's ends rather than with the element's box. A
-// range input reserves half a thumb-width at each end for the thumb to sit in,
-// and text flush to the element edge reads as misaligned against the track.
+// `left/right` inset to match the slider's own end padding, so the text lines up
+// with the track's ends rather than with the element's box. A range input
+// reserves half a thumb-width at each end for the thumb to sit in, and text
+// flush to the element edge reads as misaligned against the track.
 //
-// **NO `height`, and no vertical centring.** The caption is deliberately pinned
-// to the TOP of the gutter: the track is centred in the 44px box, so anything
-// that split the difference would land on top of it.
+// **ABOVE THE SLIDER'S BOX, NOT INSIDE IT.** It sat in the slider's top half
+// while the slider carried `padding-top` to push its track clear -- which
+// misaligned the thumb from its own groove, since padding moves the track and
+// not the thumb (see `TOUCH_SLIDER_CSS`). With the padding gone the caption has
+// to leave, so it is pulled fully above by its own height plus a hair.
+//
+// Absolute positioning is still what keeps it cheap: the group reserves the
+// space with `padding-top` once, and the caption occupies it without being a
+// flex item that could be squeezed by the slider beside it.
 const TOUCH_CAPTION_CSS =
   'position:absolute;top:0;left:2px;right:2px;z-index:1;' +
   'display:flex;align-items:baseline;justify-content:space-between;gap:8px;' +
@@ -2613,22 +2654,21 @@ const TOUCH_READOUT_CSS =
 // The prose is still allowed to shrink and ellipsize (`HINT_TEXT_CSS` on the
 // spans), which matters more here than on the desktop: several of these
 // sentences were written for a 1400px bar and this row is 390px wide.
-// **`flex-wrap:wrap`, WHERE THE DESKTOP ROW IS `nowrap`.** That reversal is
-// deliberate and is the only way three things fit. In the lit state this row
-// carries the labelled stepper (~180px, and it cannot shrink -- the arrows are
-// tap targets) plus the gold and red buttons at 44px each. On 390px that is one
-// component too many: forced onto a single line they were squeezed to 65px and
-// both labels clipped mid-word.
+// `nowrap`, like the desktop. An earlier version wrapped so the stepper could
+// take its own line, which cost a row of height in the state a user spends the
+// most time in. Everything now fits on one line because the two captions are
+// absolutely positioned and so cost no width at all -- see
+// `TOUCH_STEPPER_GROUP_CSS`.
+// `align-items:stretch` RATHER THAN `center`, so the two buttons share a height
+// whatever their labels wrap to. Centred, a two-line button and a three-line one
+// sat at different heights around a common midline, which reads as one of them
+// being broken. Stretched, the taller label sets the row and both fill it.
 //
-// Wrapping puts the stepper on its own line and the button pair beneath it, at
-// the cost of one extra row of height in the one state that needs it -- and only
-// in that state, since the unlit states have nothing to wrap.
-//
-// The desktop keeps `nowrap` for the reason its own comment gives: that row
-// mixes long prose with a three-part control, and wrapping there is the failure
-// mode rather than the fix.
+// The stepper group is `flex:none` with its own fixed-height controls, so it is
+// unaffected -- stretching a container whose children have explicit heights
+// changes nothing.
 const TOUCH_HINT_CSS =
-  'display:flex;align-items:center;gap:6px;flex-wrap:wrap;pointer-events:auto;' +
+  'display:flex;align-items:stretch;gap:6px;flex-wrap:nowrap;pointer-events:auto;' +
   'background:rgba(28,28,30,0.92);border:1px solid rgba(255,255,255,0.12);' +
   'border-radius:10px;padding:6px;box-shadow:0 4px 16px rgba(0,0,0,0.45);' +
   'font:12px system-ui,sans-serif;color:#a8a8ad;white-space:nowrap;' +
@@ -2657,20 +2697,20 @@ const TOUCH_HINT_CSS =
 //
 // `width:100%` now carries the horizontal fill, and `flex:none` with a
 // `min-height` floor keeps the target size out of the column's distribution.
-// **`padding-top` PUSHES THE TRACK BELOW THE CAPTION** without changing the hit
-// area. A range input centres its track in its content box, so a 44px slider
-// draws the track across the middle -- right where the caption now sits. Adding
-// top padding moves the CONTENT box down while `box-sizing:border-box` keeps the
-// element 44px overall, so the track ends up in the lower half and the gutter
-// above it is clear.
+// **NO PADDING, AND THAT IS THE FIX RATHER THAN AN OMISSION.** An earlier
+// version used `padding-top` to push the track clear of the caption above it.
+// That works for the TRACK, which is laid out in the content box -- but the
+// THUMB is positioned against the element, so the two stopped agreeing and the
+// knob rode visibly below its own groove.
 //
-// The full 44px remains pressable: padding is inside the element, and a range
-// input accepts a press anywhere in its box. This is what lets the labelled
-// strip stay draggable rather than being the dead zone it could have been.
+// The track and thumb only stay aligned when nothing shifts the content box, so
+// the slider is left symmetric and the CAPTION is moved instead: it is
+// absolutely positioned and pulled above the slider's own box entirely (see
+// `TOUCH_CAPTION_CSS`), which costs the group a few pixels of height and keeps
+// the control internally consistent.
 const TOUCH_SLIDER_CSS =
   'flex:none;width:100%;min-width:0;min-height:44px;height:44px;' +
-  'box-sizing:border-box;padding-top:14px;' +
-  'margin:0;accent-color:#8ab4f8;cursor:pointer;';
+  'box-sizing:border-box;margin:0;accent-color:#8ab4f8;cursor:pointer;';
 
 // The bottom row's buttons and the tool dropdown.
 //
@@ -2768,16 +2808,28 @@ const COHORT_INPUT_CSS =
 // also carries a full-width button, they are a nudge rather than a commit, and
 // the cost of a mis-tap is one step in a wrapping cycle. Still more than double
 // the desktop's 16px.
+// **32px, DOWN FROM 36, TO KEEP ALL THREE COMPONENTS ON ONE LINE.** The stepper
+// shares the hint row with the gold and red buttons, and at 36px arrows plus a
+// 3em field it took enough width to crush both to 63px and clip their labels.
+//
+// Still comfortably hittable: these are a NUDGE inside a row that also carries
+// two 44px buttons, they wrap rather than stopping at either end, and the cost
+// of a mis-tap is one step of a cycle. That is a materially different risk from
+// mis-tapping Generate Children, which is why the two are sized differently at
+// all -- and it is the same argument that put them at 36 rather than 44.
 const TOUCH_STEP_BUTTON_CSS =
   'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
-  'border-radius:6px;color:#e8e8ea;font:18px system-ui,sans-serif;line-height:1;' +
-  'padding:0;width:36px;height:36px;cursor:pointer;display:flex;' +
+  'border-radius:6px;color:#e8e8ea;font:16px system-ui,sans-serif;line-height:1;' +
+  'padding:0;width:32px;height:32px;cursor:pointer;display:flex;' +
   'align-items:center;justify-content:center;flex:none;';
 
+// `2.2em` rather than `3em`: two digits is the realistic maximum (the cohort
+// ceiling is 64) and the extra character's worth of width was going to a case
+// that cannot occur.
 const TOUCH_COHORT_INPUT_CSS =
   'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
-  'border-radius:6px;color:#e8e8ea;font:14px ui-monospace,monospace;' +
-  'width:3em;height:36px;padding:0 2px;text-align:center;box-sizing:border-box;' +
+  'border-radius:6px;color:#e8e8ea;font:13px ui-monospace,monospace;' +
+  'width:2.2em;height:32px;padding:0 2px;text-align:center;box-sizing:border-box;' +
   'flex:none;';
 
 // Wide enough to be worth having left the pane for, capped so it does not run

@@ -664,21 +664,23 @@ test('the latch label names the state it is IN, not the one it moves to', () => 
   assert.equal(contextLabelFor('toggleDragButton', true), 'Erase / Pull');
 });
 
-test('ONLY the cancel label advertises the long press', () => {
+test('NO label claims the long press, because none of them can spare the width', () => {
   // THE GESTURE CANCELS AND NOTHING ELSE. It used to mirror the whole context
   // button, which meant an accidental long press -- a finger resting while the
   // user decides where to tap -- would UNDO real work with no visible cause. It
   // now cancels only, which costs a re-tap when triggered by accident.
   //
-  // So Cancel is the one label with a second route to name. A label promising
-  // "long press" on a button the gesture no longer reaches would send people
-  // holding the canvas and watching nothing happen.
+  // That left Cancel as the one label with a second route to name, and it named
+  // it until the row had to fit three components on one line: "(Long Press)" is
+  // two words that wrap again inside a ~68px button, producing three lines and a
+  // control taller than the gold button beside it. The shortcut is documented in
+  // Help > Controls instead.
   //
-  // MATCHED CASE-INSENSITIVELY on the phrase rather than on the exact suffix, so
-  // the wording can be revised without editing this -- the assertion is about
-  // WHICH labels advertise the gesture, not about how it is phrased.
+  // The assertion stands either way: what must never happen is a label promising
+  // a gesture that does something else. Undo and the latch are unreachable by
+  // long press, so a claim there would send people holding the canvas and
+  // watching the wrong thing happen -- or nothing at all.
   const claimsLongPress = (label: string): boolean => /long press/i.test(label);
-  assert.ok(claimsLongPress(contextLabelFor('cancel', false)));
   assert.ok(
     !claimsLongPress(contextLabelFor('undo', false, 'reroll behavior')),
     'the long press no longer undoes, so the undo button must not claim it',
