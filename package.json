@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"tools/**/*.test.ts\" \"src/**/*.test.ts\"",
+    "qr:survival": "node tools/qrSurvival.mjs",
     "sync:configs": "node tools/syncConfigs.ts",
     "sync:configs:check": "node tools/syncConfigs.ts --check"
   },
@@ -17,6 +18,7 @@
     "@tweakpane/core": "^2.0.5",
     "@types/node": "^26.1.2",
     "@webgpu/types": "^0.1.60",
+    "jpeg-js": "^0.4.4",
     "typescript": "^5.7.2",
     "vite": "^6.0.7"
   },
@@ -24,8 +26,10 @@
     "esbuild@0.25.12": true
   },
   "dependencies": {
+    "jsqr": "^1.4.0",
     "lz-string": "^1.5.0",
     "mediabunny": "^1.55.1",
+    "qrcode-generator": "^2.0.4",
     "tweakpane": "^4.0.5"
   }
 }
