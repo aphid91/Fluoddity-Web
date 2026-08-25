@@ -497,8 +497,46 @@ export class MenuBar {
     // timeline -- undo, redo, checkpoints, revert -- and "Edit" sat one letter
     // away from "Editor" next door while describing something else entirely.
     this.addMenu('History', (body) => {
-      this.addItem(body, 'Undo', () => this.opts.send({ kind: 'undo' }), 'Z');
-      this.addItem(body, 'Redo', () => this.opts.send({ kind: 'redo' }), 'Shift+Z');
+      // BOTH ROWS NAME WHAT THEY WOULD MOVE, the way the hint bar's undo button
+      // already does: "Undo" alone tells you the gesture exists and never what
+      // it would cost you, which on a timeline holding a dozen slider edits is
+      // the only thing worth knowing before pressing it.
+      //
+      // The colon form matches the hint bar's tooltip (`Undo:\n<label>`) rather
+      // than its button text (`Undo <label>`), because a menu row is read as a
+      // NAME and the bare form produces "Undo edit gain" -- a phrase that parses
+      // as an imperative about a thing called "edit gain". The colon keeps the
+      // command and its object apart at a glance.
+      //
+      // `live` rather than a rebuild: these labels change on every edit, and the
+      // per-frame pump `addItem` already runs for `Revert to Saved` is the
+      // mechanism that exists for exactly this. `data-item` stays `Undo`/`Redo`,
+      // so selectors do not depend on what happens to be on the stack.
+      this.addItem(
+        body,
+        'Undo',
+        () => this.opts.send({ kind: 'undo' }),
+        'Z',
+        undefined,
+        {
+          label: () => historyLabel('Undo', this.opts.status().undoLabel),
+          enabled: () => this.opts.status().canUndo,
+        },
+      );
+      // READS `redoLabel`, NOT `undoLabel`. The two are one index apart on the
+      // timeline (see `History.redoLabel`), so reusing undo's here would name
+      // the step redo moves away from and look almost right.
+      this.addItem(
+        body,
+        'Redo',
+        () => this.opts.send({ kind: 'redo' }),
+        'Shift+Z',
+        undefined,
+        {
+          label: () => historyLabel('Redo', this.opts.status().redoLabel),
+          enabled: () => this.opts.status().canRedo,
+        },
+      );
       this.addSeparator(body);
       this.addItem(body, 'Set Checkpoint', () => this.opts.send({ kind: 'setCheckpoint' }), 'C');
       this.addItem(
@@ -1486,6 +1524,24 @@ const MENU_ITEM_CSS =
 const DELETE_BUTTON_CSS =
   'background:transparent;border:0;color:#d06060;cursor:pointer;' +
   'font:12px system-ui,sans-serif;padding:0 4px;line-height:1;';
+
+/**
+ * `Undo: edit gain`, or bare `Undo` when there is nothing to name.
+ *
+ * The empty case is NOT "Nothing to undo" -- the hint bar's button says that
+ * because it is the only thing on that row and a disabled button with no text
+ * would be a mystery. Here the row is already greyed by `live.enabled`, and a
+ * menu whose rows rename themselves to sentences when idle reads as broken. So
+ * an empty stack falls back to the plain verb, which is what the row said before
+ * labels existed.
+ *
+ * Shared by both rows so the two cannot drift into different separators; which
+ * label to hand it is the caller's business, and getting THAT wrong is the
+ * mistake worth commenting on (see the Redo row).
+ */
+export function historyLabel(verb: string, label: string): string {
+  return label === '' ? verb : `${verb}: ${label}`;
+}
 
 function disabledRow(text: string): HTMLElement {
   const row = document.createElement('div');

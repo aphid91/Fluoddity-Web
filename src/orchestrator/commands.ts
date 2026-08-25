@@ -593,6 +593,15 @@ export interface Status {
   readonly canUndo: boolean;
   readonly canRedo: boolean;
   readonly undoLabel: string;
+  /**
+   * What redo would re-apply, for menu text. Empty when nothing would.
+   *
+   * **NOT the mirror of `undoLabel`** -- see `History.redoLabel`, which reads
+   * one step further along the timeline than its counterpart. The two differ by
+   * a single index, so a reader who assumes symmetry here gets a menu row that
+   * names the step redo is moving AWAY from and looks almost right.
+   */
+  readonly redoLabel: string;
   readonly historyDepth: number;
   readonly historyCursor: number;
 

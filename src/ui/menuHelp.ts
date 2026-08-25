@@ -80,6 +80,17 @@ export const TOGGLE_UI_HELP =
   'Show/Hide the project and preferences control panels';
 
 /**
+ * Simulation > Pause / Resume, shared with the touch bar's pause button.
+ *
+ * Exported for the same reason `RESET_HELP` is: the bar mirrors this command,
+ * and one string is what stops the row and the button describing the same act
+ * two different ways. The touch button is the only place it appears on a phone
+ * -- there is no menu bar there -- so this carries the whole explanation.
+ */
+export const PAUSE_HELP =
+  'Pause/Resume the simulation. Particles and trails hold exactly where they are';
+
+/**
  * Row label -> help body. A row with no entry gets no tooltip at all, which is
  * the correct degradation: `Tooltip.attach` returns early on empty content, so
  * an unlisted row costs nothing and shows nothing.
@@ -91,9 +102,26 @@ export const MENU_HELP: Readonly<Record<string, string>> = {
     'Copy a url to the clipboard that opens Fluoddity.com to the current ' +
     `project. Encodes all the settings on the project panel and current ` +
     'particle behavior (including mutations)',
-  'Load Project from Clipboard URL':
-    'Load from a Fluoddity project url in your clipboard (equivalent to ' +
-    'pasting into the address bar and reloading the page)',
+  // KEYED WITHOUT "URL", which is what the row is actually called. The row was
+  // renamed when it learned to read stamped screenshots as well as links, and
+  // this key kept the old name -- so the lookup missed and the row silently lost
+  // its tooltip. The text below is the one that describes BOTH inputs.
+  'Load Project from Clipboard':
+    'Decode a fluoddity permalink or QR-code containing screenshot and load it ' +
+    'as the current project. Equivalent to paste/ctrl-V',
+  // THE ELLIPSIS IS PART OF THE KEY. Both screenshot rows end in a real `…`
+  // character rather than three periods, and the lookup is exact -- a key
+  // written with `...` here would miss the row it is for.
+  'Copy Screenshot…':
+    'Select a region of the canvas and copy it to your clipboard',
+  'Copy Screenshot with QR Code…':
+    'Select a region of the canvas to generate a screenshot, stamped with a QR ' +
+    'code containing a permalink to this project. Generates the same url as ' +
+    '"Copy Link to This Project"',
+  'Export Saves as JSON...':
+    'Download the contents of your custom saves as a folder of json files.',
+  'Import Saves from JSON...':
+    'Upload json files in a folder to your custom saves',
   'Video Export Controls':
     'Open the recording control panel for creating and downloading mp4 videos ' +
     'of your Fluoddities',
@@ -120,6 +148,7 @@ export const MENU_HELP: Readonly<Record<string, string>> = {
     'View the trails left behind by particles instead of the particles ' +
     'themselves. Hue indicates trail direction: Yellow-Green is up, Red is ' +
     'right, Purple is down, and Cyan is left',
+  'Reset View': 'Return the camera to the default location/zoom',
   'Reset Editor Preferences...':
     'Restore Fluoddity to factory settings. Equivalent to visiting the website ' +
     'for the first time',
@@ -127,6 +156,7 @@ export const MENU_HELP: Readonly<Record<string, string>> = {
   // text tooltip and a `<Gear symbol>` placeholder would render literally.
   'Toggle UI Panels': `${TOGGLE_UI_HELP}. Equivalent to pressing the gear button`,
 
+  'Pause / Resume': PAUSE_HELP,
   Reset: RESET_HELP,
   'Randomize Behavior': RANDOMIZE_BEHAVIOR_HELP,
   'Reroll Mutations': REROLL_MUTATIONS_HELP,

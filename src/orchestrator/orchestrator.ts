@@ -2688,6 +2688,7 @@ export class Orchestrator implements CommandBus {
       canUndo: this.history.canUndo,
       canRedo: this.history.canRedo,
       undoLabel: this.history.undoLabel(),
+      redoLabel: this.history.redoLabel(),
       historyDepth: this.history.depth,
       historyCursor: this.history.cursor,
 

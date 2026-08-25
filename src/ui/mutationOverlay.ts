@@ -44,6 +44,7 @@ import { bindFocusRelease } from './focusRelease.ts';
 import { hotkeyLabel, localHotkeyLabel } from './hotkeys.ts';
 import {
   GENERATE_CHILDREN_HELP,
+  PAUSE_HELP,
   RANDOMIZE_BEHAVIOR_HELP,
   REROLL_MUTATIONS_HELP,
   RESET_HELP,
@@ -89,9 +90,15 @@ const TOOL_LABELS: Record<MouseMode, string> = {
   draw: 'Draw',
 };
 
-/** `Tool: Select (1)`, with the key read from the hotkey table. */
-function toolOptionLabel(mode: MouseMode): string {
-  const key = hotkeyLabel({ kind: 'setMouseMode', mode });
+/**
+ * `Tool: Select (1)`, with the key read from the hotkey table.
+ *
+ * `mobile` drops the key, for the reason `keySuffix` gives: there is no keyboard
+ * to press `1` on. Passed in rather than read from a module-level flag because
+ * this is a free function and the layout is a per-instance constructor argument.
+ */
+export function toolOptionLabel(mode: MouseMode, mobile: boolean): string {
+  const key = mobile ? '' : hotkeyLabel({ kind: 'setMouseMode', mode });
   return `Tool: ${TOOL_LABELS[mode]}${key === '' ? '' : ` (${key})`}`;
 }
 
@@ -106,6 +113,24 @@ export class MutationOverlay {
   private readonly tool: HTMLSelectElement;
   /** The gear, at the right end. See its construction for why it lives here. */
   private readonly gear: HTMLButtonElement;
+  /**
+   * Pause/Resume, at the LEFT end of the touch bar's top row. `null` on desktop.
+   *
+   * NULL RATHER THAN HIDDEN, because the desktop does not want it at all: the
+   * menu bar carries Simulation > Pause / Resume and `Space` is right there, so
+   * a third route would be spending a slot on the one bar whose width is already
+   * the constraint. On touch neither of those exists -- there is no menu bar and
+   * no keyboard -- which is the whole reason this button does.
+   */
+  private readonly pause: HTMLButtonElement | null;
+  /**
+   * What `paintPause` last wrote, or `null` before the first frame.
+   *
+   * The same guard `generatedShown` and `rerollShown` use, and for the same
+   * reason: `refresh` runs every frame and repainting a button to say what it
+   * already says is the waste every guard in this file exists to avoid.
+   */
+  private pausedShown: boolean | null = null;
   /**
    * The gear's `(X)` suffix, kept so `paintGear` can rebuild its label.
    *
@@ -434,10 +459,14 @@ export class MutationOverlay {
     this.reroll = document.createElement('button');
     this.reroll.type = 'button';
     // The shortcut comes from the hotkey table, not from a literal here -- see
-    // `hotkeyLabel`. A rebind moves this label with it.
-    const rerollKey = hotkeyLabel({ kind: 'randomizeSeed' });
-    this.reroll.textContent =
-      rerollKey === '' ? 'Reroll Mutations' : `Reroll Mutations (${rerollKey})`;
+    // `hotkeyLabel`. A rebind moves this label with it, and touch drops it
+    // entirely (`barKeySuffix`). Built with the same helper as its neighbours
+    // rather than the hand-rolled conditional this used to carry: one spelling
+    // of "name the key unless there is none" is enough.
+    this.reroll.textContent = `Reroll Mutations${barKeySuffix(
+      [hotkeyLabel({ kind: 'randomizeSeed' })],
+      opts.mobile === true,
+    )}`;
     this.reroll.style.cssText = opts.mobile === true ? TOUCH_CONTROL_CSS : BUTTON_CSS;
     this.reroll.dataset['setting'] = 'config.mutationSeed.randomize';
 
@@ -451,9 +480,14 @@ export class MutationOverlay {
     // only key that randomizes behavior and this label names only it.
     this.rerollAll = document.createElement('button');
     this.rerollAll.type = 'button';
-    this.rerollAll.textContent = `Reroll All Behavior${keySuffix([
-      hotkeyLabel({ kind: 'randomizeBehavior' }),
-    ])}`;
+    // ON THE TOUCH BAR TOO, though only in the sentinel state -- it is appended
+    // to the bottom row and swapped in for the slider group by `refresh`. So it
+    // drops its key on touch like every other label here; being conditionally
+    // visible does not make it a desktop-only control.
+    this.rerollAll.textContent = `Reroll All Behavior${barKeySuffix(
+      [hotkeyLabel({ kind: 'randomizeBehavior' })],
+      opts.mobile === true,
+    )}`;
     // **THE FIXED WIDTH IS A DESKTOP CONCERN AND IS DROPPED ON TOUCH.**
     // `REROLL_ALL_CSS` matches the slider group's width so that swapping this
     // button in for it does not change the bar's total width -- which matters
@@ -482,7 +516,7 @@ export class MutationOverlay {
     for (const mode of MOUSE_MODES) {
       const option = document.createElement('option');
       option.value = mode;
-      option.textContent = toolOptionLabel(mode);
+      option.textContent = toolOptionLabel(mode, opts.mobile === true);
       // Set on each OPTION as well as on the select. An option does not reliably
       // inherit its parent's colours into the OS-drawn popup, which is how the
       // text ended up pale-on-white; stating both ends removes the guess.
@@ -496,7 +530,10 @@ export class MutationOverlay {
     // means the same thing whether the rule is authored or generated.
     this.reset = document.createElement('button');
     this.reset.type = 'button';
-    this.reset.textContent = `Reset${keySuffix([hotkeyLabel({ kind: 'reset' })])}`;
+    this.reset.textContent = `Reset${barKeySuffix(
+      [hotkeyLabel({ kind: 'reset' })],
+      opts.mobile === true,
+    )}`;
     this.reset.style.cssText = opts.mobile === true ? TOUCH_CONTROL_CSS : BUTTON_CSS;
     this.reset.dataset['setting'] = 'transport.reset';
     // Shared with the Simulation menu row, like Reroll All Behavior above.
@@ -593,8 +630,14 @@ export class MutationOverlay {
     this.gear = document.createElement('button');
     this.gear.type = 'button';
     this.gear.style.cssText = GEAR_BUTTON_CSS;
-    this.uiKeySuffix = keySuffix([localHotkeyLabel('toggleUi')]);
+    this.uiKeySuffix = barKeySuffix(
+      [localHotkeyLabel('toggleUi')],
+      opts.mobile === true,
+    );
     this.gear.dataset['setting'] = 'transport.toggleUi';
+    // `keyCaption` renders nothing for an empty string, so the touch gear is an
+    // icon alone and shrinks to match -- which is what lets the new pause button
+    // beside it be "about the same size" without either one being padded to fit.
     this.gear.append(gearIcon(), keyCaption(this.uiKeySuffix));
     // GOLD WHILE THE PANELS ARE SHOWING, the same vocabulary the layout presets
     // and Cohort Fences use: gold means "this toggle is the state you are in".
@@ -661,7 +704,41 @@ export class MutationOverlay {
     // The READOUT comes back with it, on the same line, right-aligned. It is the
     // one thing a slider position genuinely cannot tell you -- the actual number
     // -- and sharing the label's line means it costs no extra height.
+    //
+    // =====================================================================
+    // Pause/Resume, TOUCH ONLY, at the left end of the top row.
+    //
+    // The desktop reaches this from two places already -- the Simulation menu
+    // and `Space` -- and has neither on a phone. That is the gap: pausing is a
+    // basic transport act, and on touch it was reachable only by opening the
+    // panels and finding the Transport checkbox, several taps deep.
+    //
+    // IT SITS BESIDE THE SLIDER because the two are the controls you reach for
+    // WHILE WATCHING -- freeze the picture, then adjust it -- and this row is
+    // already the row for those. The bottom row is one-shot actions that restart
+    // or reroll, which is a different kind of press.
+    //
+    // ICON-ONLY, no key caption: there is no keyboard to name, and matching the
+    // gear's silhouette is what makes the two read as a pair bracketing the
+    // slider rather than as two unrelated controls.
     if (opts.mobile === true) {
+      this.pause = document.createElement('button');
+      this.pause.type = 'button';
+      this.pause.style.cssText = GEAR_BUTTON_CSS;
+      this.pause.dataset['setting'] = 'transport.togglePause';
+      this.pause.append(pauseIcon());
+      // Seeded to RUNNING, which is how the app starts. `refresh` corrects it on
+      // the first frame that disagrees -- the same bargain `paintGear` takes.
+      this.paintPause(false);
+      this.tooltip.attach(this.pause, { title: 'Pause / Resume', body: PAUSE_HELP });
+      this.pause.addEventListener('click', () => {
+        opts.send({ kind: 'togglePause' });
+        // Blurred for the reason the gear documents: a focused button swallows
+        // the keys that would otherwise re-fire it. Harmless on a phone, but
+        // this layout is reachable on a desktop via the `mobileMode` preference.
+        this.pause?.blur();
+      });
+
       // The label line: name on the left, value on the right.
       const caption = document.createElement('div');
       caption.style.cssText = TOUCH_CAPTION_CSS;
@@ -678,7 +755,11 @@ export class MutationOverlay {
 
       const top = document.createElement('div');
       top.style.cssText = TOUCH_BAR_ROW_CSS;
-      top.append(sliderGroup, this.gear);
+      // PAUSE, SLIDER, GEAR. The two icons bracket the control they act on: one
+      // freezes what the slider is changing, the other hides everything around
+      // it. Both are fixed-width and centre against the two-line stack between
+      // them, which is the arrangement the gear's own comment above describes.
+      top.append(this.pause, sliderGroup, this.gear);
 
       const bottom = document.createElement('div');
       bottom.style.cssText = TOUCH_BAR_ROW_CSS;
@@ -689,6 +770,9 @@ export class MutationOverlay {
       bar.style.cssText = TOUCH_BAR_CSS;
       bar.append(top, bottom);
     } else {
+      // No pause button here: the menu bar and `Space` both carry it, and this
+      // row is width-constrained in a way the touch layout's two rows are not.
+      this.pause = null;
       bar.append(
         presets,
         this.label,
@@ -1122,6 +1206,16 @@ export class MutationOverlay {
     }
 
     this.refreshReroll(status, typeof scale === 'number' ? scale : null);
+
+    // The pause button follows `Status`, unlike the gear beside it -- hiding the
+    // panels never reaches the Orchestrator, but pausing is simulation state and
+    // arrives here like everything else. So this needs no `setPaused` notifier:
+    // the menu row, `Space` and the button itself all go through the command,
+    // and every route lands back here on the next frame.
+    if (this.pausedShown !== status.paused) {
+      this.pausedShown = status.paused;
+      this.paintPause(status.paused);
+    }
 
     // --- the sentinel swap -------------------------------------------------
     //
@@ -1797,6 +1891,33 @@ export class MutationOverlay {
     this.gear.setAttribute('aria-pressed', String(!hidden));
   }
 
+  /**
+   * Colour the pause button and state its condition in words.
+   *
+   * GOLD WHILE PAUSED, which is this bar's one meaning for gold: the toggle is
+   * engaged. That reads the opposite way round from the gear beside it -- gold
+   * there means the panels are SHOWING, i.e. the un-pressed state -- and both are
+   * right, because in each case gold marks the condition the button PUT you in
+   * rather than a fixed half of the toggle. The gear's default is showing; this
+   * one's default is running.
+   *
+   * The glyph never changes (see `pauseIcon`), so colour and the labels below are
+   * the whole signal -- and colour is never the only one, which is the rule the
+   * population group states: `aria-label` names the state in words, so the button
+   * is readable without colour vision.
+   *
+   * A no-op on the desktop, where there is no button to paint.
+   */
+  private paintPause(paused: boolean): void {
+    if (this.pause === null) return;
+    this.pause.style.color = paused ? ACTIVE_GOLD : IDLE_WHITE;
+    this.pause.setAttribute(
+      'aria-label',
+      `Simulation: ${paused ? 'paused' : 'running'} — pause/resume it`,
+    );
+    this.pause.setAttribute('aria-pressed', String(paused));
+  }
+
   // --- the touch context control -------------------------------------------
   //
   // Three small methods rather than one exposed flag, so the LATCH cannot be
@@ -2254,6 +2375,28 @@ function keySuffix(keys: readonly string[]): string {
 }
 
 /**
+ * `keySuffix`, but empty on touch. Every label on the bottom bar uses this.
+ *
+ * **A PHONE HAS NO KEYBOARD, so `(R)` on the Reset button names a key the user
+ * cannot press.** It is not merely useless: this bar is width-starved -- five
+ * controls share one row on a 390px screen -- and the parenthetical is spending
+ * the scarcest thing on the layout to advertise an input that does not exist.
+ *
+ * The hint bar reached this conclusion first, where `suppressForTouch` shortens
+ * the commit and generate-child labels for exactly this reason. This is the same
+ * rule applied to the row above it, which had kept its captions only because
+ * they were written before the touch layout existed.
+ *
+ * ONE HELPER RATHER THAN FIVE CONDITIONALS at the call sites, so a button added
+ * later gets the behaviour by using the same function its neighbours do. The
+ * tooltips are untouched and still name the keys -- a desktop user who opens the
+ * touch layout deliberately can still learn them there.
+ */
+export function barKeySuffix(keys: readonly string[], mobile: boolean): string {
+  return mobile ? '' : keySuffix(keys);
+}
+
+/**
  * Cohort counts the preset buttons offer. Each must be a perfect square, since
  * `dotsIcon` lays it out as one -- 1, 4 and 16 read as die faces at this size.
  */
@@ -2391,6 +2534,52 @@ function gearIcon(): SVGSVGElement {
   ring.setAttribute('stroke', 'currentColor');
   ring.setAttribute('stroke-width', '3.2');
   svg.append(ring);
+
+  return svg;
+}
+
+/**
+ * The two bars of a pause glyph. Touch bar only -- see the button's construction.
+ *
+ * ALWAYS THE PAUSE BARS, never swapping to a play triangle when the simulation
+ * stops. A transport button has two readings -- "this is the state you are in"
+ * and "this is what pressing me does" -- and the two are opposites, so a button
+ * that switches glyphs is ambiguous in a way a fixed one is not. This bar
+ * already answers the state question with COLOUR, the way the gear, the layout
+ * presets and Cohort Fences all do: gold means the toggle is engaged. So the
+ * glyph is free to name the control, which is what a user scanning the row for
+ * "the pause button" is looking for.
+ *
+ * `currentColor` so the fill follows the button's `color`, which is what lets
+ * `paintPause` recolour it without this function knowing that exists -- the same
+ * arrangement `gearIcon` documents.
+ */
+function pauseIcon(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${String(ICON_BOX)} ${String(ICON_BOX)}`);
+  svg.setAttribute('width', String(ICON_BOX));
+  svg.setAttribute('height', String(ICON_BOX));
+  svg.style.display = 'block';
+
+  // Sized off ICON_BOX rather than in absolute units, so this tracks the gear
+  // beside it if the icon size is ever changed in one place.
+  const c = ICON_BOX / 2;
+  const barWidth = ICON_BOX * 0.17;
+  const barHeight = ICON_BOX * 0.62;
+  const gap = ICON_BOX * 0.13;
+  for (const side of [-1, 1]) {
+    const bar = document.createElementNS(SVG_NS, 'rect');
+    bar.setAttribute(
+      'x',
+      String(side === -1 ? c - gap / 2 - barWidth : c + gap / 2),
+    );
+    bar.setAttribute('y', String(c - barHeight / 2));
+    bar.setAttribute('width', String(barWidth));
+    bar.setAttribute('height', String(barHeight));
+    bar.setAttribute('rx', String(barWidth * 0.3));
+    bar.setAttribute('fill', 'currentColor');
+    svg.append(bar);
+  }
 
   return svg;
 }

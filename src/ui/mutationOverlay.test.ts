@@ -19,12 +19,15 @@ import assert from 'node:assert/strict';
 import type { Status } from '../orchestrator/commands.ts';
 import { NO_COHORT } from '../selection/cohortHighlight.ts';
 import {
+  barKeySuffix,
   contextActionFor,
   contextLabelFor,
   hintFor,
   overlayTop,
+  toolOptionLabel,
   type Rect,
 } from './mutationOverlay.ts';
+import { historyLabel } from './menuBar.ts';
 
 /**
  * A Status with only the fields `hintFor` reads.
@@ -705,4 +708,57 @@ test('an empty undo stack says so rather than showing a bare "Undo:"', () => {
   // this the button would read "Undo:" with nothing after the colon, which
   // looks like a label that failed to load rather than an empty history.
   assert.equal(contextLabelFor('undo', false, ''), 'Nothing to undo');
+});
+
+// ---------------------------------------------------------------------------
+// Key captions on the bottom bar
+// ---------------------------------------------------------------------------
+
+test('the touch bar names no keys, because a phone has none to press', () => {
+  // The failure this guards is silent and looks fine in code review: a label
+  // built with the desktop helper renders "(R)" on a device with no `R`, and
+  // spends width on it in the one layout that has none to spare.
+  assert.equal(barKeySuffix(['R'], true), '');
+  assert.equal(barKeySuffix(['B', 'F'], true), '');
+});
+
+test('the desktop bar still names its keys', () => {
+  // The other half of the same guard: suppressing on BOTH layouts would be an
+  // easy way to make the test above pass while deleting the desktop's shortcuts.
+  assert.equal(barKeySuffix(['R'], false), ' (R)');
+  assert.equal(barKeySuffix(['B', 'F'], false), ' (B or F)');
+});
+
+test('an unbound command drops its key rather than rendering empty parens', () => {
+  // `hotkeyLabel` returns '' for an unbound command, which is what feeds these.
+  assert.equal(barKeySuffix([''], false), '');
+  assert.equal(barKeySuffix(['', 'F'], false), ' (F)');
+});
+
+// ---------------------------------------------------------------------------
+// The History menu's undo/redo rows
+// ---------------------------------------------------------------------------
+
+test('the history rows name what they would move, like the hint bar button', () => {
+  // Same colon form the hint bar's tooltip uses (`contextLabelFor` above), so
+  // the two places that name a history step do not word it differently.
+  assert.equal(historyLabel('Undo', 'edit gain'), 'Undo: edit gain');
+  assert.equal(historyLabel('Redo', 'edit gain'), 'Redo: edit gain');
+});
+
+test('an empty stack falls back to the bare verb, not to a dangling colon', () => {
+  // The row is ALREADY greyed by `live.enabled` when this happens, so unlike the
+  // hint bar's lone button it needs no "Nothing to undo" prose -- and a menu
+  // whose rows rename themselves into sentences when idle reads as broken.
+  assert.equal(historyLabel('Undo', ''), 'Undo');
+  assert.equal(historyLabel('Redo', ''), 'Redo');
+});
+
+test('the tool options keep their names and drop only the number on touch', () => {
+  // The NAME is the part that says what the option does, so suppression must
+  // take the key and nothing else -- a bare "Tool:" would be a worse trade than
+  // the caption ever was.
+  assert.equal(toolOptionLabel('select', true), 'Tool: Select');
+  assert.equal(toolOptionLabel('draw', true), 'Tool: Draw');
+  assert.ok(toolOptionLabel('select', false).startsWith('Tool: Select'));
 });
