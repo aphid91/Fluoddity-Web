@@ -474,7 +474,7 @@ export class MutationOverlay {
     });
 
     // A real <select>, not a readout: the tool was previously only reachable
-    // from the Tools menu and the number keys, and a modal state you can see but
+    // from Editor > Tools and the number keys, and a modal state you can see but
     // not change from where you see it is a worse affordance than either.
     this.tool = document.createElement('select');
     this.tool.style.cssText = opts.mobile === true ? TOUCH_TOOL_CSS : TOOL_CSS;
@@ -2776,12 +2776,28 @@ const TOUCH_CONTROL_CSS =
 // `flex-wrap:nowrap` is explicit rather than relying on the default: this row
 // mixes long text with a three-part control, and the whole failure mode here is
 // things wrapping when they are asked to fit in too little space.
+// **SCALED UP ~20% WIDE AND ~30% TALL from the original 11px/5px/12px row**,
+// because it was the smallest text on screen while being the one thing telling
+// you what the current tool does. TOUCH IS UNTOUCHED -- `TOUCH_HINT_CSS` is
+// already finger-sized and takes the full viewport width, so there is no room
+// to grow into and nothing to fix.
+//
+// The height comes from PADDING (5px -> 7px) plus the larger font; the two
+// together carry the row from ~21px to ~28px.
+//
+// The width is the awkward half: this row SHRINK-WRAPS its sentence, so there
+// is no width here to multiply. `padding` (12px -> 15px) widens it by a fixed
+// amount whatever the prose does, and `min-width` sets the floor for the short
+// sentences -- the ones where a bare "Left click to place" was a stub of a row
+// against the bar above it. Long sentences are unaffected: they already exceed
+// the floor, and `max-width:96vw` still catches the far end.
 const HINT_CSS =
-  'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;pointer-events:auto;' +
+  'display:flex;align-items:center;gap:7px;flex-wrap:nowrap;pointer-events:auto;' +
   'background:rgba(28,28,30,0.92);border:1px solid rgba(255,255,255,0.12);' +
-  'border-radius:6px;padding:5px 12px;box-shadow:0 4px 16px rgba(0,0,0,0.45);' +
-  'font:11px system-ui,sans-serif;color:#a8a8ad;white-space:nowrap;' +
-  'user-select:none;max-width:96vw;overflow:hidden;';
+  'border-radius:6px;padding:7px 15px;box-shadow:0 4px 16px rgba(0,0,0,0.45);' +
+  'font:13px system-ui,sans-serif;color:#a8a8ad;white-space:nowrap;' +
+  'user-select:none;min-width:320px;max-width:96vw;overflow:hidden;' +
+  'box-sizing:border-box;';
 
 // The two text spans, which ARE allowed to shrink -- something has to when the
 // row runs out of room, and losing the tail of a sentence to `overflow:hidden`
@@ -2820,18 +2836,21 @@ const STEPPER_CSS =
 
 // Square and small: these sit inside a line of 11px text, so anything with the
 // bar buttons' padding would set the row's height on its own.
+// Grown with the row around it (16px -> 21px, 12px -> 14px): these sit INSIDE
+// `HINT_CSS`, and left at their old size against 13px prose they read as a
+// control that failed to scale rather than a deliberately small one.
 const STEP_BUTTON_CSS =
   'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
-  'border-radius:3px;color:#e8e8ea;font:12px system-ui,sans-serif;line-height:1;' +
-  'padding:0;width:16px;height:16px;cursor:pointer;display:flex;' +
+  'border-radius:3px;color:#e8e8ea;font:14px system-ui,sans-serif;line-height:1;' +
+  'padding:0;width:21px;height:21px;cursor:pointer;display:flex;' +
   'align-items:center;justify-content:center;flex:none;';
 
 // Wide enough for the two digits a 64-cohort maximum needs, and centred so the
 // number does not shift as it gains one.
 const COHORT_INPUT_CSS =
   'background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.14);' +
-  'border-radius:3px;color:#e8e8ea;font:11px ui-monospace,monospace;' +
-  'width:2.6em;height:16px;padding:0 2px;text-align:center;box-sizing:border-box;';
+  'border-radius:3px;color:#e8e8ea;font:13px ui-monospace,monospace;' +
+  'width:2.6em;height:21px;padding:0 2px;text-align:center;box-sizing:border-box;';
 
 // =========================================================================
 // TOUCH: the stepper, at finger size

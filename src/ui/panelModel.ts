@@ -30,7 +30,7 @@
  * single line here and nothing else.
  *
  * Everything Transport carried is reachable elsewhere -- Pause and the camera
- * from the Simulation and View menus, the tool from the Tools menu and the
+ * from the Simulation and View menus, the tool from Editor > Tools and the
  * `1`/`2`/`3` keys, and the active tool is displayed by the mutation overlay so
  * a modal tool is never invisible. Debug is a developer readout that the
  * `?debug` overlay also covers.

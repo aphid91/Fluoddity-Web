@@ -1,5 +1,6 @@
 /**
- * The menu bar: File, History, Tools, Editor, Simulation, Help.
+ * The menu bar: File, History, Editor, Simulation, Help. Tools is no longer a
+ * title of its own -- it is a submenu at the foot of Editor.
  *
  * **The menu TITLES are load-bearing strings**, not just labels: `setOpenMenu`
  * gates each hover-preview session on the open menu's title, so renaming one
@@ -537,19 +538,6 @@ export class MenuBar {
       );
     });
 
-    this.addMenu('Tools', (body) => {
-      for (const [index, mode] of MOUSE_MODES.entries()) {
-        const label = `${mode[0]!.toUpperCase()}${mode.slice(1)}`;
-        this.addItem(
-          body,
-          label,
-          () => this.opts.send({ kind: 'setMouseMode', mode }),
-          String(index + 1),
-          () => this.opts.status().mouseMode === mode,
-        );
-      }
-    });
-
     // "Editor" rather than "View": the menu already held Hide Panel, which is
     // not a view at all, and it now holds the preferences reset -- so the thing
     // these items have in common is the editor, not the camera.
@@ -580,6 +568,24 @@ export class MenuBar {
       this.addItem(body, 'Toggle UI Panels', () => this.opts.onToggleUi(), 'X', () =>
         this.opts.isUiHidden(),
       );
+      // Tools WAS a top-level menu. It is three radio rows bound to `1`/`2`/`3`,
+      // and the active tool is already shown by the mutation overlay -- so it
+      // cost a slot in the bar to hold something the keys and the overlay
+      // between them cover. Folded in here, behind its own divider at the
+      // bottom, because it is the one group under Editor that selects a MODE
+      // rather than acting once.
+      this.addSeparator(body);
+      const toolsBody = this.addSubmenu(body, 'Tools');
+      for (const [index, mode] of MOUSE_MODES.entries()) {
+        const label = `${mode[0]!.toUpperCase()}${mode.slice(1)}`;
+        this.addItem(
+          toolsBody,
+          label,
+          () => this.opts.send({ kind: 'setMouseMode', mode }),
+          String(index + 1),
+          () => this.opts.status().mouseMode === mode,
+        );
+      }
     });
 
     this.addMenu('Simulation', (body) => {
