@@ -30,8 +30,23 @@ import type { ViewPrefField } from '../orchestrator/commands.ts';
 import type { ControlContext } from './controls.ts';
 import type { SectionContext } from './sections/section.ts';
 
+/**
+ * The subset of `ViewPrefField` this file builds a checkbox for.
+ *
+ * **NARROWER THAN `ViewPrefField`, deliberately.** That set is every persisted
+ * boolean that configures the interface, and not all of them are Advanced tiers
+ * -- `physicsSliderOpen` is toggled by the rabbit button in `physicsSlider.ts`
+ * and has no blade here at all. Keying `HELP` to the full set would demand help
+ * text for a checkbox that does not exist, and taking the full set as the
+ * parameter type would let a caller ask for one to be built.
+ *
+ * Derived by exclusion rather than listed, so a fourth tier is picked up
+ * automatically while a non-tier member still has to be named here.
+ */
+type AdvancedField = Exclude<ViewPrefField, 'physicsSliderOpen'>;
+
 /** Help text per panel, so each checkbox says what it actually reveals. */
-const HELP: Record<ViewPrefField, string> = {
+const HELP: Record<AdvancedField, string> = {
   advancedProject: 'Show/Hide the advanced project settings',
   advancedPreferences: 'Show/Hide the advanced preferences settings',
   advancedDrawing: 'Show/Hide the advanced drawing controls settings',
@@ -45,7 +60,7 @@ const HELP: Record<ViewPrefField, string> = {
  */
 export function addAdvancedToggle(
   folder: FolderApi,
-  field: ViewPrefField,
+  field: AdvancedField,
   ctx: SectionContext,
 ): void {
   // Seeded from the live status rather than from a captured value: the panel is

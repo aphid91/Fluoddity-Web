@@ -2662,6 +2662,10 @@ export class Orchestrator implements CommandBus {
       // hidden, where that payload is empty. A bare boolean read costs nothing
       // next to the deep copy the closed-panel early-out exists to avoid.
       showFpsCounter: this.prefs.showFpsCounter,
+      // Outside `settingsSources()` too, and this one most of all: the slider it
+      // governs is shown only while the panels are HIDDEN, which is exactly the
+      // state that empties those payloads.
+      physicsSliderOpen: this.prefs.physicsSliderOpen,
       // Also outside `settingsSources()`, and for the same reason: auto-calibrate
       // reads this to seed its search while the panels are hidden behind the
       // first-run splash, where that payload is empty.

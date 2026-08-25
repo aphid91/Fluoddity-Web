@@ -88,6 +88,26 @@ export interface Preferences {
    */
   readonly showFpsCounter: boolean;
 
+  /**
+   * Whether the physics-rate slider is expanded beside its rabbit button.
+   *
+   * **BOOKKEEPING, NOT A CONTROL, so it is deliberately absent from
+   * `settingsSpec.ts`** -- the same call the three `advanced*` flags and
+   * `calibrated` make. There is nothing here a user would go to Preferences to
+   * drag: the round button IS the toggle, and a checkbox naming it would be a
+   * second way to say what one press already says.
+   *
+   * Persisted rather than session-only because it is a statement about how
+   * someone wants their screen laid out, not a moment-to-moment choice like the
+   * active tool -- closing it says "I do not want this over my artwork", and
+   * having to close it again on every reload would make the gesture useless.
+   *
+   * **DEFAULTS TO OPEN**, for the reason `showFpsCounter` defaults to on: a
+   * collapsed slider is a rabbit button that gives no hint what it expands
+   * into, and the rate is worth discovering. See `ui/physicsSlider.ts`.
+   */
+  readonly physicsSliderOpen: boolean;
+
   readonly bloomEnabled: boolean;
   /** Brightness cutoff for bloom extraction. Lower glows more widely. */
   readonly bloomThreshold: number;
@@ -259,6 +279,9 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   // spare -- or has none -- and neither is discoverable from a checkbox that
   // starts off.
   showFpsCounter: true,
+  // OPEN by default, for the reason the counter above is on by default: a lone
+  // rabbit button gives no hint what it expands into. See the interface.
+  physicsSliderOpen: true,
   bloomEnabled: true,
   bloomThreshold: 0.2,
   bloomIntensity: 0.1,
@@ -307,6 +330,7 @@ export const PREFERENCE_KINDS = {
   tonemapSoftness: 'float',
   motionBlurSamples: 'int',
   showFpsCounter: 'bool',
+  physicsSliderOpen: 'bool',
   bloomEnabled: 'bool',
   bloomThreshold: 'float',
   bloomIntensity: 'float',

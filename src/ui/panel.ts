@@ -69,6 +69,7 @@ import { LEFT_BUTTON, RIGHT_BUTTON } from './inputTracker.ts';
 import { RecordingBar } from './recordingBar.ts';
 import { FpsCounter } from './fpsCounter.ts';
 import { paintPerfLabels, watchPerfDrag } from './perfLabels.ts';
+import { PhysicsSlider } from './physicsSlider.ts';
 import { type Band, INITIAL_BAND } from '../perf/fpsBand.ts';
 import { AutoCalibration } from '../perf/autoCalibrate.ts';
 import { Splash } from './splash.ts';
@@ -423,6 +424,17 @@ export class Panel {
   private readonly fpsCounter: FpsCounter;
 
   /**
+   * Physics Rate, as a collapsible vertical slider at the right edge.
+   *
+   * On `document.body` beside the counter, so a pane rebuild cannot orphan it
+   * -- and **hidden by `X` INVERTED**: it is shown only while the panels are
+   * not, because the panels occupy the same space and Preferences carries the
+   * same setting a few rows down. `applyHidden` is where that happens, and
+   * `physicsSlider.ts` explains why the polarity is opposite to the counter's.
+   */
+  private readonly physicsSlider: PhysicsSlider;
+
+  /**
    * The band the counter and the three tinted labels are showing.
    *
    * Held on the panel rather than passed through, because `refresh` receives it
@@ -651,6 +663,14 @@ export class Panel {
         this.showPerformanceSettings();
       },
     });
+    // The hidden-panels route to Physics Rate. Sends through the same bus as
+    // the Preferences row it mirrors, so the two cannot disagree -- see
+    // `physicsSlider.ts` on why one field is worth two widgets here.
+    this.physicsSlider = new PhysicsSlider({
+      send,
+      // Passed down rather than re-detected, like the overlay's above.
+      mobile: this.mobile,
+    });
     // Built before the menu bar, since the bar's Help item closes over it.
     //
     // The splash pauses the simulation while it is up, and resumes it on
@@ -768,6 +788,20 @@ export class Panel {
     this.perfDragRelease = watchPerfDrag(this.right.container, (dragging) => {
       this.draggingPerfSlider = dragging;
     });
+    // **A SECOND WATCH, because the physics slider is outside both containers.**
+    // It carries the same `data-setting` as the Preferences blade, so the rule
+    // recognises it -- but a listener bound to the right container cannot see
+    // an element that is not in it. Dragging here suspends the band's dwell
+    // exactly as dragging the panel's own slider does, which is the whole point:
+    // the user is looking straight at the control asking what it costs.
+    const sliderDragRelease = watchPerfDrag(this.physicsSlider.element, (dragging) => {
+      this.draggingPerfSlider = dragging;
+    });
+    const panelDragRelease = this.perfDragRelease;
+    this.perfDragRelease = (): void => {
+      panelDragRelease();
+      sliderDragRelease();
+    };
 
     this.buildBoth();
 
@@ -777,6 +811,13 @@ export class Panel {
     // yet -- `main.ts` seeds `panelOpen` from `isOpen` immediately after this
     // returns.
     if (opts.startHidden === true) this.applyHidden(true);
+    // **UNCONDITIONAL, unlike the line above.** `applyHidden` runs at
+    // construction only for a hidden start, which is enough for the containers
+    // -- they are already visible in their own stylesheet. The physics slider
+    // is the opposite polarity and mounts HIDDEN, so an un-hidden start would
+    // otherwise never tell it anything and it would stay invisible for the
+    // session. Seeding it from the flag covers both starts with one statement.
+    this.physicsSlider.setUiHidden(this.hiddenFlag);
   }
 
   /**
@@ -1041,6 +1082,13 @@ export class Panel {
     // there is always something honest to show.
     if (fps !== null) this.band = fps.band;
     this.fpsCounter.update(this.band, fps?.readout ?? '', status.showFpsCounter);
+
+    // ALSO above the hidden check, and this one MOST of all: the slider is
+    // shown only while the panels are hidden, so refreshing it below the early
+    // return would freeze it in the exact state it exists to serve. It takes
+    // `this.band` rather than `fps` for the reason the line above does -- the
+    // held band is what survives the warmup window.
+    this.physicsSlider.refresh(status, this.band);
 
     // THE CROP BOX FOLLOWS THE TAB, and is therefore driven from STATE here
     // rather than pushed when a slider moves.
@@ -1504,6 +1552,13 @@ export class Panel {
     // never reaches the Orchestrator, so this call is the only notification
     // there is, and every route that hides the panels comes through here.
     this.overlay.setHidden(hidden);
+    // **INVERTED, and that is the point of it.** The panels occupy the right
+    // edge this slider sits in, and Preferences already carries Physics Rate as
+    // a dedicated row -- so showing both would put two live controls for one
+    // field within an inch of each other, where a drag on either silently moves
+    // the other. It takes the panels' flag rather than its own negation of it,
+    // so there is one statement of the rule rather than two that can drift.
+    this.physicsSlider.setUiHidden(hidden);
   }
 
   /**

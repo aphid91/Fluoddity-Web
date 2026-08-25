@@ -112,7 +112,7 @@ export const DRAW_PREF_FIELDS = [
 export type DrawPrefField = (typeof DRAW_PREF_FIELDS)[number];
 
 /**
- * The three per-panel Advanced flags, as a closed set.
+ * Boolean preferences that configure the INTERFACE, as a closed set.
  *
  * A SEPARATE set from `DRAW_PREF_FIELDS` rather than a widening of it, for the
  * same reason that one was narrowed in the first place: each is a closed list
@@ -122,11 +122,24 @@ export type DrawPrefField = (typeof DRAW_PREF_FIELDS)[number];
  *
  * Both land in the same `Preferences` record through the same `withValue` path;
  * the split is about what the compiler will let a caller say, not about storage.
+ *
+ * **WHAT MAKES A FIELD BELONG HERE** is not that it is a tier -- for a while
+ * these were only the three Advanced flags -- but that it governs how the
+ * editor is ARRANGED, persists, has no `settingsSpec` entry, and is neither
+ * recorded in history nor able to force a rebuild. `physicsSliderOpen` meets
+ * all four: it decides whether a control is folded away, exactly as the tiers
+ * decide whether a group of controls is shown.
+ *
+ * A field with a registry entry does NOT belong here, however interface-shaped
+ * it looks -- `showFpsCounter` is a panel row and travels by `editSetting` like
+ * every other row, and giving it a second route would be two ways to write one
+ * field.
  */
 export const VIEW_PREF_FIELDS = [
   'advancedProject',
   'advancedPreferences',
   'advancedDrawing',
+  'physicsSliderOpen',
 ] as const;
 export type ViewPrefField = (typeof VIEW_PREF_FIELDS)[number];
 
@@ -354,9 +367,9 @@ export type Command =
   | { readonly kind: 'clearStrafeField' }
   // --- view mode ------------------------------------------------------------
   // Its own command rather than a case of `editDrawPref`: see `ViewPrefField`.
-  // Never recorded in history -- a tier is how you are LOOKING at the project,
-  // not a change to it, and an undo that flipped a checkbox back would be
-  // answering a question nobody asked.
+  // Never recorded in history -- these say how you are LOOKING at the project,
+  // not what it contains, and an undo that flipped a checkbox back or unfolded
+  // a slider would be answering a question nobody asked.
   | {
       readonly kind: 'editViewPref';
       readonly field: ViewPrefField;
@@ -444,6 +457,16 @@ export interface Status {
    * A named boolean rather than a record entry, so a typo is a compile error.
    */
   readonly showFpsCounter: boolean;
+
+  /**
+   * Whether the physics-rate slider is expanded beside its rabbit button.
+   *
+   * **NOT read from `editPrefs`, for the same reason `showFpsCounter` is not**:
+   * that payload is empty whenever no panel is open, and this control exists
+   * ONLY while the panels are hidden -- so reading it from there would find
+   * `undefined` in every frame it is actually on screen.
+   */
+  readonly physicsSliderOpen: boolean;
 
   /**
    * The live physics rate.
