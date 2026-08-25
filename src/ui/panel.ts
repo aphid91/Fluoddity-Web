@@ -670,6 +670,20 @@ export class Panel {
       send,
       // Passed down rather than re-detected, like the overlay's above.
       mobile: this.mobile,
+      // Right-clicking the control runs the SAME search the Preferences button
+      // drives -- `startRateCalibration` is the one entry point, so the two
+      // gestures cannot diverge in what they measure or how they restore the
+      // pause afterwards. See `PhysicsSliderOptions.onCalibrate`.
+      //
+      // TOGGLES, so a second right-click stops a run rather than being ignored.
+      // This control is on screen precisely when the panels are hidden, which is
+      // when the Preferences button that would otherwise cancel is out of reach
+      // -- without this, a run started here could only be stopped by opening a
+      // panel.
+      onCalibrate: () => {
+        if (this.rateCalibration === null) this.startRateCalibration();
+        else this.cancelRateCalibration();
+      },
     });
     // Built before the menu bar, since the bar's Help item closes over it.
     //

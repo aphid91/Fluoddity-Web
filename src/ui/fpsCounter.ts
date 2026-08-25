@@ -188,7 +188,17 @@ export class FpsCounter {
     if (key === this.shown) return;
     this.shown = key;
 
-    this.root.textContent = readout;
+    // **THE UNIT IS PART OF THE READOUT.** A bare number in a coloured plate in
+    // the corner says nothing about what it counts -- and this one shares an
+    // edge with the physics slider's own number, so two unlabelled figures sat
+    // in the same column meaning entirely different things. The `aria-label`
+    // below has always said "frames per second"; this is the sighted half of
+    // the same fact.
+    //
+    // The suffix is NOT in the guard key above, and does not need to be: it is
+    // a constant, so `band:readout` still changes exactly when the rendered
+    // text does.
+    this.root.textContent = `${readout} fps`;
     this.root.style.color = BAND_COLOR[band];
     // The border follows the text at low alpha, so the whole badge reads as one
     // colour without the fill competing with the artwork behind it.

@@ -90,6 +90,25 @@ export interface PhysicsSliderOptions {
   readonly mobile?: boolean;
   /** Where to mount. Defaults to `document.body`. */
   readonly container?: HTMLElement;
+  /**
+   * Start (or stop) an auto-calibration run. The right-click.
+   *
+   * **A CALLBACK RATHER THAN A COMMAND**, unlike everything else this control
+   * does. A run is not a value to edit: it is a multi-second, frame-driven
+   * search that `Panel` owns outright -- it holds the `AutoCalibration`, feeds
+   * it from the frame loop, and takes and restores the pause around it. There
+   * is no command on the bus that starts one, and inventing one would put a
+   * second driver beside the panel's.
+   *
+   * Toggles: called while a run is going, it stops it. That is what makes the
+   * gesture safe to press twice, and it matches the Preferences button, which
+   * is the same run started from the other end.
+   *
+   * Optional, so a `PhysicsSlider` built without a panel behind it -- the DOM
+   * tests do exactly this -- simply has an inert right-click rather than
+   * needing a stub.
+   */
+  readonly onCalibrate?: () => void;
 }
 
 export class PhysicsSlider {
@@ -242,7 +261,14 @@ export class PhysicsSlider {
     this.slider.setAttribute('aria-label', setting?.label ?? 'Physics Rate');
 
     this.trackGroup = document.createElement('div');
-    this.trackGroup.style.cssText = TRACK_GROUP_CSS;
+    // The overlap, on whichever side faces the button -- see `TRACK_GROUP_CSS`.
+    // Appended after the shared block so it wins, in the same way `ROOT_CSS`
+    // takes its `display` override.
+    this.trackGroup.style.cssText =
+      TRACK_GROUP_CSS +
+      (mobile
+        ? `margin-bottom:-${String(OVERLAP_PX)}px;`
+        : `margin-top:-${String(OVERLAP_PX)}px;`);
     this.trackGroup.append(this.readout, this.slider);
 
     // --- the fast-forward button ---------------------------------------------------------
@@ -267,17 +293,54 @@ export class PhysicsSlider {
       this.button.blur();
     });
 
-    // A LIVE SOURCE, because both halves of what this says change under the
-    // user: which way the toggle goes, and what the rate currently is. A fixed
-    // string would describe the state the control was built in.
-    this.tooltip.attach(this.button, () => ({
-      title: setting?.label ?? 'Physics Rate',
+    // **ON BOTH HALVES, and that is the point of the overlap made verbal.** The
+    // help hung off the button alone, so hovering the track -- the part someone
+    // reaches for when they want to know what it does -- explained nothing. One
+    // source object attached twice, so the two can never drift apart.
+    //
+    // A LIVE SOURCE, because which way the toggle goes changes under the user.
+    // A fixed string would describe the state the control was built in.
+    //
+    // The help text is stated HERE rather than taken from `setting.help`: the
+    // registry's copy has to make sense in a row of Preferences blades, where
+    // there is no fast-forward icon to point at and no right-click to describe.
+    // This one is about THIS widget. The `(Expensive)` prefix is kept in step
+    // with the registry's by hand, which is the same bargain every other piece
+    // of widget-specific copy in this interface makes.
+    const help = (): { title: string; body: string } => ({
+      title: '(Expensive) Global Simulation speed',
       body:
-        `${setting?.help ?? ''}\n\n` +
-        `${this.open ? 'Hide' : 'Show'} the rate slider. The colour matches the ` +
-        'frame-rate counter, so a red mark means this is a good setting to ' +
-        'turn down.',
-    }));
+        'Determines how many physics updates occur per frame. ' +
+        'Click the fastforward icon to hide this slider. ' +
+        'Right click it to auto-calibrate physics speed.',
+    });
+    this.tooltip.attach(this.button, help);
+    this.tooltip.attach(this.slider, help);
+
+    // --- right-click to auto-calibrate ---------------------------------------
+    //
+    // **ON BOTH HALVES, like the tooltip that advertises it.** The tooltip names
+    // the icon, because that is the unambiguous thing to point at in a sentence
+    // -- but someone who has just read it with the cursor over the track should
+    // not have to travel to act on it. Binding the pair costs one listener and
+    // removes the only way to follow the instruction and have nothing happen.
+    //
+    // `preventDefault` on BOTH, unconditionally: this is the gesture's own
+    // element, so the browser menu is never what the user wanted here. It is
+    // called even when `onCalibrate` is absent, so a control built without a
+    // panel behind it suppresses the menu rather than half-implementing the
+    // gesture.
+    //
+    // **NOT `pointerdown` WITH `button === 2`.** `contextmenu` is the event that
+    // survives the platform differences that matter -- it is what a Ctrl-click
+    // raises on a Mac and what a long press raises on touch -- so one binding
+    // covers all three gestures that mean "the other click".
+    const onContextMenu = (ev: MouseEvent): void => {
+      ev.preventDefault();
+      opts.onCalibrate?.();
+    };
+    this.button.addEventListener('contextmenu', onContextMenu);
+    this.slider.addEventListener('contextmenu', onContextMenu);
 
     // **THE BUTTON GOES ON THE ANCHORED END, and the two layouts anchor
     // opposite ends.** The button is the part that is always present, so
@@ -553,10 +616,18 @@ export class PhysicsSlider {
     );
   }
 
-  /** Write the number above the track, remembering it for the frame guard. */
+  /**
+   * Write the number above the track, remembering it for the frame guard.
+   *
+   * **THE `x` IS WHAT MAKES IT A MULTIPLIER RATHER THAN A COUNT.** Bare, this
+   * is a number in a plate directly below the FPS badge -- another number in a
+   * plate, in the same column, in the same monospace face -- and nothing said
+   * that one was a rate per second and this one a multiple of the frame. `20x`
+   * reads as a speed the way `20` never did.
+   */
   private writeReadout(value: number): void {
     this.valueShown = value;
-    this.readout.textContent = String(Math.round(value));
+    this.readout.textContent = `${String(Math.round(value))}x`;
   }
 }
 
@@ -829,12 +900,40 @@ const TOUCH_ROOT_CSS =
  */
 const TOP_MARGIN_PX = 2;
 
-/** The track and its number, as a plate matching the badge's chrome. */
+/**
+ * How far the track plate tucks UNDER the button, in CSS pixels.
+ *
+ * **THE TWO READ AS ONE CONTROL ONLY IF THEY TOUCH.** Separated by the column's
+ * 8px gap they were a round button with an unrelated plate floating near it, and
+ * nothing said that pressing the one folded the other -- which is the entire
+ * relationship the control is built around.
+ *
+ * 14 of the button's 44px radius-worth, so the plate reaches roughly a third of
+ * the way into the circle: far enough to be unmistakably attached, not so far
+ * that the fast-forward glyph starts to sit on the readout. It also swallows the
+ * 8px gap, which is why the effective travel is 14 rather than 22.
+ */
+const OVERLAP_PX = 14;
+
+/**
+ * The track and its number, as a plate matching the badge's chrome.
+ *
+ * **THE NEGATIVE MARGIN IS THE OVERLAP** -- see `OVERLAP_PX`. It is applied on
+ * the side facing the button, which differs per layout: the desktop stacks
+ * button-then-track so the track pulls UP, and touch stacks track-then-button so
+ * it pulls DOWN. `PhysicsSlider` appends the matching one, since a rule that
+ * named a single side would tuck the plate the wrong way round on a phone.
+ *
+ * The button is raised above the plate rather than the other way about: the
+ * plate's own shadow would otherwise fall across the glyph, and the circle is
+ * the part that has to stay legible -- it is the only half of the control that
+ * is on screen when the track is folded away.
+ */
 const TRACK_GROUP_CSS =
   'display:flex;flex-direction:column;align-items:center;gap:6px;' +
   'padding:10px 6px;border-radius:8px;' +
   'background:rgba(28,28,30,0.92);border:1px solid rgba(255,255,255,0.12);' +
-  'box-shadow:0 2px 10px rgba(0,0,0,0.4);';
+  'box-shadow:0 2px 10px rgba(0,0,0,0.4);position:relative;z-index:0;';
 
 /**
  * The vertical track. See the header on why it is `writing-mode` rather than
@@ -883,4 +982,9 @@ const BUTTON_CSS =
   'display:flex;align-items:center;justify-content:center;' +
   'width:44px;height:44px;padding:0;border-radius:50%;cursor:pointer;' +
   'background:rgba(28,28,30,0.92);border:1px solid rgba(255,255,255,0.12);' +
-  'box-shadow:0 2px 10px rgba(0,0,0,0.4);user-select:none;';
+  'box-shadow:0 2px 10px rgba(0,0,0,0.4);user-select:none;' +
+  // ABOVE the track plate, which tucks under it -- see `OVERLAP_PX`. Both a
+  // `position` and a `z-index` are needed: `z-index` is ignored on a statically
+  // positioned box, so without the `relative` the plate would paint over the
+  // glyph in DOM order on the desktop, where the button comes first.
+  'position:relative;z-index:1;';
