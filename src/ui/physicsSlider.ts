@@ -1,10 +1,10 @@
 /**
  * Physics Rate, as a collapsible vertical slider at the right edge.
  *
- * A rabbit button with a track above it. The button toggles the track; its
- * colour is the band the FPS counter is showing, so the control that costs the
- * frame rate and the readout that reports it say the same thing at the same
- * time.
+ * A round fast-forward button with a vertical track folded out of it. The
+ * button toggles the track, and both of them carry the band colour the FPS
+ * counter is showing -- so the control that COSTS the frame rate and the
+ * readout that REPORTS it say the same thing at the same time.
  *
  * ## Why this exists when Preferences already has the setting
  *
@@ -39,25 +39,34 @@
  *
  * ## Where it sits
  *
- * Bottom-right on both layouts, and the two differ only in how far up:
+ * Hard against the RIGHT EDGE in both layouts. Which VERTICAL end it takes is
+ * the one real difference between them, and the button always sits on the
+ * anchored end so that folding the track cannot move it:
  *
- *   - DESKTOP: `bottom:8px`, the free corner. The right panel is gone whenever
- *     this is visible, so nothing competes for it.
- *   - TOUCH: above the control bar, read from `--fluoddity-bar-height` -- the
- *     variable `MutationOverlay.publishHeight` maintains for exactly this kind
- *     of question. The bar's height changes with the hint row's contents and
- *     with the safe-area inset, so a literal would be wrong on most devices and
+ *   - DESKTOP: TOP-right, button above and track hanging below. It goes as far
+ *     up as it can, stopping under whatever is already in that column -- see
+ *     `physicsSliderTop`, which is measured per frame rather than fixed,
+ *     because both of the things it stops under are optional and both move.
+ *   - TOUCH: BOTTOM-right, track above and button below, lifted clear of the
+ *     control bar by `--fluoddity-bar-height` -- the variable
+ *     `MutationOverlay.publishHeight` maintains for exactly this kind of
+ *     question. The bar's height changes with the hint row's contents and with
+ *     the safe-area inset, so a literal would be wrong on most devices and
  *     would put this on top of the undo button. The fallback is generous rather
  *     than tight, for the reason `sideContainer` gives: too much clearance
  *     costs a little space, too little hides a control.
  *
- * **THE TOUCH PLACEMENT NEEDS NO RESIZE LISTENER**, which is worth stating
- * because every other floating element here has one. The `calc()` lives in the
- * inline style rather than being resolved in JavaScript, so it re-evaluates by
- * itself whenever the overlay republishes the variable -- and the overlay
- * already republishes on resize, on rotation and on every reflow of its hint
- * row. Reading the variable here instead would mean re-reading it on all three,
- * which is a listener to duplicate a job CSS does for free.
+ * **The bottom is right for a phone for the same reason the top is right for a
+ * desktop**: the control bar already owns the bottom of a phone screen because
+ * that is where thumbs reach, while on a desktop the bottom-right corner is
+ * merely empty and the top-right is where this control's own readout -- the FPS
+ * badge -- already lives.
+ *
+ * **ONLY THE DESKTOP NEEDS A RESIZE LISTENER.** The touch placement is a
+ * `calc()` in the inline style, so it re-evaluates by itself whenever the
+ * overlay republishes the variable, and the overlay already republishes on
+ * resize, on rotation and on every reflow of its hint row. The desktop
+ * placement is a measurement, and measurements go stale -- see `reposition`.
  *
  * ## The vertical track
  *
@@ -71,6 +80,7 @@
 
 import { type Command, type Status } from '../orchestrator/commands.ts';
 import { type Band, BAND_COLOR, BAND_DESCRIPTION, startBand } from '../perf/fpsBand.ts';
+import { bindFocusRelease } from './focusRelease.ts';
 import { PREFS, settingFor } from './settingsSpec.ts';
 import { Tooltip } from './tooltip.ts';
 
@@ -84,12 +94,12 @@ export interface PhysicsSliderOptions {
 
 export class PhysicsSlider {
   private readonly root: HTMLElement;
-  /** The track's wrapper, shown and hidden by the rabbit. Holds the readout. */
+  /** The track's wrapper, shown and hidden by the button. Holds the readout. */
   private readonly trackGroup: HTMLElement;
   private readonly slider: HTMLInputElement;
   private readonly readout: HTMLElement;
   private readonly button: HTMLButtonElement;
-  /** The rabbit itself, so `paint` can tint the glyph rather than the plate. */
+  /** The mark itself, so `paint` can tint the glyph rather than the plate. */
   private readonly icon: SVGSVGElement;
 
   private readonly tooltip: Tooltip;
@@ -137,8 +147,40 @@ export class PhysicsSlider {
    */
   private dragging = false;
 
+  /**
+   * Teardown for the focus-release listeners. See where it is bound.
+   *
+   * The same field `MutationOverlay` keeps for its own binding, and for the
+   * same reason: this control lives outside both panel containers, so the
+   * panel's bindings cannot cover it and it owns its own.
+   */
+  private readonly releaseFocus: () => void;
+
+  /** Teardown for the desktop resize listener. A no-op on touch. */
+  private readonly releaseResize: () => void;
+
+  /**
+   * Whether this was built for touch. Fixed at construction.
+   *
+   * The layout branches happen ONCE in the constructor and need no field. This
+   * exists for `reposition`, whose entire job is a desktop concern -- the same
+   * reason `MutationOverlay` keeps its own `mobile`.
+   */
+  private readonly mobile: boolean;
+
+  /**
+   * The `top` last written, or `null` before the first placement.
+   *
+   * Guards the write the way every other per-frame guard in this file does:
+   * `reposition` runs each frame, the answer changes only when the window is
+   * resized or the bar reflows, and assigning an identical `style.top` sixty
+   * times a second is waste. `null` so the first frame always paints.
+   */
+  private topShown: number | null = null;
+
   constructor(opts: PhysicsSliderOptions) {
     const mobile = opts.mobile ?? false;
+    this.mobile = mobile;
     this.tooltip = new Tooltip(document.body, mobile);
 
     // Bounds from the registry, never restated -- so this and the Preferences
@@ -203,13 +245,13 @@ export class PhysicsSlider {
     this.trackGroup.style.cssText = TRACK_GROUP_CSS;
     this.trackGroup.append(this.readout, this.slider);
 
-    // --- the rabbit ---------------------------------------------------------
+    // --- the fast-forward button ---------------------------------------------------------
 
     this.button = document.createElement('button');
     this.button.type = 'button';
     this.button.style.cssText = BUTTON_CSS;
     this.button.dataset['setting'] = 'prefs.physicsSliderOpen';
-    this.icon = rabbitIcon();
+    this.icon = fastForwardIcon();
     this.button.append(this.icon);
 
     this.button.addEventListener('click', () => {
@@ -233,21 +275,67 @@ export class PhysicsSlider {
       body:
         `${setting?.help ?? ''}\n\n` +
         `${this.open ? 'Hide' : 'Show'} the rate slider. The colour matches the ` +
-        'frame-rate counter, so a red rabbit means this is a good setting to ' +
+        'frame-rate counter, so a red mark means this is a good setting to ' +
         'turn down.',
     }));
 
-    // TRACK ABOVE, BUTTON BELOW, as asked. The button is the part that is
-    // always present, so it takes the anchored position and the track grows
-    // upward out of it -- which is what makes the collapse read as folding into
-    // the button rather than as the whole control jumping down the screen.
-    this.root.append(this.trackGroup, this.button);
+    // **THE BUTTON GOES ON THE ANCHORED END, and the two layouts anchor
+    // opposite ends.** The button is the part that is always present, so
+    // whichever edge is pinned must be its edge: then folding the track away
+    // leaves the button exactly where it was, and the collapse reads as the
+    // track folding INTO the button rather than as the whole control jumping
+    // across the screen.
+    //
+    //   DESKTOP  pinned by `top`, so button first and the track hangs below.
+    //   TOUCH    pinned by `bottom`, so the track is first and grows upward.
+    if (mobile) {
+      this.root.append(this.trackGroup, this.button);
+    } else {
+      this.root.append(this.button, this.trackGroup);
+    }
     (opts.container ?? document.body).append(this.root);
 
-    // Seeded from the same starting state the badge uses, so the rabbit has a
+    // **HANDS THE KEYBOARD BACK AFTER A DRAG.** A native `<input type=range>`
+    // keeps focus once dragged, exactly as a Tweakpane track does, and would
+    // then swallow every hotkey -- and worse than swallow them: the arrow keys
+    // on a focused range MOVE THE SLIDER, so someone who dragged the rate and
+    // then reached for a key would silently edit the rate again.
+    //
+    // Its OWN binding, because this control deliberately lives outside both
+    // panel containers and the panel's two bindings cannot reach it. Exactly
+    // what `mutationOverlay.ts` does with its own root, and for the same
+    // reason -- the delegate stamps the container and tests membership at
+    // event time, so the button below is covered by the same call.
+    this.releaseFocus = bindFocusRelease(this.root);
+
+    // Seeded from the same starting state the badge uses, so the mark has a
     // colour from its first painted frame rather than being a bare plate until
     // the first measurement lands.
     this.paint(startBand().band);
+
+    // AFTER the mount, or it measures as a zero rect. Desktop only -- the touch
+    // placement is a `calc()` that needs no measuring at all.
+    //
+    // The RESIZE listener is what the touch layout does not need: this one
+    // depends on where the mutation bar ends up, and the bar re-centres itself
+    // on every resize. `refresh` covers the ordinary case per frame; this
+    // covers a resize that lands while the panels are shown, when `Panel` skips
+    // this control's refresh entirely and the last measurement would otherwise
+    // be the one from before the window changed.
+    if (!mobile) {
+      this.reposition();
+      const onResize = (): void => {
+        this.reposition();
+      };
+      window.addEventListener('resize', onResize);
+      this.releaseResize = (): void => {
+        window.removeEventListener('resize', onResize);
+      };
+    } else {
+      this.releaseResize = (): void => {
+        /* nothing bound: the touch placement is pure CSS */
+      };
+    }
 
     // --- events -------------------------------------------------------------
 
@@ -286,6 +374,12 @@ export class PhysicsSlider {
    */
   refresh(status: Status, band: Band): void {
     this.paint(band);
+
+    // Per frame, because what is above this moves: the badge appears and
+    // disappears with its preference, and the mutation bar re-centres and
+    // changes height as its own contents change. Guarded on the resulting `top`,
+    // so the common frame writes nothing.
+    this.reposition();
 
     // **THE FOLD FOLLOWS THE PREFERENCE, not just the click.** The click
     // already called `setOpen`, so this is a no-op in the common case -- but it
@@ -353,12 +447,14 @@ export class PhysicsSlider {
   }
 
   dispose(): void {
+    this.releaseResize();
+    this.releaseFocus();
     // Its element is on `document.body`, not inside `root`.
     this.tooltip.dispose();
     this.root.remove();
   }
 
-  /** Tint the rabbit for `band`, skipping the write when nothing moved. */
+  /** Tint the mark for `band`, skipping the write when nothing moved. */
   private paint(band: Band): void {
     if (band === this.bandShown) return;
     this.bandShown = band;
@@ -369,7 +465,72 @@ export class PhysicsSlider {
     const color = BAND_COLOR[band];
     this.button.style.color = color;
     this.button.style.borderColor = `${color}66`;
+
+    // **THE TRACK FOLLOWS THE BAND TOO**, so the whole control says one thing
+    // rather than a coloured button attached to a neutral slider.
+    //
+    // `accent-color` rather than custom pseudo-element rules: it tints the
+    // thumb AND the filled portion of the track in one property, it is what the
+    // platform already uses for a native range, and it is settable INLINE --
+    // `::-webkit-slider-runnable-track` is not, so the alternative is injecting
+    // a stylesheet and keeping its rules in step with this palette. The empty
+    // groove stays neutral, which is what keeps the fill legible as a level.
+    this.slider.style.accentColor = color;
     this.writeLabel();
+  }
+
+  /**
+   * Place the desktop control under whatever is above it in its column.
+   *
+   * A no-op on touch, where `TOUCH_ROOT_CSS`'s `calc()` is the whole answer and
+   * there is nothing to measure. The geometry itself is `physicsSliderTop`,
+   * which is pure and unit-tested; this is only the part that reads the DOM.
+   *
+   * **THE ELEMENTS ARE LOOKED UP BY ID EACH TIME rather than held.** Both are
+   * owned by other components with their own lifetimes -- the badge follows a
+   * preference and the bar outlives panel rebuilds -- so a cached reference
+   * could point at a detached node and quietly place this against a rectangle
+   * that is no longer on screen. Two `getElementById` calls per frame is the
+   * cheaper mistake.
+   *
+   * The badge is skipped when `display:none`, because a hidden element still
+   * reports a real-looking rect from `getBoundingClientRect` if it has ever
+   * been laid out -- which would reserve a gap for a badge the user turned off.
+   * That is exactly how `FpsCounter` hides itself, so this is the check that
+   * makes "rise to the top when the badge is off" actually happen.
+   */
+  private reposition(): void {
+    if (this.mobile) return;
+
+    // **THE CONTROL ROW, NOT THE WHOLE OVERLAY.** `#fluoddity-mutation` holds
+    // two rows -- the controls and the context hint beneath them -- so its rect
+    // spans both, and measuring it would push this control down by the height
+    // of a sentence. That sentence changes with the tool and the selection and
+    // wraps on a narrow window, so the slider would visibly hop whenever the
+    // hint grew a line.
+    //
+    // Dodging the hint buys nothing anyway: the hint row is centred and this is
+    // pinned right, so on any window wide enough to be running the desktop
+    // layout at all they do not meet. A window narrow enough for them to
+    // collide is one the touch layout should be handling.
+    //
+    // Falls back to the ROOT when the bar cannot be found, rather than to null:
+    // a missing id should cost the precision, not the collision avoidance.
+    const bar =
+      document.getElementById('fluoddity-mutation-bar') ??
+      document.getElementById('fluoddity-mutation');
+    const badge = document.getElementById('fluoddity-fps');
+    const top = physicsSliderTop(
+      this.root.getBoundingClientRect(),
+      bar === null ? null : bar.getBoundingClientRect(),
+      badge === null || badge.style.display === 'none'
+        ? null
+        : badge.getBoundingClientRect(),
+    );
+
+    if (this.topShown === top) return;
+    this.topShown = top;
+    this.root.style.top = `${String(top)}px`;
   }
 
   /**
@@ -399,6 +560,90 @@ export class PhysicsSlider {
   }
 }
 
+/**
+ * A rectangle, as much of one as `physicsSliderTop` reads.
+ *
+ * Structurally compatible with `DOMRect`, so callers hand one straight in. Its
+ * own type so the geometry can be tested under `node --test`, where `DOMRect`
+ * does not exist -- exactly the bargain `mutationOverlay.ts`'s `Rect` makes,
+ * and deliberately a separate declaration: that one reads `left`/`right` for a
+ * horizontal-overlap test and this one reads `bottom` for a stacking test, so
+ * sharing a type would over-specify both.
+ */
+export interface VerticalRect {
+  readonly left: number;
+  readonly right: number;
+  readonly bottom: number;
+}
+
+/** Breathing room under whatever this control is stacking beneath. */
+const STACK_GAP_PX = 6;
+
+/**
+ * Where the desktop control's top edge goes, given what is above it.
+ *
+ * ## Why this is measured rather than a constant
+ *
+ * The brief is a priority list, and every rung of it depends on what is
+ * actually on screen: go as far up as possible, but stop below the mutation bar
+ * if that bar would be in the way, and stop below the FPS badge if it is
+ * present. Both of those are optional and both move -- the badge follows a
+ * preference, and the bar's height changes with its hint row -- so a literal
+ * would be wrong in most configurations.
+ *
+ * ## The rules, in order
+ *
+ *   1. **The mutation bar's CONTROL ROW, and only if it OVERLAPS
+ *      HORIZONTALLY.** The bar is centred and sized by its contents; this
+ *      control is pinned to the right edge. On a wide window they do not
+ *      overlap at all, and dropping below a bar that is nowhere near this
+ *      column would spend vertical space to buy nothing -- the same reasoning,
+ *      and the same test, that `overlayTop` uses for the bar against the menu
+ *      bar.
+ *
+ *      **The CONTEXT HINT ROW beneath those controls is deliberately not
+ *      dodged**, which is why `reposition` measures `#fluoddity-mutation-bar`
+ *      rather than the overlay root that contains both. See it for why.
+ *   2. **The FPS badge**, which is always in this column when it exists (both
+ *      are pinned `right:8px`), so no overlap test is needed -- its presence is
+ *      the whole condition.
+ *   3. **Neither**: go to the top margin.
+ *
+ * Rule 1 wins over rule 2 when both apply, because the bar hangs lower than the
+ * badge; taking the larger of the two candidates is what makes the order
+ * irrelevant to the answer and the function total.
+ *
+ * ## Degrading
+ *
+ * A `null` rect means "not on screen", and a zero-width one (`right <= left`)
+ * is what an unlaid-out or hidden element measures as. Both are treated as
+ * absent rather than as an obstacle at the origin -- the failure that matters
+ * is landing ON another control, and an absent element cannot be collided with.
+ */
+export function physicsSliderTop(
+  self: VerticalRect,
+  bar: VerticalRect | null,
+  badge: VerticalRect | null,
+): number {
+  let top = TOP_MARGIN_PX;
+
+  // Rule 1. `self` is allowed to be zero-width on the very first frame -- a
+  // control with no width overlaps nothing, and the next frame corrects it.
+  if (bar !== null && bar.right > bar.left) {
+    // STRICT INEQUALITIES, so edges that merely touch are not an overlap.
+    const overlaps = self.left < bar.right && bar.left < self.right;
+    if (overlaps) top = Math.max(top, Math.round(bar.bottom) + STACK_GAP_PX);
+  }
+
+  // Rule 2. No overlap test: the badge shares this control's column by
+  // construction, so if it is on screen it is above this.
+  if (badge !== null && badge.right > badge.left) {
+    top = Math.max(top, Math.round(badge.bottom) + STACK_GAP_PX);
+  }
+
+  return top;
+}
+
 const SVG_NS = 'http://www.w3.org/2000/svg';
 /**
  * The icon's coordinate space -- 20 units, as the overlay's own icons use.
@@ -409,7 +654,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const ICON_BOX = 20;
 
 /**
- * How large the rabbit is drawn, in CSS pixels.
+ * How large the mark is drawn, in CSS pixels.
  *
  * **26, not `ICON_BOX`'s 20.** The overlay's gear and fences sit in 24px square
  * buttons where 20 nearly fills the plate; this one sits in a 44px circle,
@@ -420,25 +665,37 @@ const ICON_BOX = 20;
 const ICON_PX = 26;
 
 /**
- * A rabbit, in profile: two ears, a head, a body and a tail.
+ * The fast-forward mark: two triangles pointing right, as `⏩` draws it.
  *
  * Drawn rather than set as a glyph, for the reason the gear and the fences are:
- * an emoji renders in the platform's own colours and would defeat the whole
- * point of a button whose COLOUR is the signal. `currentColor` throughout means
- * `paint` tints the whole animal by setting one property on the button.
+ * `⏩` renders in the platform's own colours -- a full-colour emoji on most
+ * systems -- and would defeat the whole point of a button whose COLOUR is the
+ * signal. `currentColor` on each triangle means `paint` tints the whole mark by
+ * setting one property on the button.
  *
- * Deliberately simple shapes at 20px. Anything more detailed reads as noise at
- * this size, and the silhouette -- long ears, round body -- is what carries the
- * meaning of "speed" here.
+ * ## The shape, and the version that was wrong
  *
- * **THE COORDINATES ARE TUNED AGAINST THE VISUAL CENTRE, not the viewBox one.**
- * A first pass placed the shapes by arithmetic around 10,10 and rendered
- * noticeably high and to the left in the 44px circle: the ears occupy the top
- * third but are NARROW, so the animal's centre of mass sits well below and
- * right of its bounding box's middle. That is only visible by looking at it
- * magnified, which is what `rabbit-zoom.png` in the check tooling is for.
+ * **Each triangle has a VERTICAL BACK EDGE and its apex at the vertical
+ * MIDPOINT** -- isosceles, symmetric top to bottom, which is what makes it read
+ * as an arrowhead. The three vertices are `(x, top)`, `(x, bottom)` and
+ * `(x + w, middle)`.
+ *
+ * A first version read "right triangle, right angle facing right" literally and
+ * put the apex at the BOTTOM corner: `(x,top) -> (x+w,bottom) -> (x,bottom)`.
+ * Geometrically that is a right triangle whose square corner is on the right,
+ * and it is not a fast-forward mark at all -- with the point below the centre
+ * line each shape reads as a lean or a flag rather than as something aimed
+ * rightward, and three of them together looked like tally marks. The reference
+ * image settles it: the arrowheads point along the horizontal axis.
+ *
+ * ## Two, not three
+ *
+ * Matching the reference and the emoji it comes from. Three fitted the 20-unit
+ * box only by being thin, and thin arrowheads at 26px on a dark plate lose
+ * their silhouette -- the shape has to survive being small more than it has to
+ * carry a count.
  */
-function rabbitIcon(): SVGSVGElement {
+function fastForwardIcon(): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('viewBox', `0 0 ${String(ICON_BOX)} ${String(ICON_BOX)}`);
   // Drawn LARGER than the coordinate space -- see `ICON_PX`. The viewBox scales
@@ -447,81 +704,130 @@ function rabbitIcon(): SVGSVGElement {
   svg.setAttribute('height', String(ICON_PX));
   svg.style.display = 'block';
 
-  // The two ears, as rotated ellipses springing from the head. Drawn FIRST so
-  // the head overlaps their base, which is what makes them read as attached
-  // rather than as two shapes floating above a circle.
-  for (const [cx, cy, angle] of [
-    [6.6, 5.0, -13],
-    [9.7, 4.7, 11],
-  ] as const) {
-    const ear = document.createElementNS(SVG_NS, 'ellipse');
-    ear.setAttribute('cx', String(cx));
-    ear.setAttribute('cy', String(cy));
-    ear.setAttribute('rx', '1.45');
-    ear.setAttribute('ry', '4.1');
-    ear.setAttribute('fill', 'currentColor');
-    ear.setAttribute(
-      'transform',
-      `rotate(${String(angle)} ${String(cx)} ${String(cy)})`,
+  /**
+   * One arrowhead's width and height, and the pitch between the two.
+   *
+   * Wider than tall is what the reference shows: these are broad heads, not
+   * narrow darts. The gap is small enough that the pair reads as one mark.
+   */
+  const TRI_W = 7.6;
+  const TRI_H = 13.2;
+  const GAP = 0.9;
+
+  // Centred by construction rather than by a tuned literal: the two shapes plus
+  // their gap are this wide, so half the remainder is the left edge. The mark
+  // has to sit dead centre in a round button, where an off-centre glyph is far
+  // more visible than it would be in a rectangle.
+  const totalW = TRI_W * 2 + GAP;
+  const startX = (ICON_BOX - totalW) / 2;
+  const top = (ICON_BOX - TRI_H) / 2;
+  const middle = ICON_BOX / 2;
+
+  for (let i = 0; i < 2; i++) {
+    const x = startX + i * (TRI_W + GAP);
+    const tri = document.createElementNS(SVG_NS, 'polygon');
+    // Back edge top -> apex on the centre line -> back edge bottom. The first
+    // and last share an `x` (the vertical back edge); the apex sits halfway
+    // between their two `y`s, which is what makes it symmetric.
+    tri.setAttribute(
+      'points',
+      `${String(x)},${String(top)} ` +
+        `${String(x + TRI_W)},${String(middle)} ` +
+        `${String(x)},${String(top + TRI_H)}`,
     );
-    svg.append(ear);
+    tri.setAttribute('fill', 'currentColor');
+    svg.append(tri);
   }
-
-  // The head.
-  const head = document.createElementNS(SVG_NS, 'circle');
-  head.setAttribute('cx', '8.0');
-  head.setAttribute('cy', '10.7');
-  head.setAttribute('r', '3.15');
-  head.setAttribute('fill', 'currentColor');
-  svg.append(head);
-
-  // The body, an ellipse tilted back from the head so the whole animal leans
-  // forward -- which is what suggests motion in a static silhouette.
-  const body = document.createElementNS(SVG_NS, 'ellipse');
-  body.setAttribute('cx', '12.0');
-  body.setAttribute('cy', '13.8');
-  body.setAttribute('rx', '4.7');
-  body.setAttribute('ry', '3.7');
-  body.setAttribute('fill', 'currentColor');
-  body.setAttribute('transform', 'rotate(-12 12.0 13.8)');
-  svg.append(body);
-
-  // The tail, a small puff at the rear.
-  const tail = document.createElementNS(SVG_NS, 'circle');
-  tail.setAttribute('cx', '16.4');
-  tail.setAttribute('cy', '12.3');
-  tail.setAttribute('r', '1.65');
-  tail.setAttribute('fill', 'currentColor');
-  svg.append(tail);
 
   return svg;
 }
 
 // -- styling ----------------------------------------------------------------
 //
-// `z-index:45` matches the FPS counter: over the panels (20) and the recording
-// bar (40), under the menu bar's dropdowns (50/60), so an open menu is never
-// obscured. The two never overlap -- one is pinned to the top edge and this to
-// the bottom -- so they can share a layer safely.
+// ## The layer, and why it is NOT the FPS counter's
 //
-// The root is a COLUMN with the button last, so the track grows upward out of
-// it. `align-items:center` keeps the narrow track centred on the wider button.
+// **`z-index:35`, deliberately BELOW the splash at 40.** This started at 45 to
+// match `FpsCounter`, which was the wrong neighbour to copy: that badge is
+// pinned above everything because it is the route back to the settings for
+// someone whose app is struggling, and it is a 46px plate in a corner. This is
+// a ~350px column, and at 45 it drew straight over the Welcome, Guide and
+// Controls overlays -- all three are the same `#fluoddity-splash` element
+// (`splash.ts`, `Variant`), so one number covers them.
+//
+// The ordering this sits in:
+//
+//   20  the panels                  -- above, so the slider is not buried
+//   30  the mutation bar            -- above, and they never overlap anyway
+//   35  THIS
+//   40  the splash, toasts, tooltips, the recording bar
+//   50  the menu bar
+//   60  its dropdowns
+//
+// Being under 40 costs nothing real: the splash is modal and dismisses on any
+// click, and while a toast or tooltip is up there is nothing to drag here.
+//
+// **The modal DIALOGS need no number at all.** Save, Delete and Reset are
+// native `<dialog showModal()>`, which renders in the browser's top layer above
+// every `z-index` there is -- `toast.ts` documents at length why trying to
+// out-`z-index` that is a losing game. They were never the problem.
+//
+// `align-items:center` keeps the narrow track centred on the wider button in
+// both layouts. What differs is which END is anchored and therefore which order
+// the two children go in -- see each block.
 
-/** Bottom-right on the desktop: the free corner while the panels are hidden. */
+/**
+ * The stacking level for both layouts. See the table above.
+ *
+ * One constant rather than the number written twice, because the whole point of
+ * it is a RELATIONSHIP to the splash -- and two copies is how one of them gets
+ * nudged and the control starts drawing over the Guide again.
+ */
+const Z_INDEX = 35;
+
+/**
+ * TOP-right on the desktop, with the track hanging BELOW the button.
+ *
+ * **The reverse of the touch layout, and the child order reverses with it.**
+ * The anchored end has to be the one the button is on, or collapsing the track
+ * would move the button: anchored at the top, folding away a child BELOW the
+ * button leaves the button exactly where it was, which is what makes the toggle
+ * feel like it folds rather than like the whole control jumps.
+ *
+ * **`top` HERE IS ONLY THE STARTING VALUE.** `reposition` overwrites it every
+ * frame from `physicsSliderTop`. What this declaration is for is the frame
+ * before the first measurement, and it starts at the SAFE end -- below where
+ * the FPS badge sits -- so a control that somehow never gets measured is merely
+ * lower than it needs to be rather than sitting on top of the badge.
+ */
 const ROOT_CSS =
-  'position:fixed;right:8px;bottom:8px;z-index:45;' +
+  `position:fixed;right:8px;top:44px;z-index:${String(Z_INDEX)};` +
   'display:flex;flex-direction:column;align-items:center;gap:8px;';
 
 /**
- * Touch: the same corner, lifted clear of the control bar.
+ * Touch: BOTTOM-right, lifted clear of the control bar, track ABOVE the button.
+ *
+ * **Unchanged, and deliberately not moved with the desktop.** The desktop's
+ * move to the top is about a corner the panels leave free; on a phone the
+ * bottom is where thumbs reach, which is the same argument that put the control
+ * bar down there in the first place. A top-anchored slider on a phone would be
+ * the hardest place on the screen to drag.
  *
  * See the header on `--fluoddity-bar-height`. The `+8px` matches the gap the
  * settings sheet leaves above the same bar, so the two clear it identically.
  */
 const TOUCH_ROOT_CSS =
-  'position:fixed;right:8px;z-index:45;' +
+  `position:fixed;right:8px;z-index:${String(Z_INDEX)};` +
   'bottom:calc(var(--fluoddity-bar-height, 190px) + 8px);' +
   'display:flex;flex-direction:column;align-items:center;gap:8px;';
+
+/**
+ * Where the desktop control sits when nothing is above it.
+ *
+ * 2px, matching `mutationOverlay.ts`'s own `TOP_MARGIN_PX` -- the two are the
+ * only things that go hard against the top edge, and they should agree about
+ * what "hard against" means.
+ */
+const TOP_MARGIN_PX = 2;
 
 /** The track and its number, as a plate matching the badge's chrome. */
 const TRACK_GROUP_CSS =
@@ -534,13 +840,19 @@ const TRACK_GROUP_CSS =
  * The vertical track. See the header on why it is `writing-mode` rather than
  * the removed `-webkit-appearance:slider-vertical`.
  *
- * 128px is long enough to place a value in a 1..60 range with a finger and
- * short enough to leave the artwork visible on a phone in landscape.
+ * **30x256, up from 24x128**: 25% wider and twice as tall, as asked. The height
+ * is what the precision is made of -- 60 steps across 128px gave barely two
+ * pixels per step, so a finger could not reliably pick a rate and the drag felt
+ * coarse. At 256 each step is a comfortable target on both layouts, and the
+ * extra width is what makes the track easy to land on in the first place.
+ *
+ * **NO `accent-color` HERE, deliberately.** It is written by `paint` from the
+ * band, so a value in this block would be a second answer that the first frame
+ * overwrites -- and would go stale the moment the palette moved. See `paint`.
  */
 const SLIDER_CSS =
   'writing-mode:vertical-lr;direction:rtl;' +
-  'width:24px;height:128px;margin:0;cursor:pointer;' +
-  'accent-color:#a8dcb0;touch-action:none;';
+  'width:30px;height:256px;margin:0;cursor:pointer;touch-action:none;';
 
 /**
  * The number above the track.
@@ -555,7 +867,7 @@ const READOUT_CSS =
   'font-variant-numeric:tabular-nums;user-select:none;';
 
 /**
- * The rabbit button.
+ * The fast-forward button.
  *
  * **44px, which is the touch target minimum** `mutationOverlay.ts` settled on
  * for the two controls a touch session presses most -- and it is the same size

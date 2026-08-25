@@ -459,7 +459,7 @@ export interface Status {
   readonly showFpsCounter: boolean;
 
   /**
-   * Whether the physics-rate slider is expanded beside its rabbit button.
+   * Whether the physics-rate slider is expanded beside its fast-forward button.
    *
    * **NOT read from `editPrefs`, for the same reason `showFpsCounter` is not**:
    * that payload is empty whenever no panel is open, and this control exists

@@ -35,7 +35,7 @@ import type { SectionContext } from './sections/section.ts';
  *
  * **NARROWER THAN `ViewPrefField`, deliberately.** That set is every persisted
  * boolean that configures the interface, and not all of them are Advanced tiers
- * -- `physicsSliderOpen` is toggled by the rabbit button in `physicsSlider.ts`
+ * -- `physicsSliderOpen` is toggled by the fast-forward button in `physicsSlider.ts`
  * and has no blade here at all. Keying `HELP` to the full set would demand help
  * text for a checkbox that does not exist, and taking the full set as the
  * parameter type would let a caller ask for one to be built.

@@ -89,7 +89,7 @@ export interface Preferences {
   readonly showFpsCounter: boolean;
 
   /**
-   * Whether the physics-rate slider is expanded beside its rabbit button.
+   * Whether the physics-rate slider is expanded beside its fast-forward button.
    *
    * **BOOKKEEPING, NOT A CONTROL, so it is deliberately absent from
    * `settingsSpec.ts`** -- the same call the three `advanced*` flags and
@@ -103,7 +103,7 @@ export interface Preferences {
    * having to close it again on every reload would make the gesture useless.
    *
    * **DEFAULTS TO OPEN**, for the reason `showFpsCounter` defaults to on: a
-   * collapsed slider is a rabbit button that gives no hint what it expands
+   * collapsed slider is a lone button that gives no hint what it expands
    * into, and the rate is worth discovering. See `ui/physicsSlider.ts`.
    */
   readonly physicsSliderOpen: boolean;
@@ -280,7 +280,7 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   // starts off.
   showFpsCounter: true,
   // OPEN by default, for the reason the counter above is on by default: a lone
-  // rabbit button gives no hint what it expands into. See the interface.
+  // lone button gives no hint what it expands into. See the interface.
   physicsSliderOpen: true,
   bloomEnabled: true,
   bloomThreshold: 0.2,

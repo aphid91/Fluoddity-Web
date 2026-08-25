@@ -380,6 +380,17 @@ export class MutationOverlay {
     this.root.style.cssText = opts.mobile === true ? TOUCH_ROOT_CSS : ROOT_CSS;
 
     const bar = document.createElement('div');
+    // **AN ID, so other chrome can measure THE BAR rather than the whole
+    // overlay.** The root holds two rows -- this one and the hint row below it
+    // -- and its rect therefore spans both. `physicsSlider.ts` positions itself
+    // under the controls and must NOT be pushed down by the hint row: the hint
+    // is prose whose width varies with the tool and the selection, and dodging
+    // it would move the slider whenever the sentence happened to wrap.
+    //
+    // An id rather than `firstElementChild`, which is what the caller would
+    // otherwise have to guess -- and would guess WRONG on touch, where the hint
+    // row is deliberately appended first so it sits above the controls.
+    bar.id = 'fluoddity-mutation-bar';
     bar.style.cssText = BAR_CSS;
 
     this.label = document.createElement('span');
