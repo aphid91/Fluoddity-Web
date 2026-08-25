@@ -140,6 +140,53 @@
       .fluoddity-touch * {
         -webkit-tap-highlight-color: transparent;
       }
+
+      /* ===================================================================
+         TOUCH: blade labels sit BESIDE their controls, not an ocean away.
+         ===================================================================
+
+         The touch panel is ONE sheet spanning the whole viewport
+         (`sideContainer` in `ui/panel.ts`), where the desktop has two fixed
+         320px columns.
+
+         **THE LABEL IS THE CELL THAT STRETCHES, and that is the whole cause.**
+         A blade is a flex row of two cells: the value cell is FIXED width
+         (`tp-lblv_v` is `flex-grow:0; width:var(--bld-vw)`) and the label takes
+         everything left over (`flex:1`). So as the row gets wider the control
+         stays put against the right edge and the label cell grows -- with the
+         text still hard against its own left edge. At 320px that gap is small
+         enough to read across; on a tablet, or any phone in landscape, a name
+         and the slider it names end up several hundred pixels apart, and
+         working out which control belongs to which row means tracking across
+         all of it.
+
+         Right-justifying the text moves it to the end of the cell that grew,
+         so it sits against its control at every width. Nothing else moves --
+         the growing cell is the only thing that was ever the problem.
+
+         **THE LABEL CELL, NOT THE ROW.** `text-align` on the blade itself
+         would inherit into the value cell, which is where the sliders, number
+         boxes and text inputs live.
+
+         **NO PADDING CHANGE.** Tweakpane already gives this cell
+         `padding-right:16px`, which becomes the gap between the name and the
+         control the moment the text moves right -- adding to it would push the
+         label away from the control it was just brought next to, and reducing
+         it would let the last character butt against the widget.
+
+         DESKTOP IS UNAFFECTED, by the `.fluoddity-touch` scoping every rule in
+         this block uses -- the class is only ever on <html> in the touch
+         layout, so the 320px columns keep the alignment they were tuned for.
+
+         `tp-*` class names are Tweakpane's own and are NOT minified -- the same
+         literal structure `ui/perfLabels.ts` documents and walks. Its warning
+         about not matching on them applies to JS reaching into blade internals,
+         which is more fragile than styling the two cells the library has always
+         laid a blade out in. If a future Tweakpane renames them this rule
+         silently stops applying, which costs the alignment and nothing else. */
+      .fluoddity-touch .tp-lblv_l {
+        text-align: right;
+      }
     </style>
   </head>
   <body>
