@@ -32,8 +32,9 @@ import { RECORDING_FPS, driverAction } from './recorder/recordingSettings.ts';
 import { chooseRecordingFile } from './recorder/saveFile.ts';
 import { calibrate } from './calibration/calibrate.ts';
 // The ladder's result type, needed now that `rung` is declared before the
-// `try` that assigns it rather than inferred from the call.
-import type { Rung } from './calibration/progression.ts';
+// `try` that assigns it rather than inferred from the call. `BLOOM_MIN_WORLD_SIZE`
+// is the threshold the step between the two phases reads it against.
+import { BLOOM_MIN_WORLD_SIZE, type Rung } from './calibration/progression.ts';
 // The tuning phase's worst-case probe count, so the splash's single progress
 // counter can cover both phases. See the `runCalibration` callback.
 import { MAX_PROBES as AUTO_PROBES } from './perf/rateSearch.ts';
@@ -406,6 +407,29 @@ async function start(): Promise<void> {
                   // its rung, and everything below measures live frames.
                   ladderProbing = false;
                 }
+                // --- between the phases: bloom off on a weak machine ---------
+                //
+                // The ladder has just said how much machine there is, and on
+                // the low rungs there is not enough of it for bloom. See
+                // `BLOOM_MIN_WORLD_SIZE` for why the answer is read off the
+                // world size and why the threshold sits where it does.
+                //
+                // **BEFORE THE RATE TUNING, NOT AFTER.** That phase measures
+                // REAL frames -- camera, motion blur and bloom included, which
+                // is the whole reason it exists -- so bloom's cost is either in
+                // its measurement or it is not. Setting this first means a
+                // machine that just lost bloom gets its rate chosen against the
+                // frames it will actually render, and so keeps the headroom
+                // rather than spending it twice. Doing it afterwards would
+                // leave the rate tuned for a frame that no longer happens.
+                //
+                // ONE-DIRECTIONAL: it only ever turns bloom off. At or above
+                // the threshold nothing is written at all, so the default (or
+                // anything a share link brought in) stands untouched.
+                if (rung.worldSize < BLOOM_MIN_WORLD_SIZE) {
+                  orchestrator.setBloomEnabled(false);
+                }
+
                 // --- the final step: tune the rate against REAL frames -------
                 //
                 // The ladder has committed a world size, and with it a physics
@@ -441,7 +465,14 @@ async function start(): Promise<void> {
                 console.info(
                   `Calibrated to world size ${rung.worldSize}, physics rate ` +
                     `${orchestrator.status().physicsSteps} (ladder suggested ` +
-                    `${rung.physicsSteps}). Change either in Preferences > Simulation.`,
+                    `${rung.physicsSteps}). Change either in Preferences > Simulation.` +
+                    // Only mentioned when calibration actually moved it: saying
+                    // "bloom left alone" on every fast machine would be noise
+                    // about a step that did nothing.
+                    (rung.worldSize < BLOOM_MIN_WORLD_SIZE
+                      ? ` Bloom turned off for this world size; re-enable it in ` +
+                        `Preferences > Display.`
+                      : ''),
                 );
               },
             }),

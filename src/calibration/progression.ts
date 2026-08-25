@@ -59,6 +59,28 @@ export const PROGRESSION: readonly Rung[] = Object.freeze([
 ]);
 
 /**
+ * The world size below which first-run calibration turns bloom OFF.
+ *
+ * **A STATEMENT ABOUT THE MACHINE, READ OFF THE RUNG IT REACHED.** The ladder
+ * probes physics only, so it never prices bloom -- but where it stops is a
+ * decent proxy for how much frame there is left over, and a machine that could
+ * not hold world 0.6 is one whose remaining ~5 ms (see `HEADROOM`) bloom would
+ * comfortably eat. Turning it off there buys back the headroom the rate tuning
+ * is about to measure into.
+ *
+ * 0.5 rather than 0.6 -- the rung boundary -- deliberately: the shipped default
+ * world size IS 0.5 (`DEFAULT_PREFERENCES`), so an inclusive comparison at 0.5
+ * means the default configuration keeps bloom, and only machines the ladder
+ * pushed BELOW the default lose it. Stated as "less than" so the threshold value
+ * itself is on the keeping side.
+ *
+ * At or above it, bloom is left at whatever the default says. Calibration does
+ * not turn bloom ON: it only ever removes a cost a weak machine cannot afford,
+ * so a user who has it is a user the default gave it to.
+ */
+export const BLOOM_MIN_WORLD_SIZE = 0.5;
+
+/**
  * The frame time calibration aims at: 60 fps.
  *
  * FIXED AT 60 REGARDLESS OF THE DISPLAY. `requestAnimationFrame` runs at the

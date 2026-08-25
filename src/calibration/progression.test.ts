@@ -11,8 +11,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { PROGRESSION, TARGET_FRAME_MS, HEADROOM, budgetMs, cost } from './progression.ts';
+import {
+  BLOOM_MIN_WORLD_SIZE,
+  PROGRESSION,
+  TARGET_FRAME_MS,
+  HEADROOM,
+  budgetMs,
+  cost,
+} from './progression.ts';
 import { PREFS, settingFor } from '../ui/settingsSpec.ts';
+import { DEFAULT_PREFERENCES } from '../prefs/preferences.ts';
 
 test('cost ascends strictly along the path', () => {
   for (let i = 1; i < PROGRESSION.length; i++) {
@@ -91,6 +99,30 @@ test('the budget leaves room for the rest of the frame', () => {
   assert.ok(HEADROOM > 0 && HEADROOM < 1);
   assert.equal(budgetMs(), TARGET_FRAME_MS * HEADROOM);
   assert.ok(budgetMs() < TARGET_FRAME_MS);
+});
+
+test('the bloom threshold splits the ladder rather than sitting outside it', () => {
+  // The rule is only meaningful if some rungs fall below it and some do not. A
+  // threshold under the floor would never fire; one above the ceiling would fire
+  // for everybody, including the machines that reached the top.
+  const below = PROGRESSION.filter((r) => r.worldSize < BLOOM_MIN_WORLD_SIZE);
+  const at = PROGRESSION.filter((r) => r.worldSize >= BLOOM_MIN_WORLD_SIZE);
+  assert.ok(below.length > 0, 'no rung loses bloom -- the step is dead code');
+  assert.ok(at.length > 0, 'every rung loses bloom -- the threshold is above the ceiling');
+});
+
+test('the default world size keeps bloom', () => {
+  // The threshold is deliberately set so that the SHIPPED default is on the
+  // keeping side: calibration only ever takes bloom away from a machine it had
+  // to push below the default, never from one that merely landed on it. If the
+  // default world size moves, this is the assertion that catches the silent
+  // change in who loses bloom.
+  assert.ok(
+    DEFAULT_PREFERENCES.worldSize >= BLOOM_MIN_WORLD_SIZE,
+    `the default world size ${DEFAULT_PREFERENCES.worldSize} now falls below the ` +
+      `bloom threshold ${BLOOM_MIN_WORLD_SIZE}, so a default machine loses bloom`,
+  );
+  assert.ok(DEFAULT_PREFERENCES.bloomEnabled, 'bloom is no longer on by default');
 });
 
 test('the progression is frozen', () => {

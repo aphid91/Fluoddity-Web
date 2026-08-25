@@ -3095,6 +3095,32 @@ export class Orchestrator implements CommandBus {
     await rebuild;
     this.system.reset();
   }
+
+  /**
+   * Set bloom, for the calibration step that runs between the ladder and the
+   * rate tuning (`main.ts`).
+   *
+   * **ITS OWN METHOD RATHER THAN AN `editSetting` DISPATCH**, for the reason
+   * `commitCalibration` is: that command wants a `Setting` out of the registry,
+   * which is a UI object describing a row in a panel, and calibration has no
+   * panel and no business building one. This is the same narrow shape --
+   * a preference written through `adoptPreferences` so it persists exactly as a
+   * ticked checkbox would.
+   *
+   * NO REBUILD AND NO RESET, unlike `commitCalibration`. Bloom is not disruptive
+   * (`requiresRestart` names only world size and canvas aspect), so it takes
+   * effect on the next frame the assembler draws -- and this is called mid-run,
+   * with the rate tuning still to come, so resetting here would only be undone.
+   *
+   * SYNCHRONOUS: `adoptPreferences` returns an already-resolved promise when
+   * nothing rebuilds, and nothing here needs to order itself against it.
+   */
+  setBloomEnabled(enabled: boolean): void {
+    void this.adoptPreferences(
+      Object.freeze({ ...this.prefs, bloomEnabled: enabled }),
+      false,
+    );
+  }
 }
 
 /**
