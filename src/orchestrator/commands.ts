@@ -469,6 +469,19 @@ export interface Status {
   readonly physicsSliderOpen: boolean;
 
   /**
+   * Whether the physics-rate widget is on screen at all.
+   *
+   * **NOT read from `editPrefs`, for the same reason `physicsSliderOpen` is
+   * not**, and the case is even plainer here: this decides whether a control
+   * that exists ONLY while the panels are hidden is mounted, so the one payload
+   * that could carry it is empty in every frame the answer matters.
+   *
+   * Separate from `physicsSliderOpen` because they are different questions --
+   * folded-to-a-button versus gone. See `Preferences.showPhysicsSlider`.
+   */
+  readonly showPhysicsSlider: boolean;
+
+  /**
    * The live physics rate.
    *
    * **NOT read from `editPrefs`, for the reason `showFpsCounter` is not:** that

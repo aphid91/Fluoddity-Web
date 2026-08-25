@@ -157,6 +157,20 @@ export class PhysicsSlider {
   private uiHidden: boolean | null = null;
 
   /**
+   * The `showPhysicsSlider` preference, as last applied.
+   *
+   * **`true` RATHER THAN `null` HERE, unlike `uiHidden` beside it**, and the
+   * asymmetry is deliberate rather than an oversight. That field guards a claim
+   * about the DOM that nothing has written; this one is a DEFAULT, and it
+   * matches both the shipped preference and what `applyVisible` would decide on
+   * its own. Seeding it true means the first `refresh` of a session -- which
+   * arrives with the preference true for almost everybody -- writes nothing,
+   * and the control's visibility rests entirely on `uiHidden`, which is the
+   * field that actually needs three states.
+   */
+  private enabled = true;
+
+  /**
    * True between pointerdown and pointerup on the track.
    *
    * `refresh` runs every frame and writes the authoritative value in, which
@@ -436,6 +450,13 @@ export class PhysicsSlider {
    * only while they show would freeze it in the one state it exists for.
    */
   refresh(status: Status, band: Band): void {
+    // FIRST, so the rest of this frame acts on the mounted state it is about to
+    // be in rather than the previous one -- `reposition` below skips entirely
+    // while unmounted, and would otherwise spend a frame measuring a control
+    // that is on its way off screen. Guarded on the field, so the common frame
+    // is one comparison.
+    this.setEnabled(status.showPhysicsSlider);
+
     this.paint(band);
 
     // Per frame, because what is above this moves: the badge appears and
@@ -489,11 +510,46 @@ export class PhysicsSlider {
    * `hidden` is the PANELS' state, not this control's -- so it is deliberately
    * the same argument `Panel.applyHidden` receives, passed straight through.
    * See the header for why the polarity is opposite to `FpsCounter`'s.
+   *
+   * **THE PANELS ARE ONLY HALF THE ANSWER NOW.** `showPhysicsSlider` can veto
+   * the control outright, so both facts are stored and `applyVisible` combines
+   * them -- the two arrive from different places on different schedules (this
+   * from `Panel.applyHidden`, the preference from the per-frame `refresh`), and
+   * neither caller knows the other's value.
    */
   setUiHidden(hidden: boolean): void {
     if (hidden === this.uiHidden) return;
     this.uiHidden = hidden;
-    this.root.style.display = hidden ? 'flex' : 'none';
+    this.applyVisible();
+  }
+
+  /**
+   * Adopt the `showPhysicsSlider` preference. The Advanced checkbox.
+   *
+   * Split from `setUiHidden` because the two inputs are independent: this is a
+   * stored preference, that is the live panel state, and the control is on
+   * screen only when BOTH agree. Guarded on the field so the per-frame call
+   * writes nothing in the common case.
+   */
+  private setEnabled(enabled: boolean): void {
+    if (enabled === this.enabled) return;
+    this.enabled = enabled;
+    this.applyVisible();
+  }
+
+  /**
+   * Mount the control only when the panels are hidden AND the preference allows.
+   *
+   * `flex` RESTATED rather than `''`, for the reason `setOpen` gives: the layout
+   * lives in an inline style set from `cssText`, and `''` would remove the
+   * property rather than revert it, collapsing the column.
+   *
+   * Treats a `null` `uiHidden` as "not yet told", which keeps the mounted-hidden
+   * start intact -- see the field and `ROOT_CSS`.
+   */
+  private applyVisible(): void {
+    const show = this.uiHidden === true && this.enabled;
+    this.root.style.display = show ? 'flex' : 'none';
   }
 
   /**
@@ -564,6 +620,14 @@ export class PhysicsSlider {
    */
   private reposition(): void {
     if (this.mobile) return;
+
+    // **NOTHING TO PLACE WHILE UNMOUNTED.** A `display:none` element measures as
+    // a zero rect, so this would compute a `top` from nothing, cache it in
+    // `topShown`, and then skip the real placement on the frame the control came
+    // back -- the same stale-measurement trap this method already documents for
+    // the badge it stacks under. Cheaper too: the common hidden frame does no
+    // `getBoundingClientRect` at all.
+    if (this.root.style.display === 'none') return;
 
     // **THE CONTROL ROW, NOT THE WHOLE OVERLAY.** `#fluoddity-mutation` holds
     // two rows -- the controls and the context hint beneath them -- so its rect

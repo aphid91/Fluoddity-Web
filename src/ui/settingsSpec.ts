@@ -736,6 +736,30 @@ export const SETTINGS: readonly Setting[] = [
     group: 'Display',
   }),
 
+  // IMMEDIATELY BELOW THE COUNTER, and the two belong together: they are the
+  // only entries in the registry that govern a `document.body` widget rather
+  // than anything about the rendered frame, and both are answering "what do I
+  // want sitting over my artwork".
+  //
+  // **ADVANCED WHERE THE COUNTER IS BASIC.** Turning the badge off is a plain
+  // preference; hiding this one takes away a live control, and the fold on the
+  // widget itself already serves anyone who just wants it smaller. Somebody who
+  // means to banish a control entirely can be asked to find the Advanced tier.
+  setting({
+    field: 'showPhysicsSlider',
+    label: 'Show Physics Rate Widget',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'The fast-forward button and its rate slider, at the right edge. It is ' +
+      'the way to reach Physics Rate while the panels are hidden.' +
+      '\n\nUntick to remove it from the screen entirely. To merely fold the ' +
+      'slider away and keep the button, press the button itself -- and ' +
+      'right-click it to auto-calibrate the rate.',
+    group: 'Display',
+  }),
+
   setting({
     field: 'bloomEnabled',
     label: 'Bloom',

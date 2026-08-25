@@ -121,6 +121,9 @@ test('the registry has the same 35 entries the desktop does, plus the web-only o
     'oneClickSelection',
     // No desktop equivalent: the desktop has no frame-rate counter.
     'showFpsCounter',
+    // No desktop equivalent either: the desktop has no canvas-side rate widget,
+    // because it has no hidden-panels state for one to exist for.
+    'showPhysicsSlider',
     // No desktop equivalent: the desktop has one layout and no touch input, so
     // there is nothing for it to choose between.
     'mobileMode',

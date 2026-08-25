@@ -2666,6 +2666,9 @@ export class Orchestrator implements CommandBus {
       // governs is shown only while the panels are HIDDEN, which is exactly the
       // state that empties those payloads.
       physicsSliderOpen: this.prefs.physicsSliderOpen,
+      // And its companion, for the same reason: whether the widget is mounted at
+      // all is only ever asked while the panels are hidden.
+      showPhysicsSlider: this.prefs.showPhysicsSlider,
       // Also outside `settingsSources()`, and for the same reason: auto-calibrate
       // reads this to seed its search while the panels are hidden behind the
       // first-run splash, where that payload is empty.

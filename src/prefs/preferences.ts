@@ -108,6 +108,28 @@ export interface Preferences {
    */
   readonly physicsSliderOpen: boolean;
 
+  /**
+   * Whether the physics-rate widget is on screen AT ALL.
+   *
+   * **A DIFFERENT QUESTION FROM `physicsSliderOpen`, and the pair is the whole
+   * point.** That one folds the track into the button and is bookkeeping the
+   * round button itself writes; this one removes button and track together, and
+   * is a control a user goes to Preferences to find. So this one HAS a registry
+   * entry where that one deliberately has none -- the two are the same
+   * distinction `showFpsCounter` and the `advanced*` flags already draw.
+   *
+   * Three states come out of the pair, which is what was asked for: expanded
+   * (both true), collapsed to a lone round button (`physicsSliderOpen` false),
+   * and gone entirely (this false). Folding is one press on the canvas;
+   * banishing it is a deliberate trip to a checkbox, which is the right cost
+   * ratio for an action whose only undo is finding that same checkbox again.
+   *
+   * **DEFAULTS TO TRUE**, for the reason `showFpsCounter` does: the rate is one
+   * of the three settings that decide the frame rate, the panels start hidden,
+   * and a widget nobody can see is not a dial anyone will discover.
+   */
+  readonly showPhysicsSlider: boolean;
+
   readonly bloomEnabled: boolean;
   /** Brightness cutoff for bloom extraction. Lower glows more widely. */
   readonly bloomThreshold: number;
@@ -282,6 +304,11 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   // OPEN by default, for the reason the counter above is on by default: a lone
   // lone button gives no hint what it expands into. See the interface.
   physicsSliderOpen: true,
+  // SHOWN by default, and the pair above it is deliberate: a new visitor lands
+  // on the widget EXPANDED, because the rate is worth discovering and the
+  // panels start hidden. Folding it to a button, or hiding it outright, are
+  // both things they can then choose. See the interface.
+  showPhysicsSlider: true,
   bloomEnabled: true,
   bloomThreshold: 0.2,
   bloomIntensity: 0.1,
@@ -331,6 +358,7 @@ export const PREFERENCE_KINDS = {
   motionBlurSamples: 'int',
   showFpsCounter: 'bool',
   physicsSliderOpen: 'bool',
+  showPhysicsSlider: 'bool',
   bloomEnabled: 'bool',
   bloomThreshold: 'float',
   bloomIntensity: 'float',
