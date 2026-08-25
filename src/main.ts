@@ -31,6 +31,9 @@ import { RECORDING_FPS, driverAction } from './recorder/recordingSettings.ts';
 // pull in neither mediabunny nor the GPU. See `recorder/saveFile.ts`.
 import { chooseRecordingFile } from './recorder/saveFile.ts';
 import { calibrate } from './calibration/calibrate.ts';
+// The ladder's result type, needed now that `rung` is declared before the
+// `try` that assigns it rather than inferred from the call.
+import type { Rung } from './calibration/progression.ts';
 // The tuning phase's worst-case probe count, so the splash's single progress
 // counter can cover both phases. See the `runCalibration` callback.
 import { MAX_PROBES as AUTO_PROBES } from './perf/rateSearch.ts';
@@ -350,29 +353,59 @@ async function start(): Promise<void> {
                 // (`MAX_PROBES`), so the counter never exceeds its own total;
                 // a run that converges early simply skips to the end.
                 let rungs = 0;
-                const rung = await calibrate(orchestrator, {
-                  onProgress: (done, total) => {
-                    // The ladder reports its own total; the tuning's probes are
-                    // added to it so the denominator covers both phases.
-                    rungs = total;
-                    progress =
-                      `Calibrating for your display… ` +
-                      `(${String(done)}/${String(total + AUTO_PROBES)})`;
-                    panel?.setSplashStatus(progress);
-                  },
-                  // A hidden tab is throttled hard enough that measuring it
-                  // would misjudge the GPU badly, so the walk waits. Say so:
-                  // the splash is locked shut meanwhile, and a frozen counter
-                  // with no explanation reads as a hang.
-                  onWaiting: (waiting) => {
-                    panel?.setSplashStatus(
-                      waiting
-                        ? 'Paused while this tab is in the background — ' +
-                            'calibration resumes when you come back.'
-                        : progress,
-                    );
-                  },
-                });
+                // **THE LOOP STOPS SUBMITTING FOR THE LADDER'S DURATION.** See
+                // `ladderProbing`, which carries the full reasoning: without
+                // this the probes time their own work plus whatever this loop
+                // had in flight, and the first rung fails on a machine that
+                // could hold the top one.
+                //
+                // `try/finally` rather than clearing after the await: `calibrate`
+                // is documented never to throw, but a frame loop permanently
+                // stuck not submitting is a black app -- too severe a failure to
+                // leave resting on another module's promise.
+                ladderProbing = true;
+                let rung: Rung;
+                try {
+                  rung = await calibrate(orchestrator, {
+                    onProgress: (done, total) => {
+                      // The ladder reports its own total; the tuning's probes
+                      // are added to it so the denominator covers both phases.
+                      rungs = total;
+                      progress =
+                        `Calibrating for your display… ` +
+                        `(${String(done)}/${String(total + AUTO_PROBES)})`;
+                      panel?.setSplashStatus(progress);
+                    },
+                    // A hidden tab is throttled hard enough that measuring it
+                    // would misjudge the GPU badly, so the walk waits. Say so:
+                    // the splash is locked shut meanwhile, and a frozen counter
+                    // with no explanation reads as a hang.
+                    onWaiting: (waiting) => {
+                      // **THE HIDDEN-TAB WAIT MUST NOT HOLD THE LOOP OFF.**
+                      // That wait ends only when the user comes back, which may
+                      // be minutes -- and nothing is being measured meanwhile,
+                      // so there is no queue to keep clear. The loop resumes for
+                      // its duration and yields again before the next rung is
+                      // probed. Without this, backgrounding the tab mid-walk
+                      // would leave the app not submitting until the user
+                      // returned: a frozen picture rather than a paused one.
+                      //
+                      // Safe against the `finally` below, which clears the flag
+                      // unconditionally however the walk ends.
+                      ladderProbing = !waiting;
+                      panel?.setSplashStatus(
+                        waiting
+                          ? 'Paused while this tab is in the background — ' +
+                              'calibration resumes when you come back.'
+                          : progress,
+                      );
+                    },
+                  });
+                } finally {
+                  // The loop submits again from here: the ladder has committed
+                  // its rung, and everything below measures live frames.
+                  ladderProbing = false;
+                }
                 // --- the final step: tune the rate against REAL frames -------
                 //
                 // The ladder has committed a world size, and with it a physics
@@ -651,6 +684,45 @@ async function start(): Promise<void> {
    */
   let encoding = false;
 
+  /**
+   * True while the calibration LADDER is measuring. Holds the loop off.
+   *
+   * **THE LADDER'S PROBES AND THIS LOOP WERE RACING FOR THE GPU QUEUE, AND THE
+   * PROBES WERE TIMING THE RACE.** `probeFrame` measures with
+   * `onSubmittedWorkDone()`, which resolves only once everything queued ahead of
+   * it has finished -- so any frame this loop submitted landed INSIDE the
+   * stopwatch. The splash pauses the simulation, so those frames were taking the
+   * paused branch (`orchestrator.ts`) and paying for a full 1024x1024 camera
+   * resolve apiece, none of which is physics and all of which was charged to the
+   * rung being probed.
+   *
+   * That fell hardest on the FIRST rung -- world 0.25 at one sub-step, the
+   * cheapest real work on the ladder and the only rung that also pays pipeline
+   * compilation from its `rebuildSystem`. One stray resolve exceeds the 11.7 ms
+   * budget on its own, so the rung failed, the walk stopped, and `best` stayed
+   * at the unprobed floor: **world size 0.1 at physics rate 1, on a machine that
+   * could hold 1.0 comfortably.** `median` over ten samples did not help, because
+   * the contention was on every sample rather than on an outlier or two. Whether
+   * it happened at all came down to scheduling, which is why a 3080 and a 5060
+   * hit it intermittently while slower machines did not.
+   *
+   * `REBUILD_WARMUP` did not cover this either: it burns PROBE frames, and the
+   * frames doing the damage were this loop's, interleaved between them.
+   *
+   * **THE rAF LOOP KEEPS RUNNING, IT JUST STOPS SUBMITTING.** Cancelling it
+   * outright would strand the resume, and returning without rescheduling would
+   * end the app. `orchestrator.frame()` is the only call here that touches the
+   * queue, so skipping exactly that empties the queue for the probes while the
+   * clock, the input pump and the counter carry on. The screen holds the last
+   * rendered frame for the ~1-2 s the ladder takes, behind a locked splash that
+   * is covering it anyway.
+   *
+   * **SCOPED TO THE LADDER ONLY, NOT THE WHOLE RUN.** The second phase
+   * (`tuneRate`) measures REAL frames off this very loop and would measure
+   * nothing at all if this were still set -- see where it is cleared.
+   */
+  let ladderProbing = false;
+
   const frame = (): void => {
     if (deviceLost) return; // Stop cleanly rather than spinning on a dead device.
 
@@ -658,6 +730,15 @@ async function start(): Promise<void> {
     // `encoding`. The clock is NOT advanced here, so the skipped time does not
     // land as one huge `dt` on the frame that follows.
     if (encoding) {
+      requestAnimationFrame(frame);
+      return;
+    }
+
+    // Yield the GPU queue to the ladder's probes -- see `ladderProbing`. The
+    // clock is not advanced, for the same reason `encoding` does not advance it:
+    // the skipped span would otherwise arrive as one huge `dt` on the frame that
+    // resumes, and land as a camera lurch the moment the splash lifts.
+    if (ladderProbing) {
       requestAnimationFrame(frame);
       return;
     }
