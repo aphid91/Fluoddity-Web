@@ -32,6 +32,46 @@
     <link rel="manifest" href="./site.webmanifest" />
     <meta name="theme-color" content="#000000" />
     <title>Fluoddity</title>
+
+    <!-- Link-preview card, for when the URL is pasted into Discord, Slack,
+         iMessage, X and the rest.
+
+         **THESE URLS ARE ABSOLUTE, AND THAT IS NOT AN OVERSIGHT.** Every other
+         asset on this page is relative to match `base: './'` in vite.config.ts
+         (see the favicon note above), but Open Graph is the one exception:
+         scrapers fetch the image out-of-band, with no document base to resolve
+         against, so `./image_card.png` is either ignored or fetched from the
+         scraper's own host. It has to name the origin.
+
+         The cost of hardcoding it is that this is now the ONE place in the
+         project that knows where the app is deployed -- the app itself is
+         location-independent, and the share link builds from the live
+         `location` rather than from a constant. If the domain ever moves, this
+         block is what has to move with it; nothing else here will break.
+
+         `og:image:secure_url` alongside `og:image`: some scrapers still read
+         only the former over HTTPS. Same file, and cheap insurance.
+
+         NO `og:description`, deliberately -- the card is the image plus the
+         name, and a description would compete with artwork that already says
+         what this is.
+
+         `twitter:card` is `summary_large_image` so the art gets the full width
+         rather than a thumbnail beside text that is not there. Twitter falls
+         back to the `og:` tags for everything else, so they are not repeated. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Fluoddity" />
+    <meta property="og:title" content="Fluoddity" />
+    <meta property="og:url" content="https://fluoddity.com/" />
+    <meta property="og:image" content="https://fluoddity.com/image_card.png" />
+    <meta
+      property="og:image:secure_url"
+      content="https://fluoddity.com/image_card.png"
+    />
+    <meta property="og:image:alt" content="Fluoddity" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Fluoddity" />
+    <meta name="twitter:image" content="https://fluoddity.com/image_card.png" />
     <style>
       :root { color-scheme: dark; }
 

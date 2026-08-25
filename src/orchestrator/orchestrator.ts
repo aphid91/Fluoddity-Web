@@ -2099,6 +2099,24 @@ export class Orchestrator implements CommandBus {
       case 'restoreConfigs': {
         // The other half of hover-preview; likewise never recorded. Restores
         // only THIS surface's origin -- another open browser keeps its own.
+        //
+        // **SUPERSEDES ANY PREVIEW STILL IN FLIGHT, and it has to.** `previewConfig`
+        // reads from storage asynchronously and publishes under a generation
+        // guard; this restore is synchronous. Without the bump the ordering on a
+        // fast stroke is:
+        //
+        //   hover A, B, C   three reads in flight, generation is C's
+        //   leave the menu  restore runs NOW, putting the origin back
+        //   C resolves      its generation still matches, so it applies
+        //
+        // -- and the menu closes stuck on the last row the cursor crossed. The
+        // restore has to invalidate those reads, not merely outrun them, because
+        // it cannot outrun them at all: it is synchronous and they are not.
+        //
+        // Bumped UNCONDITIONALLY, before the `origin` test. A surface with no
+        // origin recorded still has reads outstanding when the cursor leaves
+        // before the first one resolves, and those must not land either.
+        this.configGeneration++;
         const origin = this.previewOrigins.get(command.surface);
         // Restoring is itself a config change, so it resets too: abandoning the
         // menu would otherwise leave the ORIGINAL config's settings running on
