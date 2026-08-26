@@ -147,7 +147,7 @@ const GUIDE_BODY: readonly Block[] = [
   [
   "Fluoddity is an extension of the classic Physarum model which you can read about in this excellent Sage Jenson blog post: https://cargocollective.com/sagejenson/physarum",
   "This github readme page contains many more details on how this system expands on traditional Physarum simulations:"+
-  " https://github.com/aphid91/Fluoddity",
+  "https://github.com/aphid91/Fluoddity",
   "This website was written almost entirely by Claude 5 Opus. It is open source at https://github.com/aphid91/Fluoddity-Web"
   ]
 

@@ -150,7 +150,14 @@ export class Camera {
    */
   private readonly canvasGroups = new WeakMap<GPUTextureView, GPUBindGroup>();
 
-  /** Set by `beginFrame`; guards nothing yet, and grows a job in 5.3. */
+  /**
+   * Samples accumulated into the current cycle. Reset by `beginFrame`, zeroed
+   * by `invalidateTargets`.
+   *
+   * Guards two things: `result()` refuses to present an accumulator nothing has
+   * been drawn into, and `canHold()` reports whether there is a completed frame
+   * for the queued pause to freeze on.
+   */
   private samplesTaken = 0;
 
   private constructor(device: GPUDevice, state: CameraState, targets: RenderTargets) {
@@ -279,9 +286,19 @@ export class Camera {
     return this.accumGroup;
   }
 
-  /** Drop bind groups that reference the render targets. Call after a resize. */
+  /**
+   * Drop bind groups that reference the render targets. Call after a resize.
+   *
+   * ALSO FORGETS THE ACCUMULATED FRAME. A resize replaces the accumulation
+   * texture, so whatever average it held is gone -- reporting otherwise would
+   * let the queued pause's hold reuse a texture that no longer has the still in
+   * it. `canHold()` and `result()` both read this counter, so zeroing it here
+   * makes a resize mid-pause fall back to a live re-render, which is exactly
+   * what a stale still should do.
+   */
   invalidateTargets(): void {
     this.accumGroup = null;
+    this.samplesTaken = 0;
   }
 
   private buildTrail(module: GPUShaderModule | null): void {
@@ -424,6 +441,24 @@ export class Camera {
       ),
     );
     queue.writeBuffer(this.accumUniforms, 0, packAccumulateUniforms(samples));
+  }
+
+  /**
+   * Whether a completed frame is available to hold.
+   *
+   * The queued pause's settled still is an average of samples taken from a
+   * simulation state that has since been advanced past: the accumulator texture
+   * is the ONLY copy, and it cannot be re-rendered from. A frame that holds it
+   * records no clear and no `render()`, and so must skip `beginFrame` entirely
+   * -- that method's `samplesTaken = 0` would make `result()` report an empty
+   * accumulator and blank the screen.
+   *
+   * The frame loop asks this before committing to a hold, so "there is
+   * something to hold" is decided by the same counter `result()` guards on
+   * rather than by two places tracking it separately.
+   */
+  canHold(): boolean {
+    return this.samplesTaken > 0 && this.targets.accum !== null;
   }
 
   /**

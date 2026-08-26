@@ -59,7 +59,13 @@ import {
   PAN_PER_SECOND,
   ZOOM_PER_SECOND,
 } from '../camera/cameraState.ts';
-import { blurSchedule, sampleAt } from '../camera/blurSchedule.ts';
+import {
+  type SettledView,
+  blurSchedule,
+  pauseSettleSchedule,
+  sampleAt,
+  settledViewMatches,
+} from '../camera/blurSchedule.ts';
 import {
   type BehaviorEvent,
   describeCheckpointSet,
@@ -278,6 +284,47 @@ export class Orchestrator implements CommandBus {
    * being able to paint into it -- or to clear it.
    */
   private paused = false;
+
+  /**
+   * Set on the frame a pause is requested, consumed by the next `frame()`.
+   *
+   * THE PAUSE IS QUEUED, NOT IMMEDIATE. `paused` goes true the moment the
+   * command arrives, so every observer sees a paused simulation right away --
+   * but the frame that follows runs `PAUSE_SETTLE_FRAMES` render frames' worth
+   * of extra physics and accumulates them into one motion-blurred still, which
+   * is what the screen then freezes on. See `pauseSettleSchedule`.
+   *
+   * WHY `paused` FLIPS FIRST rather than after the settle. Half the app pauses
+   * by reading `status().paused` and toggling only on disagreement (the splash,
+   * export start and finish, rate calibration). If the flag lagged the request
+   * by even one frame, those callers would see "still running", fire a second
+   * `togglePause`, and cancel the first -- a pause that silently does nothing.
+   * The settle frame is a rendering detail; the pause itself is immediate.
+   */
+  private pauseSettlePending = false;
+
+  /**
+   * The camera the settle frame was rendered from, or null when no settled
+   * still is on screen.
+   *
+   * THE STILL IS A PICTURE FROM ONE VIEWPOINT, which is what makes this
+   * necessary. The settle frame averages `physicsSteps` samples into the
+   * accumulator; every later paused frame then reuses that texture rather than
+   * re-rendering, because the physics it depicts no longer exists -- the
+   * simulation has moved on past it and there is nothing left to re-render it
+   * from.
+   *
+   * So the moment the user pans, zooms or switches camera mode, the still is a
+   * picture of the wrong place and must be abandoned: the frame loop falls back
+   * to rendering the frozen entities live, from the new viewpoint. That costs
+   * the blur -- unavoidably, since the samples are gone -- but a sharp image of
+   * where you are looking beats a blurred one of where you were.
+   *
+   * A VALUE SNAPSHOT, not a reference to `camera.state`. That object is mutated
+   * in place by panning and zooming, so holding it would compare the live
+   * camera against itself and never once detect a move.
+   */
+  private settledView: SettledView | null = null;
 
   /** Transient UI message, surfaced through `status().saveError`. */
   private saveError = '';
@@ -677,7 +724,7 @@ export class Orchestrator implements CommandBus {
     // MOTION BLUR PUTS THE RENDER INSIDE THE PHYSICS LOOP. A displayed frame is
     // the average of `samples` renders taken `stride` sub-steps apart, so the
     // camera must see the simulation mid-advance rather than only at the end.
-    const { steps, schedule } = this.frameSchedule();
+    const { steps, schedule, settling } = this.frameSchedule();
     this.system.physicsSteps = steps;
     const at = sampleAt(schedule);
 
@@ -706,12 +753,55 @@ export class Orchestrator implements CommandBus {
       highlightedCohort: this.highlightEnabled ? this.highlight.cohort : NO_COHORT,
     };
 
-    // Uniforms are written BEFORE the encoder opens -- `queue.writeBuffer`
-    // cannot interleave with an open encoder's passes.
-    this.camera.beginFrame(frameState, schedule.samples);
+    // WHETHER THE SETTLED STILL SURVIVES THIS FRAME.
+    //
+    // Held only while every one of these is true: the simulation is paused (a
+    // resume must show live motion again), this is not itself the settle frame
+    // (which has samples to take), and the camera has not moved since the still
+    // was taken. Panning, zooming or flipping mode drops it -- see
+    // `settledView`, and `settledViewMatches` for why the comparison is exact.
+    const currentView: SettledView = {
+      pan: this.camera.state.pan,
+      zoom: this.camera.state.zoom,
+      mode: this.camera.state.mode,
+    };
+    // A HELD FRAME RENDERS NOTHING, so anything that changes what the picture
+    // should contain has to drop the still or the edit would be invisible until
+    // the next resume. Painting and clearing both stay live while paused (see
+    // the field section below), which is exactly why they must be listed here.
+    const fieldEdited = this.pendingStroke !== null || this.clearFieldPending;
+    const holdingSettled =
+      this.paused &&
+      !settling &&
+      !fieldEdited &&
+      settledViewMatches(this.settledView, currentView) &&
+      // ...and the accumulator still actually holds it. A target resize drops
+      // the texture, which is a rebuild rather than a camera move and so would
+      // otherwise slip past the view comparison above.
+      this.camera.canHold();
+    // DROPPED PERMANENTLY, not suspended for a frame. Once the view moves or
+    // the field is edited, the still is wrong and cannot be rebuilt -- the
+    // samples came from physics the settle already advanced past. So every
+    // later paused frame re-renders the frozen entities live, sharp rather than
+    // blurred, until the next pause earns a new still. Losing the blur is the
+    // honest outcome; showing a picture of the wrong place is not.
+    if (!holdingSettled && !settling) this.settledView = null;
+
+    // BOTH SKIPPED WHILE HOLDING. `beginFrame` would zero the sample count and
+    // make `result()` report an empty accumulator; `clearAccumulator` would
+    // wipe the still itself. A held frame records no camera work at all -- the
+    // texture from an earlier frame simply stays on screen.
+    //
+    // Safe to skip only because every uniform `beginFrame` writes is
+    // view-dependent, and a hold is conditional on the view not having moved.
+    if (!holdingSettled) {
+      // Uniforms are written BEFORE the encoder opens -- `queue.writeBuffer`
+      // cannot interleave with an open encoder's passes.
+      this.camera.beginFrame(frameState, schedule.samples);
+    }
 
     const encoder = this.device.createCommandEncoder({ label: 'frame' });
-    this.camera.clearAccumulator(encoder);
+    if (!holdingSettled) this.camera.clearAccumulator(encoder);
 
     // 3. THE FIELD, ONCE PER RENDERED FRAME, ABOVE THE PHYSICS LOOP.
     //
@@ -756,7 +846,13 @@ export class Orchestrator implements CommandBus {
       drawSize: this.prefs.drawSize,
     });
 
-    if (this.paused) {
+    if (holdingSettled) {
+      // NOTHING IS RECORDED AT ALL -- no clear, no render. The accumulator
+      // already holds the settled still from an earlier frame, and re-rendering
+      // is not merely wasteful but impossible: the physics it depicts was
+      // advanced past during the settle, so the only copy of that moment is the
+      // texture itself. Leaving the accumulator untouched IS the hold.
+    } else if (this.paused && !settling) {
       // STILL ONE RENDER when paused: the camera has to draw the frozen state,
       // or the screen would go black. `runFrame` is what is skipped, not the
       // render (`orchestrator.py:318-322`).
@@ -772,6 +868,17 @@ export class Orchestrator implements CommandBus {
           canvas: this.system.currentCanvasTexture(),
         });
       });
+      // CONSUMED HERE, not in the command handler: the flag has to survive from
+      // the dispatch until the frame that spends it, and it is spent by the
+      // `runFrame` above. Cleared unconditionally in this branch so a resume
+      // arriving mid-settle cannot leave it armed for a later pause.
+      this.pauseSettlePending = false;
+
+      // ARM THE HOLD. Recorded only on the settle frame, and only once the
+      // samples are actually on the encoder -- this is the viewpoint the still
+      // now depicts, and the next frame compares against it to decide whether
+      // that picture is still of the right place.
+      this.settledView = settling ? currentView : null;
     }
 
     // 4. THE PICK PASSES, IN BOTH BRANCHES.
@@ -963,8 +1070,18 @@ export class Orchestrator implements CommandBus {
    * PAUSED STILL WINS. A paused simulation has nothing to average, so N samples
    * of a still image is the same picture at N times the cost -- true whether or
    * not a recording is in flight (`orchestrator.py:301-304`).
+   *
+   * THE SETTLE FRAME IS THE ONE EXCEPTION, and it is checked before the paused
+   * case because it is the frame where `paused` is already true and there is
+   * still something to average. It overrides the sample count outright -- that
+   * is the feature: the freeze lands on a blurred still even with motion blur
+   * switched off. See `pauseSettleSchedule` and `pauseSettlePending`.
    */
-  private frameSchedule(): { steps: number; schedule: ReturnType<typeof blurSchedule> } {
+  private frameSchedule(): {
+    steps: number;
+    schedule: ReturnType<typeof blurSchedule>;
+    settling: boolean;
+  } {
     const recording = this.recorder;
     const steps =
       recording !== null
@@ -973,9 +1090,18 @@ export class Orchestrator implements CommandBus {
     const samples =
       recording !== null ? recording.settings.motionBlurSamples : this.prefs.motionBlurSamples;
 
+    if (this.pauseSettlePending) {
+      // Off the RESOLVED rate, so a settle during a recording spends the
+      // recording's steps rather than the editor's -- the same override every
+      // other number in this method already honours.
+      const settle = pauseSettleSchedule(steps);
+      return { steps: settle.steps, schedule: settle.schedule, settling: true };
+    }
+
     return {
       steps,
       schedule: this.paused ? { samples: 1, stride: 1 } : blurSchedule(steps, samples),
+      settling: false,
     };
   }
 
@@ -1778,6 +1904,15 @@ export class Orchestrator implements CommandBus {
 
       case 'togglePause':
         this.paused = !this.paused;
+        // PAUSING queues the settle frame; RESUMING cancels one that never got
+        // to run. A pause-then-resume inside a single frame must not leave the
+        // flag armed, or the next pause -- whenever it came -- would be the one
+        // that spent the extra physics.
+        this.pauseSettlePending = this.paused;
+        // Resuming also drops any still being held, so the next frame renders
+        // live motion rather than holding a picture of a simulation that is
+        // running again. Pausing leaves it null for the settle frame to set.
+        this.settledView = null;
         return;
 
       case 'toggleCameraMode':

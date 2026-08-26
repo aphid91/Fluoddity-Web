@@ -1045,6 +1045,66 @@ N samples of an unchanging scene is the same picture at N times the cost. The
 guard that stops shoving lives inside `shove_state()` rather than at the call
 site, so a second caller cannot silently defeat it.
 
+**The pause is QUEUED, and the frame it freezes on is deliberately blurred.**
+An ordinary pause stops on whatever sub-step the loop reached — a hard, aliased
+still, and the one frame a user is most likely to sit and stare at or
+screenshot. Instead, the frame following a pause request runs
+`PAUSE_SETTLE_FRAMES` (4) render frames' worth of extra physics and averages
+every 4th sub-step into a single image. That is `physics_rate * 4` extra
+sub-steps producing `physics_rate` samples — one render frame's worth of
+samples spread over four frames of motion — so the freeze lands on a properly
+motion-blurred still **regardless of the motion blur preference**, including
+with blur switched off, which is the case the feature exists for.
+
+`PAUSE_SETTLE_FRAMES` in `blurSchedule.ts` is the only place that 4 appears. It
+sets the extra physics, the sample count and the stride together, and the tests
+derive every expectation from it rather than from a literal — retuning it is
+expected and does not turn the suite red.
+
+**The still is then HELD, not re-rendered.** This is the part that is easy to
+get wrong: an ordinary paused frame clears the accumulator and draws one sample
+into it, which would overwrite the blurred still one frame after it appeared —
+the blur would be computed correctly and then immediately thrown away. So while
+a still is being held the frame loop records *no camera work at all*: no
+`beginFrame`, no `clearAccumulator`, no `render`. The accumulation texture from
+the settle frame simply stays on screen. `beginFrame` in particular must be
+skipped because its `samplesTaken = 0` would make `result()` report an empty
+accumulator and blank the display.
+
+**And the hold is abandoned the moment it stops being true.** The still is an
+average of samples from a simulation state the settle already advanced past —
+the texture is the only copy, and it cannot be re-rendered from a new angle. So
+it is only valid from the exact viewpoint it was taken at. Any of these drops it
+and falls back to rendering the frozen entities live (sharp, not blurred, which
+is the honest trade — a correct image of where you are looking beats a blurred
+one of where you were):
+
+- **pan, zoom or a camera-mode flip** — compared exactly, with no epsilon: a
+  tolerance would let a slow drag creep the view while a stale still stayed
+  frozen on screen;
+- **painting or clearing the strafe field**, both of which stay live while
+  paused, and would otherwise be invisible until the next resume;
+- **a target resize**, which replaces the accumulation texture outright —
+  `invalidateTargets()` zeroes the sample count so `canHold()` reports honestly;
+- **resuming**, which drops it so the next frame shows live motion.
+
+The drop is permanent rather than a one-frame suspension: nothing can rebuild
+those samples, so every later paused frame re-renders live until the next pause
+earns a fresh still.
+
+Two ordering details carry the design:
+
+- **`paused` flips immediately; only the *rendering* is deferred.** Half the app
+  pauses by reading `status().paused` and toggling only on disagreement (the
+  splash, export start and finish, rate calibration). A flag that lagged the
+  request by a frame would make those callers fire a second `togglePause` and
+  cancel the first — a pause that silently does nothing.
+- **It all happens in one frame-loop iteration.** The settle frame is 4× the
+  usual physics work in a single `runFrame`, which keeps the control flow free
+  of a multi-frame state machine at the cost of one potentially long frame.
+  `ensureUniformCapacity` grows the per-sub-step uniform buffers to match and
+  does not shrink after, so the cost is paid once per session.
+
 ## The frame assembly pipeline
 
 Everything from "the simulation has advanced" to "pixels are on screen". The
