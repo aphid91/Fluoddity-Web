@@ -24,6 +24,7 @@ import {
   contextLabelFor,
   hintFor,
   overlayTop,
+  stackLead,
   toolOptionLabel,
   type Rect,
 } from './mutationOverlay.ts';
@@ -351,6 +352,59 @@ test('the one-click state withdraws its button at scale 0 and says why', () => {
   // still undoes here, and dropping it because a different action became
   // unavailable would make it flicker as the slider crosses zero.
   assert.notEqual(hint.undo, null, 'undo is unaffected by mutation scale');
+});
+
+test('the mutation-scale sentence stacks after "This child", on touch only', () => {
+  // THE STATE THAT NEEDS IT: the one above -- no gold button, no stepper, prose
+  // is all there is. Driven through `hintFor` rather than a literal so the two
+  // cannot drift: if the wording is rewritten past the split phrase, this fails
+  // here rather than silently ellipsizing on a phone.
+  const { lead } = hintFor(
+    status({ mouseMode: 'select', highlightEnabled: false, selectionIsNoOp: true }),
+  );
+  const stacked = stackLead(lead);
+  assert.equal(
+    stacked,
+    'Increase Mutation Scale for variations. This child\nis identical to its parent',
+  );
+  // EXACTLY TWO LINES, and the break is where the user asked for it. Asserted as
+  // a split rather than by eye, because a second `\n` would cost the row a third
+  // line of height it has not reserved.
+  const lines = stacked.split('\n');
+  assert.equal(lines.length, 2, 'two lines, not three');
+  assert.ok(lines[0]?.endsWith('variations. This child'), 'first line ends at the subject');
+  // NO WORDS GAINED OR LOST: the newline replaces the space and nothing else, so
+  // the stacked row says precisely what the desktop row says.
+  assert.equal(stacked.replace('\n', ' '), lead, 'only the space became a newline');
+});
+
+test('the lit no-op sentence stacks at the same phrase, in the plural', () => {
+  // `hintFor` writes this sentence twice with different grammatical number, and
+  // both should break in the same place -- otherwise the row jumps between one
+  // line and two as a cohort is lit.
+  const { tail } = hintFor(
+    status({
+      mouseMode: 'select',
+      // A LIT COHORT is what selects this branch -- `highlightEnabled` alone
+      // leaves the cohort at `NO_COHORT` and lands in the unlit case above.
+      highlightedCohort: 3,
+      highlightEnabled: true,
+      selectionIsNoOp: true,
+    }),
+  );
+  const stacked = stackLead(tail);
+  assert.ok(stacked.includes('variations. These children\n'), 'breaks after the plural subject');
+  assert.equal(stacked.split('\n').length, 2, 'two lines here too');
+});
+
+test('a lead without the phrase is returned untouched', () => {
+  // The stacking is applied to EVERY touch lead, so every other sentence has to
+  // pass through unchanged -- including the empty one, which the row uses to
+  // decide whether the span is hidden at all.
+  for (const lead of ['', 'Left click to add barriers', 'Currently selected cohort:']) {
+    assert.equal(stackLead(lead), lead, `unchanged: "${lead}"`);
+    assert.ok(!stackLead(lead).includes('\n'), 'no newline introduced');
+  }
 });
 
 test('the sentinel keeps its button at scale 0, because the GPU generates', () => {

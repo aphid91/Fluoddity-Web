@@ -1514,7 +1514,23 @@ export class MutationOverlay {
     const hasTouchButton = commit || generateChild || clearField;
     const keepLead = !suppressForTouch || (!hasTouchButton && !namesAMouseGesture);
 
-    const leadText = keepLead ? lead : '';
+    // **TWO LINES ON TOUCH, IN THE HEIGHT OF ONE.** The rescued sentence is the
+    // longest thing this row ever shows, and on a 390px phone one line of it
+    // ellipsizes to "Increase Mutation Scale for varia..." -- losing exactly the
+    // half that says what to do. Broken after "This child", the two halves both
+    // fit, and the row does not grow: `TOUCH_HINT_TEXT_CSS` drops to a 1.15 line
+    // box, so two lines land inside the 44px the buttons already set as the
+    // row's floor.
+    //
+    // A `\n` rather than two spans, matching the commit and context buttons:
+    // `textContent` plus `white-space:pre-line` keeps this a string, so nothing
+    // that renders a hint can inject markup.
+    //
+    // SUBSTITUTED AT THE RENDER SITE rather than written into `hintFor`, because
+    // it is a fact about a narrow row and not about the sentence -- the desktop
+    // shows the same words in one line with room to spare, and `hintFor` stays a
+    // pure state-to-words function that the tests read as prose.
+    const leadText = keepLead ? (suppressForTouch ? stackLead(lead) : lead) : '';
     this.hintLead.textContent = leadText;
     this.hintTail.textContent = suppressForTouch ? '' : tail;
 
@@ -1533,8 +1549,12 @@ export class MutationOverlay {
     // Restored as `inline` rather than `''` for the reason `refreshHint` spells
     // out below: these carry their layout in an inline style, and `''` REMOVES
     // the property rather than reverting it.
+    // `inline-block` FOR THE STACKED SENTENCE, `inline` for every other one: an
+    // inline box takes its height from the line box it sits on, so the second
+    // line of a stacked lead would overlap the row rather than sit under it.
     if (suppressForTouch) {
-      this.hintLead.style.display = leadText === '' ? 'none' : 'inline';
+      this.hintLead.style.display =
+        leadText === '' ? 'none' : leadText.includes('\n') ? 'inline-block' : 'inline';
     }
 
     // The label names EVERY route to the same act, which is the point of
@@ -1989,6 +2009,38 @@ export class MutationOverlay {
     this.tooltip.dispose();
     this.root.remove();
   }
+}
+
+/**
+ * Break the mutation-scale sentence over two lines, for the touch row only.
+ *
+ * ONE SENTENCE, NOT A GENERAL WRAPPER. This is the only hint long enough to
+ * ellipsize on a phone in the one state where the prose is all there is -- no
+ * gold button, no stepper, a single cohort at Mutation Scale 0 -- so the row
+ * would otherwise read "Increase Mutation Scale for varia..." and withhold the
+ * half that says what to do about it. Every other touch state either shows
+ * buttons instead of prose or has a sentence that already fits.
+ *
+ * MATCHED ON THE PHRASE RATHER THAN THE WHOLE STRING, because `hintFor` writes
+ * it twice with different grammatical number -- "This child is identical to its
+ * parent" for one cohort, "These children are all identical to their parent"
+ * when a cohort is lit -- and both should break at the same place. The split
+ * point is the sentence boundary in the middle: the first line ends "...for
+ * variations." plus the subject of the second sentence, so the break lands
+ * where a reader would pause anyway.
+ *
+ * Anything that does not contain the phrase is returned UNCHANGED, so this is
+ * safe to call on every lead: a rewritten sentence loses the stacking and keeps
+ * ellipsizing exactly as it does today, which is the failure this row already
+ * handles rather than a new one.
+ */
+export function stackLead(lead: string): string {
+  // After the subject, before its verb: "This child" / "These children".
+  const split = /^(.*\bvariations\. (?:This child|These children))( .*)$/s.exec(lead);
+  const head = split?.[1];
+  const rest = split?.[2];
+  if (head === undefined || rest === undefined) return lead;
+  return `${head}\n${rest.trimStart()}`;
 }
 
 /**
@@ -3008,9 +3060,23 @@ const HINT_TEXT_CSS = 'min-width:0;overflow:hidden;text-overflow:ellipsis;';
 // vanishing. It is the right thing to sacrifice: a truncated sentence still
 // reads, and its full text is one long press away on the tooltip, whereas a
 // 26px button cannot be hit at all.
+// **`pre-line` RATHER THAN `nowrap`, WHICH COSTS THE ROW NOTHING.** Only the
+// mutation-scale sentence carries a `\n` (see `stackLead`); every other lead is
+// a single line and renders identically, because `pre-line` still collapses
+// ordinary whitespace and only honours an EXPLICIT newline. What it gives up is
+// `text-overflow:ellipsis` on the stacked sentence -- ellipsis applies to the
+// last line of an overflowing box, and the point of stacking is that neither
+// line overflows -- so the single-line leads keep their ellipsis and the stacked
+// one no longer needs it.
+//
+// `line-height:1.15` IS WHAT KEEPS THE ROW ITS CURRENT HEIGHT: two lines of 12px
+// at 1.15 is ~28px, which fits inside the 44px minimum the touch buttons already
+// impose on this row via `align-items:stretch`. The row is sized by its tallest
+// item and that is a button, not this span, so the second line lands in space
+// the row was already reserving.
 const TOUCH_HINT_TEXT_CSS =
   'flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;' +
-  'white-space:nowrap;';
+  'white-space:pre-line;line-height:1.15;';
 
 // `‹ [n] ›`, tight enough to read as one control rather than three.
 //

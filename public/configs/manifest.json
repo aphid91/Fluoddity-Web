@@ -6,6 +6,14 @@
       "name": "Core",
       "entries": [
         {
+          "name": "AntYarn",
+          "path": "Core/AntYarn.json"
+        },
+        {
+          "name": "BubbleBelt",
+          "path": "Core/BubbleBelt.json"
+        },
+        {
           "name": "Burbles",
           "path": "Core/Burbles.json"
         },
@@ -18,12 +26,8 @@
           "path": "Core/Crystal.json"
         },
         {
-          "name": "Crystaloop",
-          "path": "Core/Crystaloop.json"
-        },
-        {
-          "name": "Cyclone",
-          "path": "Core/Cyclone.json"
+          "name": "Crystal2",
+          "path": "Core/Crystal2.json"
         },
         {
           "name": "Diversity",
@@ -107,14 +111,6 @@
           "path": "Archive/Asteroids.json"
         },
         {
-          "name": "Balloons",
-          "path": "Archive/Balloons.json"
-        },
-        {
-          "name": "Bands",
-          "path": "Archive/Bands.json"
-        },
-        {
           "name": "Barcode",
           "path": "Archive/Barcode.json"
         },
@@ -139,16 +135,8 @@
           "path": "Archive/Bonds.json"
         },
         {
-          "name": "Bouyancy",
-          "path": "Archive/Bouyancy.json"
-        },
-        {
           "name": "Box",
           "path": "Archive/Box.json"
-        },
-        {
-          "name": "Braids",
-          "path": "Archive/Braids.json"
         },
         {
           "name": "Branes3",
@@ -171,14 +159,6 @@
           "path": "Archive/Brittlestar2.json"
         },
         {
-          "name": "Bubbles2",
-          "path": "Archive/Bubbles2.json"
-        },
-        {
-          "name": "Burbles",
-          "path": "Archive/Burbles.json"
-        },
-        {
           "name": "Burbles2",
           "path": "Archive/Burbles2.json"
         },
@@ -187,16 +167,8 @@
           "path": "Archive/Buttons.json"
         },
         {
-          "name": "CantorsLavalamp",
-          "path": "Archive/CantorsLavalamp.json"
-        },
-        {
           "name": "Capsules",
           "path": "Archive/Capsules.json"
-        },
-        {
-          "name": "Cars",
-          "path": "Archive/Cars.json"
         },
         {
           "name": "Cars2",
@@ -227,10 +199,6 @@
           "path": "Archive/Circ.json"
         },
         {
-          "name": "Clock",
-          "path": "Archive/Clock.json"
-        },
-        {
           "name": "Clump",
           "path": "Archive/Clump.json"
         },
@@ -243,32 +211,12 @@
           "path": "Archive/Corrugated2.json"
         },
         {
-          "name": "Crystal",
-          "path": "Archive/Crystal.json"
-        },
-        {
-          "name": "Crystal2",
-          "path": "Archive/Crystal2.json"
-        },
-        {
-          "name": "CrystalImperfections",
-          "path": "Archive/CrystalImperfections.json"
-        },
-        {
-          "name": "Cyclone",
-          "path": "Archive/Cyclone.json"
-        },
-        {
-          "name": "Diversity",
-          "path": "Archive/Diversity.json"
+          "name": "Crystal3",
+          "path": "Archive/Crystal3.json"
         },
         {
           "name": "Diversity2",
           "path": "Archive/Diversity2.json"
-        },
-        {
-          "name": "DTest",
-          "path": "Archive/DTest.json"
         },
         {
           "name": "Dumbells",
@@ -279,44 +227,20 @@
           "path": "Archive/Dunes.json"
         },
         {
-          "name": "Dunes2",
-          "path": "Archive/Dunes2.json"
+          "name": "Ecosystem",
+          "path": "Archive/Ecosystem.json"
         },
         {
-          "name": "Dunes3",
-          "path": "Archive/Dunes3.json"
+          "name": "Ecosystem2",
+          "path": "Archive/Ecosystem2.json"
         },
         {
           "name": "Ecosystem3",
           "path": "Archive/Ecosystem3.json"
         },
         {
-          "name": "Ecosystem4",
-          "path": "Archive/Ecosystem4.json"
-        },
-        {
-          "name": "Ecosystem5",
-          "path": "Archive/Ecosystem5.json"
-        },
-        {
           "name": "Eggs",
           "path": "Archive/Eggs.json"
-        },
-        {
-          "name": "evowalls",
-          "path": "Archive/evowalls.json"
-        },
-        {
-          "name": "Evowalls2",
-          "path": "Archive/Evowalls2.json"
-        },
-        {
-          "name": "Evowalls3",
-          "path": "Archive/Evowalls3.json"
-        },
-        {
-          "name": "Evowalls4",
-          "path": "Archive/Evowalls4.json"
         },
         {
           "name": "EyeBubble",
@@ -339,48 +263,8 @@
           "path": "Archive/Fernpulse.json"
         },
         {
-          "name": "fieldtest20",
-          "path": "Archive/fieldtest20.json"
-        },
-        {
-          "name": "Filament",
-          "path": "Archive/Filament.json"
-        },
-        {
-          "name": "Filams",
-          "path": "Archive/Filams.json"
-        },
-        {
-          "name": "Filams2",
-          "path": "Archive/Filams2.json"
-        },
-        {
-          "name": "Fish",
-          "path": "Archive/Fish.json"
-        },
-        {
-          "name": "Float",
-          "path": "Archive/Float.json"
-        },
-        {
-          "name": "Flow2",
-          "path": "Archive/Flow2.json"
-        },
-        {
-          "name": "Flow3",
-          "path": "Archive/Flow3.json"
-        },
-        {
-          "name": "flowchecker",
-          "path": "Archive/flowchecker.json"
-        },
-        {
           "name": "Flowers2",
           "path": "Archive/Flowers2.json"
-        },
-        {
-          "name": "Flowing",
-          "path": "Archive/Flowing.json"
         },
         {
           "name": "Glyphy",
@@ -395,20 +279,12 @@
           "path": "Archive/Grinch.json"
         },
         {
-          "name": "GrowthEmboss",
-          "path": "Archive/GrowthEmboss.json"
-        },
-        {
           "name": "Handcuffs",
           "path": "Archive/Handcuffs.json"
         },
         {
-          "name": "hatman",
-          "path": "Archive/hatman.json"
-        },
-        {
-          "name": "Hotdogs",
-          "path": "Archive/Hotdogs.json"
+          "name": "Hotdogs2",
+          "path": "Archive/Hotdogs2.json"
         },
         {
           "name": "Instability",
@@ -423,40 +299,16 @@
           "path": "Archive/Lemonbubble.json"
         },
         {
-          "name": "Linkage",
-          "path": "Archive/Linkage.json"
-        },
-        {
-          "name": "Logo",
-          "path": "Archive/Logo.json"
-        },
-        {
-          "name": "Logo2",
-          "path": "Archive/Logo2.json"
-        },
-        {
-          "name": "Logo3",
-          "path": "Archive/Logo3.json"
-        },
-        {
-          "name": "Logo4",
-          "path": "Archive/Logo4.json"
-        },
-        {
-          "name": "Medley",
-          "path": "Archive/Medley.json"
-        },
-        {
-          "name": "Medley2",
-          "path": "Archive/Medley2.json"
-        },
-        {
           "name": "Medley3",
           "path": "Archive/Medley3.json"
         },
         {
-          "name": "Medusa",
-          "path": "Archive/Medusa.json"
+          "name": "Medley4",
+          "path": "Archive/Medley4.json"
+        },
+        {
+          "name": "Medley5",
+          "path": "Archive/Medley5.json"
         },
         {
           "name": "Medusa2",
@@ -475,20 +327,8 @@
           "path": "Archive/Medusa5.json"
         },
         {
-          "name": "Medusa6",
-          "path": "Archive/Medusa6.json"
-        },
-        {
           "name": "Medusa7",
           "path": "Archive/Medusa7.json"
-        },
-        {
-          "name": "Moths",
-          "path": "Archive/Moths.json"
-        },
-        {
-          "name": "Mushrooms",
-          "path": "Archive/Mushrooms.json"
         },
         {
           "name": "NegativeSpace",
@@ -519,10 +359,6 @@
           "path": "Archive/Nodules4.json"
         },
         {
-          "name": "Orbitals",
-          "path": "Archive/Orbitals.json"
-        },
-        {
           "name": "Orchids",
           "path": "Archive/Orchids.json"
         },
@@ -531,16 +367,16 @@
           "path": "Archive/Orion.json"
         },
         {
-          "name": "Panels",
-          "path": "Archive/Panels.json"
-        },
-        {
           "name": "Paperclips",
           "path": "Archive/Paperclips.json"
         },
         {
           "name": "Paperclips2",
           "path": "Archive/Paperclips2.json"
+        },
+        {
+          "name": "Petals",
+          "path": "Archive/Petals.json"
         },
         {
           "name": "PetriSpines",
@@ -555,36 +391,12 @@
           "path": "Archive/Phasic.json"
         },
         {
-          "name": "Pop2",
-          "path": "Archive/Pop2.json"
-        },
-        {
-          "name": "Prickles",
-          "path": "Archive/Prickles.json"
-        },
-        {
-          "name": "Prow",
-          "path": "Archive/Prow.json"
-        },
-        {
-          "name": "Pseudocrystal",
-          "path": "Archive/Pseudocrystal.json"
-        },
-        {
           "name": "Q-tips",
           "path": "Archive/Q-tips.json"
         },
         {
           "name": "Rhombus",
           "path": "Archive/Rhombus.json"
-        },
-        {
-          "name": "Rims",
-          "path": "Archive/Rims.json"
-        },
-        {
-          "name": "Rippler",
-          "path": "Archive/Rippler.json"
         },
         {
           "name": "Rippleworms",
@@ -607,28 +419,8 @@
           "path": "Archive/Salt2.json"
         },
         {
-          "name": "Sand",
-          "path": "Archive/Sand.json"
-        },
-        {
-          "name": "Sand2",
-          "path": "Archive/Sand2.json"
-        },
-        {
-          "name": "Sharps",
-          "path": "Archive/Sharps.json"
-        },
-        {
-          "name": "Sheets",
-          "path": "Archive/Sheets.json"
-        },
-        {
-          "name": "Shrimp2",
-          "path": "Archive/Shrimp2.json"
-        },
-        {
-          "name": "ShrimpEvo",
-          "path": "Archive/ShrimpEvo.json"
+          "name": "Shrimp",
+          "path": "Archive/Shrimp.json"
         },
         {
           "name": "Slides",
@@ -655,24 +447,12 @@
           "path": "Archive/Squid.json"
         },
         {
-          "name": "Squidline",
-          "path": "Archive/Squidline.json"
-        },
-        {
-          "name": "Starcrossed",
-          "path": "Archive/Starcrossed.json"
-        },
-        {
-          "name": "Stars",
-          "path": "Archive/Stars.json"
-        },
-        {
           "name": "Stars2",
           "path": "Archive/Stars2.json"
         },
         {
-          "name": "Streaks",
-          "path": "Archive/Streaks.json"
+          "name": "Stars3",
+          "path": "Archive/Stars3.json"
         },
         {
           "name": "StringTheory",
@@ -695,24 +475,8 @@
           "path": "Archive/swimmers2.json"
         },
         {
-          "name": "Symmy",
-          "path": "Archive/Symmy.json"
-        },
-        {
-          "name": "Teepees",
-          "path": "Archive/Teepees.json"
-        },
-        {
           "name": "Teeth",
           "path": "Archive/Teeth.json"
-        },
-        {
-          "name": "TEMP",
-          "path": "Archive/TEMP.json"
-        },
-        {
-          "name": "Temp2",
-          "path": "Archive/Temp2.json"
         },
         {
           "name": "TheWeave",
@@ -723,16 +487,8 @@
           "path": "Archive/TheWeave2.json"
         },
         {
-          "name": "Tick",
-          "path": "Archive/Tick.json"
-        },
-        {
           "name": "Torpedo",
           "path": "Archive/Torpedo.json"
-        },
-        {
-          "name": "Torpedos2",
-          "path": "Archive/Torpedos2.json"
         },
         {
           "name": "Triforce",
@@ -763,32 +519,12 @@
           "path": "Archive/Watchers.json"
         },
         {
-          "name": "Waterfalls",
-          "path": "Archive/Waterfalls.json"
-        },
-        {
-          "name": "WaveFront",
-          "path": "Archive/WaveFront.json"
-        },
-        {
-          "name": "Weave3",
-          "path": "Archive/Weave3.json"
-        },
-        {
           "name": "WeirdSwimmer",
           "path": "Archive/WeirdSwimmer.json"
         },
         {
           "name": "Wiggles",
           "path": "Archive/Wiggles.json"
-        },
-        {
-          "name": "WormButtons",
-          "path": "Archive/WormButtons.json"
-        },
-        {
-          "name": "Worms4",
-          "path": "Archive/Worms4.json"
         },
         {
           "name": "Zippy",
