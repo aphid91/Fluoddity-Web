@@ -598,10 +598,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Also before the fence and the boundary, so containment still gets the last
     // word -- you can shove a particle against a wall, not through it.
     //
-    // Already divided by the physics rate on the host, so holding the button for
-    // one frame moves a particle the same distance at 30 sub-steps as at 120.
-    // Without that, the Physics Rate slider would silently be a strength slider
-    // too -- the trap the Draw brush's once-per-frame cadence exists to avoid.
+    // Already scaled down by the physics rate on the host, so raising the rate
+    // does not multiply the shove by the sub-step count. Without that, the
+    // Physics Rate slider would silently be a strength slider too -- the trap
+    // the Draw brush's once-per-frame cadence exists to avoid.
+    //
+    // The host divides by `steps ** 0.75` rather than `steps`, deliberately
+    // leaving the brush relatively stronger at low rates. Nothing here depends
+    // on which: this reads one number per sub-step either way. See
+    // `shoveCommands.shoveState` for the tuning argument.
     pos += get_shove(pos);
 
     // Cohort Fences: hold each particle near its own spawn point, so cohorts

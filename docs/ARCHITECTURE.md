@@ -1264,18 +1264,33 @@ That makes it inherently per-sub-step, so the strength is divided by that count
 before it reaches the GPU (`shove_commands.shove_state`) — otherwise the raw
 value would be applied `physics_steps` times per frame.
 
-**And then multiplied back up by `steps / 30`, so the shove is PROPORTIONAL to
-Physics Rate**, at 1× where the slider defaults. The two factors cancel to a
-constant, and the code deliberately does *not* collapse them: they mean
-different things (one is required by per-sub-step application, one is a tuning
-choice) and a bare `/30.0` would read as a magic number.
+**But by `steps ** 0.75`, not `steps`** — a partial division, and the exponent
+is the tuning knob. Dividing the rate out *entirely* (exponent 1) is correct in
+principle: a held shove would move a particle the same distance per rendered
+frame at any rate. It overshoots in practice, because it makes the brush 30×
+stronger at rate 1 than at the default, which is unmanageable at the bottom of
+the slider. The exponent keeps the direction and moderates that to 12.8× (21.6×
+rather than 60× across the whole 1..60 range).
 
-This was originally the opposite — divided only, so a held shove moved a
-particle the same distance per frame at any rate. That is the defensible
-default for a *tool*, but it makes the shove feel progressively weaker as the
-rate rises, because everything it is pushing is moving faster while it is not.
-Proportional keeps the gesture the same size relative to what is on screen,
-which is what the tool is judged against in practice.
+The direction is the point. Lowering the rate slows the whole simulation
+against the wall clock; a shove that does not slow with it gets more purchase
+on a scene that has been deliberately slowed down — which is exactly when a
+user is working carefully and wants the tool to bite.
+
+**Anchored at `SHOVE_REFERENCE_STEPS`**, so strength at the default rate is
+`gain * power / 30` for any exponent. Without the anchor a bare `steps ** 0.75`
+would land at ~12.8 at the default and quietly make the standard brush 2.3×
+stronger — retuning the curve would silently retune the default too.
+
+This has flip-flopped, so the losing argument is worth keeping. An early
+version multiplied back up by `steps / 30`, making strength *proportional* to
+the rate, on the theory that a shove should keep its weight relative to
+everything else moving on screen. The theory is defensible and the feel is not:
+it makes the brush go limp precisely at the low rates people select in order to
+place things accurately, and it quietly turns the Physics Rate slider into a
+strength slider. `shoveCommands.test.ts` pins the *direction* and the anchor
+rather than just numbers, because the numbers are expected to be retuned and
+the direction is not.
 
 **Strafe channel, not force.** `pos += get_shove(pos)`, next to the painted
 field and for the same reasons: drag cannot damp it, no rule can resist it, and

@@ -17,8 +17,10 @@
  * that persists between steps, so it can be written once per frame and read many
  * times. A shove has nothing to persist in -- it has to be applied as the
  * particles move, or it would be a single jump at one arbitrary point in the
- * frame's advance. That makes it per-sub-step, so the strength is divided by the
- * physics rate before it reaches the GPU (see `shoveState`).
+ * frame's advance. That makes it per-sub-step, so the strength is scaled down by
+ * the physics rate before it reaches the GPU -- by `steps ** 0.75` rather than
+ * `steps`, which leaves the brush deliberately stronger at low rates without the
+ * full 30x swing a plain division gives (see `shoveState`).
  *
  * A pure function, not a mixin. The desktop reaches through `self` for the
  * camera, the window and the prefs; here every dependency is an argument, which
@@ -43,13 +45,28 @@ import type { MouseMode } from './commands.ts';
 export const SHOVE_GAIN = 0.004;
 
 /**
- * The physics rate a shove is tuned against. Shove strength is PROPORTIONAL to
- * the rate -- the tool pushes as fast as the simulation is running, so a shove
- * keeps its weight relative to everything else moving on screen instead of
- * becoming a feeble nudge at high rates and a shunt at low ones. This is the
- * rate where that scaling is 1x.
+ * The physics rate `SHOVE_GAIN` was tuned at -- the default -- and the anchor
+ * the rate falloff pivots around. Strength here is exactly `gain * power / 30`
+ * whatever `SHOVE_RATE_EXPONENT` is set to, which is what lets the exponent be
+ * retuned without silently restrengthening the default brush.
+ *
+ * It is also what makes `SHOVE_GAIN`'s magnitude readable: "a twentieth of the
+ * world per second" is a claim about 30 sub-steps a frame. If the gain is ever
+ * retuned at another rate, this is the number that has to move with it.
  */
 export const SHOVE_REFERENCE_STEPS = 30.0;
+
+/**
+ * How hard Physics Rate pulls back on shove strength. See `shoveState` for the
+ * three positions on this axis and why this one was chosen.
+ *
+ * 1 divides the rate out completely (a frame's total shove identical at every
+ * rate); 0 leaves it fully in (strength proportional to the rate). At 0.75 the
+ * brush still gets stronger as the rate drops -- the behaviour this is for --
+ * but across the full 1..60 slider that is a 21.6x span rather than 60x, and
+ * the bottom of the slider sits 12.8x above the default rather than 30x.
+ */
+export const SHOVE_RATE_EXPONENT = 0.75;
 
 /** What `shoveState` needs to see. Everything, explicitly. */
 export interface ShoveContext {
@@ -98,17 +115,35 @@ export function shoveState(state: InputState, ctx: ShoveContext): ShoveState | n
     ctx.zoom,
   );
 
-  // PER SUB-STEP, so a frame's total shove scales with the sub-step count -- a
-  // shove is as fast as the simulation it is pushing.
+  // PER SUB-STEP, hence dividing by a power of `steps` at all: the shader
+  // applies this value once per sub-step, so without a divisor a frame's total
+  // shove would be `steps`x stronger and Physics Rate would silently be a
+  // strength slider.
   //
-  // DO NOT COLLAPSE THIS TO `/ SHOVE_REFERENCE_STEPS`, which it algebraically
-  // equals. The two factors mean different things: the `/ steps` is what
-  // per-sub-step application requires, and the `* (steps / 30)` is the
-  // deliberate reintroduction of the rate. A bare `/ 30` would read as an
-  // arbitrary constant, and a later edit to either half would be
-  // unattributable.
+  // THE EXPONENT IS THE TUNING KNOB, and it is deliberately not 1. Three
+  // positions on one axis, all of which this codebase has held:
+  //
+  //   exponent 0   -- multiply the rate straight back in. Strength proportional
+  //                   to Physics Rate. Rejected: the brush goes limp exactly at
+  //                   the low rates people select in order to place things
+  //                   carefully, because everything it pushes slows down and it
+  //                   slows with them.
+  //   exponent 1   -- a frame's total shove identical at every rate. Correct in
+  //                   principle, but rate 1 then bites 30x harder than the
+  //                   default, which overshoots at the bottom of the slider.
+  //   exponent .75 -- here. Still stronger as the rate falls, which is the whole
+  //                   point, but 12.8x above the default at rate 1 instead of
+  //                   30x (21.6x rather than 60x across the whole 1..60 range).
+  //
+  // ANCHORED AT THE REFERENCE RATE so the exponent reshapes the curve without
+  // moving the default. `steps ** 0.75` alone would be ~12.8 at 30 rather than
+  // 30, quietly making the default shove 2.3x stronger; dividing by the
+  // reference raised to the same power pins the default to the value it has
+  // always had and lets the exponent change only the slope around it.
   const steps = Math.max(1, Math.trunc(ctx.physicsSteps));
-  let strength = ((SHOVE_GAIN * ctx.drawPower) / steps) * (steps / SHOVE_REFERENCE_STEPS);
+  const falloff =
+    steps ** SHOVE_RATE_EXPONENT / SHOVE_REFERENCE_STEPS ** (SHOVE_RATE_EXPONENT - 1);
+  let strength = (SHOVE_GAIN * ctx.drawPower) / falloff;
   if (pulling) strength = -strength;
 
   // The brush's sigma, in the world metric the shader measures in. The
