@@ -4,16 +4,14 @@
  * WHY THIS TEST EXISTS. Detection is read exactly once, at startup, and the
  * whole GUI is BUILT from the result -- so a wrong answer is not a styling
  * glitch that a resize corrects, it is the wrong application for the rest of the
- * session. There is no DOM here and no device, so the two failure modes that
- * matter are the ones a browser would never show us anyway:
+ * session. There is no DOM here and no device, so the failure modes that matter
+ * are the ones a browser would never show us anyway:
  *
- *   1. A rule that accepts too much. Both halves of the test reject a real
- *      device on their own (see `mobile.ts`), and dropping either -- which reads
- *      like a harmless simplification -- hands the touch layout to a desktop
- *      user, who then has no gestures for pan and zoom.
- *   2. Orientation flipping the answer. The width test is against the LONGER
- *      viewport edge for this reason, and comparing `innerWidth` instead is the
- *      single most natural way to write it wrong.
+ *   1. A rule that reads anything other than the primary pointer. Screen size
+ *      used to be half of it, which is what sent large tablets to the desktop
+ *      layout; the cases below pin the sizes that regression would touch.
+ *   2. Widening `pointer` to `any-pointer`, which now that size is gone is the
+ *      only thing keeping touchscreen laptops on the desktop layout.
  *
  * A structural host rather than a real `window`, as `focusRelease.test.ts` uses
  * structural stubs: `node --test` has no `matchMedia`.
@@ -22,86 +20,75 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-  detectMobile,
-  resolveMobile,
-  MOBILE_MAX_EDGE_PX,
-  type MediaQueryHost,
-} from './mobile.ts';
+import { detectMobile, resolveMobile, type MediaQueryHost } from './mobile.ts';
 
-/** A host reporting one pointer kind and one viewport. */
-function host(pointer: 'coarse' | 'fine', width: number, height: number): MediaQueryHost {
-  return {
-    matchMedia: (query: string) => ({ matches: query.includes(pointer) }),
-    innerWidth: width,
-    innerHeight: height,
-  };
+/**
+ * A host reporting one pointer kind.
+ *
+ * Takes no dimensions, and that absence is load-bearing: if a future edit
+ * reintroduces a viewport test, it has nothing here to read and the omission
+ * surfaces as a type error rather than as tablets quietly changing layout.
+ */
+function host(pointer: 'coarse' | 'fine'): MediaQueryHost {
+  return { matchMedia: (query: string) => ({ matches: query.includes(pointer) }) };
 }
 
-// --- 1. the two halves, and what each one alone would let through ----------
+// --- 1. a coarse pointer is the whole rule, at every size -----------------
 
 test('a phone is mobile', () => {
-  // REAL DIMENSIONS, not round numbers, and that is the point of this case.
-  // Phones are LONG: the first draft of `MOBILE_MAX_EDGE_PX` was picked from
-  // portrait widths and rejected both of these, which would have shipped the
-  // desktop layout to the exact devices this work is for.
-  assert.equal(detectMobile(host('coarse', 390, 844)), true, 'iPhone 14');
-  assert.equal(detectMobile(host('coarse', 430, 932)), true, 'iPhone 14 Pro Max');
-  assert.equal(detectMobile(host('coarse', 360, 800)), true, 'a common Android');
+  assert.equal(detectMobile(host('coarse')), true);
 });
 
-test('a large touchscreen is NOT mobile', () => {
-  // THE CASE `pointer: coarse` ALONE GETS WRONG. A 27" touch monitor points
-  // coarsely and has room for the full desktop layout, which is what its user
-  // wants -- dropping the width test hands them a phone UI on a huge screen.
+test('a large tablet IS mobile', () => {
+  // THE CASE THIS FILE IS NOW MOST FOR, and the bug that removed the size test:
+  // an iPad points coarsely at 1024pt and a 12.9" Pro at 1366pt. Both used to
+  // fail a `<= 960` longer-edge check and get the desktop layout -- tooltips
+  // that never open, context menus that never fire -- because the old rule
+  // asked whether the screen had ROOM rather than whether the input could
+  // hover. Size is not consulted at all now, so one coarse host covers every
+  // tablet dimension there is.
+  assert.equal(detectMobile(host('coarse')), true);
+});
+
+test('a large touchscreen monitor IS mobile', () => {
+  // The device the old size test existed to protect, deliberately reversed. A
+  // 27" touch monitor cannot hover or right-click either, so the touch layout
+  // is the defensible default; `mobileMode: 'off'` is the escape hatch for an
+  // owner who disagrees. Asserted so the reversal reads as intended rather
+  // than as fallout.
+  assert.equal(detectMobile(host('coarse')), true);
+});
+
+test('a mouse is NOT mobile', () => {
+  // A fine pointer never gets the touch layout, at any window size -- the touch
+  // gestures would be dead code sitting in front of working mouse handlers.
+  assert.equal(detectMobile(host('fine')), false);
+});
+
+test('a touchscreen LAPTOP is NOT mobile', () => {
+  // WHY THE QUERY IS `pointer` AND NOT `any-pointer`. A Surface has a coarse
+  // pointer available, but its PRIMARY one is the trackpad, so `pointer`
+  // answers `fine`. With the size test gone this query is the only thing
+  // standing between every touchscreen laptop and the phone layout.
   assert.equal(
-    detectMobile(host('coarse', 1920, 1080)),
+    detectMobile(host('fine')),
     false,
-    'width must be part of the rule, or big touchscreens get the phone layout',
+    'any-pointer would flip every touchscreen laptop to the touch layout',
   );
 });
 
-test('a narrow desktop WINDOW is NOT mobile', () => {
-  // THE CASE THE WIDTH TEST ALONE GETS WRONG, and the more likely of the two:
-  // anyone can drag a browser window narrow. The pointer is a mouse, so the
-  // touch gestures would be dead code in front of working mouse handlers.
-  assert.equal(
-    detectMobile(host('fine', 700, 900)),
-    false,
-    'a mouse must never get the touch layout, however narrow the window',
-  );
+test('the query asks about the PRIMARY pointer', () => {
+  // The above pinned by inspection rather than by stub convention: a host that
+  // answers `true` to `any-pointer: coarse` and `false` to `pointer: coarse`
+  // must come out desktop. The `host` helper cannot express this, since it
+  // matches on substring and `pointer` is one inside `any-pointer`.
+  const laptop: MediaQueryHost = {
+    matchMedia: (query: string) => ({ matches: query.includes('any-pointer') }),
+  };
+  assert.equal(detectMobile(laptop), false, 'detection must not read any-pointer');
 });
 
-// --- 2. orientation must not decide the session ---------------------------
-
-test('a phone in LANDSCAPE is still mobile', () => {
-  // THE ASSERTION THIS FILE IS MOST FOR. Nothing re-reads detection, so if this
-  // is wrong the layout is decided by which way the phone happened to be held
-  // at load. 844x390 is the iPhone above, rotated -- the longer edge is
-  // unchanged, which is the whole reason the rule reads it.
-  assert.equal(
-    detectMobile(host('coarse', 844, 390)),
-    true,
-    'comparing innerWidth instead of the longer edge breaks rotation',
-  );
-});
-
-test('an iPad is NOT mobile in either orientation', () => {
-  // THE CEILING, and why `MOBILE_MAX_EDGE_PX` cannot simply be raised until the
-  // phones pass. A tablet points coarsely and has the screen for the desktop
-  // layout; its 1024pt longer edge is what the threshold sits below. Landscape
-  // is the case that would break first, since its 1024 arrives as innerWidth.
-  assert.equal(detectMobile(host('coarse', 768, 1024)), false, 'iPad portrait');
-  assert.equal(detectMobile(host('coarse', 1024, 768)), false, 'iPad landscape');
-});
-
-test('the threshold is inclusive at the boundary', () => {
-  const edge = MOBILE_MAX_EDGE_PX;
-  assert.equal(detectMobile(host('coarse', 400, edge)), true);
-  assert.equal(detectMobile(host('coarse', 400, edge + 1)), false);
-});
-
-// --- 3. never throw, and default to the layout every device can drive ------
+// --- 2. never throw, and default to the layout every device can drive ------
 
 test('a host without matchMedia degrades to desktop', () => {
   // Detection runs before the first frame. Throwing here would take the app
@@ -112,8 +99,6 @@ test('a host without matchMedia degrades to desktop', () => {
     matchMedia: () => {
       throw new Error('no matchMedia here');
     },
-    innerWidth: 390,
-    innerHeight: 844,
   };
   assert.equal(detectMobile(broken), false, 'a detection failure must not throw');
 });

@@ -6,24 +6,36 @@
  * `navigator.userAgent` is a string browsers actively lie in -- iPadOS reports
  * itself as a Mac by default, and the tablet/phone distinction has never been
  * reliably encoded anywhere in it. What this file actually needs to know is not
- * "is this a phone" but two answerable questions: **can the user point
- * precisely**, and **is there room for the desktop layout**. Both are CSS media
- * features, and both are readable synchronously before the first frame.
+ * "is this a phone" but one answerable question: **can the user point
+ * precisely**. That is a CSS media feature, readable synchronously before the
+ * first frame.
  *
  * There is also no "mobile version" for a phone to navigate to. Serving a
  * separate document per device class is a convention that predates responsive
  * layout; one page that branches internally is what replaced it.
  *
- * ## Both halves are required, and each rejects a real device
+ * ## Why screen size is NOT part of the test
  *
- *   - `pointer: coarse` alone accepts a 27" touchscreen monitor, where the
- *     desktop layout fits comfortably and is what the user wants.
- *   - the width test alone accepts a narrow desktop WINDOW, where the pointer is
- *     a mouse and every touch gesture in `touchGestures.ts` would be dead code
- *     sitting in front of working mouse handlers.
+ * It used to be: the rule also required the longer viewport edge to fall under
+ * a threshold, which was set below the iPad's 1024pt to keep tablets on the
+ * desktop layout on the grounds that they have the room for it. **That was the
+ * wrong question.** Room is not what the desktop layout needs -- it needs HOVER
+ * and RIGHT-CLICK, and a 12.9" iPad has neither. Sizing the rule to the screen
+ * shipped tooltips that never open and context menus that never fire to every
+ * large tablet, which is precisely the hardware the touch layout is for.
+ *
+ * A coarse pointer is the whole signal, at any size. The 27" touchscreen
+ * monitor the size test was there to protect is both rarer than a tablet and
+ * subject to the same limitation -- it cannot hover either -- so the touch
+ * layout is a defensible answer for it too. Where it is not, `mobileMode` is
+ * the escape hatch.
  *
  * `pointer` (not `any-pointer`) asks about the PRIMARY input, which is the one
- * the layout should be built for. A laptop with a touchscreen answers `fine`.
+ * the layout should be built for. **This is what still keeps touchscreen
+ * laptops on the desktop layout**, and with the size test gone it is the only
+ * thing that does: a Surface with a trackpad answers `fine`, because the
+ * trackpad is primary. Widening this to `any-pointer` would flip every one of
+ * them to touch.
  *
  * ## Latched, deliberately
  *
@@ -35,47 +47,28 @@
  * when a phone rotates, or when the URL bar collapses and fires a resize, is a
  * large amount of teardown for a question whose answer almost never changes.
  *
- * The width test is therefore against the LARGER viewport dimension, so a phone
- * held in landscape is still a phone. Reading `innerWidth` directly would flip
- * a 900px-wide landscape phone to the desktop layout on rotation -- and since
- * nothing re-reads this, whichever orientation happened to be live at load
- * would silently decide the whole session.
+ * Dropping the size test makes that latch strictly safer than it was. Viewport
+ * dimensions were the one input to this decision that changed mid-session --
+ * on rotation, on a window drag -- and the rule had to read the LONGER edge
+ * specifically so that a rotated phone could not flip the answer. Pointer kind
+ * does not change while the page is open.
  */
 
 import { DROPDOWN_MODES } from './settingsSpec.ts';
 
 /**
- * Longest viewport edge that still counts as small, in CSS pixels.
- *
- * Compared against the LONGER side of the viewport (see the header), so this is
- * a statement about the device rather than about how it is being held -- which
- * is what makes the number large enough to need explaining.
- *
- * **IT HAS TO CLEAR THE TALL SIDE OF A BIG PHONE, NOT THE WIDE SIDE.** Modern
- * phones are long: an iPhone 14 is 390x844 and a 14 Pro Max is 430x932, so a
- * threshold chosen by eye from portrait WIDTHS (720, 820) rejects every one of
- * them and quietly ships the desktop layout to exactly the devices this work is
- * for. 960 clears the tallest phones with room to spare.
- *
- * The ceiling above it is the iPad, whose shorter edge is 768pt and whose
- * LONGER edge is 1024pt. Only the longer edge is consulted here, so any value
- * below 1024 keeps tablets on the desktop layout -- they have the screen for it,
- * and with a keyboard attached they have a precise pointer too. 960 sits inside
- * that gap rather than at either end of it.
- *
- * A phone big enough to exceed this, or a tablet small enough to fall under it,
- * is what the `mobileMode` preference is for.
- */
-export const MOBILE_MAX_EDGE_PX = 960;
-
-/**
  * The three states of the preference that overrides detection.
  *
  * `'auto'` is the default and means "use `detectMobile`". The other two exist
- * because **detection will be wrong for somebody** -- a hybrid device, an
- * unusual window size, a browser that misreports `pointer` -- and being stuck
- * in a layout that does not suit the hardware, with the control that would fix
- * it living inside that layout, is a dead end.
+ * because **detection will be wrong for somebody** -- a hybrid device, a
+ * browser that misreports `pointer`, a large touchscreen whose owner wants the
+ * desktop layout anyway -- and being stuck in a layout that does not suit the
+ * hardware, with the control that would fix it living inside that layout, is a
+ * dead end.
+ *
+ * `'off'` carries more weight now that size is out of the rule: it is the
+ * answer for a big touchscreen that would rather have the desktop layout, a
+ * case detection used to decide on its own by measuring the viewport.
  *
  * It is also how the touch layout gets tested on a desktop, which is worth as
  * much during development as the escape hatch is in the field.
@@ -125,15 +118,20 @@ export function mobileModeFromValue(index: number): MobileMode {
   return MOBILE_MODES[index] ?? 'auto';
 }
 
-/** The `matchMedia`-shaped slice this module needs, so tests can supply one. */
+/**
+ * The `matchMedia`-shaped slice this module needs, so tests can supply one.
+ *
+ * `window` satisfies this structurally. It carried `innerWidth`/`innerHeight`
+ * while the rule consulted viewport size; both are gone because nothing here
+ * reads them any more, and leaving them would oblige every caller and stub to
+ * supply dimensions that no longer influence the answer.
+ */
 export interface MediaQueryHost {
   matchMedia(query: string): { readonly matches: boolean };
-  readonly innerWidth: number;
-  readonly innerHeight: number;
 }
 
 /**
- * Whether the hardware looks like a phone. Ignores the preference.
+ * Whether the primary pointer is coarse. Ignores the preference.
  *
  * Split from `resolveMobile` so the two decisions are separately testable: this
  * one is about the device, and the caller's is about what the user asked for.
@@ -148,10 +146,9 @@ export interface MediaQueryHost {
 export function detectMobile(host: MediaQueryHost | null = globalHost()): boolean {
   if (host === null) return false;
   try {
-    if (!host.matchMedia('(pointer: coarse)').matches) return false;
-    // The LONGER side, so orientation cannot change the answer. See the header.
-    const edge = Math.max(host.innerWidth, host.innerHeight);
-    return edge <= MOBILE_MAX_EDGE_PX;
+    // The ENTIRE rule: no hover and no right-click, whatever the screen size.
+    // See the header for why viewport dimensions are deliberately not consulted.
+    return host.matchMedia('(pointer: coarse)').matches;
   } catch {
     return false;
   }

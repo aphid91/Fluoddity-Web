@@ -843,9 +843,9 @@ export const SETTINGS: readonly Setting[] = [
     // than styled by it. A dropdown that appears to do nothing is worse than one
     // that says when it will.
     help:
-      'Which layout to build: Auto picks the touch layout on phones. Change ' +
-      'this only if the automatic choice is wrong for your device -- it takes ' +
-      'effect after you reload the page.',
+      'Which layout to build: Auto picks the touch layout on touchscreens, ' +
+      'including tablets. Change this only if the automatic choice is wrong ' +
+      'for your device -- it takes effect after you reload the page.',
     group: 'Behavior',
     options: DROPDOWN_MODES.mobileMode,
   }),
