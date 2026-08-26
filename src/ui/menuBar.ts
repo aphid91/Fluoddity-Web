@@ -236,17 +236,15 @@ export class MenuBar {
    * category is a "get this out of my way while I look at the other one" move
    * rather than a setting, and it costs one click to redo.
    *
-   * Starts holding ARCHIVE ONLY, and every File > Load open re-folds it (see
-   * `setOpenMenu`). Core and Custom are open by default, so nothing a user works
-   * with day to day is hidden from them; the 176-entry v8 backlog is folded
-   * because it is a thing to go looking through occasionally, and unfolded it
-   * would be the overwhelming majority of the menu.
+   * Starts holding ARCHIVE ONLY. Core and Custom are open by default, so
+   * nothing a user works with day to day is hidden from them; the 176-entry v8
+   * backlog is folded because it is a thing to go looking through occasionally,
+   * and unfolded it would be the overwhelming majority of the menu.
    *
-   * ARCHIVE IS RE-FOLDED PER VISIT rather than remembered, unlike the others:
-   * expanding it is "let me dig through the backlog now", which does not imply
-   * wanting to be dropped back into 176 rows on the next unrelated visit to
-   * Save. Expanding Core or Custom, by contrast, is left exactly as the user put
-   * it for the rest of the session.
+   * That is a STARTING STATE, not a per-visit reset: once the user opens the
+   * Archive it stays open for the rest of the session, exactly like Core and
+   * Custom. An earlier version re-folded it as File closed, which meant someone
+   * working out of the backlog had to re-expand 176 rows on every single visit.
    */
   private readonly collapsedCategories = new Set<string>([ARCHIVE_CATEGORY]);
 
@@ -261,16 +259,6 @@ export class MenuBar {
    * regardless of where the cursor went.
    */
   private readonly submenuClosers: (() => void)[] = [];
-
-  /**
-   * Per-category "re-apply your fold state to the DOM", keyed by category.
-   *
-   * Populated by `syncLoadMenu` and cleared by it, since each closure captures
-   * that build's header and rows. Exists so `foldArchive` can fold a category
-   * between rebuilds -- the signature guard means a rebuild is NOT guaranteed to
-   * happen when the menu closes.
-   */
-  private readonly applyCollapsedFns = new Map<string, () => void>();
 
   /**
    * The pending "the cursor left this menu" close, or `null`.
@@ -1065,9 +1053,6 @@ export class MenuBar {
     if (signature === this.catalogSignature || this.loadBody === null) return;
     this.catalogSignature = signature;
     this.loadBody.textContent = '';
-    // Cleared with the DOM it refers to: every closure in here captures elements
-    // that are about to be discarded.
-    this.applyCollapsedFns.clear();
 
     const categories = Object.entries(status.configCategories);
     if (categories.length === 0) {
@@ -1102,9 +1087,6 @@ export class MenuBar {
         header.textContent = `${collapsed ? '▸' : '▾'} ${category} (${names.length})`;
         for (const row of rows) row.style.display = collapsed ? 'none' : '';
       };
-      // Registered so `foldArchive` can re-apply this category's fold without a
-      // rebuild. Rebuilt with the subtree, so it never outlives its elements.
-      this.applyCollapsedFns.set(category, applyCollapsed);
       header.addEventListener('click', () => {
         if (this.collapsedCategories.has(category)) {
           this.collapsedCategories.delete(category);
@@ -1179,10 +1161,14 @@ export class MenuBar {
           // user pressing it saw a scary prompt followed by silence.
           //
           // Keyed off the CATEGORY because that is all the UI is given:
-          // `catalog()` flattens `ConfigEntry.source` away, so `Core` is the
-          // only signal that survives to here. `CORE_CATEGORY` is imported
-          // rather than written as `'Core'` so the two cannot drift.
-          category === CORE_CATEGORY
+          // `catalog()` flattens `ConfigEntry.source` away, so the category name
+          // is the only signal that survives to here. The constants are imported
+          // rather than written as `'Core'`/`'Archive'` so they cannot drift.
+          //
+          // ARCHIVE IS SHIPPED TOO -- its entries come from the manifest exactly
+          // like Core's, so `remove` throws for them for the same reason and the
+          // X was the same lie there.
+          category === CORE_CATEGORY || category === ARCHIVE_CATEGORY
             ? null
             : () => {
                 // Deleting the previewed config must not leave it applied.
@@ -1426,13 +1412,6 @@ export class MenuBar {
 
       this.hoveredConfig = null;
       this.loadPreview.end();
-      // RE-FOLD THE ARCHIVE as File closes, so the next visit starts folded
-      // however the user left it. Done on CLOSE rather than open because
-      // `applyCollapsed` runs from `syncLoadMenu`, which only rebuilds when the
-      // catalog changes -- folding on open would set the flag with no rebuild to
-      // act on it, and the rows would stay visible until the next save.
-      // `foldArchive` moves the DOM directly, so it works either way.
-      this.foldArchive();
     }
     if (title !== 'History') {
       this.hoveredCheckpoint = null;
@@ -1440,23 +1419,6 @@ export class MenuBar {
     }
     if (title === 'File') this.loadPreview.begin();
     if (title === 'History') this.checkpointPreview.begin();
-  }
-
-  /**
-   * Fold the Archive back up, so the next File > Load starts collapsed.
-   *
-   * A no-op when it is already folded, which is the common case -- the flag and
-   * the DOM are set together, so re-applying is idempotent.
-   */
-  private foldArchive(): void {
-    if (this.collapsedCategories.has(ARCHIVE_CATEGORY)) return;
-    this.collapsedCategories.add(ARCHIVE_CATEGORY);
-    // The rows are about to be hidden, and `display:none` fires no `mouseleave`
-    // -- the same trap the collapse click handler documents. The preview session
-    // has already been ended by the caller, so only the sticky hover needs
-    // clearing here, or reopening would re-preview a row that is now invisible.
-    this.hoveredConfig = null;
-    this.applyCollapsedFns.get(ARCHIVE_CATEGORY)?.();
   }
 
   private closeMenus(): void {
