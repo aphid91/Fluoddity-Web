@@ -104,7 +104,7 @@
       "misc": {
         "lateral": -0.1860000044107437,
         "hazard_rate": 0.0,
-        "cohorts": 8,
+        "cohorts": 9,
         "mutation_seed": 0.2835553553703606
       },
       "force2": {
