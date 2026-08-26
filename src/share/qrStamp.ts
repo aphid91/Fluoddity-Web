@@ -256,15 +256,33 @@ export const DOWNSCALE_WARN_PX = 1080;
  *
  * An addition does not compound. The minimum is the stamp plus enough room for
  * the picture to be a picture, which is a FIXED amount of artwork rather than a
- * proportion of a number that is itself in flux. 240px is roughly a thumbnail's
- * worth on each axis -- visibly a screenshot with a code in the corner, not a
- * code with a border.
+ * proportion of a number that is itself in flux.
  *
  * The lesson generalizes and is worth stating: anything derived from `sizePx` by
  * multiplication inherits its growth, and `sizePx` grows with the payload. A
  * two-config project would have demanded a 1724px crop under the old rule.
+ *
+ * ## WHY IT IS 40 AND NOT 240
+ *
+ * It was 240 -- "roughly a thumbnail's worth on each axis" -- which is a
+ * judgement about what makes a good screenshot, not a fact about whether the
+ * stamp survives. That is the user's call to make: a crop dominated by the code
+ * is a legitimate thing to want, the drag overlay PREVIEWS the stamp square at
+ * its true size while the rectangle is being dragged, so nobody arrives at that
+ * result by surprise, and the honest floor is the one the geometry actually
+ * imposes.
+ *
+ * 40 IS THAT FLOOR PLUS A PIXEL OF SLACK. `stampShareImage` refuses anything
+ * under `sizePx + STAMP_INSET * 2`, and the inset is 16 -- so 32 is the smallest
+ * headroom that can be stamped AT ALL, and a minimum below it would let the
+ * overlay accept a drag the stamper then throws on. 40 clears it with room to
+ * spare and still leaves the quiet zone intact, which is what the inset is
+ * protecting (see `STAMP_INSET`).
+ *
+ * This is a floor, NOT a recommendation. Nothing stops a user dragging a
+ * generous crop, and the readout keeps telling them the size either way.
  */
-export const MIN_CROP_HEADROOM = 240;
+export const MIN_CROP_HEADROOM = 40;
 
 /**
  * The smallest screenshot a stamp will fit inside, in device pixels.

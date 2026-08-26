@@ -90,6 +90,21 @@ export interface CropOverlayOptions {
   readonly warnAboveDevicePx: number;
 }
 
+/**
+ * `user-select:none` IS NOT COSMETIC HERE -- see `onKey`.
+ *
+ * A press-and-drag on this overlay is also, as far as the browser is concerned,
+ * the start of a TEXT SELECTION over whatever is underneath. Nothing shows while
+ * the overlay is up, because the overlay covers it. Cancel mid-drag with Escape,
+ * though, and the root is removed with the button still down -- the selection
+ * the browser had quietly been extending all along becomes visible, and the user
+ * is left with half the panel's slider labels highlighted.
+ *
+ * Declared on the root as well as prevented on `pointerdown` because they stop
+ * different halves of it: `preventDefault` stops the drag being INTERPRETED as a
+ * selection gesture, and this stops the overlay's own elements being selectable
+ * if one starts anyway.
+ */
 const ROOT_CSS = `
   position: fixed;
   inset: 0;
@@ -97,6 +112,8 @@ const ROOT_CSS = `
   cursor: crosshair;
   background: rgba(0, 0, 0, 0.35);
   touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 `;
 
 /**
@@ -162,8 +179,20 @@ const TOO_LARGE = 'rgba(255, 214, 82, 0.95)';
  * the only useful thing to give them is the reason.
  */
 const LARGE_NOTE =
-  'Large screenshots are more likely to be downscaled by social media, ' +
-  'increasing the chance that a QR code will be damaged.';
+  'Large images may be downsampled when posted to social media, ' +
+  'corrupting the QR code';
+
+/**
+ * The same caution on the readout, beside the box.
+ *
+ * SHORTER THAN `LARGE_NOTE` ON PURPOSE. The readout tracks the corner the user
+ * is dragging, so it has to stay one line -- the banner is where the reason
+ * goes, and repeating the whole sentence here would drag a paragraph around the
+ * screen. This is the yellow counterpart to the "too small" clause below it, and
+ * exists because the red state said something at the pointer and the yellow one
+ * said nothing: the border changed colour and the number did not explain it.
+ */
+const LARGE_READOUT_NOTE = 'may be downsampled, corrupting the QR code';
 
 /**
  * Run one crop gesture.
@@ -220,6 +249,8 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
     let startY = 0;
     let dragging = false;
     let current: CropSelection | null = null;
+    /** The captured pointer, so `finish` can release it. `null` when none is. */
+    let activePointer: number | null = null;
 
     const rectFrom = (x: number, y: number): CropSelection => ({
       x: Math.min(startX, x),
@@ -272,10 +303,14 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
         stamp.style.borderColor = accent;
       }
 
+      // THREE STATES, IN THE PRIORITY THE ACCENT ALREADY USES: the correction
+      // outranks the caution, and a selection that is neither is just a size.
       hint.style.display = 'block';
       hint.textContent = tooSmall
         ? `${dw} x ${dh} — too small, will grow to ${options.minDevicePx}`
-        : `${dw} x ${dh}`;
+        : tooLarge
+          ? `${dw} x ${dh} — ${LARGE_READOUT_NOTE}`
+          : `${dw} x ${dh}`;
       hint.style.color = accent;
       // Above the box, unless that would put it off the top of the window.
       const above = rect.y - 24;
@@ -302,9 +337,59 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
     };
 
     const finish = (result: CropSelection | null): void => {
+      // READ BEFORE THE RESET BELOW, and it is the whole condition for the
+      // `selectstart` guard at the end: `pointerup` reaches `finish` with the
+      // button already released and needs no guard, while Escape reaches it
+      // mid-drag and needs one.
+      const buttonStillDown = dragging;
+
+      // BEFORE `root.remove()`, because releasing capture on a detached element
+      // is a no-op: the pointer would stay captured by a node that is no longer
+      // in the document, and the button is very likely still down -- Escape is
+      // the whole reason this path exists.
+      if (activePointer !== null && root.hasPointerCapture(activePointer)) {
+        root.releasePointerCapture(activePointer);
+      }
+      activePointer = null;
+      dragging = false;
+
       root.remove();
       banner.remove();
       window.removeEventListener('keydown', onKey, true);
+
+      // THE BELT TO `preventDefault`'s BRACES. A selection begun before this
+      // overlay opened -- or by any route that dodged the handler above --
+      // outlives the element that was hiding it, and cancelling mid-drag is
+      // exactly when it becomes visible. Collapsing it costs nothing when there
+      // is no selection, which is the ordinary case.
+      window.getSelection()?.removeAllRanges();
+
+      // **THE BUTTON MAY STILL BE DOWN, AND THE OVERLAY IS NOW GONE.** Escape
+      // cancels on KEYDOWN, so the drag that was aimed at the overlay carries on
+      // against whatever was underneath it: the pointer is no longer captured,
+      // every `pointermove` retargets to the panel, and the browser starts a
+      // FRESH text selection over the slider labels there. Removing the ranges
+      // above does not help, because that selection has not happened yet.
+      //
+      // So the guard has to outlive this function: `selectstart` is cancelled on
+      // the document until the button actually comes up, which is the exact
+      // window in which a selection would be an artefact of the cancelled drag
+      // rather than something the user asked for. All three listeners drop
+      // themselves, so nothing is left bound once the gesture really ends.
+      if (buttonStillDown) {
+        const stopSelect = (e: Event): void => e.preventDefault();
+        const release = (): void => {
+          document.removeEventListener('selectstart', stopSelect, true);
+          window.removeEventListener('pointerup', release, true);
+          window.removeEventListener('pointercancel', release, true);
+          // The drag may have painted one before the guard went up.
+          window.getSelection()?.removeAllRanges();
+        };
+        document.addEventListener('selectstart', stopSelect, true);
+        window.addEventListener('pointerup', release, true);
+        window.addEventListener('pointercancel', release, true);
+      }
+
       resolve(result);
     };
 
@@ -318,6 +403,12 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
     }
 
     root.addEventListener('pointerdown', (event: PointerEvent) => {
+      // STOPS THE BROWSER STARTING A TEXT SELECTION under the overlay. The
+      // default action of a primary pointerdown is to begin one, and it runs
+      // whether or not anything visible is selectable -- see `ROOT_CSS`. There
+      // is nothing here we want the default for: no focusable child, no native
+      // drag, no caret to place.
+      event.preventDefault();
       // Right or middle button cancels, matching the convention that a
       // secondary click backs out of a modal gesture.
       if (event.button !== 0) {
@@ -329,7 +420,10 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
       startY = event.clientY;
       // Captured so the drag survives the pointer leaving the window, which is
       // the common case when selecting a region that runs to the screen edge.
+      // RECORDED, so `finish` can hand it back on a cancel -- a capture left
+      // dangling on a removed element is how a stuck drag outlives its overlay.
       root.setPointerCapture(event.pointerId);
+      activePointer = event.pointerId;
       draw(rectFrom(event.clientX, event.clientY));
     });
 

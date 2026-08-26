@@ -178,8 +178,10 @@ test('one pixel under the minimum is where it stops working', () => {
   const min = minimumCropFor(link);
   const stamped = stampShareImage(artwork(min, min), link);
   // The stamp plus its insets is what actually has to fit; the minimum includes
-  // headroom beyond that by design (`MIN_CROP_FACTOR`), so the assertion is that
-  // the minimum exceeds the hard requirement rather than equalling it.
+  // headroom beyond that by design (`MIN_CROP_HEADROOM`), so the assertion is
+  // that the minimum exceeds the hard requirement rather than equalling it.
+  // The margin is deliberately thin now -- 40px of headroom against 32px of
+  // inset -- which is exactly why this stays an assertion rather than a comment.
   assert.ok(min > stamped.stampSizePx + STAMP_INSET * 2);
 });
 
