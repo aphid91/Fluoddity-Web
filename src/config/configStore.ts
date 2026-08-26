@@ -83,7 +83,7 @@ export const ARCHIVE_CATEGORY = 'Archive';
  * `npm run sync:configs` builds the manifest and the manifest decides; this
  * says "take the first" without pretending to know what that is.
  */
-export const DEFAULT_PRESET_NAME = 'Medley';
+export const DEFAULT_PRESET_NAME = 'Tangle';
 
 /** One config in the catalog, wherever it came from. */
 export interface ConfigEntry {
