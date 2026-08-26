@@ -130,7 +130,8 @@ const GUIDE_BODY: readonly Block[] = [
   DIVIDER,
   "Tips:",
   ["I like to start at 16 or 4 cohorts (press the buttons to the far left of the mutation slider) and reduce down to 1 once I've found something I like.",
-    "Set/Load checkpoints with (C)/(V) so that you can explore without losing your place.",
+    "I usually set Mutation rate somewhere between 0.1 and 0.3 when I'm exploring",
+    "Set/Load checkpoints with (C)/(V) so that you can experiment without losing your place.",
     "Enable cohort fences if you want to keep the cohorts from mixing together (Click the dotted circle button to the left of the mutation bar).",
     "File->Save your favorite creations or turn them into shareable urls with Share->Copy Link to this Project"
   ],
