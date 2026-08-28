@@ -1,3 +1,5 @@
+Attention humans: This readme was written entirely by Opus 5 for agent orientation. See https://github.com/aphid91/Fluoddity for a human-readable explainer
+
 # Fluoddity
 
 A GPU particle simulation in TypeScript and WebGPU: 600,000 entities driven by a
