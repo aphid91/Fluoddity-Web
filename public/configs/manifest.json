@@ -6,8 +6,8 @@
       "name": "Core",
       "entries": [
         {
-          "name": "AntYarn",
-          "path": "Core/AntYarn.json"
+          "name": "Blanket",
+          "path": "Core/Blanket.json"
         },
         {
           "name": "BubbleBelt",
@@ -76,6 +76,10 @@
         {
           "name": "Stars",
           "path": "Core/Stars.json"
+        },
+        {
+          "name": "Stringy",
+          "path": "Core/Stringy.json"
         },
         {
           "name": "Tangle",

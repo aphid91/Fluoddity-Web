@@ -52,9 +52,14 @@
          `og:image:secure_url` alongside `og:image`: some scrapers still read
          only the former over HTTPS. Same file, and cheap insurance.
 
-         NO `og:description`, deliberately -- the card is the image plus the
-         name, and a description would compete with artwork that already says
-         what this is.
+         `og:description` is PLACEHOLDER TEXT -- swap the lorem ipsum below for
+         real copy before this matters. Scrapers cache aggressively, so whatever
+         is here when a link is first pasted can outlive the edit that fixes it.
+         Keep it under ~200 characters: Discord and Slack truncate past roughly
+         that, and X shows less still.
+
+         No `twitter:description` -- Twitter falls back to `og:description`, so
+         a second copy would only be one more place to forget to update.
 
          `twitter:card` is `summary_large_image` so the art gets the full width
          rather than a thumbnail beside text that is not there. Twitter falls
@@ -62,6 +67,11 @@
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Fluoddity" />
     <meta property="og:title" content="Fluoddity" />
+    <!-- TODO: replace with the real description. -->
+    <meta
+      property="og:description"
+      content="An interactive lava lamp? An evolvable ant farm? Explore a world very different from our own."
+    />
     <meta property="og:url" content="https://fluoddity.com/" />
     <meta property="og:image" content="https://fluoddity.com/image_card.png" />
     <meta
