@@ -88,7 +88,7 @@ export class Dialogs {
   /**
    * The rows currently on offer, paired with their checkboxes.
    *
-   * Held so "Yes" can read the ticks back. Cleared on close so a dismissed
+   * Held so Apply can read the ticks back. Cleared on close so a dismissed
    * dialog cannot apply anything on a later opening.
    */
   private urlSettingsRows: readonly {
@@ -240,9 +240,9 @@ export class Dialogs {
     // CANCEL IS THE PRIMARY, following the reset-preferences dialog rather than
     // save and delete: this prompt appears unbidden, in response to a link
     // rather than a click, so the default answer should be the one that changes
-    // nothing. Enter picks it. The spec asks for Enter to act like Yes; see
-    // `openUrlSettings`, where Enter is bound to Yes explicitly and this button
-    // is merely the visual default.
+    // nothing. Enter picks it. The spec asks for Enter to act like Apply; see
+    // below, where Enter is bound to Apply explicitly and this button is merely
+    // the visual default.
     const urlSettings = dialog('fluoddity-url-settings');
     urlSettings.append(heading('Allow this project to modify these settings?'));
 
@@ -264,7 +264,11 @@ export class Dialogs {
         button('Cancel', () => {
           this.closeUrlSettings([]);
         }, true),
-        button('Yes', () => {
+        // "Apply", not "Yes": the heading is a question, but the button says
+        // what pressing it DOES -- which is the one thing a user scanning the
+        // two buttons needs, and which "Yes" leaves them to infer from a
+        // heading they may not have read.
+        button('Apply', () => {
           this.acceptUrlSettings();
         }),
       ]),

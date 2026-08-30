@@ -186,8 +186,7 @@ export function buildLinkSection(
   if (firstRow !== null) {
     noteBefore(
       firstRow,
-      'Recipients are prompted to adopt these settings, and can refuse any of ' +
-        'them. Each box sends whatever you have set when you copy the link.',
+      'Recipients are prompted to adopt these settings, and can refuse any of them.',
     );
   }
 
@@ -214,9 +213,12 @@ export function buildLinkSection(
 function noteBefore(anchor: HTMLElement, text: string, emphasis = false): void {
   const el = document.createElement('div');
   el.textContent = text;
+  // 12px, matching the dialogs' body text rather than the 10px used for the
+  // incidental notes under a control. This prose is the tab's only explanation
+  // of what the checkboxes do to somebody else, so it is not incidental.
   el.style.cssText =
-    'font-size:10px;line-height:1.45;padding:6px 8px;' +
-    (emphasis ? 'opacity:0.8;font-weight:600;' : 'opacity:0.65;');
+    'font-size:12px;line-height:1.5;padding:7px 8px;' +
+    (emphasis ? 'opacity:0.85;font-weight:600;' : 'opacity:0.7;');
   anchor.parentElement?.insertBefore(el, anchor);
 }
 

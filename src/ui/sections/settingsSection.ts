@@ -84,6 +84,23 @@ export type SettingsTab =
  * three hold how your editor is set up, which persists across sessions and is
  * deliberately untouched by loading someone else's work.
  */
+/**
+ * What each tab is really called, for its tooltip.
+ *
+ * The strip's buttons are abbreviated to fit 320px without overflowing (see
+ * where they are built); this is where the unabbreviated name lives, so the
+ * shortening costs the user nothing. The Share menu rows use these words too,
+ * which is what lets someone who ticked "Video Export Controls" recognise the
+ * "Video" tab it produced.
+ */
+const TAB_FULL_NAME: Record<SettingsTab, string> = {
+  [PROJECT_TAB]: 'Project',
+  [PREFS_TAB]: 'Preferences',
+  [DRAWING_TAB]: 'Drawing Controls',
+  [RECORDING_TAB]: 'Recording Controls',
+  [LINK_TAB]: 'Project Link Settings',
+};
+
 const TAB_HELP: Record<SettingsTab, string> = {
   // THE ODD ONE OUT, and its help says so: everything on this page DOES travel
   // with the project, which is exactly what the other three promise not to do.
@@ -208,20 +225,34 @@ export function buildSettingsSection(
   // moved to the front, so it renders above them.
   const strip = document.createElement('div');
   strip.style.cssText = STRIP_CSS;
+  // The hook the WebKit scrollbar rule in `index.html` hangs off -- a
+  // pseudo-element cannot be expressed in `cssText`. Also a stable selector for
+  // `tools/uiCheck.mjs`, following this file's `data-*` convention.
+  strip.dataset['tabStrip'] = 'settings';
 
   let active: SettingsTab = initialTab;
 
   // Built from the tabs that EXIST, so an untickedRecording leaves two buttons
   // rather than three with one dead.
+  // **THE LABELS ARE SHORT ON PURPOSE.** The panel is a fixed 320px and these
+  // buttons do not wrap, so four full names ("Drawing Controls", "Recording
+  // Controls", "Project Link Settings") overflow the strip and push the last
+  // tab off the edge -- where it is not merely ugly but unreachable, which is
+  // how a tab someone had just enabled came to be invisible.
+  //
+  // The full name survives in two places that have room for it: the tooltip on
+  // each button (`TAB_HELP`, whose `title` is passed below) and the Share menu
+  // rows that summon the optional two. So nothing is lost, and the strip stops
+  // spending its width on the word "Controls" three times.
   const tabs: (readonly [SettingsTab, string])[] = [];
   // FIRST when it exists -- see `PROJECT_TAB`.
   if (projectFolder !== null) tabs.push([PROJECT_TAB, 'Project']);
-  tabs.push([PREFS_TAB, 'Preferences'], [DRAWING_TAB, 'Drawing Controls']);
-  if (recordingFolder !== null) tabs.push([RECORDING_TAB, 'Recording Controls']);
-  // LAST, beside Recording Controls: the two are the optional pair, both
-  // summoned from the Share menu, and keeping them adjacent means the strip's
-  // first three buttons never move as either is toggled.
-  if (linkFolder !== null) tabs.push([LINK_TAB, 'Project Link Settings']);
+  tabs.push([PREFS_TAB, 'Preferences'], [DRAWING_TAB, 'Draw']);
+  if (recordingFolder !== null) tabs.push([RECORDING_TAB, 'Video']);
+  // LAST, beside Video: the two are the optional pair, both summoned from the
+  // Share menu, and keeping them adjacent means the strip's first buttons never
+  // move as either is toggled.
+  if (linkFolder !== null) tabs.push([LINK_TAB, 'Link']);
 
   const buttons = new Map<SettingsTab, HTMLButtonElement>();
   for (const [tab, title] of tabs) {
@@ -229,11 +260,16 @@ export function buildSettingsSection(
     button.type = 'button';
     button.textContent = title;
     button.dataset['tab'] = tab;
-    // ON THE TAB BUTTON, which is the only header these three pages have --
-    // their folder titles are suppressed (`hideFolderTitle`), so this is where
-    // "what is this whole page for" has to live. All three say the same thing
-    // in different words: none of it travels with a project.
-    ctx.tooltip.attach(button, { title, body: TAB_HELP[tab] });
+    // ON THE TAB BUTTON, which is the only header these pages have -- their
+    // folder titles are suppressed (`hideFolderTitle`), so this is where "what
+    // is this whole page for" has to live. They all say the same thing in
+    // different words: none of it travels with a project.
+    //
+    // **THE TOOLTIP CARRIES THE FULL NAME, not the button's abbreviation.**
+    // That is what makes shortening the labels above safe: "Draw" is enough to
+    // find the tab again, and anyone who needs to know it means "Drawing
+    // Controls" gets it by hovering.
+    ctx.tooltip.attach(button, { title: TAB_FULL_NAME[tab], body: TAB_HELP[tab] });
     button.addEventListener('click', () => {
       // A manual choice, and it stands until the next qualifying tool
       // transition. Nothing re-asserts a tab on a timer.
@@ -285,6 +321,15 @@ export function buildSettingsSection(
     for (const [id, button] of buttons) {
       button.style.cssText = id === active ? TAB_ACTIVE_CSS : TAB_IDLE_CSS;
     }
+    // KEEP THE ACTIVE TAB IN VIEW when the strip has overflowed. The panel
+    // brings a newly summoned tab to the front (`setLinkSettingsShown`), and if
+    // the strip happens to be scrolled that tab is off screen -- the same
+    // invisible-tab failure the short labels fix, arriving by another route.
+    //
+    // `nearest` on both axes so this never scrolls the PANEL: `block:'nearest'`
+    // leaves the vertical position alone when the button is already visible,
+    // which it always is.
+    buttons.get(active)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
   setActiveTab(active);
 
@@ -366,13 +411,38 @@ function hideFolderTitle(folder: FolderApi): void {
 // -- styling ----------------------------------------------------------------
 // Mirrors `menuBar.ts`'s vocabulary, so the two strips read as one interface.
 
+/**
+ * The strip.
+ *
+ * **`overflow-x:auto` IS A SAFETY NET, NOT THE LAYOUT.** The short labels above
+ * are what make the tabs fit; this is what stops a tab becoming UNREACHABLE if
+ * they ever stop fitting anyway -- a fifth tab, a longer name, a browser with
+ * wider default metrics. Before it, an overflowing button was simply clipped by
+ * the 320px panel with no way to scroll to it.
+ *
+ * `scrollbar-width:none` and the WebKit rule hide the scrollbar itself: a
+ * horizontal bar under four buttons would eat a row of vertical space to
+ * announce an overflow that normally does not happen. The strip still scrolls
+ * by wheel, trackpad and touch drag, and `scrollIntoView` below is what keeps a
+ * programmatically-selected tab visible without one.
+ */
 const STRIP_CSS =
   'display:flex;gap:2px;padding:6px 4px 2px 4px;' +
-  'border-bottom:1px solid rgba(255,255,255,0.10);margin-bottom:4px;';
+  'border-bottom:1px solid rgba(255,255,255,0.10);margin-bottom:4px;' +
+  'overflow-x:auto;scrollbar-width:none;';
 
+/**
+ * `flex:1` GROWS the buttons to share the width and `min-width:0` lets them
+ * SHRINK below their text -- together they keep four tabs inside 320px, with
+ * `text-overflow:ellipsis` making a squeezed label say so rather than spill.
+ *
+ * Without `min-width:0` a flex item refuses to shrink past its content, which
+ * is precisely how a nowrap button pushed the strip wider than the panel.
+ */
 const TAB_BASE_CSS =
-  'flex:1;border:0;border-radius:4px 4px 0 0;cursor:pointer;' +
-  'font:11px system-ui,sans-serif;padding:6px 8px;white-space:nowrap;';
+  'flex:1 1 0;min-width:0;border:0;border-radius:4px 4px 0 0;cursor:pointer;' +
+  'font:11px system-ui,sans-serif;padding:6px 6px;white-space:nowrap;' +
+  'overflow:hidden;text-overflow:ellipsis;';
 
 const TAB_IDLE_CSS = `${TAB_BASE_CSS}background:transparent;color:rgba(232,232,234,0.6);`;
 

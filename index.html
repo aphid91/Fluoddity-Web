@@ -147,6 +147,19 @@
       #gpu-error h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
       #gpu-error p  { margin: 0; max-width: 44rem; color: #bbb; }
 
+      /* The settings panel's tab strip scrolls horizontally when its buttons
+         cannot fit, which is what stops an overflowing tab becoming
+         unreachable. This hides the scrollbar itself: a horizontal bar under
+         the tabs would cost a row of vertical space to announce an overflow
+         that the short labels normally prevent. Wheel, trackpad and touch drag
+         all still scroll, and `settingsSection.ts` calls `scrollIntoView` when
+         it changes tabs.
+
+         `scrollbar-width: none` (the standard property) is set inline with the
+         rest of the strip's style; this is the WebKit half, which needs a
+         pseudo-element and so cannot live in `cssText`. */
+      [data-tab-strip]::-webkit-scrollbar { display: none; }
+
       /* ===================================================================
          TOUCH: long-press must not select text or raise the callout menu.
          ===================================================================
