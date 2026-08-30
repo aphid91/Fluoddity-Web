@@ -130,6 +130,15 @@ export interface MenuBarOptions {
   /** Whether the Recording Controls tab is showing, for the checkmark. */
   readonly isExportVideoShown: () => boolean;
   /**
+   * Show or hide the Project Link Settings tab.
+   *
+   * A toggle with a checkmark, exactly like `onToggleExportVideo` above and for
+   * the same reason -- the two rows are siblings in the menu and behave alike.
+   */
+  readonly onToggleLinkSettings: () => void;
+  /** Whether the Project Link Settings tab is showing, for the checkmark. */
+  readonly isLinkSettingsShown: () => boolean;
+  /**
    * Build for touch. Defaults to false.
    *
    * Today this only reaches the tooltip, whose affordance is per instance --
@@ -458,6 +467,19 @@ export class MenuBar {
       // menu, which is a far larger signal than a checkmark on a row that is
       // about to be dismissed. The checkmark is for the NEXT visit, to say
       // whether the tab is already up.
+      // DIRECTLY ABOVE Video Export Controls and INSIDE the same separated
+      // group, because it is the same kind of row: a tab toggle rather than an
+      // action, carrying a checkmark rather than an ellipsis. It sits first of
+      // the two because it configures the rows at the top of this menu -- what
+      // Copy Link hands to someone -- so it belongs nearer to them than the
+      // video controls do.
+      this.addItem(
+        body,
+        'Project Link Settings',
+        () => this.opts.onToggleLinkSettings(),
+        '',
+        () => this.opts.isLinkSettingsShown(),
+      );
       this.addItem(
         body,
         'Video Export Controls',

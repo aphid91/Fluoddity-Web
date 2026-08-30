@@ -46,6 +46,7 @@
 import type { SavedConfig } from '../config/persistence.ts';
 import type { PickResult } from '../particleSystem/pick.ts';
 import type { Setting } from '../ui/settingsSpec.ts';
+import type { Preferences } from '../prefs/preferences.ts';
 
 /**
  * What the mouse does on the canvas. The active TOOL.
@@ -745,6 +746,22 @@ export interface CommandBus {
    * these bytes mean and this is only the thing that carries them.
    */
   projectDocument(): unknown;
+
+  /**
+   * The live editor preferences.
+   *
+   * A PULL, like `projectDocument`, and for a related reason: `editPrefs` on
+   * `Status` is EMPTY whenever no panel is open (`settingsSources`'s
+   * optimization), so it cannot answer a question asked from a menu row or a
+   * hotkey. The one caller is the share link, which reads the current world
+   * size and brightness at the moment a link is COPIED -- see `buildLinkQuery`
+   * on why that must be copy time rather than tick time.
+   *
+   * A GETTER rather than a method, matching the Orchestrator's existing
+   * `preferences` accessor -- it is the frozen object that class already holds,
+   * so reading it costs nothing and it cannot be written through.
+   */
+  readonly preferences: Preferences;
 
   /**
    * Every user save, as the documents they are stored as. For folder export.

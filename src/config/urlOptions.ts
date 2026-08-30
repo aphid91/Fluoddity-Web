@@ -185,6 +185,117 @@ export function sharedNameFor(current: string): string {
 }
 
 /**
+ * What the Project Link Settings tab has been asked to put in a link.
+ *
+ * **BOOLEANS, NOT VALUES, AND THAT IS THE WHOLE DESIGN.** Every entry here
+ * means "match what I have open right now", so the tab offers no inputs to get
+ * wrong and no second copy of a number to drift from the real one. The values
+ * are read off the live state at the moment a link is built (`buildLinkQuery`),
+ * which is also what makes the tab's answer stay correct as the user keeps
+ * editing after ticking a box.
+ *
+ * `projectName` is the one exception and the one text field, because there is
+ * no "current" to match -- a name for the recipient is genuinely new
+ * information. Empty means the default, `Shared-<current>`.
+ */
+export interface LinkSettings {
+  // --- prompted: the recipient is asked before any of these apply ---
+  readonly worldSize: boolean;
+  readonly canvasAspect: boolean;
+  readonly brightness: boolean;
+  readonly tonemapSoftness: boolean;
+  readonly trailMap: boolean;
+  // --- unprompted: these just happen ---
+  readonly splash: SplashVariant | null;
+  /** Empty for the `Shared-<current>` default. */
+  readonly projectName: string;
+}
+
+/** Nothing requested: the link a plain `Copy Link` produces. */
+export const DEFAULT_LINK_SETTINGS: LinkSettings = Object.freeze({
+  worldSize: false,
+  canvasAspect: false,
+  brightness: false,
+  tonemapSoftness: false,
+  trailMap: false,
+  splash: null,
+  projectName: '',
+});
+
+/** Where the tab's choices live between sessions. Namespaced like the rest. */
+export const LINK_SETTINGS_STORAGE_KEY = 'fluoddity.linkSettings';
+
+/**
+ * The live values a link is built against.
+ *
+ * Passed in rather than read, so this module stays pure and every case below
+ * runs under `node --test`.
+ */
+export interface LinkSource {
+  readonly prefs: Preferences;
+  readonly cameraMode: CameraMode;
+  readonly projectName: string;
+}
+
+/**
+ * Turn the tab's choices into the query string a share link should carry.
+ *
+ * **BUILT FROM THE LIVE STATE, NOT FROM STORED NUMBERS.** A ticked box is a
+ * standing instruction ("whatever my world size is when I copy"), so the value
+ * is read here at copy time. Ticking Brightness, then dragging the slider, then
+ * copying produces the NEW brightness -- which is what "match current" means
+ * and what a stored value would get wrong.
+ *
+ * `existing` carries any parameters already in the address bar so they survive,
+ * for the reason `buildShareUrl` preserves the query string at all: a link
+ * copied from `?nopanel` should still open without a panel. Any parameter this
+ * function owns is REPLACED rather than added to, so repeated copies cannot
+ * accumulate duplicates.
+ */
+export function buildLinkQuery(
+  settings: LinkSettings,
+  source: LinkSource,
+  existing = '',
+): string {
+  const params = new URLSearchParams(existing);
+
+  // Every parameter this function owns is cleared first, so a box the user has
+  // just UNTICKED leaves no trace of a previous copy behind.
+  for (const key of [...NUMERIC_FIELDS, 'trailmap', 'splash', 'name']) {
+    params.delete(key);
+  }
+
+  if (settings.worldSize) params.set('worldSize', String(source.prefs.worldSize));
+  if (settings.canvasAspect) {
+    params.set('canvasAspect', String(source.prefs.canvasAspect));
+  }
+  if (settings.brightness) params.set('brightness', String(source.prefs.brightness));
+  if (settings.tonemapSoftness) {
+    params.set('tonemapSoftness', String(source.prefs.tonemapSoftness));
+  }
+  // BOTH DIRECTIONS. "Match current" means the recipient ends up where the
+  // sender is, and that includes matching a trail map that is currently OFF --
+  // omitting it when off would silently mean "no opinion" instead.
+  if (settings.trailMap) {
+    params.set('trailmap', source.cameraMode === 'trail' ? '1' : '0');
+  }
+
+  if (settings.splash !== null) params.set('splash', settings.splash);
+
+  // The name always rides along, defaulting to `Shared-<current>` -- which is
+  // what `copyShareLink` did before this tab existed, so an untouched field
+  // reproduces the old behaviour exactly.
+  const name =
+    settings.projectName.trim() === ''
+      ? sharedNameFor(source.projectName)
+      : settings.projectName.trim().slice(0, MAX_NAME_LENGTH);
+  params.set('name', name);
+
+  const query = params.toString();
+  return query === '' ? '' : `?${query}`;
+}
+
+/**
  * A location whose query string carries `?name=Shared-<current>`.
  *
  * PURE, and shaped to feed straight into `buildShareUrl` -- it takes and
@@ -277,6 +388,119 @@ export function numericProposal(
 ): number | undefined {
   if (key === 'cameraMode') return undefined;
   return settings[key];
+}
+
+/**
+ * Read the tab's stored choices, falling back to none requested.
+ *
+ * NEVER THROWS, and drops anything of the wrong type -- `preferences.ts`'s
+ * contract, for the same reason: a corrupt entry outlives a reload, so an
+ * exception here would make the panel permanently unbuildable until the user
+ * cleared site data by hand.
+ */
+export function loadLinkSettings(
+  storage: { getItem(key: string): string | null } | null = browserStorageOrNull(),
+): LinkSettings {
+  if (storage === null) return DEFAULT_LINK_SETTINGS;
+  let raw: string | null;
+  try {
+    raw = storage.getItem(LINK_SETTINGS_STORAGE_KEY);
+  } catch {
+    return DEFAULT_LINK_SETTINGS;
+  }
+  if (raw === null) return DEFAULT_LINK_SETTINGS;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.warn('Could not read the link settings; using the defaults.');
+    return DEFAULT_LINK_SETTINGS;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return DEFAULT_LINK_SETTINGS;
+
+  const record = parsed as Record<string, unknown>;
+  const bool = (key: keyof LinkSettings): boolean =>
+    typeof record[key] === 'boolean' ? (record[key] as boolean) : false;
+
+  const splash = record['splash'];
+  const name = record['projectName'];
+  return Object.freeze({
+    worldSize: bool('worldSize'),
+    canvasAspect: bool('canvasAspect'),
+    brightness: bool('brightness'),
+    tonemapSoftness: bool('tonemapSoftness'),
+    trailMap: bool('trailMap'),
+    splash:
+      typeof splash === 'string' && (SPLASH_VARIANTS as readonly string[]).includes(splash)
+        ? (splash as SplashVariant)
+        : null,
+    projectName:
+      typeof name === 'string' ? name.slice(0, MAX_NAME_LENGTH) : '',
+  });
+}
+
+/** Persist the tab's choices. Swallows a storage failure, like `savePreferences`. */
+export function saveLinkSettings(
+  settings: LinkSettings,
+  storage: { setItem(key: string, value: string): void } | null = browserStorageOrNull(),
+): void {
+  if (storage === null) return;
+  try {
+    storage.setItem(LINK_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch (e) {
+    console.warn(`Could not write the link settings: ${String(e)}`);
+  }
+}
+
+/** Where the tab's VISIBILITY lives. Separate from its contents, like recording. */
+export const LINK_SHOWN_STORAGE_KEY = 'fluoddity.linkSettingsShown';
+
+/**
+ * Whether the Project Link Settings tab was left showing.
+ *
+ * Defaults to FALSE on every failure path, matching `loadExportVideoShown`: an
+ * optional tab that cannot prove it was wanted should not appear.
+ */
+export function loadLinkSettingsShown(
+  storage: { getItem(key: string): string | null } | null = browserStorageOrNull(),
+): boolean {
+  if (storage === null) return false;
+  try {
+    return storage.getItem(LINK_SHOWN_STORAGE_KEY) === 'true';
+  } catch (e) {
+    console.warn(`Could not read link-tab visibility (${String(e)}); hiding`);
+    return false;
+  }
+}
+
+/** Store the tab's visibility. Failure is reported, never thrown. */
+export function saveLinkSettingsShown(
+  shown: boolean,
+  storage: { setItem(key: string, value: string): void } | null = browserStorageOrNull(),
+): void {
+  if (storage === null) return;
+  try {
+    storage.setItem(LINK_SHOWN_STORAGE_KEY, String(shown));
+  } catch (e) {
+    console.warn(`Could not write link-tab visibility: ${String(e)}`);
+  }
+}
+
+/**
+ * `localStorage`, or null where there is none.
+ *
+ * Its own tiny copy rather than an import of `preferences.browserStorage`,
+ * because that one's type demands BOTH `getItem` and `setItem` and the two
+ * functions above each want only one. Merely TOUCHING `localStorage` can throw
+ * in a sandboxed iframe, which is why the access is inside the try.
+ */
+function browserStorageOrNull(): (Storage & object) | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
 }
 
 /** True when a link proposed nothing at all. */

@@ -32,10 +32,13 @@ import test from 'node:test';
 
 import { DEFAULT_PREFERENCES } from '../prefs/preferences.ts';
 import {
+  DEFAULT_LINK_SETTINGS,
   MAX_NAME_LENGTH,
+  buildLinkQuery,
   collapseSharedPrefix,
   describeChanges,
   hasProposedSettings,
+  loadLinkSettings,
   numericProposal,
   parseUrlOptions,
   sharedNameFor,
@@ -220,6 +223,127 @@ test('the trail map can be offered in the On -> Off direction', () => {
   assert.equal(rows.length, 1);
   assert.equal(rows[0]?.from, 'On');
   assert.equal(rows[0]?.to, 'Off');
+});
+
+// -- buildLinkQuery ---------------------------------------------------------
+
+/** A live state to build links against. */
+const SOURCE = {
+  prefs: DEFAULT_PREFERENCES,
+  cameraMode: 'particles' as const,
+  projectName: 'Tangle',
+};
+
+test('an untouched tab produces just the name, as Copy Link always did', () => {
+  const query = buildLinkQuery(DEFAULT_LINK_SETTINGS, SOURCE);
+  const params = new URLSearchParams(query);
+
+  assert.equal(params.get('name'), 'Shared-Tangle');
+  // Nothing else: an unticked box must not put a parameter in the link.
+  assert.deepEqual([...params.keys()], ['name']);
+});
+
+test('a ticked box carries the CURRENT value, not a stored one', () => {
+  // The property the whole tab rests on -- ticking is a standing instruction,
+  // resolved when the link is built. Here that is expressed by building against
+  // a source whose value differs from the default.
+  const source = {
+    ...SOURCE,
+    prefs: Object.freeze({ ...DEFAULT_PREFERENCES, brightness: 1.25 }),
+  };
+  const query = buildLinkQuery(
+    { ...DEFAULT_LINK_SETTINGS, brightness: true },
+    source,
+  );
+
+  assert.equal(new URLSearchParams(query).get('brightness'), '1.25');
+});
+
+test('the trail map is carried in BOTH directions', () => {
+  // "Match current" has to be able to mean OFF. Omitting it when off would say
+  // "no opinion" instead, and the recipient would keep their own view.
+  const on = buildLinkQuery(
+    { ...DEFAULT_LINK_SETTINGS, trailMap: true },
+    { ...SOURCE, cameraMode: 'trail' },
+  );
+  assert.equal(new URLSearchParams(on).get('trailmap'), '1');
+
+  const off = buildLinkQuery(
+    { ...DEFAULT_LINK_SETTINGS, trailMap: true },
+    { ...SOURCE, cameraMode: 'particles' },
+  );
+  assert.equal(new URLSearchParams(off).get('trailmap'), '0');
+});
+
+test('unticking a box removes its parameter from an existing query', () => {
+  // Copying twice with a box unticked in between must not leave the first
+  // copy's parameter behind -- the link would keep asking for something the
+  // sender has since decided against.
+  const query = buildLinkQuery(DEFAULT_LINK_SETTINGS, SOURCE, '?brightness=1.5&nopanel');
+  const params = new URLSearchParams(query);
+
+  assert.equal(params.has('brightness'), false);
+  // Parameters the tab does not own are preserved, as `buildShareUrl` promises.
+  assert.equal(params.has('nopanel'), true);
+});
+
+test('a custom project name beats the Shared- default and is capped', () => {
+  const named = buildLinkQuery(
+    { ...DEFAULT_LINK_SETTINGS, projectName: '  My Piece  ' },
+    SOURCE,
+  );
+  assert.equal(new URLSearchParams(named).get('name'), 'My Piece');
+
+  const long = buildLinkQuery(
+    { ...DEFAULT_LINK_SETTINGS, projectName: 'y'.repeat(500) },
+    SOURCE,
+  );
+  assert.equal(new URLSearchParams(long).get('name')?.length, MAX_NAME_LENGTH);
+});
+
+test('the splash choice rides along unprompted', () => {
+  const query = buildLinkQuery({ ...DEFAULT_LINK_SETTINGS, splash: 'guide' }, SOURCE);
+  assert.equal(new URLSearchParams(query).get('splash'), 'guide');
+});
+
+test('what buildLinkQuery emits is what parseUrlOptions reads back', () => {
+  // The round trip is the real contract: these two functions are the two ends
+  // of one feature, and a link that cannot be parsed by the app that wrote it
+  // would fail silently on the recipient's machine.
+  const settings = {
+    ...DEFAULT_LINK_SETTINGS,
+    worldSize: true,
+    brightness: true,
+    trailMap: true,
+    splash: 'controls' as const,
+    projectName: 'Round Trip',
+  };
+  const parsed = parseUrlOptions(buildLinkQuery(settings, SOURCE));
+
+  assert.equal(parsed.splash, 'controls');
+  assert.equal(parsed.name, 'Round Trip');
+  assert.equal(parsed.settings.worldSize, DEFAULT_PREFERENCES.worldSize);
+  assert.equal(parsed.settings.brightness, DEFAULT_PREFERENCES.brightness);
+  assert.equal(parsed.settings.cameraMode, 'particles');
+});
+
+test('loadLinkSettings survives absent, corrupt and hostile storage', () => {
+  // `preferences.ts`'s contract: a bad entry outlives a reload, so throwing
+  // would make the panel permanently unbuildable.
+  assert.deepEqual(loadLinkSettings(null), DEFAULT_LINK_SETTINGS);
+  assert.deepEqual(
+    loadLinkSettings({ getItem: () => 'not json' }),
+    DEFAULT_LINK_SETTINGS,
+  );
+  assert.deepEqual(
+    loadLinkSettings({ getItem: () => { throw new Error('denied'); } }),
+    DEFAULT_LINK_SETTINGS,
+  );
+  // Wrong types are dropped rather than trusted.
+  assert.deepEqual(
+    loadLinkSettings({ getItem: () => '{"worldSize":"yes","splash":"nope"}' }),
+    DEFAULT_LINK_SETTINGS,
+  );
 });
 
 test('a whole link parses end to end', () => {

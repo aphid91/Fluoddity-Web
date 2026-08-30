@@ -93,6 +93,7 @@ import {
   type SettingsSectionHandle,
   type SettingsTab,
   DRAWING_TAB,
+  LINK_TAB,
   PREFS_TAB,
   RECORDING_TAB,
   buildSettingsSection,
@@ -115,6 +116,9 @@ import {
 import {
   type SettingChange,
   type SplashVariant,
+  buildLinkQuery,
+  loadLinkSettingsShown,
+  saveLinkSettingsShown,
   withSharedName,
 } from '../config/urlOptions.ts';
 import type { RgbaImage } from '../share/qrRender.ts';
@@ -573,6 +577,8 @@ export class Panel {
    * reasoning as the tier flags.
    */
   private exportVideoShown = loadExportVideoShown();
+  /** Whether the Project Link Settings tab is up. Its sister -- see the toggle. */
+  private linkSettingsShown = loadLinkSettingsShown();
 
   /**
    * The recorder, while an export is in flight.
@@ -798,6 +804,10 @@ export class Panel {
         this.setExportVideoShown(!this.exportVideoShown);
       },
       isExportVideoShown: () => this.exportVideoShown,
+      onToggleLinkSettings: () => {
+        this.setLinkSettingsShown(!this.linkSettingsShown);
+      },
+      isLinkSettingsShown: () => this.linkSettingsShown,
     });
 
     this.left = {
@@ -946,6 +956,16 @@ export class Panel {
           // the same decision `leftSections` makes, read from the same flag, so
           // the two cannot both claim it and render it twice.
           this.mobile,
+          // Undefined -- and so NO link tab -- unless the menu item is ticked.
+          // Unlike recording there is no second condition: building a share URL
+          // needs nothing this panel might be missing.
+          this.linkSettingsShown
+            ? {
+                onCopyLink: () => {
+                  this.copyShareLink();
+                },
+              }
+            : undefined,
         );
         this.settings = handle;
         side.sections.push(handle);
@@ -1624,13 +1644,35 @@ export class Panel {
    * app does not care, and a hardcoded origin here would quietly undo that.
    */
   copyShareLink(): void {
-    // `?name=Shared-<project>` rides along, so the recipient sees the link
-    // named after what the sender had open rather than the bare "Shared Link".
-    // Built here rather than in `buildShareUrl` because that function is pure
-    // and takes a location; this is the one place that knows the live project's
-    // name. `withSharedName` collapses an existing prefix, so a link that has
-    // been passed along several times does not accumulate them.
-    const loc = withSharedName(window.location, this.bus.status().projectName);
+    const status = this.bus.status();
+    // **THE LINK TAB'S CHOICES WIN WHEN THAT TAB EXISTS.** Both routes into this
+    // method -- the menu row and the tab's own button -- must produce the same
+    // URL, so the query is built in one place from one source. Without the tab
+    // this falls back to `withSharedName`, which is exactly what the method did
+    // before the tab existed: the name alone, and nothing else.
+    //
+    // The values are read HERE rather than when a box was ticked, which is what
+    // makes "match current" mean the current value. See `buildLinkQuery`.
+    const chosen = this.settings?.linkSettings() ?? null;
+    const loc =
+      chosen === null
+        ? withSharedName(window.location, status.projectName)
+        : {
+            origin: window.location.origin,
+            pathname: window.location.pathname,
+            search: buildLinkQuery(
+              chosen,
+              {
+                prefs: this.bus.preferences,
+                // `Status.camMode` is a plain string, so it is narrowed rather
+                // than asserted -- an unrecognised mode degrades to the default
+                // view instead of putting a bad value in someone's link.
+                cameraMode: status.camMode === 'trail' ? 'trail' : 'particles',
+                projectName: status.projectName,
+              },
+              window.location.search,
+            ),
+          };
     const url = buildShareUrl(loc, this.bus.projectDocument());
     void copyText(url).then((ok) => {
       this.showShareResult(ok, url);
@@ -2176,6 +2218,31 @@ export class Panel {
 
     // 3. Rebuild, which is what makes the tab EXIST. Last, so it sees the
     //    activeTab set above.
+    this.rebuild();
+  }
+
+  /**
+   * Show or hide the Project Link Settings tab.
+   *
+   * The Recording Controls toggle above, minus its two guards: there is no
+   * export to be mid-way through and no `recording` dependency to be missing,
+   * because building a share URL asks nothing of the GPU. What is kept is the
+   * part that matters to the user -- bring the tab forward and reveal the panels
+   * -- for the reason that one documents: a menu item that appears to do nothing
+   * is the failure being avoided, and the panels start hidden.
+   */
+  private setLinkSettingsShown(shown: boolean): void {
+    if (shown === this.linkSettingsShown) return;
+
+    this.linkSettingsShown = shown;
+    // Stored on the toggle, not at teardown, for the reason the recording flag
+    // is: a browser tab has no reliable "session ended" moment.
+    saveLinkSettingsShown(shown);
+
+    if (shown) {
+      this.activeTab = LINK_TAB;
+      if (this.hiddenFlag) this.setHidden(false);
+    }
     this.rebuild();
   }
 

@@ -38,6 +38,12 @@ import {
   buildRecordingSection,
 } from './recordingSection.ts';
 import type { RecordingSettings } from '../../recorder/recordingSettings.ts';
+import {
+  type LinkSectionHandle,
+  type LinkSectionOptions,
+  buildLinkSection,
+} from './linkSection.ts';
+import type { LinkSettings } from '../../config/urlOptions.ts';
 
 /**
  * The Project tab. **TOUCH ONLY, and first in the strip when it exists.**
@@ -56,11 +62,18 @@ export const PROJECT_TAB = 'project';
 export const PREFS_TAB = 'preferences';
 export const DRAWING_TAB = 'drawing';
 export const RECORDING_TAB = 'recording';
+/**
+ * Project Link Settings. **A SISTER TO RECORDING CONTROLS**, and built on the
+ * same terms: toggled from the Share menu, absent rather than hidden when it is
+ * not wanted, and holding editor state that never travels with a project.
+ */
+export const LINK_TAB = 'link';
 export type SettingsTab =
   | typeof PROJECT_TAB
   | typeof PREFS_TAB
   | typeof DRAWING_TAB
-  | typeof RECORDING_TAB;
+  | typeof RECORDING_TAB
+  | typeof LINK_TAB;
 
 /**
  * What each tab is FOR, shown on hovering its button.
@@ -86,6 +99,12 @@ const TAB_HELP: Record<SettingsTab, string> = {
   [RECORDING_TAB]:
     'Editor settings for video recording and export. Persistent; not ' +
     'saved/loaded with projects or checkpoints.',
+  // THE ODD ONE OUT IN THE OTHER DIRECTION from Project: nothing here travels
+  // with the project OR stays on this machine -- it describes what a link hands
+  // to somebody else.
+  [LINK_TAB]:
+    'What a copied share link asks the recipient to adopt. Persistent; not ' +
+    'saved/loaded with projects or checkpoints.',
 };
 
 /** A settings section, plus the tab control the panel drives. */
@@ -94,6 +113,8 @@ export interface SettingsSectionHandle extends SectionHandle {
   readonly activeTab: () => SettingsTab;
   /** The recording tab's settings, or null while that tab does not exist. */
   readonly recordingSettings: () => RecordingSettings | null;
+  /** The link tab's choices, or null while that tab does not exist. */
+  readonly linkSettings: () => LinkSettings | null;
 }
 
 export function buildSettingsSection(
@@ -120,6 +141,11 @@ export function buildSettingsSection(
    * `panelModel.leftSections` is the other half.
    */
   project?: boolean,
+  /**
+   * Project Link Settings, when Share > Project Link Settings is ticked.
+   * Undefined builds NO tab, on the same terms as `recording` above.
+   */
+  link?: LinkSectionOptions,
 ): SettingsSectionHandle {
   // The host folder's own header goes too: the tab strip sits directly beneath
   // it and names both pages, so a "Settings" bar above them is a third label for
@@ -167,6 +193,16 @@ export function buildSettingsSection(
     recordingSection = buildRecordingSection(recordingFolder, status, ctx, recording);
   }
 
+  // The fifth tab, on the same terms as Recording Controls -- see the parameter.
+  let linkSection: LinkSectionHandle | null = null;
+  let linkFolder: FolderApi | null = null;
+  if (link !== undefined) {
+    linkFolder = folder.addFolder({ title: 'Project Link Settings', expanded: true });
+    hideFolderTitle(linkFolder);
+    (linkFolder.element as HTMLElement).dataset['section'] = LINK_TAB;
+    linkSection = buildLinkSection(linkFolder, status, ctx, link);
+  }
+
   // --- the strip ----------------------------------------------------------
   // Built after the folders (Tweakpane needs to own its own children) and then
   // moved to the front, so it renders above them.
@@ -182,6 +218,10 @@ export function buildSettingsSection(
   if (projectFolder !== null) tabs.push([PROJECT_TAB, 'Project']);
   tabs.push([PREFS_TAB, 'Preferences'], [DRAWING_TAB, 'Drawing Controls']);
   if (recordingFolder !== null) tabs.push([RECORDING_TAB, 'Recording Controls']);
+  // LAST, beside Recording Controls: the two are the optional pair, both
+  // summoned from the Share menu, and keeping them adjacent means the strip's
+  // first three buttons never move as either is toggled.
+  if (linkFolder !== null) tabs.push([LINK_TAB, 'Project Link Settings']);
 
   const buttons = new Map<SettingsTab, HTMLButtonElement>();
   for (const [tab, title] of tabs) {
@@ -238,6 +278,10 @@ export function buildSettingsSection(
       (recordingFolder.element as HTMLElement).style.display =
         active === RECORDING_TAB ? '' : 'none';
     }
+    if (linkFolder !== null) {
+      (linkFolder.element as HTMLElement).style.display =
+        active === LINK_TAB ? '' : 'none';
+    }
     for (const [id, button] of buttons) {
       button.style.cssText = id === active ? TAB_ACTIVE_CSS : TAB_IDLE_CSS;
     }
@@ -272,6 +316,10 @@ export function buildSettingsSection(
       // Recording's refresh drives the export button's progress label, which
       // must keep counting while the user reads a different tab.
       recordingSection?.refresh(s, input);
+      // A no-op today -- the link tab reads the live state when a link is
+      // built rather than mirroring it -- and forwarded anyway, for the reason
+      // `dispose` forwards to Project below.
+      linkSection?.refresh(s, input);
     },
     // Forwarded so the window listeners the recording tab registers are
     // released when this host is torn down. The other two sections have
@@ -283,10 +331,12 @@ export function buildSettingsSection(
       // children is the kind of asymmetry that goes unnoticed until the fourth
       // one grows a window listener.
       projectSection?.dispose?.();
+      linkSection?.dispose?.();
     },
     setActiveTab,
     activeTab: () => active,
     recordingSettings: () => recordingSection?.settings() ?? null,
+    linkSettings: () => linkSection?.settings() ?? null,
   };
 }
 

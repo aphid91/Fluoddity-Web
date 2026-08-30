@@ -122,6 +122,9 @@ export const MENU_HELP: Readonly<Record<string, string>> = {
     'Download the contents of your custom saves as a folder of json files.',
   'Import Saves from JSON...':
     'Upload json files in a folder to your custom saves',
+  'Project Link Settings':
+    'Choose what a copied link asks the recipient to adopt — your world size, ' +
+    'brightness and the rest. They are prompted before anything is applied.',
   'Video Export Controls':
     'Open the recording control panel for creating and downloading mp4 videos ' +
     'of your Fluoddities',
