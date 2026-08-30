@@ -153,6 +153,16 @@ export interface OrchestratorOptions {
   readonly surface: Surface;
   /** Preset to open with. Defaults to the desktop's own default. */
   readonly presetName?: string;
+  /**
+   * What to CALL the open project, whatever it was loaded from.
+   *
+   * `?name=` supplies this. **DISPLAY ONLY** -- it names the project and
+   * nothing else, leaving `configOrigin` and so the save path untouched, which
+   * is what stops a link named after a shipped preset from being able to
+   * overwrite it. Already trimmed and length-capped by `parseUrlOptions`; every
+   * surface that renders a project name uses `textContent`.
+   */
+  readonly projectName?: string;
   /** Overridden by tests and by `?prefs=default`; normally `localStorage`. */
   readonly preferences?: Preferences;
   /**
@@ -591,7 +601,10 @@ export class Orchestrator implements CommandBus {
       // Every config in the file, not just slot 0: a save can hold several.
       configs: loaded.configs,
       world: loaded.world,
-      name: opts.openWith?.name ?? presetName,
+      // `projectName` beats both, because it is the most explicit request:
+      // someone typing `?name=` has said what to call THIS load, whether the
+      // project came from a share link or from a preset.
+      name: opts.projectName ?? opts.openWith?.name ?? presetName,
     });
 
     const orchestrator = new Orchestrator({

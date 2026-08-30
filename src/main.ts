@@ -24,6 +24,13 @@ import { createSurface, type Surface } from './app/surface.ts';
 import { CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
 import { type SavedConfig, fromDocument } from './config/persistence.ts';
 import { SHARED_LINK_NAME, decodeShareLink } from './config/shareLink.ts';
+import {
+  describeChanges,
+  hasProposedSettings,
+  numericProposal,
+  parseUrlOptions,
+} from './config/urlOptions.ts';
+import { PREFS, settingFor } from './ui/settingsSpec.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
 import { RECORDING_FPS, driverAction } from './recorder/recordingSettings.ts';
 // Static, and deliberately so: the file picker must run before any await in the
@@ -99,6 +106,13 @@ async function start(): Promise<void> {
 
   const params = new URLSearchParams(window.location.search);
 
+  // `?splash`, `?name` and the five setting parameters. Parsed once, here, and
+  // handed down -- the module is pure so that every case is testable without a
+  // browser, and this is the only place that reads a real `location`. See
+  // `config/urlOptions.ts` for why the settings are a PROPOSAL rather than
+  // something applied on arrival.
+  const urlOptions = parseUrlOptions(window.location.search);
+
   // --- the share link --------------------------------------------------------
   //
   // Read BEFORE `create`, so a shared project is what the app OPENS rather than
@@ -131,6 +145,9 @@ async function start(): Promise<void> {
   try {
     const shared = decodeShareLink(window.location.hash);
     if (shared !== null) {
+      // `?name` is NOT applied here. It goes through `projectName` below, so
+      // that one route names the project whether it came from a link or a
+      // preset -- see that option. This stays the generic fallback.
       openWith = { saved: fromDocument(shared, 'shared link'), name: SHARED_LINK_NAME };
     }
   } catch (err: unknown) {
@@ -187,6 +204,8 @@ async function start(): Promise<void> {
     // preset without synthesizing a click on a panel button.
     ...(params.has('preset') ? { presetName: params.get('preset') ?? undefined } : {}),
     ...(openWith !== undefined ? { openWith } : {}),
+    // `?name=`. Display only, and applies on every path -- see the option.
+    ...(urlOptions.name !== null ? { projectName: urlOptions.name } : {}),
     // Governs ONE rule in there: whether a pick commits or only re-aims.
     mobile,
   });
@@ -198,6 +217,14 @@ async function start(): Promise<void> {
   // **`?camera` IS THE FLIP TEST.** The two modes walk the same transform in
   // opposite directions, so switching between them must not shift or mirror the
   // image (`camera.py:14-18`). If it does, a Y flip is wrong.
+  //
+  // **`?camera` AND `?trailmap` BOTH REACH THE MODE, AND `?camera` WINS.** They
+  // are deliberately different affordances: `?camera` is the verification tool's
+  // lever and sets the mode SILENTLY, as it always has; `?trailmap` is the
+  // link-sharing one and goes through the consent prompt. When a URL carries
+  // both, the silent one is applied here and `askForSettings` then finds the
+  // mode already where `?trailmap` wanted it -- so no redundant row is offered
+  // and the prompt stays honest. See `describeChanges`.
   const cameraState = orchestrator.cameraState;
   const requestedMode = params.get('camera');
   if (requestedMode !== null) {
@@ -269,6 +296,91 @@ async function start(): Promise<void> {
   // between runs. Off in anything shipped -- see `orchestrator/featureFlags.ts`.
   const firstVisit = ALWAYS_CALIBRATE || !orchestrator.preferences.calibrated;
 
+  // --- the URL settings prompt ----------------------------------------------
+  //
+  // **ASKED AFTER THE USER HAS SEEN THE APP, NEVER BEFORE.** The whole point of
+  // the prompt is that it offers a COMPARISON -- "World Size: 1 -> 0.5" only
+  // means something to someone who has seen what 1 looks like on their machine.
+  // Two things have to happen first:
+  //
+  //   1. **Calibration, on a first visit.** The ladder WRITES `worldSize` and
+  //      `physicsSteps` (`commitCalibration`), so asking beforehand would offer
+  //      to change a value that is about to be overwritten, and the answer would
+  //      be silently undone moments later. Waiting also means the comparison is
+  //      against the machine's real measured settings.
+  //   2. **The splash, whenever one is up.** A modal stacked over the welcome
+  //      would be two overlays deep on someone's first second in the app.
+  //
+  // Both resolve to the same signal: the splash closing. On a first visit the
+  // splash is LOCKED until calibration finishes (`setLocked`), so "the splash
+  // closed" already implies "calibration is done" and no second flag is needed.
+  // On a return visit with no splash, nothing defers it and it opens at once.
+  //
+  // ONE-SHOT. `onSplashClosed` fires on every close, including Help > Welcome
+  // much later, and a link's proposal must be offered exactly once -- so the
+  // pending state is cleared before the dialog opens rather than after it is
+  // answered.
+  let pendingSettings = urlOptions.settings;
+  const askForSettings = async (): Promise<void> => {
+    if (panel === null) return;
+    if (!hasProposedSettings(pendingSettings)) return;
+
+    // Read the preferences NOW, not at parse time: on a first visit these are
+    // the post-calibration values, which is the whole reason this waited.
+    const changes = describeChanges(
+      pendingSettings,
+      orchestrator.preferences,
+      orchestrator.cameraState.mode,
+    );
+    // Cleared BEFORE the await, so a second splash close while the dialog is
+    // open cannot open a second one.
+    pendingSettings = {};
+    if (changes.length === 0) return;
+
+    const accepted = await panel.askUrlSettings(changes);
+    if (accepted.length === 0) return;
+
+    // The world size decides whether a recalibration follows, so it is tracked
+    // across the loop rather than re-derived afterwards -- by then the
+    // preference has already been overwritten and the comparison is impossible.
+    const worldSizeBefore = orchestrator.preferences.worldSize;
+
+    for (const change of accepted) {
+      if (change.key === 'cameraMode') {
+        // Not a preference: `CameraState.mode`. A TOGGLE is exact here because
+        // there are only two modes and the row exists only when the proposal
+        // differs from the live one -- so flipping lands on what was asked for,
+        // in either direction.
+        orchestrator.dispatch({ kind: 'toggleCameraMode' });
+        continue;
+      }
+      const setting = settingFor(PREFS, change.key);
+      // A renamed field: skip the row rather than crash, matching how
+      // `startRateCalibration` handles the same possibility.
+      if (setting === null) continue;
+      const value = numericProposal(urlOptions.settings, change.key);
+      if (value === undefined) continue;
+      orchestrator.dispatch({ kind: 'editSetting', setting, value });
+    }
+
+    // **ONLY WHEN THE WORLD SIZE ACTUALLY MOVED.** The physics rate was tuned
+    // against the old world size, so a new one leaves it measuring the wrong
+    // thing -- but every other setting here is free, and recalibrating after a
+    // brightness change would be a 20-second wait for nothing. Compared against
+    // the value read before the loop, so an accepted-but-identical world size
+    // (which `describeChanges` already filters) cannot trigger it either.
+    if (orchestrator.preferences.worldSize !== worldSizeBefore) {
+      await panel.recalibrateRate();
+    }
+  };
+
+  // **DECLARED BEFORE THE PANEL, WHICH IS WHAT STARTS CALIBRATION.** The ladder
+  // assigns this from inside `runCalibration` below, and that runs during
+  // `new Panel(...)` -- so the declaration cannot sit beside the frame loop that
+  // reads it without landing in the temporal dead zone. Its full reasoning is
+  // with the loop; this is only where the binding is created.
+  let ladderProbing = false;
+
   // `let`, and the callback reads it rather than closing over a value, because
   // the Panel needs a calibration callback that reports progress THROUGH the
   // Panel -- a circular reference the constructor cannot be handed. The callback
@@ -283,7 +395,25 @@ async function start(): Promise<void> {
         // holds, rather than one the panel looks up for itself -- see
         // `PanelOptions.canvas`.
         canvas,
-        showSplash: firstVisit && !params.has('nosplash'),
+        // `?splash=` FORCES ONE ON ANY VISIT, which is the one thing that
+        // differs from the first-run rule: a returning user who follows a link
+        // pointing at the guide should land on the guide. `?nosplash` still
+        // wins over both, because it exists for the screenshot comparison and a
+        // link must not be able to put an overlay in front of that.
+        showSplash:
+          (firstVisit || urlOptions.splash !== null) && !params.has('nosplash'),
+        // **A FORCED WELCOME IS A NO-OP FOR A FIRST-TIME VISITOR**, who was
+        // getting the welcome anyway -- so there is nothing to show afterwards
+        // and nothing here has to special-case it. A forced GUIDE or CONTROLS
+        // on a first visit replaces the welcome rather than queueing behind it:
+        // the calibration progress line lives on whichever document is up, so
+        // showing two in sequence would either split the progress across them
+        // or leave the second one lying about a calibration that had finished.
+        ...(urlOptions.splash !== null ? { splashVariant: urlOptions.splash } : {}),
+        // The URL settings prompt waits for this. See `askForSettings`.
+        onSplashClosed: () => {
+          void askForSettings();
+        },
         // THE APP OPENS ON THE PICTURE. The panels are two 320px columns of
         // controls over a piece whose whole point is being looked at, and the
         // mutation bar -- which `X` never hid -- already carries the controls
@@ -492,6 +622,15 @@ async function start(): Promise<void> {
       'error',
     );
   }
+
+  // NO SPLASH MEANS NOTHING TO WAIT FOR. A returning visitor with `?nosplash`,
+  // or simply one past their first visit, never fires `onSplashClosed` -- so
+  // the prompt would sit pending forever. The deferral exists to put the
+  // question after the app is visible, and here it already is.
+  //
+  // `void`: the prompt resolves whenever the user answers, and the frame loop
+  // below must start regardless. Nothing after this awaits it.
+  if (panel !== null && !panel.splashVisible) void askForSettings();
 
   // --- input (Step 8) --------------------------------------------------------
   // Every listener lives in `ui/inputBinding.ts`; what comes back is a tracker
@@ -751,8 +890,15 @@ async function start(): Promise<void> {
    * **SCOPED TO THE LADDER ONLY, NOT THE WHOLE RUN.** The second phase
    * (`tuneRate`) measures REAL frames off this very loop and would measure
    * nothing at all if this were still set -- see where it is cleared.
+   *
+   * **DECLARED ABOVE THE PANEL, NOT HERE BESIDE THE LOOP THAT READS IT.** The
+   * calibration callback assigns it, and `new Panel(...)` starts calibration --
+   * so a declaration down here sits in the temporal dead zone at the moment the
+   * ladder first writes to it, and the whole run dies with a `ReferenceError`
+   * before a single rung is probed. It failed silently in exactly the case
+   * nobody re-tests by hand: a genuine first visit, which needs a cleared
+   * `localStorage` to reproduce at all.
    */
-  let ladderProbing = false;
 
   const frame = (): void => {
     if (deviceLost) return; // Stop cleanly rather than spinning on a dead device.

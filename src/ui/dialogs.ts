@@ -29,6 +29,7 @@
  */
 
 import type { Command, Status } from '../orchestrator/commands.ts';
+import type { SettingChange } from '../config/urlOptions.ts';
 import { localHotkeyLabel } from './hotkeys.ts';
 
 export interface DialogOptions {
@@ -75,6 +76,28 @@ export class Dialogs {
   private pendingDelete: { category: string; name: string } | null = null;
 
   private readonly resetPrefsEl: HTMLDialogElement;
+
+  // --- the URL settings prompt ----------------------------------------------
+  //
+  // Built EMPTY and refilled on each opening, unlike the three above whose
+  // content is fixed at construction. The rows depend on what a link proposed
+  // and on what the user's settings were when it was opened, neither of which
+  // exists yet at construction time.
+  private readonly urlSettingsEl: HTMLDialogElement;
+  private readonly urlSettingsList: HTMLElement;
+  /**
+   * The rows currently on offer, paired with their checkboxes.
+   *
+   * Held so "Yes" can read the ticks back. Cleared on close so a dismissed
+   * dialog cannot apply anything on a later opening.
+   */
+  private urlSettingsRows: readonly {
+    readonly change: SettingChange;
+    readonly box: HTMLInputElement;
+  }[] = [];
+  /** Told which changes the user accepted. Null when nothing is pending. */
+  private urlSettingsResolve: ((accepted: readonly SettingChange[]) => void) | null =
+    null;
 
   constructor(opts: DialogOptions) {
     this.send = opts.send;
@@ -200,6 +223,70 @@ export class Dialogs {
       ]),
     );
     this.resetPrefsEl = resetPrefs;
+
+    // --- the URL settings prompt ---------------------------------------------
+    //
+    // **THIS IS A PERMISSION PROMPT, AND IT IS WORDED AS ONE.** The values come
+    // from a URL, which means from whoever wrote the link rather than from the
+    // person reading it. `preferences.ts` already refuses to let a loaded
+    // config change your brightness or canvas size; a query parameter must not
+    // be the back door around that rule, so the answer is to ask.
+    //
+    // EVERY BOX STARTS TICKED. The common case is a link someone sent on
+    // purpose, and making the user tick four boxes to accept what they already
+    // chose to open would be friction with no safety payoff -- the protection
+    // is in seeing the list and being able to refuse it, not in the default.
+    //
+    // CANCEL IS THE PRIMARY, following the reset-preferences dialog rather than
+    // save and delete: this prompt appears unbidden, in response to a link
+    // rather than a click, so the default answer should be the one that changes
+    // nothing. Enter picks it. The spec asks for Enter to act like Yes; see
+    // `openUrlSettings`, where Enter is bound to Yes explicitly and this button
+    // is merely the visual default.
+    const urlSettings = dialog('fluoddity-url-settings');
+    urlSettings.append(heading('Allow this project to modify these settings?'));
+
+    const urlIntro = document.createElement('div');
+    urlIntro.style.cssText =
+      'font-size:11px;opacity:0.75;line-height:1.5;margin-bottom:10px;';
+    urlIntro.textContent =
+      'The link you opened asks to change how your editor is set up. ' +
+      'Untick anything you would rather keep.';
+    urlSettings.append(urlIntro);
+
+    this.urlSettingsList = document.createElement('div');
+    this.urlSettingsList.style.cssText =
+      'display:flex;flex-direction:column;gap:6px;max-height:40vh;overflow-y:auto;';
+    urlSettings.append(this.urlSettingsList);
+
+    urlSettings.append(
+      buttonRow([
+        button('Cancel', () => {
+          this.closeUrlSettings([]);
+        }, true),
+        button('Yes', () => {
+          this.acceptUrlSettings();
+        }),
+      ]),
+    );
+
+    // ENTER MEANS YES, which native `<dialog>` does not give for free -- it
+    // gives Escape-to-cancel only. Bound on the dialog rather than on a form so
+    // it fires wherever focus sits, including on a checkbox the user has just
+    // tabbed to. Space still toggles a focused box, because this only claims
+    // Enter.
+    urlSettings.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      this.acceptUrlSettings();
+    });
+    // Escape, and the backdrop, resolve as Cancel. Without this the promise
+    // would never settle and the caller would wait forever for an answer the
+    // user has already given.
+    urlSettings.addEventListener('cancel', () => {
+      this.closeUrlSettings([]);
+    });
+    this.urlSettingsEl = urlSettings;
   }
 
   // -- save -----------------------------------------------------------------
@@ -272,6 +359,80 @@ export class Dialogs {
     this.resetPrefsEl.showModal();
   }
 
+  // -- the URL settings prompt ------------------------------------------------
+
+  /**
+   * Ask whether a link may change these settings, resolving with the accepted
+   * subset.
+   *
+   * RESOLVES RATHER THAN DISPATCHING, because the caller has to do more than
+   * apply the list: a world-size change also triggers a recalibration, and that
+   * ordering belongs with the startup sequence in `main.ts` rather than buried
+   * in a dialog. An empty array means Cancel, Escape, or every box unticked --
+   * all three mean "change nothing", so they need no distinguishing.
+   *
+   * Never rejects. A prompt the user closed is an answer, not a failure.
+   */
+  openUrlSettings(changes: readonly SettingChange[]): Promise<readonly SettingChange[]> {
+    // Nothing to ask about. Resolving immediately rather than showing an empty
+    // dialog -- `describeChanges` already omits settings that match, so a link
+    // proposing only redundant values lands here and should be invisible.
+    if (changes.length === 0) return Promise.resolve([]);
+
+    this.urlSettingsList.replaceChildren();
+    this.urlSettingsRows = changes.map((change) => {
+      const row = document.createElement('label');
+      row.style.cssText =
+        'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:11px;';
+
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = true;
+      box.style.cssText = 'cursor:pointer;margin:0;';
+      row.append(box);
+
+      // `textContent`, NEVER `innerHTML`. The label is built from
+      // `settingsSpec.ts` rather than from the URL, but the VALUES either side
+      // of the arrow are parsed from one -- and this is the one place they are
+      // rendered. See the header on `urlOptions.ts`.
+      const text = document.createElement('span');
+      text.textContent = `${change.label}: ${change.from} → ${change.to}`;
+      row.append(text);
+
+      this.urlSettingsList.append(row);
+      return { change, box };
+    });
+
+    this.urlSettingsEl.showModal();
+    return new Promise((resolve) => {
+      this.urlSettingsResolve = resolve;
+    });
+  }
+
+  /** Resolve with whatever is still ticked. */
+  private acceptUrlSettings(): void {
+    this.closeUrlSettings(
+      this.urlSettingsRows.filter((r) => r.box.checked).map((r) => r.change),
+    );
+  }
+
+  /**
+   * Close and settle, exactly once.
+   *
+   * The resolver is cleared BEFORE it is called and the rows are dropped with
+   * it, so the two paths that can both fire -- a Cancel click and the `cancel`
+   * event it triggers -- cannot resolve the same promise twice or leave a stale
+   * row list behind for the next opening.
+   */
+  private closeUrlSettings(accepted: readonly SettingChange[]): void {
+    const resolve = this.urlSettingsResolve;
+    this.urlSettingsResolve = null;
+    this.urlSettingsRows = [];
+    this.urlSettingsList.replaceChildren();
+    if (this.urlSettingsEl.open) this.urlSettingsEl.close();
+    resolve?.(accepted);
+  }
+
   // -- per frame ------------------------------------------------------------
 
   /**
@@ -296,6 +457,10 @@ export class Dialogs {
     this.saveEl.remove();
     this.deleteEl.remove();
     this.resetPrefsEl.remove();
+    // Settled first: a caller awaiting an answer would otherwise hang forever
+    // on a disposed dialog. Disposal changes nothing, so it answers as Cancel.
+    this.closeUrlSettings([]);
+    this.urlSettingsEl.remove();
   }
 }
 

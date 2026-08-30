@@ -112,6 +112,11 @@ import {
   buildShareUrl,
   decodeShareText,
 } from '../config/shareLink.ts';
+import {
+  type SettingChange,
+  type SplashVariant,
+  withSharedName,
+} from '../config/urlOptions.ts';
 import type { RgbaImage } from '../share/qrRender.ts';
 import { DOWNSCALE_WARN_PX, QrCapacityError } from '../share/qrStamp.ts';
 import {
@@ -175,6 +180,22 @@ export interface PanelOptions {
    * toll booth on every load. See its startup block.
    */
   readonly showSplash?: boolean;
+  /**
+   * Which splash document to open with. Defaults to the welcome.
+   *
+   * `?splash=` supplies this. Separate from `showSplash` because the two
+   * answer different questions -- whether to show one at all, and which -- and
+   * a link can force the second without changing the first.
+   */
+  readonly splashVariant?: SplashVariant;
+  /**
+   * Called whenever the splash closes, including the first-run one.
+   *
+   * Exists for the URL settings prompt, which must wait for the user to be
+   * looking at the app before asking them anything. Fires on every close, not
+   * just the first: the caller decides whether it still has a question.
+   */
+  readonly onSplashClosed?: () => void;
   /**
    * Run GPU calibration, resolving when it is done.
    *
@@ -304,6 +325,8 @@ export class Panel {
   private readonly bus: CommandBus;
   /** The canvas share images are captured from, or `null`. See `PanelOptions`. */
   private readonly canvas: HTMLCanvasElement | null;
+  /** Told when the splash closes, for the URL settings prompt. See its option. */
+  private readonly onSplashClosed: (() => void) | null;
   private readonly left: PanelSide;
   private readonly right: PanelSide;
 
@@ -598,6 +621,7 @@ export class Panel {
   constructor(opts: PanelOptions) {
     this.bus = opts.bus;
     this.canvas = opts.canvas ?? null;
+    this.onSplashClosed = opts.onSplashClosed ?? null;
     // FIRST, because the build steps below branch on it -- the overlay, the
     // containers and the tab list all ask which layout they are building.
     this.mobile = opts.mobile ?? false;
@@ -703,6 +727,9 @@ export class Panel {
       // Wording only -- the dismiss rule itself branches per event. See
       // `SplashOptions.mobile`.
       mobile: this.mobile,
+      // Which document opens on construction. `main.ts` passes a forced one
+      // through from `?splash`; otherwise the welcome, as it always has.
+      ...(opts.splashVariant !== undefined ? { variant: opts.splashVariant } : {}),
       onVisibilityChange: (visible) => {
         if (visible) {
           this.pausedBySplash = !this.bus.status().paused;
@@ -714,6 +741,10 @@ export class Panel {
           // sim may already be where we want it.
           if (this.bus.status().paused) send({ kind: 'togglePause' });
         }
+        // Announced AFTER the pause bookkeeping, so a listener that opens a
+        // modal cannot run while this method is half done. `Splash` fires only
+        // on real transitions, so this cannot double-report a close.
+        if (!visible) this.onSplashClosed?.();
       },
     });
     this.menuBar = new MenuBar({
@@ -1593,7 +1624,14 @@ export class Panel {
    * app does not care, and a hardcoded origin here would quietly undo that.
    */
   copyShareLink(): void {
-    const url = buildShareUrl(window.location, this.bus.projectDocument());
+    // `?name=Shared-<project>` rides along, so the recipient sees the link
+    // named after what the sender had open rather than the bare "Shared Link".
+    // Built here rather than in `buildShareUrl` because that function is pure
+    // and takes a location; this is the one place that knows the live project's
+    // name. `withSharedName` collapses an existing prefix, so a link that has
+    // been passed along several times does not accumulate them.
+    const loc = withSharedName(window.location, this.bus.status().projectName);
+    const url = buildShareUrl(loc, this.bus.projectDocument());
     void copyText(url).then((ok) => {
       this.showShareResult(ok, url);
     });
@@ -1954,6 +1992,43 @@ export class Panel {
    */
   showControls(): void {
     this.splash.show('controls');
+  }
+
+  /**
+   * Ask whether a link may change these editor settings.
+   *
+   * Fronts `Dialogs` for the reason `setSplashStatus` fronts the splash:
+   * `main.ts` owns the startup sequence but should not reach through the panel
+   * to one of its surfaces. Resolves with the accepted subset -- see
+   * `Dialogs.openUrlSettings` for why it resolves rather than dispatching.
+   */
+  askUrlSettings(
+    changes: readonly SettingChange[],
+  ): Promise<readonly SettingChange[]> {
+    return this.dialogs.openUrlSettings(changes);
+  }
+
+  /**
+   * Whether a splash is currently up.
+   *
+   * For the startup sequence, which defers the URL settings prompt until the
+   * splash closes and so has to know whether one will ever close. See
+   * `askForSettings` in `main.ts`.
+   */
+  get splashVisible(): boolean {
+    return this.splash.visible;
+  }
+
+  /**
+   * Run the rate search the Auto-calibrate button runs, and report it.
+   *
+   * For the world-size case in `main.ts`: accepting a new world size leaves the
+   * physics rate tuned for the old one, so the rate has to be re-derived. This
+   * is the BUTTON's path rather than the first-run ladder -- the world size is
+   * already decided, and only the rate is in question.
+   */
+  async recalibrateRate(): Promise<void> {
+    await this.tuneRate();
   }
 
   // --- touch -----------------------------------------------------------------
