@@ -36,7 +36,7 @@
 
 import { compileModule } from '../gpu/shaderModule.ts';
 import { HDR_FORMAT, type RenderTargets } from '../app/renderTargets.ts';
-import { CANVAS_FORMAT } from '../particleSystem/particleSystem.ts';
+import { FIELD_FORMAT } from '../strafeField/fieldSize.ts';
 import type { CameraView } from '../camera/cameraUniforms.ts';
 import type { DisplayPreferences } from '../prefs/preferences.ts';
 import {
@@ -94,7 +94,8 @@ export class Assembler {
 
     // The formats must match what will really be bound there, or the bind group
     // is rejected when the real texture arrives: bloom is rgba16float like the
-    // rest of the HDR chain, the strafe field is rg16float like the canvas.
+    // rest of the HDR chain, the user-drawn field is rgba16float (two vectors per
+    // texel -- walls and trails; see `FIELD_FORMAT`).
     const dummy = (label: string, format: GPUTextureFormat): GPUTextureView =>
       device
         .createTexture({
@@ -105,7 +106,7 @@ export class Assembler {
         })
         .createView();
     this.dummyHdrView = dummy('bloom-placeholder', HDR_FORMAT);
-    this.dummyFieldView = dummy('strafe-field-placeholder', CANVAS_FORMAT);
+    this.dummyFieldView = dummy('strafe-field-placeholder', FIELD_FORMAT);
     this.strafeFieldView = this.dummyFieldView;
   }
 

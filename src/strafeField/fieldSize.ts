@@ -11,6 +11,31 @@
 import { canvasDimensions } from '../particleSystem/sizing.ts';
 
 /**
+ * The user-drawn field's texel format. FOUR channels, and deliberately NOT the
+ * canvas's `CANVAS_FORMAT`.
+ *
+ * ## Why this is its own constant
+ *
+ * This texture used to be `rg16float`, borrowed from `CANVAS_FORMAT` because it
+ * held one 2D vector per texel and so did the canvas. It now holds TWO:
+ *
+ *   rg -- WALLS, a displacement added straight to position (`get_walls`)
+ *   ba -- TRAILS, added to the canvas sample the sensors read (`get_can`)
+ *
+ * Widening `CANVAS_FORMAT` itself would have been the smaller diff and the wrong
+ * move: the canvas is the biggest texture in the app and follows world size (4 MB
+ * at world size 1, 16 MB at 4), so giving it two channels it would never write
+ * doubles that for nothing. The field is capped at MAX_FIELD_DIM^2 and pays the
+ * widening once, flat.
+ *
+ * `rgba16float` clears the same bar `rg16float` did and for the same reason: base
+ * WebGPU filters, renders and blends it with no optional features. That is what
+ * makes this a safe widening rather than a narrowing of the device matrix -- see
+ * `CANVAS_FORMAT`'s note, which is about `rg32float` and still applies to it.
+ */
+export const FIELD_FORMAT: GPUTextureFormat = 'rgba16float';
+
+/**
  * THE SINGLE SOURCE OF TRUTH for how detailed the field may get.
  *
  * Read as a square-equivalent edge: the field is capped at MAX_FIELD_DIM^2
@@ -21,8 +46,9 @@ import { canvasDimensions } from '../particleSystem/sizing.ts';
  * invisible while the VRAM is not. The canvas has to track world size because
  * trails ARE the fine detail; the field does not.
  *
- * rg16float is 4 bytes/texel, so 512 costs 1 MB flat. Uncapped it would follow
- * the canvas: 4 MB at world size 1, 16 MB at world size 4.
+ * rgba16float is 8 bytes/texel, so 512 costs 2 MB flat -- it was 1 MB while this
+ * was a two-channel texture. Uncapped it would follow the canvas: 8 MB at world
+ * size 1, 32 MB at world size 4, which is what the cap is buying.
  */
 export const MAX_FIELD_DIM = 512;
 

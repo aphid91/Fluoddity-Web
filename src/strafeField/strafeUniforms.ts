@@ -19,15 +19,44 @@
  * `ArrayBuffer`, read back with `bitcast<i32>`.
  */
 
+import { BRUSH_MODE_INDEX, LAYER_INDEX, type BrushMode, type FieldLayer } from './fieldLayer.ts';
+
 /**
- * `StrafeDrawUniforms` -- 48 bytes.
+ * `StrafeDrawUniforms` -- 64 bytes.
  *
  *   field_res : vec4f  (16)  offset 0   xy: FIELD resolution   zw: reserved
  *   stroke    : vec4f  (16)  offset 16  xy: mouse uv   zw: previous mouse uv
  *   brush     : vec4f  (16)  offset 32  x: draw_size  y: draw_power
- *                                       z: erase_mode(i)  w: reserved
+ *                                       z: erase_mode(i)  w: brush_mode(i)
+ *   layer     : vec4f  (16)  offset 48  x: layer_index(i)  y: draw_angle
+ *                                       z: line_gain  w: reserved
+ *
+ * The fourth vec4 is the "add a whole vec4" half of invariant 7 -- `brush` had
+ * exactly one spare lane and this addition needed three.
  */
-export const STRAFE_DRAW_UNIFORM_SIZE = 48;
+export const STRAFE_DRAW_UNIFORM_SIZE = 64;
+
+/** Everything the brush pass needs that is not geometry. */
+export interface BrushParams {
+  readonly drawSize: number;
+  readonly drawPower: number;
+  readonly mode: BrushMode;
+  readonly layer: FieldLayer;
+  /**
+   * Radians, 0 = up (+y in world space). Read only by the `fixed` mode; packed
+   * unconditionally because a branch here would save nothing.
+   */
+  readonly drawAngle: number;
+  /**
+   * A flat multiplier on the deposited vector, for the LINE TOOL only.
+   *
+   * A freehand stroke deposits once per rendered frame, so dragging slowly over
+   * a spot builds it up. A line commits in ONE pass, so without this an identical
+   * line reads as a faint ghost of the hand-drawn equivalent. 1.0 for freehand;
+   * `LINE_STROKE_GAIN` for a committed line.
+   */
+  readonly lineGain: number;
+}
 
 /**
  * Pack the airbrush pass's uniforms.
@@ -46,15 +75,14 @@ export const STRAFE_DRAW_UNIFORM_SIZE = 48;
  * i.e. it would ship.
  *
  * `drawSize` is the gaussian's sigma in the aspect-corrected metric; `erase`
- * selects the shader's zero-writing branch (the BLEND STATE is per-pipeline and
- * is not carried here -- see `strafeField.ts`).
+ * selects the shader's zero-writing branch (the BLEND STATE and the COLOUR WRITE
+ * MASK are per-pipeline and are not carried here -- see `strafeField.ts`).
  */
 export function packStrafeDrawUniforms(
   fieldRes: readonly [number, number],
   uv: readonly [number, number],
   prevUv: readonly [number, number],
-  drawSize: number,
-  drawPower: number,
+  brush: BrushParams,
   erase: boolean,
 ): ArrayBuffer {
   const buffer = new ArrayBuffer(STRAFE_DRAW_UNIFORM_SIZE);
@@ -67,16 +95,24 @@ export function packStrafeDrawUniforms(
 
   // stroke: xy this frame's cursor, zw the previous frame's. A segment, not a
   // point -- painting only the current position visibly breaks into dots on a
-  // fast drag (`strafe_draw.frag:37-41`).
+  // fast drag (`strafe_draw.frag:37-41`). The LINE TOOL packs its anchor as
+  // `prevUv` and its endpoint as `uv`, so one segment covers both gestures and
+  // the shader needs no line-versus-freehand branch at all.
   f32[4] = uv[0];
   f32[5] = uv[1];
   f32[6] = prevUv[0];
   f32[7] = prevUv[1];
 
-  // brush: x sigma, y power, z erase_mode(i), w reserved
-  f32[8] = drawSize;
-  f32[9] = drawPower;
+  // brush: x sigma, y power, z erase_mode(i), w brush_mode(i)
+  f32[8] = brush.drawSize;
+  f32[9] = brush.drawPower;
   i32[10] = erase ? 1 : 0;
+  i32[11] = BRUSH_MODE_INDEX[brush.mode];
+
+  // layer: x layer_index(i), y draw angle, z line gain, w reserved
+  i32[12] = LAYER_INDEX[brush.layer];
+  f32[13] = brush.drawAngle;
+  f32[14] = brush.lineGain;
 
   return buffer;
 }

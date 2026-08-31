@@ -141,20 +141,64 @@ export interface Preferences {
   /** Airbrush gaussian sigma, in aspect-corrected canvas uv. */
   readonly drawSize: number;
   /**
-   * How hard a stroke paints. THE ONLY strength control for drawing: how far
-   * the painted field then moves a particle is a fixed constant
-   * (`STRAFE_FIELD_GAIN` in `common.wgsl`), so there is no second multiplier
-   * interacting with this one.
+   * How hard a stroke paints, at the moment it is painted.
+   *
+   * Distinct from the two FIELD STRENGTHS below, and the difference is when each
+   * applies. This one is baked into the texture: it decides what gets written,
+   * and changing it later does nothing to what is already there. The strengths
+   * are applied at READ time, every step, so they retune a field that was painted
+   * an hour ago. That is the whole reason both exist.
    */
   readonly drawPower: number;
 
   /**
-   * Opacity of the strafe field overlay. EXACTLY zero is the off switch: the
-   * assembler does not sample the field texture at all below it.
+   * Which way a stroke's vectors point. An INDEX into `BRUSH_MODES`.
+   *
+   * An int rather than a string for the reason `mobileMode` is one: preferences
+   * are validated by `PREFERENCE_KINDS`, which knows three primitive kinds, and
+   * an out-of-range index degrades to the default at the one place that reads it
+   * (`brushModeFor`). A persisted string from a future build would not.
+   */
+  readonly brushMode: number;
+
+  /**
+   * The direction the `fixed` brush paints, in radians. 0 is UP.
+   *
+   * -PI..PI, so the slider's two ends meet at straight down and the handle's
+   * centre is the default. Read by that one mode; stored unconditionally, since
+   * a mode switch should not lose the angle you set.
+   */
+  readonly drawAngle: number;
+
+  /**
+   * Multiplier on the painted WALLS layer, applied at read time. 0..4.
+   *
+   * 1.0 reproduces the fixed gain this feature replaced, so a field painted
+   * before these sliders existed behaves identically. 0.0 mutes a painted set of
+   * walls without erasing it, which is the case that motivated the control.
+   */
+  readonly wallsStrength: number;
+  /** Multiplier on the painted TRAILS layer, applied at read time. 0..4. */
+  readonly trailsStrength: number;
+
+  /**
+   * Opacity of the painted-field overlay. EXACTLY zero is the off switch: the
+   * assembler does not sample the field texture at all below it. Shared by both
+   * layers -- it is how strongly the overlay is drawn, not which one is drawn.
    */
   readonly fieldOpacity: number;
-  /** When false the field overlay appears only while Draw is the active tool. */
+  /**
+   * Show the WALLS overlay while a non-drawing tool is active.
+   *
+   * **ONLY CONSULTED OUTSIDE THE TWO DRAWING TOOLS.** In Walls mode the walls
+   * overlay is always shown and the trails overlay never is, and vice versa in
+   * Trails mode -- you are looking at the thing you are painting, and hiding it
+   * would be a way to draw blind. These two flags are about Select and Shove,
+   * where neither layer is being edited and either might be worth seeing.
+   */
   readonly fieldAlwaysShow: boolean;
+  /** Show the TRAILS overlay while a non-drawing tool is active. */
+  readonly trailsAlwaysShow: boolean;
   /**
    * The brush reticle. Only ever drawn while a BRUSH tool is active, so this
    * gates it within those tools rather than across all of them.
@@ -315,8 +359,20 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   bloomRadius: 1.0,
   drawSize: 0.01,
   drawPower: 2.5,
+  // Out/Diverge -- index 0 in BRUSH_MODES. THE DEFAULT IN EVERY TOOL, and the
+  // only behaviour this brush had before the other three existed, so a session
+  // that never opens the dropdown draws exactly as it always did.
+  brushMode: 0,
+  // Up. The centre of the -PI..PI range, so the slider starts at its midpoint.
+  drawAngle: 0.0,
+  // 1.0 is the identity: it reproduces the fixed gain that used to be compiled
+  // into the shader, so adding these sliders changed nothing about how a painted
+  // field feels until someone moves one.
+  wallsStrength: 1.0,
+  trailsStrength: 1.0,
   fieldOpacity: 0.10,
   fieldAlwaysShow: false,
+  trailsAlwaysShow: false,
   showReticle: true,
   resetOnBehaviorChange: true,
   oneClickSelection: false,
@@ -365,8 +421,15 @@ export const PREFERENCE_KINDS = {
   bloomRadius: 'float',
   drawSize: 'float',
   drawPower: 'float',
+  // An INDEX into `BRUSH_MODES`, so 'int' -- the same reasoning as `mobileMode`
+  // below. `brushModeFor` degrades an out-of-range value to the default.
+  brushMode: 'int',
+  drawAngle: 'float',
+  wallsStrength: 'float',
+  trailsStrength: 'float',
   fieldOpacity: 'float',
   fieldAlwaysShow: 'bool',
+  trailsAlwaysShow: 'bool',
   showReticle: 'bool',
   resetOnBehaviorChange: 'bool',
   oneClickSelection: 'bool',
@@ -577,3 +640,58 @@ export type DisplayPreferences = Pick<
   | 'bloomRadius'
   | 'fieldOpacity'
 >;
+
+/**
+ * What a Walls Field Strength of 1.0 means, per physics step.
+ *
+ * **THIS IS THE OLD `STRAFE_FIELD_GAIN`,** moved out of `common.wgsl` when the
+ * constant became a slider. Keeping the number identical is what makes the
+ * default a no-op: a field painted before these controls existed displaces
+ * particles by exactly what it always did.
+ */
+export const WALLS_FIELD_GAIN = 0.01;
+
+/**
+ * What a Trails Field Strength of 1.0 means.
+ *
+ * ## This one had no predecessor, so it was tuned rather than inherited
+ *
+ * Walls converts a constant that already existed. Trails is a new path -- the
+ * painted vector is added to the CANVAS SAMPLE the sensors read -- so there is no
+ * previous behaviour to reproduce and the only question is what makes a
+ * default-power stroke read as comparable to a trail the swarm laid down itself.
+ *
+ * The arithmetic that fixes the order of magnitude: the brush deposits
+ * `0.01 * (power/5) * kernel / size` per frame, so at the default power 2.5 and
+ * size 0.01 a texel at the centre of a stroke gains ~0.5 per frame and saturates
+ * within a few frames of being held. Canvas trail values, after `get_can` divides
+ * out CANVAS_VALUE_SCALE, sit in the low single digits where the sensors are
+ * responsive. A gain of 1.0 therefore lands painted trails in the same range as
+ * simulated ones without further scaling, which is why this is 1.0 and not a
+ * fraction -- the two quantities were already commensurate once the descale is
+ * accounted for.
+ *
+ * Named and separate from `WALLS_FIELD_GAIN` anyway, rather than folded away as
+ * "no conversion needed": the two feed different shader paths, and a future
+ * retune of one must not silently move the other.
+ */
+export const TRAILS_FIELD_GAIN = .001;
+
+/**
+ * The strengths the entity update reads, derived from the two sliders.
+ *
+ * **THE ONE PLACE THE GAINS ARE APPLIED.** The shader multiplies by nothing
+ * further, so a reader who wants to know what a slider of 2.0 does looks here and
+ * nowhere else. Splitting the conversion across host and shader is how the two
+ * drift apart, which is the trap the old arrangement -- a slider here and a
+ * constant in `common.wgsl` -- would have set.
+ */
+export function fieldStrengthsFor(prefs: Preferences): {
+  readonly walls: number;
+  readonly trails: number;
+} {
+  return {
+    walls: prefs.wallsStrength * WALLS_FIELD_GAIN,
+    trails: prefs.trailsStrength * TRAILS_FIELD_GAIN,
+  };
+}

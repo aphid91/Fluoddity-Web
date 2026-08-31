@@ -36,9 +36,12 @@ import {
   type MouseMode,
   type Status,
   MOUSE_MODES,
+  layerForMouseMode,
   mouseModeFromValue,
+  usesBrushReticle,
 } from '../orchestrator/commands.ts';
 import { IC } from '../particleSystem/config.ts';
+import type { FieldLayer } from '../strafeField/fieldLayer.ts';
 import { NO_COHORT } from '../selection/cohortHighlight.ts';
 import { bindFocusRelease } from './focusRelease.ts';
 import { hotkeyLabel, localHotkeyLabel } from './hotkeys.ts';
@@ -87,7 +90,25 @@ export interface MutationOverlayOptions {
 const TOOL_LABELS: Record<MouseMode, string> = {
   select: 'Select',
   shove: 'Shove',
-  draw: 'Draw',
+  walls: 'Walls',
+  trails: 'Trails',
+};
+
+/**
+ * The hint bar's Clear button, per layer.
+ *
+ * **"(Can't undo)" IS IN THE LABEL, not a tooltip**, for both. `clearStrafeField`
+ * is deliberately outside the undo timeline (see the Orchestrator's case for it),
+ * and a destructive one-click action whose irreversibility is only discoverable
+ * by hovering is the version that gets pressed by accident.
+ *
+ * Named per layer rather than "Clear field", because the button clears exactly
+ * one of the two and a user with both painted needs to know which one is about
+ * to go.
+ */
+const CLEAR_FIELD_LABELS: Record<FieldLayer, string> = {
+  walls: "Clear all barriers (Can't undo)",
+  trails: "Clear all trails (Can't undo)",
 };
 
 /**
@@ -153,6 +174,16 @@ export class MutationOverlay {
    * and this is a mirror of it, refreshed every frame.
    */
   private fencesOn = false;
+
+  /**
+   * Which layer the hint bar's Clear button currently targets.
+   *
+   * Cached from `refresh` for the same reason `fencesOn` is: the listener was
+   * wired at construction and has no `Status` in scope, and reading one per click
+   * would mean holding the whole status getter for a single field. `null` while a
+   * non-painting tool is active, in which case the button is hidden anyway.
+   */
+  private clearFieldLayer: FieldLayer | null = null;
 
   /**
    * What the left group last rendered as active, so `refresh` can skip the
@@ -915,10 +946,18 @@ export class MutationOverlay {
     this.clearFieldButton = document.createElement('button');
     this.clearFieldButton.type = 'button';
     this.clearFieldButton.style.cssText = CLEAR_FIELD_BUTTON_CSS;
-    this.clearFieldButton.textContent = "Clear all barriers (Can't undo)";
+    // The label is written by `refresh`, because it names the layer the active
+    // tool paints. Set here only so the element is never momentarily blank.
+    this.clearFieldButton.textContent = CLEAR_FIELD_LABELS.walls;
     this.clearFieldButton.dataset['setting'] = 'transport.clearStrafeField';
     this.clearFieldButton.addEventListener('click', () => {
-      opts.send({ kind: 'clearStrafeField' });
+      // CLEARS THE LAYER THE ACTIVE TOOL PAINTS. The guard is not defensive
+      // padding: the button is hidden outside the painting tools, so a null here
+      // would mean a click arrived while it was hidden, and clearing an arbitrary
+      // layer is a worse answer than clearing none.
+      if (this.clearFieldLayer !== null) {
+        opts.send({ kind: 'clearStrafeField', layer: this.clearFieldLayer });
+      }
       // Hands the keys back, like every other button on this bar.
       this.clearFieldButton.blur();
     });
@@ -1619,6 +1658,15 @@ export class MutationOverlay {
     this.undoButton.style.display =
       undo !== null && !suppressForTouch ? 'inline-flex' : 'none';
 
+    // THE CLEAR BUTTON FOLLOWS THE ACTIVE TOOL, in both its label and what it
+    // sends. Resolved here rather than in the click listener because the listener
+    // was wired at construction and never sees a `Status`; `clearFieldLayer` is
+    // the handoff between the two.
+    this.clearFieldLayer = layerForMouseMode(status.mouseMode);
+    if (this.clearFieldLayer !== null) {
+      this.clearFieldButton.textContent = CLEAR_FIELD_LABELS[this.clearFieldLayer];
+    }
+
     // `inline-flex` RESTATED rather than `''`, for the reason spelled out at the
     // stepper below: this button carries its layout in an inline `style` set
     // from `cssText`, and `''` would REMOVE the property rather than revert it.
@@ -2134,13 +2182,23 @@ export function hintFor(status: Status): {
   if (status.mouseMode === 'shove') {
     return none('Left click to push particles away | Right click to pull them in');
   }
-  if (status.mouseMode === 'draw') {
-    // THE ONLY STATE THAT OFFERS IT. Clearing the field is a Draw-tool act --
-    // the button is the bulk form of the right-click the same sentence
-    // describes, so it belongs beside that sentence and nowhere else. Under
-    // Select or Shove it would be an unrelated destructive control sitting in a
-    // row about something else entirely.
-    return { ...none('Left click to add barriers | Right click to erase them'), clearField: true };
+  const layer = layerForMouseMode(status.mouseMode);
+  if (layer !== null) {
+    // THE ONLY STATES THAT OFFER IT. Clearing is a painting-tool act -- the
+    // button is the bulk form of the right-click the same sentence describes, so
+    // it belongs beside that sentence and nowhere else. Under Select or Shove it
+    // would be an unrelated destructive control sitting in a row about something
+    // else entirely.
+    //
+    // **CONTEXTUAL, AND IT CLEARS ONLY THE LAYER YOU ARE PAINTING.** One button
+    // whose meaning follows the tool, rather than two buttons here -- the hint
+    // bar is a single row about what the mouse does right now, and the Drawing
+    // Controls panel is where both layers are addressable at once.
+    const noun = layer === 'walls' ? 'barriers' : 'trails';
+    return {
+      ...none(`Left click to add ${noun} | Right click to erase them`),
+      clearField: true,
+    };
   }
 
   // Select. `highlightedCohort` arrives ALREADY GATED by the Orchestrator, so
@@ -2288,10 +2346,10 @@ export function hintFor(status: Status): {
 export type ContextAction = 'cancel' | 'undo' | 'toggleDragButton';
 
 export function contextActionFor(status: Status): ContextAction {
-  // SHOVE AND DRAW FIRST, because the question they answer is different in kind:
-  // the other two branches ask "what would backing out do here", and these two
+  // THE BRUSH TOOLS FIRST, because the question they answer is different in
+  // kind: the other two branches ask "what would backing out do here", and these
   // have no backing-out to offer at all.
-  if (status.mouseMode === 'shove' || status.mouseMode === 'draw') {
+  if (usesBrushReticle(status.mouseMode)) {
     return 'toggleDragButton';
   }
   // READ THROUGH THE SAME GATE `applyCanvasInput` USES. `highlightedCohort`

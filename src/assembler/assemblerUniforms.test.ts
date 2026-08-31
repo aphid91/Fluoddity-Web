@@ -18,6 +18,8 @@ import {
   BLOOM_UPSAMPLE_UNIFORM_SIZE,
   FRAME_ASSEMBLY_UNIFORM_SIZE,
   NO_OVERLAYS,
+  RETICLE_STYLES,
+  RETICLE_STYLE_INDEX,
   packBloomDownsampleUniforms,
   packBloomUpsampleUniforms,
   packFrameAssemblyUniforms,
@@ -135,19 +137,89 @@ test('field opacity is zero unless the overlay was actually asked for', () => {
   assert.equal(visible[11], Math.fround(0.8));
 });
 
-test('the reticle rides its own lanes, dashed as an INT', () => {
+test('the reticle rides its own lanes, style as an INT', () => {
   const overlays: OverlayState = {
     ...NO_OVERLAYS,
     reticleCenter: [0.4, 0.6],
     reticleRadius: 0.031,
-    reticleDashed: true,
+    reticleStyle: 'dashed',
+    reticleAngle: 0.5,
   };
   const buffer = packFrameAssemblyUniforms(VIEW, prefs(), false, overlays);
   const f32 = new Float32Array(buffer);
   assert.equal(f32[12], Math.fround(0.4), 'reticle center x');
   assert.equal(f32[13], Math.fround(0.6), 'reticle center y');
   assert.equal(f32[14], Math.fround(0.031), 'reticle radius');
-  assert.equal(new Int32Array(buffer)[16], 1, 'reticle_dashed true');
+  assert.equal(f32[15], Math.fround(0.5), 'draw angle');
+  assert.equal(new Int32Array(buffer)[16], RETICLE_STYLE_INDEX.dashed);
+});
+
+test('every reticle style packs its own index, and plain is zero', () => {
+  // The shader's RETICLE_* constants are the other half of this table. `plain`
+  // MUST be 0: this lane held a boolean `reticle_dashed` before, so a stale
+  // reader sees 'plain' as false and every decorated style as true -- wrong in
+  // an obvious way rather than a subtle one.
+  assert.equal(RETICLE_STYLE_INDEX.plain, 0);
+  assert.notEqual(RETICLE_STYLE_INDEX.dashed, 0);
+  for (const style of RETICLE_STYLES) {
+    const buffer = packFrameAssemblyUniforms(VIEW, prefs(), false, {
+      ...NO_OVERLAYS,
+      reticleStyle: style,
+    });
+    assert.equal(new Int32Array(buffer)[16], RETICLE_STYLE_INDEX[style], style);
+  }
+});
+
+test('the two field overlays are gated independently', () => {
+  // They share `fieldOpacity` -- one control for how strongly overlays draw --
+  // but each has its own flag, because the painting tools force one layer on and
+  // the other off. A single gate could not express that.
+  const wallsOnly = new Float32Array(
+    packFrameAssemblyUniforms(VIEW, prefs({ fieldOpacity: 0.8 }), false, {
+      ...NO_OVERLAYS,
+      showField: true,
+    }),
+  );
+  assert.equal(wallsOnly[11], Math.fround(0.8), 'walls opacity');
+  assert.equal(wallsOnly[17], 0.0, 'trails must stay dark');
+
+  const trailsOnly = new Float32Array(
+    packFrameAssemblyUniforms(VIEW, prefs({ fieldOpacity: 0.8 }), false, {
+      ...NO_OVERLAYS,
+      showTrails: true,
+    }),
+  );
+  assert.equal(trailsOnly[11], 0.0, 'walls must stay dark');
+  assert.equal(trailsOnly[17], Math.fround(0.8), 'trails opacity');
+});
+
+test('the line preview is gated by its own flag, not by being non-zero', () => {
+  // A ZERO-LENGTH SEGMENT IS A LEGITIMATE PREVIEW -- it is what the frame the
+  // line arms looks like, before the cursor has moved off the anchor. So the
+  // enable cannot be inferred from the endpoints, and this asserts it is not.
+  const off = new Float32Array(
+    packFrameAssemblyUniforms(VIEW, prefs(), false, NO_OVERLAYS),
+  );
+  assert.equal(off[18], 0.0, 'no preview means the enable is zero');
+
+  const degenerate = new Float32Array(
+    packFrameAssemblyUniforms(VIEW, prefs(), false, {
+      ...NO_OVERLAYS,
+      linePreview: { from: [0.5, 0.5], to: [0.5, 0.5] },
+    }),
+  );
+  assert.equal(degenerate[18], 1.0, 'a zero-length preview is still enabled');
+
+  const real = new Float32Array(
+    packFrameAssemblyUniforms(VIEW, prefs(), false, {
+      ...NO_OVERLAYS,
+      linePreview: { from: [0.25, 0.75], to: [0.5, 0.125] },
+    }),
+  );
+  assert.equal(real[28], Math.fround(0.25), 'anchor x');
+  assert.equal(real[29], Math.fround(0.75), 'anchor y');
+  assert.equal(real[30], Math.fround(0.5), 'cursor x');
+  assert.equal(real[31], Math.fround(0.125), 'cursor y');
 });
 
 test('the capture remap defaults to the IDENTITY, never to zero', () => {

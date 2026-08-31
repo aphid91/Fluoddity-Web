@@ -101,16 +101,20 @@ test('fwidth sits inside branches on UNIFORMS ONLY', () => {
   // otherwise never see.
   const source = stripComments(expand('frameAssembly.wgsl'));
 
-  // Take the LAST `if (a || b)` before the first fwidth, not the first one in
-  // the file: the expanded source begins with common.wgsl, whose
-  // `letterbox_scale` opens with `if (window_res.x <= 0.0 || ...)`. Anchoring
-  // on the first match tests the wrong function entirely -- and passes, because
-  // that condition happens to reference no per-fragment name either.
-  const upToFwidth = source.slice(0, source.indexOf('fwidth'));
-  assert.ok(upToFwidth.length > 0, 'expected an fwidth call');
-  const guards = [...upToFwidth.matchAll(/if\s*\(([^{]*?\|\|[^{]*?)\)\s*\{/g)];
-  assert.ok(guards.length > 0, 'expected an outer `if (a || b)` guarding the fwidth calls');
-  const condition = guards[guards.length - 1]![1]!;
+  // THE OVERLAY BLOCK'S OWN GUARD, found by NESTING rather than by proximity.
+  //
+  // An earlier version took "the last `if (a || b)` before the first fwidth",
+  // which was only ever a proxy for "the block the fwidth is inside". It broke
+  // the moment a sibling branch appeared between the two -- the field-sample
+  // block `if ((...) && inside)`, which legitimately reads `inside`, CLOSES
+  // before any fwidth and so does not guard one at all. The proxy read it as the
+  // guard and failed on correct code.
+  //
+  // So: find the overlay guard by its content, then verify every fwidth in the
+  // file sits inside a branch chain that reads no per-fragment name.
+  const guardMatch = /if\s*\(([^{]*u\.reticle\.z[^{]*)\)\s*\{/.exec(source);
+  assert.ok(guardMatch !== null, 'expected an overlay guard testing u.reticle.z');
+  const condition = guardMatch[1]!;
 
   for (const perFragment of ['inside', 'canvas_uv', 'in.uv', 'color']) {
     assert.ok(
@@ -119,9 +123,46 @@ test('fwidth sits inside branches on UNIFORMS ONLY', () => {
         'that makes the control flow non-uniform and fwidth illegal',
     );
   }
-  // Positively: it should be testing the two overlay switches, both uniforms.
+  // Positively: it should be testing the overlay switches, all uniforms.
   assert.match(condition, /u\.tone\.w/, 'expected the field_opacity switch');
   assert.match(condition, /u\.reticle\.z/, 'expected the reticle_radius switch');
+
+  // AND THE STRONGER FORM: no fwidth may sit inside a branch whose condition
+  // names a per-fragment value. Walks the brace nesting and tracks the condition
+  // of every open `if`, which is what the proximity heuristic was approximating.
+  const openGuards: string[] = [];
+  const tokens = [...source.matchAll(/if\s*\(([^{]*?)\)\s*\{|\{|\}|fwidth/g)];
+  let depth = 0;
+  // Depth at which each open `if` block started, so `}` can pop the right one.
+  const guardDepths: number[] = [];
+  for (const token of tokens) {
+    const text = token[0];
+    if (text.startsWith('if')) {
+      openGuards.push(token[1]!);
+      guardDepths.push(depth);
+      depth++;
+    } else if (text === '{') {
+      depth++;
+    } else if (text === '}') {
+      depth--;
+      if (guardDepths.length > 0 && guardDepths[guardDepths.length - 1] === depth) {
+        guardDepths.pop();
+        openGuards.pop();
+      }
+    } else {
+      // An fwidth: every enclosing `if` condition must be uniform.
+      for (const open of openGuards) {
+        for (const perFragment of ['inside', 'canvas_uv', 'in.uv', ' color']) {
+          assert.ok(
+            !open.includes(perFragment),
+            `an fwidth sits inside \`if (${open.trim()})\`, which reads the ` +
+              `per-fragment value "${perFragment.trim()}" -- fwidth requires ` +
+              'uniform control flow and this will fail to compile in a browser',
+          );
+        }
+      }
+    }
+  }
 });
 
 test('the dashed ring derives its arc footprint from the RADIAL measure', () => {

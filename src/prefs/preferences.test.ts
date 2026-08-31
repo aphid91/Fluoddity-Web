@@ -26,12 +26,14 @@ import {
   PREFERENCE_KINDS,
   STORAGE_KEY,
   coerce,
+  fieldStrengthsFor,
   isPreferenceKey,
   loadPreferences,
   requiresRestart,
   savePreferences,
   withValue,
 } from './preferences.ts';
+import { DEFAULT_FIELD_STRENGTHS } from '../particleSystem/uniforms.ts';
 
 /** A `localStorage` stand-in over a plain map. */
 function fakeStorage(initial: string | null = null): PreferenceStorage & { value: string | null } {
@@ -246,4 +248,34 @@ test('the kind map covers exactly the preference keys', () => {
     Object.keys(PREFERENCE_KINDS).sort(),
     Object.keys(DEFAULT_PREFERENCES).sort(),
   );
+});
+
+test('the default field strengths reproduce the gains that replaced constants', () => {
+  // `DEFAULT_FIELD_STRENGTHS` restates these two numbers in `particleSystem/`,
+  // which may not import `prefs/` (invariant 3: the simulation does not read the
+  // editor's settings). THIS TEST IS WHAT KEEPS THE DUPLICATION HONEST -- a
+  // retune of either gain that missed the other would leave the simulation
+  // running one value until the Orchestrator's first push and another after it,
+  // which looks like a one-frame flicker and reproduces on nothing.
+  assert.deepEqual(fieldStrengthsFor(DEFAULT_PREFERENCES), DEFAULT_FIELD_STRENGTHS);
+});
+
+test('a walls strength of 1.0 is exactly the retired STRAFE_FIELD_GAIN', () => {
+  // The whole promise of the default: a field painted before these sliders
+  // existed must displace particles by precisely what it did then. 0.01 is the
+  // constant that used to live in common.wgsl.
+  assert.equal(fieldStrengthsFor(DEFAULT_PREFERENCES).walls, 0.01);
+  // And the slider is linear in it, so 0 mutes and 4 is four times the old feel.
+  const muted = { ...DEFAULT_PREFERENCES, wallsStrength: 0 };
+  assert.equal(fieldStrengthsFor(muted).walls, 0);
+  const loud = { ...DEFAULT_PREFERENCES, wallsStrength: 4 };
+  assert.equal(fieldStrengthsFor(loud).walls, 0.04);
+});
+
+test('brushMode coerces like the index it is, not like a string', () => {
+  // An INDEX into BRUSH_MODES, declared 'int' -- so a fractional value truncates
+  // rather than landing a non-integer where an array lookup goes. The read side
+  // (`brushModeFor`) is what handles an index past the end.
+  assert.equal(coerce('brushMode', 2.7), 2);
+  assert.equal(withValue(DEFAULT_PREFERENCES, 'brushMode', 3).brushMode, 3);
 });

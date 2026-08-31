@@ -108,12 +108,13 @@ test('nearest is returned in RAW uv, not the aspect-corrected metric', () => {
   );
 });
 
-test('the two degenerate-input guards use if, never select()', () => {
+test('the degenerate-input guards use if, never select()', () => {
   // select() EVALUATES BOTH ARMS. Here the discarded arms are a divide by zero
   // (denom == 0 on a stroke's first frame) and a normalize of a zero vector
-  // (a fragment exactly on the stroke).
+  // (a fragment exactly on the stroke, or a `stroke` mode brush that has not
+  // moved).
   //
-  // The second is the dangerous one: the target is fp16 under ADDITIVE
+  // The normalize is the dangerous one: the target is fp16 under ADDITIVE
   // BLENDING, so a single NaN texel is permanent -- it survives every later
   // frame, renders as black in the overlay (indistinguishable from empty), and
   // poisons the physics every sub-step until a clear happens to cover it.
@@ -126,7 +127,68 @@ test('the two degenerate-input guards use if, never select()', () => {
     'strafeDraw.wgsl must not use select() -- it evaluates both arms; use var + if',
   );
   assert.match(OWN_BODY, /if\s*\(\s*denom\s*>\s*0\.0\s*\)/);
-  assert.match(OWN_BODY, /if\s*\(\s*len\s*>\s*0\.0\s*\)/);
+  // TWO `len > 0.0` guards now, not one: the diverge/converge normalize and the
+  // stroke-direction normalize. Both divide by a length that can be zero.
+  assert.equal(
+    [...OWN_BODY.matchAll(/if\s*\(\s*len\s*>\s*0\.0\s*\)/g)].length,
+    2,
+    'both normalizes -- the repel direction and the stroke direction -- need a zero-length guard',
+  );
+});
+
+test('every brush mode is dispatched, and the numbering matches fieldLayer.ts', () => {
+  // The mode constants are declared here and in `BRUSH_MODES`, and the two are
+  // only connected by this assertion. A shader that renumbered them would paint
+  // in the WRONG MODE -- a plausible-looking picture rather than a broken one,
+  // which is the failure this catches.
+  for (const [name, index] of [
+    ['MODE_DIVERGE', 0],
+    ['MODE_CONVERGE', 1],
+    ['MODE_STROKE', 2],
+    ['MODE_FIXED', 3],
+  ] as const) {
+    assert.match(
+      SOURCE,
+      new RegExp(`const\\s+${name}\\s*:\\s*i32\\s*=\\s*${index}\\s*;`),
+      `${name} must be ${index}, matching BRUSH_MODES' order in fieldLayer.ts`,
+    );
+  }
+});
+
+test('the four modes share one kernel, one radius and one power term', () => {
+  // The modes differ in DIRECTION ONLY. `brush_direction` returns a unit vector
+  // and the caller applies the magnitude, which is what guarantees switching mode
+  // cannot change how hard the brush feels. A mode that scaled its own return
+  // value would break that silently -- it would just feel wrong.
+  assert.match(
+    SOURCE,
+    /fn\s+brush_direction\s*\(/,
+    'the per-mode branch must live in brush_direction, with magnitude applied by its caller',
+  );
+  // Exactly one gaussian in the file, so no mode can have grown its own.
+  assert.equal(
+    [...SOURCE.matchAll(/exp\s*\(\s*-hit\.dist/g)].length,
+    1,
+    'one kernel for all four modes',
+  );
+});
+
+test('the layer selector places the vector in rg or ba, never both', () => {
+  // The other half of the layer separation is the pipeline's write mask
+  // (LAYER_WRITE_MASK). This half decides which channels the shader targets, and
+  // the two must agree: a stroke written to channels the mask discards is a brush
+  // that silently draws nothing.
+  assert.match(SOURCE, /fn\s+place_in_layer\s*\(/);
+  assert.match(SOURCE, /vec4f\s*\(\s*v\s*,\s*0\.0\s*,\s*0\.0\s*\)/, 'walls must land in rg');
+  assert.match(SOURCE, /vec4f\s*\(\s*0\.0\s*,\s*0\.0\s*,\s*v\s*\)/, 'trails must land in ba');
+});
+
+test('the fragment entry point writes all four channels', () => {
+  // It returned a vec2f while the field was rg16float. Returning a vec2f against
+  // an rgba16float target is a compile error, so this is really an assertion that
+  // the format widening reached the shader -- the one place a stale signature
+  // would not show up until the pipeline is built at runtime.
+  assert.match(SOURCE, /fn\s+fs_main\s*\([^)]*\)\s*->\s*@location\(0\)\s*vec4f/);
 });
 
 test('both discards survive translation', () => {
@@ -156,9 +218,13 @@ test('the deposit formula matches the desktop, constants and all', () => {
   // 0.1..5.0 slider range, and the trailing /draw_size keeps total painted
   // impulse roughly constant as the footprint shrinks. Both are tuning the A/B
   // is measured against, so a drift here is a drift in what "power 1.0" means.
+  //
+  // `line_gain()` joins them as a multiplier that is 1.0 for every freehand
+  // stroke -- so this is still the desktop's formula wherever the desktop had
+  // one, and the line tool is the only caller that changes it.
   assert.match(
     SOURCE,
-    /dir\s*\*\s*0\.01\s*\*\s*\(\s*draw_power\(\)\s*\/\s*5\.0\s*\)\s*\*\s*kernel\s*\/\s*draw_size\(\)/,
+    /dir\s*\*\s*0\.01\s*\*\s*\(\s*draw_power\(\)\s*\/\s*5\.0\s*\)\s*\*\s*kernel\s*\*\s*line_gain\(\)\s*\/\s*draw_size\(\)/,
   );
 });
 

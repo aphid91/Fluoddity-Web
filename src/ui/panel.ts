@@ -57,6 +57,7 @@ import type {
   Status,
   ViewPrefField,
 } from '../orchestrator/commands.ts';
+import { MOUSE_MODES, usesBrushReticle } from '../orchestrator/commands.ts';
 import { type ControlBinding, currentValues } from './controls.ts';
 import { Dialogs } from './dialogs.ts';
 import { GateState } from './gateState.ts';
@@ -322,8 +323,14 @@ interface PanelSide {
  * A set rather than a list, because what matters at every use site is
  * membership: the tab rule is about crossing INTO or OUT OF this group, and
  * moves within it change nothing.
+ *
+ * Built from `usesBrushReticle` rather than written out, so it cannot disagree
+ * with the predicate that decides whether the reticle is drawn -- the tools that
+ * show a brush are exactly the tools whose brush settings you want to reach.
  */
-const BRUSH_TOOLS: ReadonlySet<MouseMode> = new Set<MouseMode>(['shove', 'draw']);
+const BRUSH_TOOLS: ReadonlySet<MouseMode> = new Set<MouseMode>(
+  MOUSE_MODES.filter(usesBrushReticle),
+);
 
 export class Panel {
   private readonly bus: CommandBus;

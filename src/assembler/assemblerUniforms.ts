@@ -32,24 +32,28 @@ export const BLOOM_DOWNSAMPLE_UNIFORM_SIZE = 16;
 export const BLOOM_UPSAMPLE_UNIFORM_SIZE = 16;
 
 /**
- * `FrameAssemblyUniforms` -- 96 bytes.
+ * `FrameAssemblyUniforms` -- 128 bytes.
  *
  *   canvas_res : vec4f  (16)  offset 0    xy canvas, zw window
  *   camera     : vec4f  (16)  offset 16   xy pan, z zoom
  *   tone       : vec4f  (16)  offset 32   x bloom_intensity  y brightness
  *                                         z tonemap_softness w field_opacity
- *   reticle    : vec4f  (16)  offset 48   xy center  z radius
- *   flags      : vec4f  (16)  offset 64   x reticle_dashed(i)
+ *   reticle    : vec4f  (16)  offset 48   xy center  z radius  w draw angle
+ *   flags      : vec4f  (16)  offset 64   x reticle_style(i)  y trails_opacity
+ *                                         z line_enable  w reserved
  *   crop       : vec4f  (16)  offset 80   xy half-extent  z enable  w dim
  *   capture    : vec4f  (16)  offset 96   xy uv scale  zw uv offset
+ *   line       : vec4f  (16)  offset 112  xy anchor  zw cursor (canvas uv)
  *
  * The lane at 80 was reserved for Step 9's field state and Step 10's reticle
  * state; both landed in `tone` and `reticle` instead, and the recording crop box
- * claimed it. `capture` is the one addition that grew the struct -- 96 -> 112 --
- * which costs nothing but keeping this comment and the WGSL struct in step. Both
- * are checked by `shaders.test.ts`.
+ * claimed it. `capture` grew the struct once (96 -> 112); the TRAILS overlay and
+ * the line tool grew it again (112 -> 128), after first claiming `reticle.w` and
+ * two lanes of `flags` -- the "spend the reserved lanes, then add a vec4" order
+ * invariant 7 asks for. Keeping this comment and the WGSL struct in step is the
+ * whole cost, and `shaders.test.ts` checks both.
  */
-export const FRAME_ASSEMBLY_UNIFORM_SIZE = 112;
+export const FRAME_ASSEMBLY_UNIFORM_SIZE = 128;
 
 /**
  * Pack one bloom downsample level.
@@ -90,20 +94,70 @@ export function packBloomUpsampleUniforms(
   return buffer;
 }
 
+/**
+ * How the brush reticle is drawn.
+ *
+ * The ring itself is the same circle in every style -- what changes is the
+ * decoration around it, which says what the brush is about to DO. That is worth
+ * more than it sounds: the four brush modes differ only in the direction they
+ * deposit, which is invisible until you have already painted something.
+ *
+ *   plain  -- bare ring. Stroke mode, whose direction is the mouse's own travel
+ *             and so is already shown by the cursor moving.
+ *   dashed -- Shove. THE ONE STYLE NOT ABOUT A BRUSH MODE: it distinguishes a
+ *             different TOOL, and is deliberately unchanged by this feature.
+ *   out    -- eight short rays pointing outward. Diverge.
+ *   in     -- eight short rays pointing inward. Converge.
+ *   fixed  -- one arrow at the Draw Angle, so the direction is readable before
+ *             the first stroke rather than after it.
+ *
+ * **MEMBER ORDER IS THE SHADER'S NUMBERING**, the same convention `BRUSH_MODES`
+ * follows. `frameAssembly.wgsl`'s `RETICLE_*` constants are the other half.
+ */
+export const RETICLE_STYLES = ['plain', 'dashed', 'out', 'in', 'fixed'] as const;
+export type ReticleStyle = (typeof RETICLE_STYLES)[number];
+
+/** The shader's integer for a reticle style. Derived, never restated. */
+export const RETICLE_STYLE_INDEX: Readonly<Record<ReticleStyle, number>> =
+  Object.fromEntries(RETICLE_STYLES.map((s, i) => [s, i])) as Record<ReticleStyle, number>;
+
 /** The overlay state the assembler is handed, already decided by the caller. */
 export interface OverlayState {
   /**
-   * Whether the field overlay belongs on screen AT ALL. Depends on the active
-   * tool, which is the Orchestrator's to know -- `assembler.py:80-86`. Step 5
-   * always passes false; Step 9 wires it.
+   * Whether the WALLS overlay belongs on screen AT ALL. Depends on the active
+   * tool, which is the Orchestrator's to know -- `assembler.py:80-86`.
    */
   readonly showField: boolean;
+  /**
+   * Whether the TRAILS overlay belongs on screen.
+   *
+   * Independent of `showField`, so both, either or neither can be up. In the
+   * painting tools the Orchestrator forces exactly the active layer on and the
+   * other off -- you look at what you are painting -- and outside them both
+   * follow their own preference. See `overlayState`.
+   */
+  readonly showTrails: boolean;
   /** Cursor in canvas uv. */
   readonly reticleCenter: readonly [number, number];
   /** The brush's visible extent, aspect-corrected. Zero means no reticle. */
   readonly reticleRadius: number;
-  /** Dashed distinguishes SHOVE from DRAW; both share one brush and reticle. */
-  readonly reticleDashed: boolean;
+  /** Which decoration the ring carries. See `ReticleStyle`. */
+  readonly reticleStyle: ReticleStyle;
+  /**
+   * The direction the `fixed` reticle's arrow points, in radians. 0 is up.
+   *
+   * Read only by that style. Live from the Draw Angle slider, so dragging it
+   * turns the arrow -- which is the entire reason the arrow exists.
+   */
+  readonly reticleAngle: number;
+  /**
+   * The line tool's pending segment in canvas uv, or null when none is armed.
+   *
+   * Drawn as a half-opacity capsule: the stroke's FOOTPRINT, not the vector field
+   * it would deposit. The footprint is what the user is aiming, and it is
+   * legible at a glance where a field of arrows would not be.
+   */
+  readonly linePreview: LinePreview | null;
   /**
    * The recording crop box, or null for no box.
    *
@@ -132,6 +186,12 @@ export interface CropOverlay {
   readonly halfExtent: readonly [number, number];
 }
 
+/** The line tool's pending segment, both endpoints in canvas uv. */
+export interface LinePreview {
+  readonly from: readonly [number, number];
+  readonly to: readonly [number, number];
+}
+
 /** A uv remap: `uv * scale + offset`. See `frameAssembly.wgsl`'s `fs_main`. */
 export interface CaptureRemap {
   readonly scale: readonly [number, number];
@@ -141,9 +201,12 @@ export interface CaptureRemap {
 /** No overlays -- what Step 5 passes until Steps 8 and 9 provide the state. */
 export const NO_OVERLAYS: OverlayState = {
   showField: false,
+  showTrails: false,
   reticleCenter: [0.0, 0.0],
   reticleRadius: 0.0,
-  reticleDashed: false,
+  reticleStyle: 'plain',
+  reticleAngle: 0.0,
+  linePreview: null,
   crop: null,
   capture: null,
 };
@@ -187,13 +250,35 @@ export function packFrameAssemblyUniforms(
   f32[10] = Math.max(0.0, prefs.tonemapSoftness);
   f32[11] = overlays.showField ? Math.max(0.0, prefs.fieldOpacity) : 0.0;
 
-  // reticle: xy center, z radius, w reserved
+  // reticle: xy center, z radius, w draw angle (the `fixed` arrow's direction)
   f32[12] = overlays.reticleCenter[0];
   f32[13] = overlays.reticleCenter[1];
   f32[14] = overlays.reticleRadius;
+  f32[15] = overlays.reticleAngle;
 
-  // flags: x reticle_dashed(i), yzw reserved
-  i32[16] = overlays.reticleDashed ? 1 : 0;
+  // flags: x reticle_style(i), y trails_opacity, zw reserved
+  //
+  // `reticle_style` REPLACED A BOOLEAN `reticle_dashed` in this lane. It is an
+  // index into RETICLE_STYLES, and 'dashed' is deliberately NOT index 0 -- so a
+  // stale build reading this as a bool would see 'plain' (0) as false and every
+  // other style as true, i.e. dashed. That is wrong in an obvious way rather than
+  // a subtle one, which is the right failure for a lane that changed meaning.
+  i32[16] = RETICLE_STYLE_INDEX[overlays.reticleStyle];
+  // The trails overlay's own opacity, gated by its own flag. Shares the
+  // `fieldOpacity` preference with the walls overlay -- one control for how
+  // strongly overlays draw, two flags for which ones do.
+  f32[17] = overlays.showTrails ? Math.max(0.0, prefs.fieldOpacity) : 0.0;
+
+  // line: xy the anchor, zw the cursor, both in canvas uv. z of `flags` is the
+  // enable, because a zero-length segment is a legitimate preview (the frame the
+  // line is armed, before the cursor moves) and so cannot double as "off".
+  if (overlays.linePreview !== null) {
+    f32[18] = 1.0;
+    f32[28] = overlays.linePreview.from[0];
+    f32[29] = overlays.linePreview.from[1];
+    f32[30] = overlays.linePreview.to[0];
+    f32[31] = overlays.linePreview.to[1];
+  }
 
   // crop: xy half-extent as a fraction of the window, z enable, w dim amount.
   //

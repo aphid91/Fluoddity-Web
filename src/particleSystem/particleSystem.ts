@@ -49,13 +49,20 @@ import {
   forUpload,
 } from './config.ts';
 import { ENTITY_STRIDE } from './layout.ts';
+// A LEAF import, sanctioned by invariant 3: `fieldSize.ts` holds a format
+// constant and one function of arithmetic, with no state and no GPU resources.
+// It is `strafeField/`'s value module, not its implementation module -- importing
+// `strafeField.ts` here would be the cycle (that class already imports this one).
+import { FIELD_FORMAT } from '../strafeField/fieldSize.ts';
 import { packConfigs } from './pack.ts';
 import { canvasDimensions, ENTITIES_PER_WORLD_UNIT, ENTITY_COUNT } from './sizing.ts';
 import {
+  type FieldStrengths,
   type ShoveState,
   alignTo,
   BRUSH_UNIFORM_SIZE,
   CANVAS_UNIFORM_SIZE,
+  DEFAULT_FIELD_STRENGTHS,
   ENTITY_UPDATE_UNIFORM_SIZE,
   packBrushUniforms,
   packCanvasUniforms,
@@ -171,6 +178,20 @@ export class ParticleSystem {
   private strafeFieldSize: readonly [number, number] = [1, 1];
   /** False while the placeholder is bound; the shader then skips the sample. */
   private strafeFieldBound = false;
+
+  /**
+   * How strongly each painted layer acts, pre-multiplied by its base gain.
+   *
+   * **A SETTER, NOT A `runFrame` PARAMETER**, unlike `shove` beside it, and the
+   * split is the same one ARCHITECTURE.md:658-665 draws: a shove is live input
+   * that genuinely differs every frame, while these change only when a slider
+   * moves. Threading them through `runFrame` would rebuild them 30 times a frame
+   * -- ~1800 times a second -- for a value the user touches once an hour.
+   *
+   * Defaults reproduce the pre-slider behaviour exactly: `walls` is the old
+   * `STRAFE_FIELD_GAIN`, and `trails` is the gain a strength of 1.0 gives.
+   */
+  private fieldStrengths: FieldStrengths = DEFAULT_FIELD_STRENGTHS;
 
   // NOT readonly: `physicsSteps` is a live preference, and each of these holds
   // one slice per sub-step. Raising the rate past the allocated slot count
@@ -322,7 +343,11 @@ export class ParticleSystem {
     this.dummyTexture = device.createTexture({
       label: 'strafe-field-placeholder',
       size: { width: 1, height: 1 },
-      format: CANVAS_FORMAT,
+      // FIELD_FORMAT, not CANVAS_FORMAT: this stands in for the user-drawn field,
+      // which is rgba16float since it gained the trails channels. A placeholder
+      // whose format disagrees with the texture that replaces it is a bind group
+      // validation error at the swap, not at creation.
+      format: FIELD_FORMAT,
       usage: GPUTextureUsage.TEXTURE_BINDING,
     });
     this.dummyTextureView = this.dummyTexture.createView();
@@ -610,6 +635,22 @@ export class ParticleSystem {
     this.strafeFieldSize = size;
     this.strafeFieldBound = true;
     this.buildTextureGroups();
+  }
+
+  /**
+   * Set how strongly each painted layer acts.
+   *
+   * Takes values ALREADY MULTIPLIED by their base gains -- the caller owns that
+   * arithmetic (`fieldStrengthsFor` in `prefs/preferences.ts`), so there is one
+   * place that knows a slider of 1.0 means 0.01. Passing raw slider values here
+   * would put half the conversion in this class and half in the shader, which is
+   * how the two drift.
+   *
+   * Cheap and idempotent: it writes a field that the next `runFrame` reads. No
+   * GPU work, so calling it on every settings change costs nothing.
+   */
+  setFieldStrengths(strengths: FieldStrengths): void {
+    this.fieldStrengths = strengths;
   }
 
   /**
@@ -1103,6 +1144,7 @@ export class ParticleSystem {
             fc,
             shove,
             this.strafeFieldBound,
+            this.fieldStrengths,
           ),
         ),
         i * this.entityUpdateStride,

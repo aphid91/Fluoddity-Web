@@ -15,6 +15,7 @@ import { BC, forUpload, makeWorldSettings, type WorldConfig } from './config.ts'
 import { packWorldConfig } from './pack.ts';
 import { WORLD_DATA_SIZE } from './layout.ts';
 import {
+  type FieldStrengths,
   alignTo,
   BRUSH_UNIFORM_SIZE,
   CANVAS_UNIFORM_SIZE,
@@ -37,6 +38,15 @@ const WORLD: WorldConfig = forUpload(
 
 const hex = (b: ArrayBuffer): string => Buffer.from(b).toString('hex');
 
+/**
+ * Field strengths for the tests that are not about them.
+ *
+ * Deliberately NOT the defaults: distinctive values make a packer that ignored
+ * the argument and wrote a constant visible, where 0.01/1.0 would look correct
+ * either way.
+ */
+const STRENGTHS: FieldStrengths = { walls: 0.03, trails: 2.5 };
+
 test('every uniform struct is 16-byte aligned', () => {
   // WGSL's uniform address space aligns structs to 16. The vec4-only rule makes
   // this automatic, so a failure here means a struct grew a non-vec4 member.
@@ -54,7 +64,7 @@ test('WorldData occupies offset 0 of every struct, byte for byte', () => {
   assert.equal(expected.length / 2, WORLD_DATA_SIZE);
 
   const buffers = [
-    packEntityUpdateUniforms(WORLD, [1024, 1024], [512, 512], 7, null, false),
+    packEntityUpdateUniforms(WORLD, [1024, 1024], [512, 512], 7, null, false, STRENGTHS),
     packCanvasUniforms(WORLD, 7),
     packBrushUniforms(WORLD, [1024, 1024], 7),
   ];
@@ -88,7 +98,7 @@ test('frame 0 is representable, because it is the reset sentinel', () => {
 
 test('the entity-update canvas_res lane carries both resolutions', () => {
   const f32 = new Float32Array(
-    packEntityUpdateUniforms(WORLD, [1024, 768], [512, 256], 3, null, false),
+    packEntityUpdateUniforms(WORLD, [1024, 768], [512, 256], 3, null, false, STRENGTHS),
   );
   const base = WORLD_DATA_SIZE / 4;
   assert.deepEqual([...f32.slice(base, base + 4)], [1024, 768, 512, 256]);
@@ -96,7 +106,7 @@ test('the entity-update canvas_res lane carries both resolutions', () => {
 
 test('a null shove writes zeroes, not stale values', () => {
   const f32 = new Float32Array(
-    packEntityUpdateUniforms(WORLD, [1024, 1024], [1, 1], 5, null, false),
+    packEntityUpdateUniforms(WORLD, [1024, 1024], [1, 1], 5, null, false, STRENGTHS),
   );
   const base = WORLD_DATA_SIZE / 4 + 4;
   assert.deepEqual([...f32.slice(base, base + 4)], [0, 0, 0, 0]);
@@ -105,7 +115,7 @@ test('a null shove writes zeroes, not stale values', () => {
 test('a live shove writes centre, strength and size', () => {
   const shove = { center: [0.25, -0.5] as const, strength: -0.004, size: 0.1 };
   const f32 = new Float32Array(
-    packEntityUpdateUniforms(WORLD, [1024, 1024], [1, 1], 5, shove, true),
+    packEntityUpdateUniforms(WORLD, [1024, 1024], [1, 1], 5, shove, true, STRENGTHS),
   );
   const base = WORLD_DATA_SIZE / 4 + 4;
   // 0.25 and -0.5 are exact in binary, so these compare exactly.
@@ -121,13 +131,45 @@ test('a live shove writes centre, strength and size', () => {
 test('strafeFieldActive is an int lane, and false really is 0', () => {
   const base = WORLD_DATA_SIZE / 4 + 8;
   const off = new Int32Array(
-    packEntityUpdateUniforms(WORLD, [1, 1], [1, 1], 0, null, false),
+    packEntityUpdateUniforms(WORLD, [1, 1], [1, 1], 0, null, false, STRENGTHS),
   );
   const on = new Int32Array(
-    packEntityUpdateUniforms(WORLD, [1, 1], [1, 1], 0, null, true),
+    packEntityUpdateUniforms(WORLD, [1, 1], [1, 1], 0, null, true, STRENGTHS),
   );
   assert.equal(off[base + 1], 0);
   assert.equal(on[base + 1], 1);
+});
+
+test('the two field strengths ride the flags vec4 as floats, in order', () => {
+  // THE ORDER IS THE ASSERTION. Both are floats in the same range, so a
+  // transposed pair packs cleanly and produces a simulation where the walls
+  // slider moves the trails -- which is exactly why `FieldStrengths` is a named
+  // pair rather than two positional numbers. This checks the last hop.
+  const base = WORLD_DATA_SIZE / 4 + 8;
+  const f32 = new Float32Array(
+    packEntityUpdateUniforms(WORLD, [1, 1], [1, 1], 0, null, true, {
+      walls: 0.03,
+      trails: 2.5,
+    }),
+  );
+  assert.equal(f32[base + 2], Math.fround(0.03), 'walls strength');
+  assert.equal(f32[base + 3], 2.5, 'trails strength');
+});
+
+test('the strength lanes are floats, not the int lanes beside them', () => {
+  // They share a vec4 with two bit-punned ints, and both views alias the same
+  // ArrayBuffer. Reading a float lane as an int (or the reverse) is the mistake
+  // this shape invites, so the packed bytes are checked to be a real float32
+  // rather than an integer that happens to sit in the lane.
+  const base = WORLD_DATA_SIZE / 4 + 8;
+  const buffer = packEntityUpdateUniforms(WORLD, [1, 1], [1, 1], 0, null, true, {
+    walls: 1.0,
+    trails: 1.0,
+  });
+  // 1.0f is 0x3f800000, which as an int is 1065353216 -- not 1. If these lanes
+  // were written through the Int32Array view, this would read back as 1.
+  assert.equal(new Int32Array(buffer)[base + 2], 0x3f800000);
+  assert.equal(new Float32Array(buffer)[base + 2], 1.0);
 });
 
 test('reserved lanes are left zero', () => {

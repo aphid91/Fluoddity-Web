@@ -88,7 +88,14 @@ struct EntityUpdateUniforms {
     canvas_res : vec4f,
     // xy: shove center (world)   z: strength (signed; 0 is off)   w: size
     shove      : vec4f,
-    // x: frame_count(i)   y: strafe_field_active(i)   zw: reserved
+    // x: frame_count(i)   y: strafe_field_active(i)
+    // z: walls_strength   w: trails_strength
+    //
+    // The two strengths took the vec4's LAST TWO SPARE LANES rather than a new
+    // vec4 -- the "claim reserved lanes" half of invariant 7, the same move the
+    // sensor jitters made in `misc2`. They are PREFS, not config, so they are
+    // deliberately not in `WorldData`: a downloaded config must not carry someone
+    // else's decision to mute the walls they painted and you did not.
     flags      : vec4f,
 }
 @group(0) @binding(2) var<uniform> u : EntityUpdateUniforms;
@@ -106,6 +113,10 @@ struct EntityUpdateUniforms {
 fn frame_count() -> i32 { return bitcast<i32>(u.flags.x); }
 fn strafe_field_active() -> bool { return bitcast<i32>(u.flags.y) != 0; }
 fn canvas_res() -> vec2f { return u.canvas_res.xy; }
+// Already multiplied by the old STRAFE_FIELD_GAIN host-side, so this is the whole
+// factor -- do not reapply that constant here. See `get_walls`.
+fn walls_strength() -> f32 { return u.flags.z; }
+fn trails_strength() -> f32 { return u.flags.w; }
 
 //=========================================================================================
 //------------------------------------RANDOM / HASH / NOISE--------------------------------
@@ -155,6 +166,36 @@ fn pR(p: vec2f, a: f32) -> vec2f {
     return cos(a) * p + sin(a) * vec2f(p.y, -p.x);
 }
 
+// Read the user-drawn field at a world position, honoring the boundary mode for
+// the same reason get_can does: past the edge, wrap reads the far side and every
+// other mode reads the edge.
+//
+// ONE SAMPLE, BOTH LAYERS. The texture is rgba16float -- walls in rg, trails in
+// ba (see `FIELD_FORMAT`) -- and the two callers below take the half they want.
+// Sampling it twice would cost a second fetch for data the first one already
+// returned.
+//
+// DECLARED ABOVE `get_can` BECAUSE `get_can` CALLS IT. WGSL requires a function
+// to be declared before it is used, unlike GLSL's more forgiving rules -- and the
+// error a wrong order produces here names the callee, not the ordering.
+fn get_field(p: vec2f, bc: i32) -> vec4f {
+    if (!strafe_field_active()) { return vec4f(0.0); }
+    let res = u.canvas_res.zw;
+    return textureSampleLevel(strafe_field_texture, strafe_field_sampler,
+                              world_to_uv_bc(p, res, bc), 0.0);
+}
+
+// The WALLS layer: a displacement added straight to position.
+//
+// `walls_strength` REPLACED THE `STRAFE_FIELD_GAIN` CONSTANT that used to live in
+// common.wgsl. The host multiplies the user's 0..4 slider by that same 0.01, so a
+// strength of 1.0 reproduces the old constant exactly and nothing about a painted
+// field changes on upgrade. What the slider buys is the ability to mute a painted
+// set of walls (0.0) or lean on it (4.0) without repainting.
+fn get_walls(p: vec2f, bc: i32) -> vec2f {
+    return get_field(p, bc).rg * walls_strength();
+}
+
 // Convert p from worldspace to texture coords and retrieve canvas.
 // The boundary mode decides what a sensor reaching past the edge sees: in
 // BC_WRAP the sampler repeats and it reads the far side; otherwise it clamps
@@ -174,18 +215,30 @@ fn get_can(p: vec2f, bc: i32) -> vec4f {
     // Identical here -- there are no mips.
     let canv = textureSampleLevel(canvas_texture, canvas_sampler,
                                   world_to_uv_bc(p, res, bc), 0.0);
-    return clamp(canv, vec4f(-CANVAS_VALUE_MAX), vec4f(CANVAS_VALUE_MAX))
-           / CANVAS_VALUE_SCALE;
-}
+    let trail = clamp(canv, vec4f(-CANVAS_VALUE_MAX), vec4f(CANVAS_VALUE_MAX))
+                / CANVAS_VALUE_SCALE;
 
-// Read the painted strafe field at a world position, honoring the boundary mode
-// for the same reason get_can does: past the edge, wrap reads the far side and
-// every other mode reads the edge.
-fn get_strafe_field(p: vec2f, bc: i32) -> vec2f {
-    if (!strafe_field_active()) { return vec2f(0.0); }
-    let res = u.canvas_res.zw;
-    return textureSampleLevel(strafe_field_texture, strafe_field_sampler,
-                              world_to_uv_bc(p, res, bc), 0.0).rg;
+    // THE USER-DRAWN TRAILS LAYER, added to what the sensors see.
+    //
+    // This is the whole difference between the two painted layers: walls are
+    // added to POSITION and no rule can resist them, while trails are added to
+    // the SENSOR READING, so the particle merely believes something is there and
+    // its rule decides what to do about it. Painted trails steer; painted walls
+    // shove. A trail the user paints is therefore indistinguishable, to a
+    // particle, from one the swarm laid down itself -- which is the point, and
+    // the reason this is an addition here rather than a term further down.
+    //
+    // AFTER THE DESCALE, deliberately. The canvas stores values multiplied by
+    // CANVAS_VALUE_SCALE (an fp16 range fix); the painted field does not, because
+    // the brush writes it directly. Adding before the divide would shrink the
+    // painted contribution by 512x -- not zero, so it would look like the feature
+    // works and the slider does nothing.
+    //
+    // Only xy carry a vector: the canvas is a 2D field (`camera.wgsl:85`
+    // colorizes it as atan2(y, x)), so the trails layer is one too and zw stay
+    // whatever the canvas put there.
+    let painted = get_field(p, bc).ba * trails_strength();
+    return trail + vec4f(painted, 0.0, 0.0);
 }
 
 // The Shove tool: a displacement away from (or toward) the cursor while the
@@ -581,7 +634,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     pos += strafe * cfg_strafe_power(config);
     pos += 0.01 / sqrt_world_size * -gravity_expand(cfg_gravity_strafe(config)) * gravity_dir;
 
-    // The painted Strafe Field, in the strafe channel: a displacement, not a
+    // The painted WALLS layer, in the strafe channel: a displacement, not a
     // force, so no rule can resist it and drag never damps it. Applied before
     // the fence and the boundary so containment still gets the last word --
     // you can paint a particle against a wall, not through it.
@@ -591,7 +644,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // this is painted in uv space and read in uv space, so it already tracks
     // canvas size. Dividing again would make an identical stroke weaker in a
     // bigger world for no reason the user could see.
-    pos += STRAFE_FIELD_GAIN * get_strafe_field(pos, bc);
+    //
+    // The gain that used to be here is now inside `get_walls`, folded into the
+    // Walls Field Strength preference -- see that function.
+    pos += get_walls(pos, bc);
 
     // The Shove tool, in the same channel and for the same reasons: a
     // displacement, so drag cannot damp it and no rule can resist a direct push.

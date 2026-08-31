@@ -47,6 +47,7 @@ import type { SavedConfig } from '../config/persistence.ts';
 import type { PickResult } from '../particleSystem/pick.ts';
 import type { Setting } from '../ui/settingsSpec.ts';
 import type { Preferences } from '../prefs/preferences.ts';
+import type { FieldLayer } from '../strafeField/fieldLayer.ts';
 
 /**
  * What the mouse does on the canvas. The active TOOL.
@@ -57,25 +58,35 @@ import type { Preferences } from '../prefs/preferences.ts';
  *
  *   SELECT  click adopts a particle's rule, right-click undoes.
  *   SHOVE   drag pushes particles away from the cursor, right-drag pulls in.
- *   DRAW    drag paints the strafe field, right-drag erases.
+ *   WALLS   drag paints the walls layer, right-drag erases it.
+ *   TRAILS  drag paints the trails layer, right-drag erases it.
  *
- * SHOVE and DRAW are easy to confuse and worth stating apart: Shove acts on the
- * PARTICLES, directly and only while the button is held. Draw paints the FIELD,
- * which then keeps pushing whatever crosses it until it is erased.
+ * SHOVE and the two painting tools are easy to confuse and worth stating apart:
+ * Shove acts on the PARTICLES, directly and only while the button is held. The
+ * others paint a FIELD, which then keeps acting on whatever crosses it until it
+ * is erased.
+ *
+ * **WALLS AND TRAILS DIFFER ONLY IN WHICH CHANNELS THEY WRITE.** Every mechanic
+ * -- brush size, power, mode, erase, the line tool -- is identical between them
+ * (`FieldLayer` is the whole difference). What differs is what the simulation
+ * then does with the result: walls displace a particle's position, trails change
+ * what its sensors report. See `fieldLayer.ts`.
+ *
+ * **`'draw'` WAS RENAMED TO `'walls'`** when trails made "draw" ambiguous. Safe
+ * to rename because this value is runtime-only: it is not persisted, not in a
+ * share link, not in a save file, and it resets to `'select'` every session -- so
+ * no stored string can carry the old name. `mouseModeFromValue` returns null on
+ * anything unrecognized regardless.
  *
  * THERE IS NO PAN TOOL. Navigation is on the keyboard (WASD/QE) and the scroll
  * wheel, which frees the mouse for tools entirely.
  *
- * **MEMBER ORDER IS THE TOOLBAR ORDER** and the 1/2/3 key order -- the toolbar
+ * **MEMBER ORDER IS THE TOOLBAR ORDER** and the 1/2/3/4 key order -- the toolbar
  * builds itself from this array, so adding a tool here adds a button. An
  * ordered array rather than an object for the same reason `CAMERA_MODES` is one:
  * the order is the semantics.
- *
- * Note SHOVE and DRAW have no effect until Step 9 builds the strafe field. They
- * are declared now because `MouseMode` is what arbitrates the left button, and
- * a Step 7 that shipped only SELECT would have no arbitration to extend.
  */
-export const MOUSE_MODES = ['select', 'shove', 'draw'] as const;
+export const MOUSE_MODES = ['select', 'shove', 'walls', 'trails'] as const;
 export type MouseMode = (typeof MOUSE_MODES)[number];
 
 /** Look up a mode by its string value, or `null` if unknown. */
@@ -83,6 +94,37 @@ export function mouseModeFromValue(value: string): MouseMode | null {
   return (MOUSE_MODES as readonly string[]).includes(value)
     ? (value as MouseMode)
     : null;
+}
+
+/**
+ * The layer a painting tool writes, or `null` for the tools that paint nothing.
+ *
+ * **THE ONE PLACE THAT MAPS TOOL TO LAYER.** Everything downstream -- which
+ * pipeline a stroke uses, which overlay is forced on, which Clear button the hint
+ * bar shows -- asks this rather than testing the mode against string literals.
+ * That is what makes "is this a painting tool?" a single question with a single
+ * answer, instead of two comparisons that can be updated separately and drift.
+ */
+export function layerForMouseMode(mode: MouseMode): FieldLayer | null {
+  if (mode === 'walls') return 'walls';
+  if (mode === 'trails') return 'trails';
+  return null;
+}
+
+/** True for the tools that paint a field, i.e. the ones the brush serves. */
+export function isPaintingTool(mode: MouseMode): boolean {
+  return layerForMouseMode(mode) !== null;
+}
+
+/**
+ * True for every tool the brush RETICLE is drawn for.
+ *
+ * Wider than `isPaintingTool` by exactly one: Shove borrows `drawSize` for its
+ * radius, so the ring means something there too -- "the reach of what the button
+ * is about to do". It is drawn dashed in that tool to say which is armed.
+ */
+export function usesBrushReticle(mode: MouseMode): boolean {
+  return isPaintingTool(mode) || mode === 'shove';
 }
 
 /**
@@ -106,8 +148,13 @@ export function mouseModeFromValue(value: string): MouseMode | null {
 export const DRAW_PREF_FIELDS = [
   'drawSize',
   'drawPower',
+  'brushMode',
+  'drawAngle',
+  'wallsStrength',
+  'trailsStrength',
   'fieldOpacity',
   'fieldAlwaysShow',
+  'trailsAlwaysShow',
   'showReticle',
 ] as const;
 export type DrawPrefField = (typeof DRAW_PREF_FIELDS)[number];
@@ -365,7 +412,11 @@ export type Command =
       readonly field: DrawPrefField;
       readonly value: number | boolean;
     }
-  | { readonly kind: 'clearStrafeField' }
+  // Clears ONE layer. The layer is explicit rather than implied by the active
+  // tool, because the two callers want different things: the Drawing Controls
+  // offer both buttons at once, while the hint bar's single button is contextual
+  // and resolves the tool to a layer before sending.
+  | { readonly kind: 'clearStrafeField'; readonly layer: FieldLayer }
   // --- view mode ------------------------------------------------------------
   // Its own command rather than a case of `editDrawPref`: see `ViewPrefField`.
   // Never recorded in history -- these say how you are LOOKING at the project,

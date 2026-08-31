@@ -56,11 +56,16 @@
 
 const PI: f32 = 3.1415926;
 
-// How hard the painted Strafe Field displaces a particle, per physics step.
-// FIXED BY DESIGN: Draw Power alone sets how strongly a stroke paints, so
-// there is no second multiplier for the user to get lost between. Retuning the
-// feel of the whole feature is this one number.
-const STRAFE_FIELD_GAIN: f32 = 0.01;
+// `STRAFE_FIELD_GAIN` USED TO LIVE HERE, at 0.01, as the fixed rate at which the
+// painted field displaced a particle. It is now a UNIFORM, because the Walls
+// Field Strength preference multiplies it -- so the host owns the number
+// (`FIELD_STRENGTH_GAIN` in `prefs/preferences.ts`) and packs `strength * 0.01`
+// into the entity update's uniform.
+//
+// Moved rather than kept alongside the slider: two multipliers, one here and one
+// host-side, is exactly the "second multiplier for the user to get lost between"
+// that the original comment ruled out. At the default strength of 1.0 the product
+// is 0.01 and every painted field behaves precisely as it did before.
 
 // ---------------------------------------------------------------------------
 // CANVAS VALUE SCALE -- the canvas is RG16F (see CANVAS_DTYPE in

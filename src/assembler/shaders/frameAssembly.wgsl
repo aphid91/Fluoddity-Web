@@ -26,14 +26,20 @@ struct FrameAssemblyUniforms {
     camera     : vec4f,   // xy: pan   z: zoom   w: reserved
     // x: bloom_intensity   y: brightness   z: tonemap_softness   w: field_opacity
     tone       : vec4f,
-    reticle    : vec4f,   // xy: center (canvas uv)   z: radius   w: reserved
-    flags      : vec4f,   // x: reticle_dashed(i)   yzw: reserved
+    // xy: center (canvas uv)   z: radius   w: draw angle (the `fixed` arrow)
+    reticle    : vec4f,
+    // x: reticle_style(i)   y: trails_opacity   z: line_enable   w: reserved
+    flags      : vec4f,
     // xy: crop half-extent as a fraction of the window   z: enable
     // w: how far the surround is dimmed, 0..1
     crop       : vec4f,
     // xy: uv scale   zw: uv offset. The identity (1,1,0,0) on the screen pass;
     // the crop sub-rect on the recording pass. See `fs_main`'s first statement.
     capture    : vec4f,
+    // xy: the line tool's anchor   zw: the cursor. Both in canvas uv. Gated by
+    // `flags.z`, NOT by being non-zero: a zero-length segment is a legitimate
+    // preview on the frame the line arms.
+    line       : vec4f,
 }
 
 @group(0) @binding(0) var<uniform> u : FrameAssemblyUniforms;
@@ -45,7 +51,18 @@ struct FrameAssemblyUniforms {
 @group(1) @binding(2) var strafe_field : texture_2d<f32>;  // painted vector field. A 1x1 dummy until Step 9
 @group(1) @binding(3) var tex_sampler : sampler;
 
-fn reticle_dashed() -> bool { return bitcast<i32>(u.flags.x) != 0; }
+fn reticle_style() -> i32 { return bitcast<i32>(u.flags.x); }
+fn trails_opacity() -> f32 { return u.flags.y; }
+fn line_enabled() -> bool { return u.flags.z > 0.0; }
+fn draw_angle() -> f32 { return u.reticle.w; }
+
+// Reticle styles. MUST match `RETICLE_STYLES` in `assemblerUniforms.ts`, whose
+// array order IS this numbering.
+const RETICLE_PLAIN  : i32 = 0;
+const RETICLE_DASHED : i32 = 1;
+const RETICLE_OUT    : i32 = 2;
+const RETICLE_IN     : i32 = 3;
+const RETICLE_FIXED  : i32 = 4;
 
 // Turns the field's small magnitudes into visible grey. A default stroke peaks
 // near 0.06 (0.01 * draw_power/5 / draw_size), so this puts a typical stroke
@@ -71,6 +88,52 @@ const RETICLE_DASH_DUTY: f32 = 0.6625;
 // Crop box border width, in pixels. Converted via fwidth like the reticle's, so
 // the rule stays this thick on screen whatever the window size.
 const CROP_BORDER_PX: f32 = 1.0;
+
+// How many rays the In and Out reticles carry, and how long they are.
+//
+// Eight is enough to read as "radiating" at a glance without the rays merging
+// into a solid annulus on a small brush. The length is a FRACTION OF THE RADIUS
+// rather than a fixed distance, so the decoration scales with the ring instead of
+// swamping a small brush and vanishing on a large one.
+const RETICLE_RAY_COUNT: f32 = 8.0;
+const RETICLE_RAY_LENGTH: f32 = 1.0 / 6.0;
+
+// The `fixed` arrow: one ray with a head, at the Draw Angle.
+const RETICLE_ARROW_LENGTH: f32 = 1.0 / 6.0;
+// The barbs' length, as a fraction of the RADIUS, so the head scales with the
+// ring. Deliberately more than half the shaft's own length: a head shorter than
+// that reads as a thickening rather than as an arrow at the default brush size.
+const RETICLE_ARROW_HEAD: f32 = 0.10;
+
+// The line tool's preview, drawn at half opacity: it is a proposal, not a mark.
+const LINE_PREVIEW_ALPHA: f32 = 0.5;
+
+// hsv2rgb, for the TRAILS overlay's direction colouring. The same function
+// `camera.wgsl:35` carries, and deliberately the same one: the trails layer is
+// colourized by exactly the formula the Trail Map View uses on the canvas, so a
+// painted trail and a simulated one at the same angle are the same colour.
+fn hsv2rgb(c: vec3f) -> vec3f {
+    let p = abs(fract(c.xxx + vec3f(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - vec3f(3.0));
+    return c.z * mix(vec3f(1.0), clamp(p - vec3f(1.0), vec3f(0.0), vec3f(1.0)), c.y);
+}
+
+// Distance from `p` to the segment a->b, in whatever metric the caller passes in.
+// The line preview's capsule, and the same shape `strafeDraw.wgsl` paints along --
+// which is what makes the preview show the stroke's real footprint rather than an
+// approximation of it.
+fn dist_to_segment(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let denom = dot(ba, ba);
+    // denom == 0 while the line is armed but the cursor has not moved. h = 0 then,
+    // which degenerates to a point -- the correct preview for a zero-length line.
+    // `var` + `if`, not select(): the discarded arm divides by zero.
+    var h = 0.0;
+    if (denom > 0.0) {
+        h = clamp(dot(pa, ba) / denom, 0.0, 1.0);
+    }
+    return length(pa - ba * h);
+}
 
 // asinh is NOT a WGSL builtin. asinh(x) = log(x + sqrt(x*x + 1)).
 //
@@ -164,7 +227,7 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
     // `inside` up into the outer condition is a plausible-looking tidy-up that
     // makes this shader fail to compile.
     // ------------------------------------------------------------------
-    if (u.tone.w > 0.0 || u.reticle.z > 0.0) {
+    if (u.tone.w > 0.0 || trails_opacity() > 0.0 || u.reticle.z > 0.0 || line_enabled()) {
         // The REMAPPED uv, so the field lands on the same particles it does on
         // screen. Using `in.uv` here would put the painted field in the wrong
         // place in the exported video and nowhere else -- a bug visible only in
@@ -176,13 +239,61 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
 
         // The field is the same SHAPE as the canvas -- only its resolution is
         // capped -- so canvas uv indexes it directly with no correction.
-        if (u.tone.w > 0.0 && inside) {
-            let m = length(textureSampleLevel(strafe_field, tex_sampler, canvas_uv, 0.0).rg);
-            // Saturating rather than clamped: a faint field and a heavily
-            // overpainted one both stay readable, and repainting the same spot
-            // approaches white instead of flattening into a solid blob.
-            let g = 1.0 - exp(-m * FIELD_OVERLAY_GAIN);
-            color = mix(color, vec3f(g), u.tone.w * g);
+        //
+        // ONE SAMPLE FOR BOTH LAYERS: walls in rg, trails in ba.
+        if ((u.tone.w > 0.0 || trails_opacity() > 0.0) && inside) {
+            let field = textureSampleLevel(strafe_field, tex_sampler, canvas_uv, 0.0);
+
+            // WALLS: greyscale by magnitude. Direction is deliberately not shown
+            // -- a wall's job is to be in the way, and which way it pushes is
+            // legible from what the particles do when they hit it.
+            if (u.tone.w > 0.0) {
+                let m = length(field.rg);
+                // Saturating rather than clamped: a faint field and a heavily
+                // overpainted one both stay readable, and repainting the same spot
+                // approaches white instead of flattening into a solid blob.
+                let g = 1.0 - exp(-m * FIELD_OVERLAY_GAIN);
+                color = mix(color, vec3f(g), u.tone.w * g);
+            }
+
+            // TRAILS: HUE BY DIRECTION, exactly as the Trail Map View colours the
+            // canvas (`camera.wgsl:85`). The two are the same kind of data -- a 2D
+            // vector field the sensors read -- so painting them with one formula
+            // is what lets a user compare a drawn trail against a simulated one
+            // and see that they agree. Greyscale here would hide the very thing
+            // the trails layer is for, since a trail's DIRECTION is what steers.
+            //
+            // 3.1415, not PI, matching the camera literal it mirrors: the ~2e-5
+            // hue difference is invisible, and a gratuitous divergence between two
+            // formulas that must look identical is worse than the rounding.
+            if (trails_opacity() > 0.0) {
+                let m = length(field.ba);
+                let g = 1.0 - exp(-m * FIELD_OVERLAY_GAIN);
+                let hue = atan2(field.a, field.b) / 3.1415 / 2.0;
+                color = mix(color, hsv2rgb(vec3f(hue, 0.75, 1.0)), trails_opacity() * g);
+            }
+        }
+
+        // THE LINE TOOL'S PREVIEW, under the reticle so the ring stays readable
+        // where the two cross.
+        //
+        // A CAPSULE AT THE BRUSH'S RADIUS: this is the stroke's FOOTPRINT -- where
+        // the line will land and how wide it will be -- not the vector field it
+        // would deposit. The footprint is what is being aimed, and a field of
+        // arrows at preview opacity would be unreadable over a moving simulation.
+        //
+        // Measured in the aspect-corrected metric, like the reticle and like the
+        // brush that will paint it, so the preview is the same shape as the result
+        // on a non-square canvas.
+        if (line_enabled()) {
+            let from_p = aspect_correct_uv(canvas_uv - u.line.xy, u.canvas_res.xy);
+            let to_p = aspect_correct_uv(canvas_uv - u.line.zw, u.canvas_res.xy);
+            // Both endpoints are expressed relative to this fragment, so the
+            // segment runs between them and the fragment sits at the origin.
+            let d = dist_to_segment(vec2f(0.0), from_p, to_p);
+            let edge = fwidth(d) * RETICLE_WIDTH_PX;
+            let band = 1.0 - smoothstep(0.0, edge, abs(d - u.reticle.z));
+            color = mix(color, vec3f(1.0), band * LINE_PREVIEW_ALPHA);
         }
 
         // Drawn outside the canvas too: the brush paints right up to the edge,
@@ -197,9 +308,13 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
             let w = fwidth(d) * RETICLE_WIDTH_PX;
             var ring = 1.0 - smoothstep(0.0, w, abs(d - u.reticle.z));
 
-            // SHOVE draws the same circle dashed, so the two brush tools are
-            // told apart at a glance without moving or resizing the reticle.
-            if (reticle_dashed()) {
+            let style = reticle_style();
+
+            // SHOVE draws the same circle dashed, so it is told apart from the
+            // painting tools at a glance without moving or resizing the reticle.
+            // UNCHANGED BY THE BRUSH MODES: Shove has none, and its reticle must
+            // keep meaning exactly what it meant.
+            if (style == RETICLE_DASHED) {
                 // Position around the ring, in dash cells. atan2 is the one
                 // place this fragment cares about angle at all.
                 let cell = (atan2(rel.y, rel.x) / (2.0 * PI) + 0.5) * RETICLE_DASH_COUNT;
@@ -218,6 +333,95 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
                 let t = abs(fract(cell) - 0.5) * 2.0;
                 ring *= 1.0 - smoothstep(RETICLE_DASH_DUTY - arc,
                                          RETICLE_DASH_DUTY + arc, t);
+            }
+
+            // IN / OUT: eight short rays saying which way the brush deposits.
+            //
+            // The rays live OUTSIDE the ring for Out and INSIDE it for In, which
+            // is the whole signal -- the ring is the brush's edge, and the rays
+            // show what crosses it in which direction. Drawn as an angular repeat
+            // crossed with a radial band, so both are one smoothstep each.
+            if (style == RETICLE_OUT || style == RETICLE_IN) {
+                // Each ray is a SEGMENT, tested by distance-to-segment, rather
+                // than an angular sector crossed with a radial band.
+                //
+                // **THE BAND VERSION DOES NOT SURVIVE A SMALL BRUSH, and that is
+                // the default brush.** A ray is 1/6 of the radius -- ~0.0033 uv at
+                // the default size -- while `w`, the line's antialiasing
+                // half-width, is ~0.002. Two opposed smoothsteps whose transition
+                // bands are each 2w then overlap the whole 0.0033 extent, their
+                // product never approaches 1, and the decoration washes out to
+                // nothing. It looked correct on a large brush and vanished on the
+                // one every session starts with.
+                //
+                // Distance-to-segment has no such failure: the ray is drawn at the
+                // SAME width as the ring itself, so it is exactly as visible as the
+                // circle it decorates, at every brush size.
+                let len = u.reticle.z * RETICLE_RAY_LENGTH;
+                var inner = u.reticle.z;
+                var outer = u.reticle.z + len;
+                if (style == RETICLE_IN) {
+                    inner = u.reticle.z - len;
+                    outer = u.reticle.z;
+                }
+
+                // Snap this fragment to its nearest ray's direction, so one
+                // distance test covers all eight. Rounding the turn fraction to
+                // the nearest 1/8 IS the angular repeat.
+                let turn = atan2(rel.y, rel.x);
+                let step_angle = 2.0 * PI / RETICLE_RAY_COUNT;
+                let snapped = round(turn / step_angle) * step_angle;
+                let dir = vec2f(cos(snapped), sin(snapped));
+
+                // The ray runs from `inner` to `outer` along that direction.
+                let a = dir * inner;
+                let b = dir * outer;
+                let ray = dist_to_segment(rel, a, b);
+                ring = max(ring, 1.0 - smoothstep(0.0, w, ray));
+            }
+
+            // FIXED: one arrow, pointing where the brush will push.
+            //
+            // ROTATES LIVE WITH THE DRAW ANGLE SLIDER, which is the point of
+            // drawing it at all: the direction a `fixed` brush deposits is
+            // otherwise invisible until after the first stroke.
+            //
+            // ANGLE 0 IS UP, AND CANVAS UV IS Y-UP HERE -- so this is `+cos(a)`,
+            // with no negation.
+            //
+            // `world_to_uv` (common.wgsl) is a plain scale-and-offset with NO Y
+            // FLIP, so `rel` inherits world space's y-up orientation. The flip
+            // that does exist in this feature belongs to `strafeDraw.wgsl`, which
+            // RASTERIZES INTO the field through its own flipped quad -- a
+            // different space entirely, and not this one. Assuming "uv means
+            // y-down" here put the arrow at the bottom of the ring while the
+            // brush it describes pushed upward.
+            if (style == RETICLE_FIXED) {
+                let a = draw_angle();
+                let dir = vec2f(sin(a), cos(a));
+                let perp = vec2f(-dir.y, dir.x);
+                let tip = u.reticle.z * (1.0 + RETICLE_ARROW_LENGTH);
+
+                // THE SHAFT, as a segment from the ring to the tip. Segment
+                // distance for the same reason the rays above use it: a shaft
+                // built from an across-axis smoothstep is thinner than its own
+                // antialiasing band at the default brush size and disappears.
+                let shaft = dist_to_segment(rel, dir * u.reticle.z, dir * tip);
+
+                // THE HEAD: two short barbs swept back from the tip, drawn as
+                // segments like everything else here. A filled triangle would need
+                // a taper test whose width again collapses below `w` on a small
+                // brush -- the exact trap the shaft above just escaped.
+                let barb = u.reticle.z * RETICLE_ARROW_HEAD;
+                let base = dir * (tip - barb);
+                let left = base + perp * barb;
+                let right = base - perp * barb;
+                let head = min(
+                    dist_to_segment(rel, dir * tip, left),
+                    dist_to_segment(rel, dir * tip, right),
+                );
+
+                ring = max(ring, 1.0 - smoothstep(0.0, w, min(shaft, head)));
             }
 
             color = mix(color, vec3f(1.0), ring);

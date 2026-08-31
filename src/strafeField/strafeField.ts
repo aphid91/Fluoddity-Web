@@ -27,10 +27,25 @@
  */
 
 import { compileModule } from '../gpu/shaderModule.ts';
-import { CANVAS_FORMAT } from '../particleSystem/particleSystem.ts';
-import { fieldDimensions } from './fieldSize.ts';
-import { STRAFE_DRAW_UNIFORM_SIZE, packStrafeDrawUniforms } from './strafeUniforms.ts';
+import { FIELD_FORMAT, fieldDimensions } from './fieldSize.ts';
+import { FIELD_LAYERS, LAYER_WRITE_MASK, type FieldLayer } from './fieldLayer.ts';
+import {
+  STRAFE_DRAW_UNIFORM_SIZE,
+  packStrafeDrawUniforms,
+  type BrushParams,
+} from './strafeUniforms.ts';
 import strafeDrawSource from './shaders/strafeDraw.wgsl';
+
+/**
+ * The brush radius `clear()` erases with, in the aspect-corrected uv metric.
+ *
+ * The field spans at most ~1 unit per axis in that metric, and the eraser admits
+ * fragments within `2 * draw_size` of the stroke, so anything above ~0.71 from the
+ * centre already covers the far corner. 4.0 is far past that with room for any
+ * aspect ratio -- deliberately not tight, since the only cost of overshooting is
+ * arithmetic on fragments that were going to be written anyway.
+ */
+const CLEAR_RADIUS = 4.0;
 
 export class StrafeField {
   private readonly device: GPUDevice;
@@ -49,11 +64,19 @@ export class StrafeField {
   private readonly uniforms: GPUBuffer;
 
   /**
-   * TWO PIPELINES, ONE SHADER MODULE, ONE ENTRY POINT.
+   * FOUR PIPELINES, ONE SHADER MODULE, ONE ENTRY POINT: {draw, erase} x {walls,
+   * trails}. Keyed by layer, because both axes are per-pipeline state that no
+   * uniform can express.
    *
-   * Blend state is per-pipeline in WebGPU, and the two modes differ in it:
-   * drawing accumulates (ONE, ONE) so a held brush builds up, while erasing must
-   * write literal zeros and therefore runs unblended.
+   * **Blend state** is per-pipeline in WebGPU, and the two operations differ in
+   * it: drawing accumulates (ONE, ONE) so a held brush builds up, while erasing
+   * must write literal zeros and therefore runs unblended.
+   *
+   * **The colour write mask** is likewise per-pipeline, and it is what makes the
+   * two layers independent: a walls pass physically cannot write the trails
+   * channels. That is load-bearing for ERASE and CLEAR specifically, which write
+   * literal values with blending off -- unmasked, erasing walls would take the
+   * trails with it. See `LAYER_WRITE_MASK`.
    *
    * `erase_mode` REMAINS A UNIFORM AS WELL, which looks redundant and is not.
    * The pipelines differ in blending; the shader branch differs in what it
@@ -61,8 +84,8 @@ export class StrafeField {
    * distinction -- there is no blend state that turns the gaussian into a hard
    * circle, and no uniform that turns off blending.
    */
-  private drawPipeline: GPURenderPipeline | null = null;
-  private erasePipeline: GPURenderPipeline | null = null;
+  private drawPipelines: Partial<Record<FieldLayer, GPURenderPipeline>> = {};
+  private erasePipelines: Partial<Record<FieldLayer, GPURenderPipeline>> = {};
   private uniformGroup: GPUBindGroup | null = null;
 
   /**
@@ -95,9 +118,10 @@ export class StrafeField {
     this.device = device;
     this.size = fieldDimensions(canvasSize);
 
-    // rg16float: two signed, unclamped channels. Signed because a brush vector
-    // points in any direction; unclamped because strokes accumulate additively
-    // and a normalized format would saturate almost immediately.
+    // rgba16float: FOUR signed, unclamped channels -- two 2D vectors per texel,
+    // walls in rg and trails in ba. Signed because a brush vector points in any
+    // direction; unclamped because strokes accumulate additively and a normalized
+    // format would saturate almost immediately.
     //
     // Unlike the desktop this needs no explicit zero-clear: WebGPU guarantees a
     // freshly created texture reads as zero, where an unwritten GL float texture
@@ -106,7 +130,7 @@ export class StrafeField {
     this.texture = device.createTexture({
       label: 'strafe-field',
       size: { width: this.size[0], height: this.size[1] },
-      format: CANVAS_FORMAT,
+      format: FIELD_FORMAT,
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.RENDER_ATTACHMENT |
@@ -145,8 +169,8 @@ export class StrafeField {
     const device = this.device;
     const module = await compileModule(device, 'strafeDraw.wgsl', strafeDrawSource);
     if (module === null) {
-      this.drawPipeline = null;
-      this.erasePipeline = null;
+      this.drawPipelines = {};
+      this.erasePipelines = {};
       return;
     }
 
@@ -162,7 +186,11 @@ export class StrafeField {
     });
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
 
-    const build = (label: string, blend: GPUBlendState | undefined): GPURenderPipeline =>
+    const build = (
+      label: string,
+      blend: GPUBlendState | undefined,
+      writeMask: number,
+    ): GPURenderPipeline =>
       device.createRenderPipeline({
         label,
         layout: pipelineLayout,
@@ -170,18 +198,26 @@ export class StrafeField {
         fragment: {
           module,
           entryPoint: 'fs_main',
-          targets: [{ format: CANVAS_FORMAT, blend }],
+          targets: [{ format: FIELD_FORMAT, blend, writeMask }],
         },
         primitive: { topology: 'triangle-strip' },
       });
 
-    this.drawPipeline = build('strafe-draw', {
+    const additive: GPUBlendState = {
       color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
       alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-    });
-    // No blend state at all: the erase branch writes literal zero, and blending
-    // it additively would make the eraser a no-op.
-    this.erasePipeline = build('strafe-erase', undefined);
+    };
+
+    this.drawPipelines = {};
+    this.erasePipelines = {};
+    for (const layer of FIELD_LAYERS) {
+      const mask = LAYER_WRITE_MASK[layer];
+      this.drawPipelines[layer] = build(`strafe-draw-${layer}`, additive, mask);
+      // No blend state at all: the erase branch writes literal zero, and blending
+      // it additively would make the eraser a no-op. The MASK is what keeps that
+      // zero off the other layer's channels.
+      this.erasePipelines[layer] = build(`strafe-erase-${layer}`, undefined, mask);
+    }
 
     this.uniformGroup = device.createBindGroup({
       label: 'strafe-draw-uniforms',
@@ -211,30 +247,37 @@ export class StrafeField {
     return this.wrap;
   }
 
-  /** Accumulate one Out-Repel stroke segment into the field. */
+  /**
+   * Accumulate one stroke segment into the layer `brush` names.
+   *
+   * The segment is `prevUv -> uv` whether it came from one frame of a drag or
+   * from the line tool's anchor and endpoint; this class does not distinguish
+   * them, and neither does the shader.
+   */
   draw(
     encoder: GPUCommandEncoder,
     uv: readonly [number, number],
     prevUv: readonly [number, number],
-    drawSize: number,
-    drawPower: number,
+    brush: BrushParams,
   ): void {
-    this.pass(encoder, uv, prevUv, drawSize, drawPower, false);
+    this.pass(encoder, uv, prevUv, brush, false);
   }
 
   /**
-   * Zero the field along one stroke segment.
+   * Zero one layer along one stroke segment.
    *
-   * `drawPower` is deliberately not a parameter: erasing is absolute, so there
-   * is nothing for a strength control to mean.
+   * `drawPower` is ignored (the caller still supplies a `BrushParams`, since the
+   * radius and the layer are both read): erasing is absolute, so there is nothing
+   * for a strength control to mean. `brush.layer` is what keeps a walls eraser
+   * off the trails.
    */
   erase(
     encoder: GPUCommandEncoder,
     uv: readonly [number, number],
     prevUv: readonly [number, number],
-    drawSize: number,
+    brush: BrushParams,
   ): void {
-    this.pass(encoder, uv, prevUv, drawSize, 0.0, true);
+    this.pass(encoder, uv, prevUv, brush, true);
   }
 
   /**
@@ -250,21 +293,22 @@ export class StrafeField {
     encoder: GPUCommandEncoder,
     uv: readonly [number, number],
     prevUv: readonly [number, number],
-    drawSize: number,
-    drawPower: number,
+    brush: BrushParams,
     erase: boolean,
   ): void {
-    const pipeline = erase ? this.erasePipeline : this.drawPipeline;
-    if (pipeline === null || this.uniformGroup === null) return;
+    const pipeline = erase
+      ? this.erasePipelines[brush.layer]
+      : this.drawPipelines[brush.layer];
+    if (pipeline === undefined || this.uniformGroup === null) return;
 
     this.device.queue.writeBuffer(
       this.uniforms,
       0,
-      packStrafeDrawUniforms(this.size, uv, prevUv, drawSize, drawPower, erase),
+      packStrafeDrawUniforms(this.size, uv, prevUv, brush, erase),
     );
 
     const pass = encoder.beginRenderPass({
-      label: erase ? 'strafe-erase' : 'strafe-draw',
+      label: erase ? `strafe-erase-${brush.layer}` : `strafe-draw-${brush.layer}`,
       colorAttachments: [
         {
           view: this.textureView,
@@ -286,41 +330,53 @@ export class StrafeField {
   }
 
   /**
-   * Zero the whole field.
+   * Zero ONE layer of the field, leaving the other untouched.
    *
-   * A render pass with no draws -- `loadOp: 'clear'` IS the clear. The same
-   * shape the camera's accumulator clear uses, and for the same reason: it needs
-   * an encoder, which a command handler does not have, so the Orchestrator flags
-   * it and the frame loop performs it.
+   * ## Why this is a masked DRAW and not `loadOp: 'clear'`
    *
-   * One call, because this texture holds nothing but the strafe field. The
-   * reference had to read back 4 channels, memset 2 and re-upload, purely
-   * because it packed force and strafe into one RGBA texture.
+   * It used to be a render pass with no draws, which is the cheapest clear there
+   * is. **That shape cannot survive two layers in one texture:** `clearValue`
+   * applies to the whole attachment and IGNORES the colour write mask entirely
+   * (the mask governs fragment output, and a clear produces no fragments). So a
+   * `loadOp: 'clear'` here would zero all four channels, and "Clear Walls" would
+   * silently take the trails with it -- exactly the coupling `LAYER_WRITE_MASK`
+   * exists to prevent, reintroduced at the one call that looks too simple to be
+   * doing anything subtle.
+   *
+   * So the clear reuses the ERASE pipeline, whose mask does apply, over a segment
+   * whose radius covers the whole field. `draw_size` is in the aspect-corrected
+   * uv metric where the field spans at most ~1 unit in each axis, so 4.0 is
+   * comfortably beyond the far corner from any point in it -- the eraser's hard
+   * circle (`hit.dist < draw_size * 2.0`) then admits every fragment and the pass
+   * writes zero everywhere it is allowed to.
+   *
+   * Still one pass and still no readback. The reference had to read back 4
+   * channels, memset 2 and re-upload; the mask does that job on the GPU.
    */
-  clear(encoder: GPUCommandEncoder): void {
-    encoder
-      .beginRenderPass({
-        label: 'strafe-clear',
-        colorAttachments: [
-          {
-            view: this.textureView,
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          },
-        ],
-      })
-      .end();
+  clear(encoder: GPUCommandEncoder, layer: FieldLayer): void {
+    // Centre of the field, so the covering radius is measured from the middle
+    // rather than a corner. The mode and angle are irrelevant on an erase pass --
+    // it takes the `erase_mode` branch before it ever reads them.
+    const centre: readonly [number, number] = [0.5, 0.5];
+    this.pass(
+      encoder,
+      centre,
+      centre,
+      { drawSize: CLEAR_RADIUS, drawPower: 0.0, mode: 'diverge', layer, drawAngle: 0.0, lineGain: 1.0 },
+      true,
+    );
   }
 
-  /** True when both pipelines compiled. Surfaced for the startup summary. */
+  /** True when the pipelines compiled. Surfaced for the startup summary. */
   pipelineStatus(): Readonly<Record<string, boolean>> {
-    // Reported separately because they ARE separate pipelines, and
-    // browserCheck.mjs greps this line for /FAILED/. One module, two entries --
-    // the same asymmetry entityPick.wgsl already has.
+    // Reported per OPERATION rather than per pipeline, though there are now four
+    // of those: the two layers compile from one module with one entry point and
+    // differ only in a write mask, so they cannot fail independently, and four
+    // rows would imply a failure mode that does not exist. browserCheck.mjs greps
+    // these lines for /FAILED/.
     return {
-      strafeDraw: this.drawPipeline !== null,
-      strafeErase: this.erasePipeline !== null,
+      strafeDraw: this.drawPipelines.walls !== undefined,
+      strafeErase: this.erasePipelines.walls !== undefined,
     };
   }
 

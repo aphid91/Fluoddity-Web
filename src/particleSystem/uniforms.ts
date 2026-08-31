@@ -48,6 +48,7 @@ import { PICK_UNIFORM_SIZE } from './pick.ts';
  *   canvas_res : vec4f      (16)  offset 32   xy: canvas   zw: strafe field
  *   shove      : vec4f      (16)  offset 48   xy: center   z: strength  w: size
  *   flags      : vec4f      (16)  offset 64   x: frame_count(i)  y: strafe_active(i)
+ *                                             z: walls_strength  w: trails_strength
  *
  * `canvas_res` is THE `textureDimensions` HOIST. The GLSL calls
  * `textureSize(canvas_texture, 0)` at five sites per invocation
@@ -62,6 +63,35 @@ export const CANVAS_UNIFORM_SIZE = 48;
 
 /** `BrushUniforms` -- 64 bytes. world (32) + canvas_res (16) + flags (16). */
 export const BRUSH_UNIFORM_SIZE = 64;
+
+/**
+ * How strongly each painted layer acts, already multiplied by its base gain.
+ *
+ * **A NAMED PAIR RATHER THAN TWO FLOAT PARAMETERS**, because they are adjacent,
+ * same-typed and same-ranged: a transposed pair would compile, run, and produce a
+ * simulation where the walls slider moved the trails. The two mean entirely
+ * different things -- see `get_walls` and `get_can` -- so there is nothing to
+ * catch it downstream.
+ *
+ * `walls` arrives pre-multiplied by `FIELD_STRENGTH_GAIN`; `trails` by
+ * `TRAILS_FIELD_GAIN`. The shader applies no further constant.
+ */
+export interface FieldStrengths {
+  readonly walls: number;
+  readonly trails: number;
+}
+
+/**
+ * What the system uses until the Orchestrator pushes the user's preferences.
+ *
+ * These are the PRE-MULTIPLIED values for a strength of 1.0 on both sliders --
+ * i.e. `WALLS_FIELD_GAIN` and `TRAILS_FIELD_GAIN`. Restated here as literals
+ * rather than imported, because `particleSystem/` must not depend on `prefs/`
+ * (the simulation does not read the editor's settings; the Orchestrator brokers
+ * them, per invariant 3). `preferences.test.ts` asserts the two agree, which is
+ * what keeps the duplication honest.
+ */
+export const DEFAULT_FIELD_STRENGTHS: FieldStrengths = { walls: 0.01, trails: 1.0 };
 
 /** The Shove tool's live state, or null while the button is not held. */
 export interface ShoveState {
@@ -113,6 +143,7 @@ export function packEntityUpdateUniforms(
   frameCount: number,
   shove: ShoveState | null,
   strafeFieldActive: boolean,
+  strengths: FieldStrengths,
 ): ArrayBuffer {
   const { buffer, f32, i32 } = withWorld(world, ENTITY_UPDATE_UNIFORM_SIZE);
 
@@ -128,9 +159,18 @@ export function packEntityUpdateUniforms(
   f32[AFTER_WORLD + 6] = shove === null ? 0.0 : shove.strength;
   f32[AFTER_WORLD + 7] = shove === null ? 0.0 : shove.size;
 
-  // flags: x frame_count(i), y strafe_field_active(i), zw reserved
+  // flags: x frame_count(i), y strafe_field_active(i),
+  //        z walls_strength, w trails_strength
+  //
+  // The strengths are FLOATS in the last two lanes -- the two that were reserved.
+  // Note the index arithmetic runs off the same `AFTER_WORLD` base as the i32
+  // writes above: both views alias one ArrayBuffer, so lane 10 as a float and
+  // lane 10 as an int are the same four bytes. Writing one after the other into
+  // DIFFERENT lanes is what keeps that safe.
   i32[AFTER_WORLD + 8] = frameCount;
   i32[AFTER_WORLD + 9] = strafeFieldActive ? 1 : 0;
+  f32[AFTER_WORLD + 10] = strengths.walls;
+  f32[AFTER_WORLD + 11] = strengths.trails;
 
   return buffer;
 }

@@ -59,7 +59,7 @@ test('nothing shoves while paused', () => {
 });
 
 test('nothing shoves in another tool', () => {
-  for (const mouseMode of ['select', 'draw'] as const) {
+  for (const mouseMode of ['select', 'walls'] as const) {
     assert.equal(shoveState(input({ leftDragging: true }), ctx({ mouseMode })), null);
   }
 });

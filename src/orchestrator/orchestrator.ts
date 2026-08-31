@@ -52,6 +52,7 @@ import {
   NO_OVERLAYS,
   type CropOverlay,
   type OverlayState,
+  type ReticleStyle,
 } from '../assembler/assemblerUniforms.ts';
 import { Camera } from '../camera/camera.ts';
 import {
@@ -87,6 +88,12 @@ import {
   isFullFrame,
 } from '../recorder/recordingSettings.ts';
 import { StrafeField } from '../strafeField/strafeField.ts';
+import {
+  type FieldLayer,
+  BRUSH_MODES,
+  LINE_STROKE_GAIN,
+} from '../strafeField/fieldLayer.ts';
+import type { BrushParams } from '../strafeField/strafeUniforms.ts';
 import { screenToWorld, worldToUv } from '../particleSystem/coords.ts';
 import {
   type PickResult,
@@ -107,6 +114,7 @@ import {
   type Preferences,
   DEFAULT_PREFERENCES,
   loadPreferences,
+  fieldStrengthsFor,
   requiresRestart,
   savePreferences,
   withValue,
@@ -129,12 +137,15 @@ import {
   type Command,
   type CommandBus,
   type MouseMode,
+  isPaintingTool,
+  layerForMouseMode,
+  usesBrushReticle,
   type PreviewSurface,
   type Status,
 } from './commands.ts';
 import { type Checkpoint, CheckpointStore } from './clipboardCommands.ts';
 import { RESET_ON_CONFIG_LOAD, RESET_ON_CONFIG_UNDO_REDO } from './featureFlags.ts';
-import { type PendingStroke, strokeFor } from './drawingCommands.ts';
+import { type LineAnchor, type PendingStroke, strokeFor } from './drawingCommands.ts';
 import { shoveState } from './shoveCommands.ts';
 import {
   applySettingEdit,
@@ -233,13 +244,26 @@ export class Orchestrator implements CommandBus {
   private pendingStroke: PendingStroke | null = null;
 
   /**
-   * Set by `clearStrafeField`, consumed by the frame loop.
+   * Layers awaiting a clear, set by `clearStrafeField` and drained by the frame
+   * loop.
    *
    * Same shape and same reason as the accumulator's clear: zeroing a texture is
    * a render pass, a render pass needs an encoder, and a command handler runs
    * outside one.
+   *
+   * **A SET RATHER THAN A BOOLEAN**, because the two layers clear independently
+   * and both buttons are on screen at once -- pressing Clear Walls and Clear
+   * Trails in the same frame must do both, where a single flag would drop one.
    */
-  private clearFieldPending = false;
+  private readonly clearFieldPending = new Set<FieldLayer>();
+
+  /**
+   * The line tool's anchor, in field uv, or `null` when no line is armed.
+   *
+   * Lives here rather than in `strokeFor` because that function is pure -- the
+   * whole reason its asymmetries are testable. See `drawingCommands.ts`.
+   */
+  private lineAnchor: LineAnchor = null;
 
   /** Editor state, distinct from anything saved with a project. */
   private prefs: Preferences;
@@ -591,6 +615,10 @@ export class Orchestrator implements CommandBus {
     const strafeField = await StrafeField.create(opts.device, system.canvasSize);
     strafeField.setWrap(loaded.world.boundaryConditions === BC.WRAP);
     system.setStrafeField(strafeField.view(), strafeField.size);
+    // Preferences are loaded from `localStorage` before this, so a strength the
+    // user set in an earlier session applies from the first frame rather than
+    // from whenever they next touch a control.
+    system.setFieldStrengths(fieldStrengthsFor(prefs));
 
     const targets = new RenderTargets(opts.device);
     const camera = await Camera.create(opts.device, new CameraState(), targets);
@@ -782,7 +810,11 @@ export class Orchestrator implements CommandBus {
     // should contain has to drop the still or the edit would be invisible until
     // the next resume. Painting and clearing both stay live while paused (see
     // the field section below), which is exactly why they must be listed here.
-    const fieldEdited = this.pendingStroke !== null || this.clearFieldPending;
+    // `.size > 0`, NOT the Set itself. `clearFieldPending` was a boolean and is
+    // now a Set of layers -- and an EMPTY Set is truthy, so the bare reference
+    // this line used to carry would make `fieldEdited` permanently true and no
+    // paused frame could ever hold its settled still.
+    const fieldEdited = this.pendingStroke !== null || this.clearFieldPending.size > 0;
     const holdingSettled =
       this.paused &&
       !settling &&
@@ -827,19 +859,28 @@ export class Orchestrator implements CommandBus {
     // Painting HERE rather than inside `runFrame` is the whole cadence argument:
     // one stroke segment per rendered frame, so brush weight never tracks the
     // physics rate (`drawing_commands.py:14-19`).
-    if (this.clearFieldPending) {
-      this.strafeField.clear(encoder);
-      this.clearFieldPending = false;
+    if (this.clearFieldPending.size > 0) {
+      for (const layer of this.clearFieldPending) {
+        this.strafeField.clear(encoder, layer);
+      }
+      this.clearFieldPending.clear();
       // A cleared field ends the stroke in progress: the next press should start
       // fresh rather than draw a segment from wherever the cursor was.
       this.strokePrevUv = null;
     }
     if (this.pendingStroke !== null) {
-      const { uv, prevUv, erasing } = this.pendingStroke;
-      if (erasing) {
-        this.strafeField.erase(encoder, uv, prevUv, this.prefs.drawSize);
-      } else {
-        this.strafeField.draw(encoder, uv, prevUv, this.prefs.drawSize, this.prefs.drawPower);
+      const { uv, prevUv, erasing, isLine } = this.pendingStroke;
+      // The layer comes from the ACTIVE TOOL, resolved here rather than captured
+      // when the stroke was recorded: both are the same frame, and asking once at
+      // the point of use means there is no second copy to fall out of step.
+      const layer = layerForMouseMode(this.mouseMode);
+      if (layer !== null) {
+        const brush = this.brushParams(layer, isLine);
+        if (erasing) {
+          this.strafeField.erase(encoder, uv, prevUv, brush);
+        } else {
+          this.strafeField.draw(encoder, uv, prevUv, brush);
+        }
       }
       this.pendingStroke = null;
     }
@@ -1013,7 +1054,19 @@ export class Orchestrator implements CommandBus {
         this.prefs,
         {
           ...NO_OVERLAYS,
-          showField: this.prefs.fieldAlwaysShow || this.mouseMode === 'draw',
+          // The SAME rule the screen pass uses (`overlayState`), so a recording
+          // shows the fields exactly as the editor did. The reticle, the line
+          // preview and the crop box are all absent here by way of NO_OVERLAYS --
+          // those are annotations about what the mouse is doing, and burning them
+          // into the video would record the tool rather than the work.
+          showField:
+            layerForMouseMode(this.mouseMode) === null
+              ? this.prefs.fieldAlwaysShow
+              : this.mouseMode === 'walls',
+          showTrails:
+            layerForMouseMode(this.mouseMode) === null
+              ? this.prefs.trailsAlwaysShow
+              : this.mouseMode === 'trails',
           capture: {
             scale,
             offset: [(1 - scale[0]) / 2, (1 - scale[1]) / 2],
@@ -1178,16 +1231,33 @@ export class Orchestrator implements CommandBus {
           this.dispatch({ kind: state.shift ? 'redo' : 'undo' });
         }
       }
-    } else if (this.mouseMode === 'draw') {
+    } else if (isPaintingTool(this.mouseMode)) {
       // RECORDS INTENT, DOES NOT PAINT. Painting needs an encoder, and this runs
       // above the one `frame()` opens -- deliberately, because that is what
       // makes a stroke land once per rendered frame instead of once per physics
       // sub-step. `frame()` consumes what this records.
-      const step = strokeFor(state, this.strokePrevUv, (p) => this.mouseFieldUv(p));
+      //
+      // ONE BRANCH FOR BOTH PAINTING TOOLS. Walls and Trails differ only in the
+      // layer the stroke lands in, which `frame()` resolves from the active tool
+      // -- so the gesture handling, the line tool and the stroke memory are
+      // shared rather than duplicated per tool.
+      const step = strokeFor(
+        state,
+        this.strokePrevUv,
+        (p) => this.mouseFieldUv(p),
+        this.lineAnchor,
+      );
       this.pendingStroke = step.stroke;
       this.strokePrevUv = step.prevUv;
+      this.lineAnchor = step.lineAnchor;
+    } else {
+      // EVERY OTHER TOOL DISARMS THE LINE. Switching to Select or Shove with an
+      // anchor still set would leave a preview on screen belonging to a tool that
+      // is no longer active, and arm a stroke the next painting tool never asked
+      // for.
+      this.lineAnchor = null;
     }
-    // SHOVE HAS NO BRANCH HERE, and that asymmetry with DRAW is correct rather
+    // SHOVE HAS NO BRANCH HERE, and that asymmetry with the painting tools is
     // than an omission. A shove is not an event to record: `shoveState` reads
     // the same `InputState` directly in the frame loop, because its answer is a
     // uniform the physics loop needs, not a pass to encode. The desktop splits
@@ -1255,10 +1325,21 @@ export class Orchestrator implements CommandBus {
    * before the field exists.
    */
   private overlayState(): OverlayState {
-    const drawing = this.mouseMode === 'draw';
+    const painting = layerForMouseMode(this.mouseMode);
     const shoving = this.mouseMode === 'shove';
-    const brushing = drawing || shoving;
-    const showField = this.prefs.fieldAlwaysShow || drawing;
+    const brushing = usesBrushReticle(this.mouseMode);
+
+    // **THE ACTIVE PAINTING TOOL FORCES ITS OWN LAYER ON AND THE OTHER OFF.** You
+    // are always looking at what you are painting, and never at the layer you are
+    // not -- painting blind is not a preference worth offering, and the other
+    // layer on top of it is clutter you did not ask for while drawing.
+    //
+    // The two `alwaysShow` preferences therefore only govern SELECT AND SHOVE,
+    // where neither layer is being edited and either might be worth seeing. That
+    // is a narrower job than the single flag they replaced had, and it is why
+    // splitting it in two was worth doing rather than keeping one flag for both.
+    const showField = painting === null ? this.prefs.fieldAlwaysShow : painting === 'walls';
+    const showTrails = painting === null ? this.prefs.trailsAlwaysShow : painting === 'trails';
     // The crop box, whenever one has been asked for and is smaller than the
     // window. Independent of the tool and of the reticle: it says what will be
     // recorded, which is true regardless of what the mouse is currently doing.
@@ -1271,24 +1352,57 @@ export class Orchestrator implements CommandBus {
     // will land or how wide it is -- which is not a preference so much as a way
     // to break them.
     //
-    // The FIELD is still read from prefs, and deliberately: `fieldAlwaysShow`
-    // is a real choice between seeing the barriers all the time and seeing them
-    // only while drawing. The reticle has no such second mode.
+    // The FIELDS are still read from prefs, and deliberately: the two
+    // `alwaysShow` flags are a real choice between seeing a layer all the time
+    // and seeing it only while painting it. The reticle has no such second mode.
     if (!brushing) {
-      return { ...NO_OVERLAYS, showField, crop };
+      return { ...NO_OVERLAYS, showField, showTrails, crop };
     }
     // The brush's VISIBLE extent, which is 2 sigma of its gaussian -- and also
     // exactly the eraser's hard radius, so the ring reads as "what the eraser
     // will take". Measured in the aspect-corrected metric the brush shader
     // paints in, so what crosses this boundary is a plain scalar.
+    const radius = 2.0 * this.prefs.drawSize;
     return {
       ...NO_OVERLAYS,
       showField,
+      showTrails,
       crop,
       reticleCenter: this.mouseFieldUv(this.input.mousePos),
-      reticleRadius: 2.0 * this.prefs.drawSize,
-      reticleDashed: shoving,
+      reticleRadius: radius,
+      reticleStyle: shoving ? 'dashed' : this.brushReticleStyle(),
+      reticleAngle: this.prefs.drawAngle,
+      // The preview exists exactly while a line is armed. `lineAnchor` is
+      // cleared by every path that abandons one -- releasing Shift, switching
+      // tool, committing -- so there is no separate "should I preview" question
+      // to get wrong.
+      linePreview:
+        this.lineAnchor === null
+          ? null
+          : { from: this.lineAnchor, to: this.mouseFieldUv(this.input.mousePos) },
     };
+  }
+
+  /**
+   * Which decoration the reticle carries for the current brush mode.
+   *
+   * **THE RING IS THE SAME CIRCLE IN EVERY MODE**; only the decoration differs,
+   * because the modes differ only in the direction they deposit -- which is
+   * otherwise invisible until after the first stroke. Stroke mode gets the bare
+   * ring, since its direction is the cursor's own travel and the moving cursor
+   * already shows it.
+   */
+  private brushReticleStyle(): ReticleStyle {
+    switch (BRUSH_MODES[this.prefs.brushMode] ?? 'diverge') {
+      case 'converge':
+        return 'in';
+      case 'stroke':
+        return 'plain';
+      case 'fixed':
+        return 'fixed';
+      default:
+        return 'out';
+    }
   }
 
   /**
@@ -1363,6 +1477,30 @@ export class Orchestrator implements CommandBus {
       cam.zoom,
     );
     return worldToUv(world, this.strafeField.size);
+  }
+
+  /**
+   * The brush settings a stroke is painted with.
+   *
+   * **BUILT AT THE POINT OF USE, from live preferences.** The brush has no cached
+   * state of its own, so changing a slider takes effect on the next stroke with
+   * nothing to invalidate.
+   *
+   * `brushModeFor` is what makes a stored index safe: `brushMode` is persisted to
+   * `localStorage` as an int, so a downgrade -- or a hand-edited entry -- can
+   * present an index past the end of `BRUSH_MODES`, and the default is a better
+   * answer than an undefined lookup reaching the uniform packer.
+   */
+  private brushParams(layer: FieldLayer, isLine: boolean): BrushParams {
+    return {
+      drawSize: this.prefs.drawSize,
+      drawPower: this.prefs.drawPower,
+      mode: BRUSH_MODES[this.prefs.brushMode] ?? 'diverge',
+      layer,
+      drawAngle: this.prefs.drawAngle,
+      // Freehand deposits every frame; a line deposits once. See the constant.
+      lineGain: isLine ? LINE_STROKE_GAIN : 1.0,
+    };
   }
 
   // =========================================================================
@@ -2403,7 +2541,11 @@ export class Orchestrator implements CommandBus {
         // and a render pass needs an encoder, which a command handler has not
         // got. The frame loop consumes this above its paused branch, so clearing
         // works while paused.
-        this.clearFieldPending = true;
+        //
+        // ONE LAYER PER COMMAND. Both Clear buttons are on screen at once in the
+        // Drawing Controls, so a set is what lets two arrive in the same frame
+        // and both take effect.
+        this.clearFieldPending.add(command.layer);
         return;
 
       default: {
@@ -2709,6 +2851,11 @@ export class Orchestrator implements CommandBus {
       this.clearHighlight();
     }
     this.prefs = updated;
+    // THE ONE PLACE THE FIELD STRENGTHS REACH THE SIMULATION, because this is the
+    // one place preferences change. Pushed rather than read per frame: the value
+    // moves when a slider does, and `runFrame` would rebuild it 30 times a frame
+    // for something the user touches once a session (see `setFieldStrengths`).
+    this.system.setFieldStrengths(fieldStrengthsFor(this.prefs));
     savePreferences(this.prefs);
     return needsRebuild ? this.rebuildSystem() : Promise.resolve();
   }
@@ -2754,6 +2901,12 @@ export class Orchestrator implements CommandBus {
     replacementField.setWrap(this.project.world.boundaryConditions === BC.WRAP);
     replacement.setStrafeField(replacementField.view(), replacementField.size);
     replacement.applyProject(this.project.configs, this.project.world);
+    // CARRIED ACROSS, like the project above it. A fresh system starts on
+    // `DEFAULT_FIELD_STRENGTHS`, so without this a World Size change would
+    // silently snap both sliders back to 1.0 in effect while the UI went on
+    // showing whatever the user had set -- the controls and the simulation
+    // disagreeing, with nothing on screen to say so.
+    replacement.setFieldStrengths(fieldStrengthsFor(this.prefs));
 
     const outgoingSystem = this.system;
     const outgoingField = this.strafeField;

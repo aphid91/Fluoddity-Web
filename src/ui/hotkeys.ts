@@ -187,9 +187,10 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
 
   // --- tools ---------------------------------------------------------------
   // Zipped against MOUSE_MODES, whose "MEMBER ORDER IS THE TOOLBAR ORDER and
-  // the 1/2/3 key order" (`commands.ts:67`). Built rather than written out so
+  // the 1/2/3/4 key order" (`commands.ts:67`). Built rather than written out so
   // adding a tool needs one array member and nothing here -- the desktop zips
-  // for the same reason (`ui.py:466-469`).
+  // for the same reason (`ui.py:466-469`). The Trails tool arrived on `4` this
+  // way, with no edit to this file.
   ...MOUSE_MODES.map(
     (mode, index): Hotkey => ({
       code: `Digit${index + 1}`,

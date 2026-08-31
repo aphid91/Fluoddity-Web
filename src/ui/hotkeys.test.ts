@@ -267,7 +267,7 @@ test('hotkeyLabel discriminates same-kind rows by their payload', () => {
 test('hotkeyLabel returns empty for an unbound command', () => {
   // Appended harmlessly by callers, so an unbound action loses its hint rather
   // than rendering "( )".
-  assert.equal(hotkeyLabel({ kind: 'clearStrafeField' }), '');
+  assert.equal(hotkeyLabel({ kind: 'clearStrafeField', layer: 'walls' }), '');
 });
 
 test('hotkeyLabel follows a rebound table rather than the default', () => {
