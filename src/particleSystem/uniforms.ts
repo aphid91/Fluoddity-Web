@@ -91,7 +91,7 @@ export interface FieldStrengths {
  * them, per invariant 3). `preferences.test.ts` asserts the two agree, which is
  * what keeps the duplication honest.
  */
-export const DEFAULT_FIELD_STRENGTHS: FieldStrengths = { walls: 0.01, trails: 1.0 };
+export const DEFAULT_FIELD_STRENGTHS: FieldStrengths = { walls: 0.01, trails: 0.001 };
 
 /** The Shove tool's live state, or null while the button is not held. */
 export interface ShoveState {

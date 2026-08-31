@@ -188,16 +188,16 @@ export interface Preferences {
    */
   readonly fieldOpacity: number;
   /**
-   * Show the WALLS overlay while a non-drawing tool is active.
+   * Show the WALLS overlay regardless of which tool is active.
    *
-   * **ONLY CONSULTED OUTSIDE THE TWO DRAWING TOOLS.** In Walls mode the walls
-   * overlay is always shown and the trails overlay never is, and vice versa in
-   * Trails mode -- you are looking at the thing you are painting, and hiding it
-   * would be a way to draw blind. These two flags are about Select and Shove,
-   * where neither layer is being edited and either might be worth seeing.
+   * **CONSULTED IN EVERY TOOL, including the painting ones.** The Walls tool
+   * shows its own layer whether or not this is set -- painting blind is not a
+   * preference worth offering -- so what this adds is the walls staying visible
+   * everywhere else, the Trails tool included. Watching the walls you are
+   * threading a trail around is exactly the case it exists for.
    */
   readonly fieldAlwaysShow: boolean;
-  /** Show the TRAILS overlay while a non-drawing tool is active. */
+  /** Show the TRAILS overlay regardless of which tool is active. */
   readonly trailsAlwaysShow: boolean;
   /**
    * The brush reticle. Only ever drawn while a BRUSH tool is active, so this
@@ -654,28 +654,29 @@ export const WALLS_FIELD_GAIN = 0.01;
 /**
  * What a Trails Field Strength of 1.0 means.
  *
- * ## This one had no predecessor, so it was tuned rather than inherited
+ * ## This one had no predecessor, so it was TUNED BY EYE rather than inherited
  *
- * Walls converts a constant that already existed. Trails is a new path -- the
- * painted vector is added to the CANVAS SAMPLE the sensors read -- so there is no
- * previous behaviour to reproduce and the only question is what makes a
- * default-power stroke read as comparable to a trail the swarm laid down itself.
+ * Walls converts a constant that already existed, so its value was fixed by
+ * having to reproduce the old behaviour. Trails is a new path -- the painted
+ * vector is added to the CANVAS SAMPLE the sensors read -- so there was no
+ * previous behaviour to match and nothing to derive the scale from.
  *
- * The arithmetic that fixes the order of magnitude: the brush deposits
- * `0.01 * (power/5) * kernel / size` per frame, so at the default power 2.5 and
- * size 0.01 a texel at the centre of a stroke gains ~0.5 per frame and saturates
- * within a few frames of being held. Canvas trail values, after `get_can` divides
- * out CANVAS_VALUE_SCALE, sit in the low single digits where the sensors are
- * responsive. A gain of 1.0 therefore lands painted trails in the same range as
- * simulated ones without further scaling, which is why this is 1.0 and not a
- * fraction -- the two quantities were already commensurate once the descale is
- * accounted for.
+ * An estimate from the deposit formula put this near 1.0, on the reasoning that
+ * the brush lays down ~0.5 per frame at default power while descaled canvas
+ * values sit in the low single digits, so the two are already commensurate.
+ * **That estimate was three orders of magnitude too hot in practice**, because it
+ * accounted for the magnitudes and not for the fact that a painted trail is
+ * PERMANENT while a simulated one decays every step -- so a stroke that merely
+ * matches the canvas instantaneously ends up dominating what the sensors see
+ * within a second. The working value came from drawing with it.
  *
- * Named and separate from `WALLS_FIELD_GAIN` anyway, rather than folded away as
- * "no conversion needed": the two feed different shader paths, and a future
- * retune of one must not silently move the other.
+ * Kept as a named constant, and separate from `WALLS_FIELD_GAIN`: the two feed
+ * different shader paths, and a retune of one must not silently move the other.
+ * `DEFAULT_FIELD_STRENGTHS` mirrors this number in `particleSystem/uniforms.ts`
+ * (which may not import this module) and `preferences.test.ts` asserts the two
+ * agree -- that test is what caught this value changing without its mirror.
  */
-export const TRAILS_FIELD_GAIN = .001;
+export const TRAILS_FIELD_GAIN = 0.001;
 
 /**
  * The strengths the entity update reads, derived from the two sliders.

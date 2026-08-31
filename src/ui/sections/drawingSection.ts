@@ -120,8 +120,8 @@ const CONTROLS: readonly DrawControl[] = [
     label: 'Always Show Walls',
     params: {},
     help:
-      'Show the painted walls even when the Walls tool is not active. While it ' +
-      'IS active they are always shown',
+      'Keep the painted walls visible in every tool, including Trails. The ' +
+      'Walls tool shows them either way',
     advanced: true,
   },
   {
@@ -129,8 +129,8 @@ const CONTROLS: readonly DrawControl[] = [
     label: 'Always Show Trails',
     params: {},
     help:
-      'Show the painted trails even when the Trails tool is not active. While ' +
-      'it IS active they are always shown',
+      'Keep the painted trails visible in every tool, including Walls. The ' +
+      'Trails tool shows them either way',
     advanced: true,
   },
   // **BRUSH RETICLE WAS REMOVED FROM THIS TABLE**, and the `showReticle`

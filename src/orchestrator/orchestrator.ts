@@ -1059,14 +1059,8 @@ export class Orchestrator implements CommandBus {
           // preview and the crop box are all absent here by way of NO_OVERLAYS --
           // those are annotations about what the mouse is doing, and burning them
           // into the video would record the tool rather than the work.
-          showField:
-            layerForMouseMode(this.mouseMode) === null
-              ? this.prefs.fieldAlwaysShow
-              : this.mouseMode === 'walls',
-          showTrails:
-            layerForMouseMode(this.mouseMode) === null
-              ? this.prefs.trailsAlwaysShow
-              : this.mouseMode === 'trails',
+          showField: this.prefs.fieldAlwaysShow || this.mouseMode === 'walls',
+          showTrails: this.prefs.trailsAlwaysShow || this.mouseMode === 'trails',
           capture: {
             scale,
             offset: [(1 - scale[0]) / 2, (1 - scale[1]) / 2],
@@ -1329,17 +1323,19 @@ export class Orchestrator implements CommandBus {
     const shoving = this.mouseMode === 'shove';
     const brushing = usesBrushReticle(this.mouseMode);
 
-    // **THE ACTIVE PAINTING TOOL FORCES ITS OWN LAYER ON AND THE OTHER OFF.** You
-    // are always looking at what you are painting, and never at the layer you are
-    // not -- painting blind is not a preference worth offering, and the other
-    // layer on top of it is clutter you did not ask for while drawing.
+    // **THE ACTIVE PAINTING TOOL FORCES ITS OWN LAYER ON. It does not force the
+    // other one off.**
     //
-    // The two `alwaysShow` preferences therefore only govern SELECT AND SHOVE,
-    // where neither layer is being edited and either might be worth seeing. That
-    // is a narrower job than the single flag they replaced had, and it is why
-    // splitting it in two was worth doing rather than keeping one flag for both.
-    const showField = painting === null ? this.prefs.fieldAlwaysShow : painting === 'walls';
-    const showTrails = painting === null ? this.prefs.trailsAlwaysShow : painting === 'trails';
+    // The floor is what the tool needs: you are always looking at what you are
+    // painting, because painting blind is not a preference worth offering. Above
+    // that floor the two `alwaysShow` checkboxes mean exactly what they say, in
+    // EVERY tool -- including the other painting tool. Drawing trails while
+    // watching the walls you are threading them around is a real thing to want,
+    // and an earlier rule that switched the other layer off in the painting tools
+    // made those checkboxes silently inert in the two modes where you are most
+    // likely to be looking at them.
+    const showField = this.prefs.fieldAlwaysShow || painting === 'walls';
+    const showTrails = this.prefs.trailsAlwaysShow || painting === 'trails';
     // The crop box, whenever one has been asked for and is smaller than the
     // window. Independent of the tool and of the reticle: it says what will be
     // recorded, which is true regardless of what the mouse is currently doing.
