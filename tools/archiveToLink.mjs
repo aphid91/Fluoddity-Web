@@ -50,6 +50,8 @@ import {
   loadArchive,
   reconstruct,
 } from '../src/archive/reconstruct.ts';
+import { derivationKey } from '../src/archive/gpuDeriver.ts';
+import { deriveOnGpu } from './deriveRules.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -74,14 +76,17 @@ if (has('--help') || has('-h')) {
       '  node tools/archiveToLink.mjs <archive.json> [options]',
       '',
       '      --hash <h>   Reconstruct this node. Default: the newest one',
-      '      --nearest    If the target needs a GPU, use its closest rebuildable',
-      '                   ancestor instead of failing',
+      '      --no-gpu     Do not open Chrome to derive cohort selections;',
+      '                   report them instead',
+      '      --nearest    If a node cannot be rebuilt, use its closest',
+      '                   rebuildable ancestor instead of failing',
       '      --json       Print the v8 document instead of a link',
       '      --stats      Summarize the archive and exit',
       '      --url <base> Print a full URL with this origin+path prefix',
       '',
-      'A cohort-selection node cannot be rebuilt without running rule.wgsl;',
-      'those are reported rather than approximated. See the file header.',
+      'A cohort selection stores a cohort number, not a rule. Rebuilding one',
+      'runs the real rule.wgsl on a GPU through Chrome -- it is never',
+      'approximated, because a wrong rule looks legitimate. See the header.',
     ].join('\n'),
   );
   process.exit(0);
@@ -143,6 +148,72 @@ if (wanted !== null && !archive.nodes.has(wanted)) die(`no node with hash ${want
 
 // --- reconstruct ------------------------------------------------------------
 
+/**
+ * Rules already derived, keyed by the question that produced them.
+ *
+ * Filled by `resolveDerivations` below and read through a synchronous lookup,
+ * because `reconstruct` is synchronous by design and a GPU readback is not.
+ */
+const derived = new Map();
+
+/** The synchronous deriver `reconstruct` takes, over whatever is in the table. */
+function tableLookup(request) {
+  const found = derived.get(derivationKey(request));
+  if (found === undefined) {
+    // Signalled rather than approximated. `resolveDerivations` catches this to
+    // learn WHICH derivation is still missing -- see there.
+    const err = new Error('missing derivation');
+    err.request = request;
+    throw err;
+  }
+  return found;
+}
+
+/**
+ * Fill `derived` until `hash` reconstructs, or until nothing more can be found.
+ *
+ * **ITERATIVE, AND IT HAS TO BE.** A selection's inputs are the rule, seed and
+ * scale of its PARENT state -- and that parent may itself be a selection whose
+ * rule is not known until it has been derived. So the requests cannot all be
+ * computed up front: each pass reconstructs as far as it can, catches the first
+ * derivation it lacks, runs THAT on the GPU, and goes round again. A chain of n
+ * selections resolves in n passes.
+ *
+ * Each pass costs one Chrome launch, which is why the common archive -- a
+ * handful of selections in one lineage -- is a handful of seconds rather than
+ * instant. Batching the independent ones would need a dependency walk the tool
+ * does not currently do, and is the obvious next optimization if it ever matters.
+ */
+async function resolveDerivations(hash) {
+  for (let pass = 0; pass < 200; pass++) {
+    let missing = null;
+    try {
+      const attempt = reconstruct(archive, hash, tableLookup);
+      if (attempt.ok) return attempt;
+      // A structural failure -- not something a derivation can fix.
+      if (attempt.failure.kind !== 'needsDeriver') return attempt;
+      // `needsDeriver` only comes back when the deriver is null, and it is not.
+      return attempt;
+    } catch (err) {
+      if (err?.message !== 'missing derivation') throw err;
+      missing = err.request;
+    }
+    console.error(
+      `deriving cohort ${missing.cohort} (seed ${missing.mutationSeed})…`,
+    );
+    const [rule] = await deriveOnGpu([
+      {
+        rule: [...missing.rule],
+        cohort: missing.cohort,
+        mutationSeed: missing.mutationSeed,
+        mutationScale: missing.mutationScale,
+      },
+    ]);
+    derived.set(derivationKey(missing), rule);
+  }
+  throw new Error('gave up after 200 derivation passes');
+}
+
 /** Reconstruct `hash`, or walk back to the nearest ancestor that works. */
 function rebuild(hash) {
   const direct = reconstruct(archive, hash, null);
@@ -162,15 +233,37 @@ function rebuild(hash) {
   return { failure: direct.failure };
 }
 
-const built = rebuild(target);
+let built = rebuild(target);
+
+// **A COHORT SELECTION IS DERIVED ON A REAL GPU, not approximated.** The rule is
+// a pure function of the parent state and the cohort, but only `rule.wgsl`
+// computes it correctly -- see that file's header, and `deriveRules.mjs`. This
+// opens a Chrome, runs the actual shader and reads the rule back.
+//
+// `--no-gpu` opts out for someone without a browser to hand, leaving the old
+// behaviour: report the selection rather than guess at it.
+if (built.failure?.kind === 'needsDeriver' && !has('--no-gpu')) {
+  const resolved = await resolveDerivations(target).catch((err) => {
+    die(
+      `could not derive the rule on a GPU:\n  ${String(
+        err instanceof Error ? err.message : err,
+      )}\n  Set CHROME_PATH if Chrome is somewhere unusual, or pass --no-gpu.`,
+    );
+  });
+  built = resolved.ok
+    ? { project: resolved.project, hash: target, back: 0 }
+    : { failure: resolved.failure };
+}
+
 if (built.failure !== undefined) {
   const f = built.failure;
   if (f.kind === 'needsDeriver') {
     die(
       `node ${f.hash} is a cohort selection (cohort ${f.cohort}).\n` +
         '  Rebuilding it means running derive_entity_rule from rule.wgsl, which\n' +
-        '  needs a WGSL implementation -- this tool will not approximate it.\n' +
-        '  Pass --nearest to use the closest ancestor that can be rebuilt.',
+        '  needs a real GPU -- this tool will not approximate it.\n' +
+        '  Drop --no-gpu to derive it, or pass --nearest for the closest\n' +
+        '  ancestor that can be rebuilt without one.',
     );
   }
   die(`could not reconstruct ${target}: ${f.kind}${'detail' in f ? ` -- ${f.detail}` : ''}`);
