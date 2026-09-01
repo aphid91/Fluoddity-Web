@@ -112,7 +112,7 @@ export const BRUSH_MODE_INDEX: Readonly<Record<BrushMode, number>> = Object.from
  * a gesture that was never made. Tuned by eye; Brush Power remains the control
  * for how hard a line actually lands.
  */
-export const LINE_STROKE_GAIN = 8.0;
+export const LINE_STROKE_GAIN = 1.0;
 
 /** Look up a brush mode by string value, or `null` if unknown. */
 export function brushModeFromValue(value: string): BrushMode | null {
