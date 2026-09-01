@@ -144,6 +144,7 @@ export async function putNode(
   db: IDBDatabase,
   node: ArchiveNode,
   root: ArchiveRoot | null,
+  supersedes: string | null = null,
 ): Promise<void> {
   const stores = root === null ? [NODE_STORE] : [NODE_STORE, ROOT_STORE];
   const tx = db.transaction(stores, 'readwrite');
@@ -152,10 +153,19 @@ export async function putNode(
     tx.onerror = () => reject(tx.error ?? new Error('archive write failed'));
     tx.onabort = () => reject(tx.error ?? new Error('archive write aborted'));
   });
+  // **THE SUPERSEDED NODE GOES IN THE SAME TRANSACTION as its replacement.** A
+  // coalescing gesture files a node per frame and keeps only the value the user
+  // settled on, so each frame retires the one before it. Doing both here means
+  // the archive is never observed holding both, or neither -- the same
+  // all-or-nothing argument the node/root pairing below makes.
+  if (supersedes !== null) tx.objectStore(NODE_STORE).delete(supersedes);
   // `add`, not `put`: a node is written once and never revised, so a second
   // write for the same hash is a bug in the caller's dedup rather than an
   // update. Letting it throw surfaces that instead of silently rewriting
   // parentage -- which is the one field that must never move after first visit.
+  //
+  // A superseding write is not an exception to that: it DELETES one hash and
+  // ADDS a different one, so no record is ever rewritten in place.
   tx.objectStore(NODE_STORE).add(node);
   if (root !== null) tx.objectStore(ROOT_STORE).add(root);
   await done;

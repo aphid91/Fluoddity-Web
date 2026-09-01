@@ -73,7 +73,18 @@ class FakeStore implements ArchiveStore {
   readonly roots: ArchiveRoot[] = [];
   seed: Set<string> = new Set();
 
-  put(node: ArchiveNode, root: ArchiveRoot | null): Promise<void> {
+  put(
+    node: ArchiveNode,
+    root: ArchiveRoot | null,
+    supersedes?: string | null,
+  ): Promise<void> {
+    // Retiring the superseded node is what the real store's transaction does,
+    // and the tests assert on `nodes` -- so a fake that skipped it would report
+    // a drag leaving a pile behind when it does not.
+    if (supersedes !== undefined && supersedes !== null) {
+      const at = this.nodes.findIndex((n) => n.hash === supersedes);
+      if (at >= 0) this.nodes.splice(at, 1);
+    }
     this.nodes.push(node);
     if (root !== null) this.roots.push(root);
     return Promise.resolve();
@@ -332,7 +343,7 @@ test('a stale cursor defers to the before-state it is handed', async () => {
 // menu showed the one entry it always did.
 // ---------------------------------------------------------------------------
 
-test('a coalesced drag files one node, not one per frame', async () => {
+test('a coalesced drag leaves exactly one node: the value it settled on', async () => {
   const { archive, store } = await enabled();
   const rootNodes = store.nodes.length;
 
@@ -342,12 +353,45 @@ test('a coalesced drag files one node, not one per frame', async () => {
   archive.recordVisit(at(3), at(4), 'edit Gain', null, 'coalesced');
   archive.recordVisit(at(4), at(5), 'edit Gain', null, 'coalesced');
 
-  // Four calls, four states genuinely visited -- but the gesture builds on its
-  // ORIGIN rather than chaining, so none of them is parented on another.
-  for (const gain of [2, 3, 4, 5]) {
-    assert.equal(store.find(at(gain))?.parent, hashState(base));
+  // ONE NODE PER COALESCED ACTION, exactly as the undo stack sees it. The values
+  // swept past are not choices -- nobody decided on the number a slider was
+  // passing through on its way somewhere else.
+  assert.equal(store.nodes.length - rootNodes, 1);
+  assert.equal(store.find(at(5))?.parent, hashState(base));
+  for (const gain of [2, 3, 4]) {
+    assert.equal(store.find(at(gain)), undefined, `gain ${gain} should be retired`);
   }
-  assert.equal(store.nodes.length - rootNodes, 4);
+});
+
+test('a retired state can be reached again later', async () => {
+  // The dedup set has to forget a superseded hash along with the store. Leaving
+  // it behind would make the archive believe that value is on record when it is
+  // not, so arriving there deliberately would be read as a revisit and never
+  // filed -- permanently unrecordable for the rest of the session.
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(2), 'edit Gain', null, 'appended');
+  archive.recordVisit(at(2), at(3), 'edit Gain', null, 'coalesced');
+  assert.equal(store.find(at(2)), undefined);
+
+  // Now arrive at gain 2 as a deliberate act of its own.
+  archive.recordVisit(at(3), at(2), 'edit Gain', null, 'appended');
+  assert.notEqual(store.find(at(2)), undefined);
+});
+
+test('a drag sweeping through an older state does not delete it', async () => {
+  // That node belongs to whatever earlier act discovered it; this gesture has no
+  // claim on it.
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(4), 'earlier act', null, 'appended');
+  archive.moveCursor(base);
+
+  // A drag that passes across gain 4 on its way to 6.
+  archive.recordVisit(base, at(3), 'edit Gain', null, 'appended');
+  archive.recordVisit(at(3), at(4), 'edit Gain', null, 'coalesced');
+  archive.recordVisit(at(4), at(6), 'edit Gain', null, 'coalesced');
+
+  assert.notEqual(store.find(at(4)), undefined, 'the older node survives');
+  assert.equal(store.find(at(6))?.parent, hashState(base));
 });
 
 test('a coalesced step derives its delta from the gesture origin', async () => {
@@ -376,6 +420,8 @@ test('an appended step after a drag parents on where the drag ended', async () =
   archive.recordVisit(at(5), at(6), 'edit Angle', null, 'appended');
 
   assert.equal(store.find(at(6))?.parent, hashState(at(5)));
+  // And the drag itself is still one node, so base -> 5 -> 6 is the whole chain.
+  assert.equal(store.find(at(2)), undefined);
 });
 
 test('dragging back to the start files nothing new', async () => {

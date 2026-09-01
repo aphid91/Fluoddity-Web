@@ -82,7 +82,17 @@ export type RootReason = 'session' | 'load' | 'paste' | 'checkpoint' | 'logging-
 
 /** The storage surface, injectable so tests run under `node --test` with no IDB. */
 export interface ArchiveStore {
-  put(node: ArchiveNode, root: ArchiveRoot | null): Promise<void>;
+  /**
+   * Write a node, its root if it has one, and retire `supersedes` if given.
+   *
+   * All in ONE transaction: a coalescing gesture replaces its own last frame,
+   * and an archive observed holding both -- or neither -- is a corrupt one.
+   */
+  put(
+    node: ArchiveNode,
+    root: ArchiveRoot | null,
+    supersedes?: string | null,
+  ): Promise<void>;
   known(): Promise<Set<string>>;
   count(): Promise<number>;
 }
@@ -90,7 +100,7 @@ export interface ArchiveStore {
 /** The real store, over the archive database. */
 export function idbStore(db: IDBDatabase): ArchiveStore {
   return {
-    put: (node, root) => putNode(db, node, root),
+    put: (node, root, supersedes) => putNode(db, node, root, supersedes ?? null),
     known: () => loadKnownHashes(db),
     count: () => nodeCount(db),
   };
@@ -129,6 +139,16 @@ export class ProjectArchive {
    * coalescing key (a slider drag) ever sets it.
    */
   private gestureParent: string | null = null;
+  /**
+   * The node this gesture has filed, and which the next frame retires.
+   *
+   * **ONLY EVER A NODE THIS GESTURE CREATED.** Null when the drag has passed
+   * through a state that was already on record, because that node was somebody
+   * else's discovery and deleting it would erase a visit this gesture did not
+   * make. A drag that sweeps across an old state therefore leaves it alone and
+   * simply stops superseding until it files something new.
+   */
+  private gestureNode: string | null = null;
   /**
    * The gesture's ORIGIN STATE, held so a replacement's delta can be derived
    * against the same node it is parented on.
@@ -251,8 +271,8 @@ export class ProjectArchive {
   ): void {
     if (this.store === null) return;
 
-    // **A COALESCED STEP CONTINUES THE GESTURE ALREADY ON RECORD, so it REPLACES
-    // the node that gesture is building rather than adding one.**
+    // **A COALESCED STEP CONTINUES THE GESTURE ALREADY ON RECORD, so it retires
+    // the frame before it rather than adding to a pile.**
     //
     // Without this the archive files a node per FRAME of a drag: `record` is
     // called on every one, and only the timeline knew that the fortieth call was
@@ -260,12 +280,12 @@ export class ProjectArchive {
     // hundred states -- exactly the flood coalescing exists to prevent, and
     // invisible in the undo menu, which showed the one entry it always did.
     //
-    // The archive is therefore EXACTLY as strict as the undo stack: one node per
-    // entry on the timeline, no more. Deliberately not stricter -- a second
-    // policy would be a second thing to reason about, and the timeline's answer
-    // is the one the user experiences as "a step".
+    // The archive is therefore EXACTLY as strict as the undo stack: ONE NODE PER
+    // COALESCED ACTION. The timeline's answer to "what counts as a step" is the
+    // one the user experiences, so a second policy here would only be a second
+    // thing to reason about.
     if (outcome === 'coalesced' && this.gestureOrigin !== null) {
-      this.replaceGestureNode(after, label, tag);
+      this.advanceGesture(after, label, tag);
       return;
     }
     // Any non-coalesced step ends whatever gesture was in progress.
@@ -319,34 +339,39 @@ export class ProjectArchive {
     // Only a keyed step can be extended, but recording that here unconditionally
     // costs nothing and keeps the two paths symmetric -- an unkeyed act simply
     // never sees a `coalesced` outcome to use it.
+    //
+    // `gestureNode` is this node: if the next call continues the gesture, THIS is
+    // the frame it retires. A one-shot act sets it too and simply never has it
+    // read.
     this.gestureParent = this.cursorHash;
     this.gestureOrigin = before;
+    this.gestureNode = hash;
     this.commit(hash, node, root);
   }
 
   /**
-   * File one frame of a gesture already in progress.
+   * Advance a gesture already in progress, retiring the frame before it.
    *
-   * **THE ARCHIVE'S ANALOGUE OF `History`'s in-place update**, and it keeps that
-   * method's invariant: the gesture's START does not move, only its end. Every
-   * frame is parented on `gestureParent` -- where the drag began -- rather than
-   * on the value it happens to be leaving, which is what stops a slider sweep
-   * laying down a chain of forty nodes each parented on the last.
+   * **THE ARCHIVE'S ANALOGUE OF `History`'s in-place update, and it matches it
+   * exactly: ONE NODE PER COALESCED ACTION.** The gesture's START does not move,
+   * only its end. Each frame is parented on `gestureParent` -- where the drag
+   * began -- and DELETES the node the previous frame filed, so a two-second
+   * slider sweep leaves the single value the user settled on rather than the
+   * hundred it swept past.
    *
-   * **NOTHING IS DELETED, and that is deliberate.** Each state the drag passed
-   * through was genuinely visited: the user held the slider there and saw it.
-   * Under first-visit parentage a state that has been reached stays reached, and
-   * removing it would make the archive disagree with what happened. So a drag
-   * leaves the values it swept through as siblings hanging off its origin, and
-   * the value the user settled on is simply the one the next act continues from.
-   * Nodes are never revised once written, which is what lets `putNode` use `add`
-   * rather than `put`.
+   * The intermediate values are genuinely discarded, not merely re-parented.
+   * They were technically visited, but they are not choices: nobody decided on
+   * the value a slider was passing through on its way somewhere else, and a
+   * dataset about exploration should record where the exploring stopped. That is
+   * the same judgement `History` already makes for undo, and the archive is now
+   * no stricter and no looser than the timeline.
    *
-   * The GRAPH therefore stays honest about what was seen while the TIMELINE
-   * stays honest about what was done -- which is the whole reason these are two
-   * structures rather than one.
+   * **A STATE THAT WAS ALREADY ON RECORD IS NEVER DELETED**, even if a drag
+   * happens to pass through it -- it belongs to whatever earlier act discovered
+   * it, and this gesture has no claim on it. `gestureNode` is null in that case
+   * and the sweep simply stops superseding until it files something new.
    */
-  private replaceGestureNode(
+  private advanceGesture(
     after: Project,
     label: string,
     tag: ArchiveTag | null,
@@ -355,10 +380,12 @@ export class ProjectArchive {
     if (origin === null) return;
 
     const hash = hashState(after);
-    // Landing back on a state already recorded -- dragging a slider back to where
-    // it started, which happens constantly. Nothing to file; just follow it.
+    // Landing on a state already recorded -- dragging a slider back to where it
+    // started, which happens constantly. Nothing to file, and nothing to retire:
+    // this node is not the gesture's to remove.
     if (this.known.has(hash)) {
       this.cursorHash = hash;
+      this.gestureNode = null;
       return;
     }
 
@@ -375,7 +402,9 @@ export class ProjectArchive {
       visitedAt: this.now(),
       session: this.session,
     };
-    this.commit(hash, node, null);
+    const superseded = this.gestureNode;
+    this.gestureNode = hash;
+    this.commit(hash, node, null, superseded);
   }
 
   /**
@@ -428,6 +457,7 @@ export class ProjectArchive {
   private endGesture(): void {
     this.gestureParent = null;
     this.gestureOrigin = null;
+    this.gestureNode = null;
   }
 
   /** How many states are on record. For the Preferences readout. */
@@ -447,10 +477,21 @@ export class ProjectArchive {
    * both file the same state, and the write is left to settle in the background.
    * See the header on why failure is silent.
    */
-  private commit(hash: string, node: ArchiveNode, root: ArchiveRoot | null): void {
+  private commit(
+    hash: string,
+    node: ArchiveNode,
+    root: ArchiveRoot | null,
+    supersedes: string | null = null,
+  ): void {
+    // **THE RETIRED NODE LEAVES THE DEDUP SET TOO.** That set is the in-memory
+    // mirror of what is stored, and leaving a deleted hash in it would make the
+    // archive believe a state is on record when it is not -- so returning to
+    // that value later would be treated as a revisit and never re-filed. The
+    // state would be permanently unrecordable for the rest of the session.
+    if (supersedes !== null) this.known.delete(supersedes);
     this.known.add(hash);
     this.cursorHash = hash;
-    void this.store?.put(node, root).catch((e: unknown) => {
+    void this.store?.put(node, root, supersedes).catch((e: unknown) => {
       if (this.warned) return;
       this.warned = true;
       console.warn(`Archive write failed (${String(e)}); further failures are silent.`);
