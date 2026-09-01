@@ -319,13 +319,15 @@ test('grouped preserves declaration order and omits empty groups', () => {
   // 'Mutation' is absent, and that is the point: both its members are
   // `panel: false`, so the group empties itself through `visible()` and is
   // omitted for exactly the same reason an all-Advanced group is in Basic.
-  // 'Behavior' is LAST because its one member is declared last, which is how
-  // "Reset on Behavior Change" ends up at the bottom of the Preferences panel.
-  // That placement is the reason it is a group of its own, so it is pinned here.
+  // 'Behavior' and then 'Archive' come LAST because their members are declared
+  // last, which is how they end up at the bottom of the Preferences panel. Both
+  // placements are the reason each is a group of its own, so the order is pinned
+  // here -- 'Archive' is the research feature, and it must stay below every
+  // setting that changes what the app does.
   assert.deepEqual(
     advanced.map(([name]) => name),
     ['Population', 'Sensors', 'Forces', 'Trails', 'Appearance',
-     'Advanced', 'Simulation', 'Display', 'Behavior'],
+     'Advanced', 'Simulation', 'Display', 'Behavior', 'Archive'],
   );
   // 'Trails' holds one ADVANCED entry, so Basic must not render it.
   const basic = grouped(false, [CONFIG, WORLD, PREFS]);

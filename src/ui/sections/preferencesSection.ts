@@ -35,6 +35,22 @@ export function buildPreferencesSection(
   const bindings: ControlBinding[] = [];
   /** Set by the calibrate button, so `refresh` can keep its label current. */
   let paintCalibrateButton: (() => void) | null = null;
+  /**
+   * The archive buttons' blades, hidden while Strong Logging is off.
+   *
+   * **NOT `revealsOn`, and it is not an oversight.** That mechanism resolves a
+   * `Setting`'s governing field and is applied by `Panel.applyVisibility`, which
+   * walks `ControlBinding`s -- and these are buttons, which have no registry
+   * entry and produce no binding. Giving them one would mean inventing a
+   * `Setting` for something that stores no value, which is exactly what
+   * `advancedToggle.ts` declined to do for the same reason.
+   *
+   * So the section owns their visibility and applies it from `refresh`, which is
+   * the same per-frame pass `applyVisibility` runs in. `blade.hidden` rather than
+   * a rebuild, for the reason that method gives: a rebuild would drop folder
+   * expansion state to change a class.
+   */
+  const archiveButtons: { hidden: boolean }[] = [];
 
   // FIRST, above the groups it governs. See `projectSection.ts`.
   addAdvancedToggle(folder, 'advancedPreferences', ctx);
@@ -58,22 +74,24 @@ export function buildPreferencesSection(
         paintCalibrateButton = addCalibrateButton(sub, ctx.calibrateRate);
       }
 
-      // **DIRECTLY BENEATH THE CHECKBOX IT SERVES**, for the reason the
-      // calibrate button sits under Physics Rate: a download button several rows
-      // away reads as belonging to whatever it happens to sit under.
+      // **DIRECTLY BENEATH THE CHECKBOX THEY SERVE**, for the reason the
+      // calibrate button sits under Physics Rate: a button several rows away
+      // reads as belonging to whatever it happens to sit under.
       //
-      // Built whether or not logging is currently ON: the archive outlives the
-      // preference, so someone who recorded a session and then unticked the box
-      // must still be able to get their data out. Absent only where the host
-      // supplies no exporter (the DOM tests).
+      // BUILT ALWAYS, SHOWN CONDITIONALLY -- see `archiveButtons`. They are
+      // hidden while Strong Logging is off, so someone who has never turned the
+      // feature on sees one checkbox rather than three rows of machinery for a
+      // database they do not have. Absent entirely only where the host supplies
+      // no handler (the DOM tests), which leaves no button rather than an inert
+      // one.
       if (setting.field === 'strongLogging' && ctx.downloadArchive !== undefined) {
-        addDownloadArchiveButton(sub, ctx.downloadArchive);
+        archiveButtons.push(addDownloadArchiveButton(sub, ctx.downloadArchive));
       }
       // AFTER the download button, deliberately: the safe action is the one
       // reached first, and "keep a copy before discarding it" is the order these
       // two are meant to be used in.
       if (setting.field === 'strongLogging' && ctx.clearArchive !== undefined) {
-        addClearArchiveButton(sub, ctx.clearArchive);
+        archiveButtons.push(addClearArchiveButton(sub, ctx.clearArchive));
       }
     }
   }
@@ -86,6 +104,19 @@ export function buildPreferencesSection(
       // The label carries the run's progress, so it changes every probe. Cheap:
       // `paintCalibrateButton` guards on the rendered string.
       paintCalibrateButton?.();
+
+      // **READ FROM `editPrefs`, WHICH IS EMPTY WHILE THE PANEL IS SHUT** -- the
+      // deliberate optimization in `settingsSources`. That makes the buttons
+      // hide themselves whenever nothing can see them, which costs nothing and
+      // is the same conclusion `isRevealed` reaches from the same absence: a
+      // missing governing value counts as OFF.
+      const on = s.editPrefs['strongLogging'] === true;
+      for (const blade of archiveButtons) {
+        // Guarded on an actual transition, because the setter touches class
+        // lists and this runs every frame. Same reasoning as
+        // `Panel.applyVisibility`.
+        if (blade.hidden !== !on) blade.hidden = !on;
+      }
     },
   };
 }
@@ -135,7 +166,7 @@ function spanRow(element: HTMLElement, settingId: string): void {
 function addClearArchiveButton(
   folder: FolderApi,
   clear: NonNullable<SectionContext['clearArchive']>,
-): void {
+): { hidden: boolean } {
   const button = folder.addButton({ title: 'Clear Archive…' });
   spanRow(button.element as HTMLElement, 'prefs.strongLogging.clear');
   // The ellipsis is doing real work: it is the convention for "this opens a
@@ -144,6 +175,10 @@ function addClearArchiveButton(
   button.on('click', () => {
     clear();
   });
+  // The BLADE, so the caller can hide it. Returned rather than the element,
+  // because `hidden` is Tweakpane's own property and setting it keeps the pane's
+  // idea of the row in step with the DOM.
+  return button;
 }
 
 /**
@@ -161,7 +196,7 @@ function addClearArchiveButton(
 function addDownloadArchiveButton(
   folder: FolderApi,
   download: NonNullable<SectionContext['downloadArchive']>,
-): void {
+): { hidden: boolean } {
   const TITLE = 'Download Archive';
   const button = folder.addButton({ title: TITLE });
   spanRow(button.element as HTMLElement, 'prefs.strongLogging.download');
@@ -185,6 +220,8 @@ function addDownloadArchiveButton(
         button.title = TITLE;
       });
   });
+  // The blade, so the caller can hide it. See `addClearArchiveButton`.
+  return button;
 }
 
 /**
