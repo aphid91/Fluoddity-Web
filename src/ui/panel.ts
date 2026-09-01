@@ -282,6 +282,18 @@ export interface PanelOptions {
     readonly finish: (recorder: VideoRecorder) => Promise<RecordingResult>;
   };
   /**
+   * Write the strong-logging archive to a file.
+   *
+   * Injected for `recording`'s reason and by the same argument: the export needs
+   * the Orchestrator's archive database AND an `<a download>`, and `CommandBus`
+   * deliberately admits neither -- it is a value-in, value-out seam that keeps
+   * DOM and Web APIs out of the Orchestrator. `main.ts` holds both halves.
+   *
+   * Omitted in the DOM tests, where the button is then absent rather than
+   * present and broken.
+   */
+  readonly downloadArchive?: () => Promise<void>;
+  /**
    * The canvas a share image is captured from.
    *
    * PASSED IN rather than found with `getElementById`, matching how `bus` and
@@ -613,6 +625,13 @@ export class Panel {
   private readonly recording: NonNullable<PanelOptions['recording']> | null;
 
   /**
+   * See `PanelOptions.downloadArchive`. Null where the host supplies no exporter.
+   *
+   * `NonNullable` for the reason `recording` above is: one way to say absent.
+   */
+  private readonly downloadArchive: NonNullable<PanelOptions['downloadArchive']> | null;
+
+  /**
    * Whether a calibration run is in flight.
    *
    * Guards against a second run being started on top of the first -- two
@@ -648,6 +667,7 @@ export class Panel {
     this.runCalibration = opts.runCalibration ?? null;
     this.onHiddenChange = opts.onHiddenChange ?? null;
     this.recording = opts.recording ?? null;
+    this.downloadArchive = opts.downloadArchive ?? null;
 
     // **RESETTING PREFERENCES RE-CALIBRATES.** A reset puts World Size and
     // Physics Rate back to compiled-in defaults the user never chose and their
@@ -1030,6 +1050,11 @@ export class Panel {
       // Project section cannot accidentally grow a calibrate button by reading a
       // context member that was never meant for it.
       ...(which === RIGHT ? { calibrateRate: this.calibrateRateContext() } : {}),
+      // RIGHT ONLY, for the same reason: `strongLogging` is a `PREFS` field, so
+      // its button can only be built in the Preferences tab.
+      ...(which === RIGHT && this.downloadArchive !== null
+        ? { downloadArchive: this.downloadArchive }
+        : {}),
     };
   }
 

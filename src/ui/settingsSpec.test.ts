@@ -127,6 +127,9 @@ test('the registry has the same 35 entries the desktop does, plus the web-only o
     // No desktop equivalent: the desktop has one layout and no touch input, so
     // there is nothing for it to choose between.
     'mobileMode',
+    // No desktop equivalent: the state archive is a web-only research feature,
+    // and there is no IndexedDB behind the desktop to write it to.
+    'strongLogging',
   ];
   const ported = SETTINGS.filter((s) => !WEB_ONLY.includes(s.field));
   assert.equal(ported.length, 35);

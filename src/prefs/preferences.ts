@@ -250,6 +250,27 @@ export interface Preferences {
    */
   readonly oneClickSelection: boolean;
 
+  /**
+   * Record every project state visited into the permanent archive (`archive/`).
+   *
+   * **A RESEARCH FEATURE, NOT A WORKING PREFERENCE**, which is why it is Advanced
+   * tier and defaults OFF. It changes nothing about the simulation, the panels or
+   * what is rendered; it writes a graph of visited states to its own IndexedDB
+   * database so the exploration can be studied offline. Somebody who never ticks
+   * it never pays for it -- `ProjectArchive` is constructed inert and costs one
+   * null check per undo entry.
+   *
+   * **NOT A `ViewPrefField`**, despite being a persisted boolean the panel
+   * renders: those govern how the editor is ARRANGED and have no registry entry.
+   * This is an ordinary row in the Preferences panel and travels by `editSetting`
+   * like every other row -- the same call `showFpsCounter` makes.
+   *
+   * Turning it on mid-session does not retroactively record anything, and the
+   * state the user happens to be in becomes an archive root only if it is
+   * genuinely unseen. See `ProjectArchive.enable`.
+   */
+  readonly strongLogging: boolean;
+
   // --- disruptive: changing these reallocates and resets the simulation ---
   /** Scales entity count and canvas resolution together. */
   readonly worldSize: number;
@@ -376,6 +397,9 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   showReticle: true,
   resetOnBehaviorChange: true,
   oneClickSelection: false,
+  // OFF. A research feature that writes a database; nobody gets one without
+  // asking. See the interface.
+  strongLogging: false,
   worldSize: .50,
   canvasAspect: 1.0,
   // Basic for a first-run user. Persisted thereafter -- see the interface.
@@ -433,6 +457,7 @@ export const PREFERENCE_KINDS = {
   showReticle: 'bool',
   resetOnBehaviorChange: 'bool',
   oneClickSelection: 'bool',
+  strongLogging: 'bool',
   worldSize: 'float',
   canvasAspect: 'float',
   advancedProject: 'bool',

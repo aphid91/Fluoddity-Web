@@ -74,6 +74,10 @@ import {
   describeHistoryStep,
   historyLabelFor,
 } from './notices.ts';
+import { ProjectArchive, openArchiveStore } from '../archive/archive.ts';
+import { openArchiveDb } from '../archive/archiveDb.ts';
+import { type ArchiveDocument, buildArchiveDocument } from '../archive/export.ts';
+import type { ArchiveTag } from '../archive/delta.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
 // TYPE-ONLY. `recorder.ts` reaches mediabunny through a dynamic `import()`, and
 // a value import here would pull the whole encoder into the main bundle for
@@ -487,6 +491,16 @@ export class Orchestrator implements CommandBus {
   private recorder: VideoRecorder | null = null;
 
   /**
+   * The permanent state archive. Constructed INERT and does nothing until the
+   * `strongLogging` preference turns it on -- see `archive/archive.ts`.
+   *
+   * Always present rather than nullable, so the one call site in `recordHistory`
+   * has no branch to forget. A disabled archive costs a null check per undo
+   * entry, which is once per deliberate act.
+   */
+  private readonly archive = new ProjectArchive();
+
+  /**
    * Whether a settings panel is open, so `settingsSources()` can skip building
    * the three payloads when nothing reads them.
    *
@@ -536,6 +550,12 @@ export class Orchestrator implements CommandBus {
 
     this.history.seed(this.project);
     this.selection = new SelectionController(this.selectionHost());
+
+    // The preference PERSISTS, so a session that starts with it on begins
+    // recording immediately -- otherwise strong logging would silently need
+    // re-ticking every reload. The startup state becomes a root only if it is
+    // unseen, which for a returning user's usual preset it will not be.
+    if (this.prefs.strongLogging) this.startArchiving();
   }
 
   /**
@@ -1694,7 +1714,24 @@ export class Orchestrator implements CommandBus {
         this.setProject(p);
       },
       recordHistory: (before, label) => {
-        this.recordHistory(before, label);
+        // THE COHORT IS TAGGED, and this is the only call site that needs to.
+        // An adopted rule is a pure function of the parent state and the cohort
+        // (`rule.wgsl`), so the archive stores the number and recomputes the 80
+        // floats offline -- but the number cannot be recovered from the rule,
+        // and this is the only place that knows it.
+        //
+        // `this.selected` is the pick that produced this very commit:
+        // `SelectionController.resolve` calls `setSelected` immediately before
+        // `recordHistory`, so it is the winner and not a stale one. Null only
+        // if that ordering changes, and the archive would rather record a
+        // rule-bearing delta than a wrong cohort -- hence no fallback guess.
+        const picked = this.selected;
+        this.recordHistory(
+          before,
+          label,
+          null,
+          picked === null ? null : { kind: 'commitSelection', cohort: picked.cohort },
+        );
       },
       setSelected: (result) => {
         this.selected = result;
@@ -1848,9 +1885,24 @@ export class Orchestrator implements CommandBus {
     this.recordHistory(before, historyLabelFor(event));
   }
 
-  private recordHistory(before: Project, label: string, coalesceKey: string | null = null): void {
+  /**
+   * `tag` carries what a state diff cannot recover. Today that is exactly one
+   * thing -- a selection's cohort number -- and it is optional so the other call
+   * sites are unchanged. See `archive/delta.ts`'s `ArchiveTag`.
+   */
+  private recordHistory(
+    before: Project,
+    label: string,
+    coalesceKey: string | null = null,
+    tag: ArchiveTag | null = null,
+  ): void {
     if (before !== this.project) {
       this.history.record(before, this.project, label, coalesceKey);
+      // AFTER the history record and inside the same identity guard, so the
+      // archive sees exactly the steps the timeline does -- previews and
+      // undo/redo excluded, drags already coalesced. Never throws into a frame:
+      // `recordVisit` is synchronous bookkeeping plus a detached write.
+      this.archive.recordVisit(before, this.project, label, tag);
     }
   }
 
@@ -2209,6 +2261,12 @@ export class Orchestrator implements CommandBus {
         if (previous !== null) {
           this.notify(describeHistoryStep('undo', undone));
           this.setProject(previous);
+          // THE ARCHIVE CURSOR FOLLOWS, and nothing is recorded. An undo reaches
+          // a state already on the map, so there is no discovery -- but the next
+          // act's parent is read from the cursor, and that is what makes undoing
+          // and then working forward record a BRANCH rather than a straight
+          // line. See `archive/archive.ts`.
+          this.archive.moveCursor(previous);
           this.resetForUndoRedo();
           // Undoing a rule adoption or a reroll gives the particles a target
           // rule they were not obeying a moment ago, which is a behavior change
@@ -2238,6 +2296,8 @@ export class Orchestrator implements CommandBus {
         if (next !== null) {
           this.notify(describeHistoryStep('redo', redone));
           this.setProject(next);
+          // Follows without recording, exactly as undo does above.
+          this.archive.moveCursor(next);
           this.resetForUndoRedo();
           // Redo re-applies the rule change undo just took away, so it is a
           // behavior change by the same argument. See the undo case above.
@@ -2574,6 +2634,45 @@ export class Orchestrator implements CommandBus {
   //     app down.
   // =========================================================================
 
+  /**
+   * Open the archive and begin recording from the current state.
+   *
+   * FIRE-AND-FORGET, like every other storage handler here, and silent on
+   * failure: an unavailable database means strong logging simply does not
+   * happen. It is a research feature, and nothing about the app's real work
+   * depends on it -- reporting through `saveError` would put an archive problem
+   * in the same place a lost save appears, which overstates it.
+   *
+   * The current project becomes a ROOT only if it is genuinely unseen; someone
+   * who enables logging while sitting on a preset they have visited before adds
+   * no root. `ProjectArchive.enable` does that dedup.
+   */
+  private startArchiving(): void {
+    void openArchiveStore().then((store) => {
+      if (store === null) return;
+      // Re-read the preference rather than trusting the call: the open is async,
+      // and a user who ticked the box and immediately unticked it must not end
+      // up with a live archive.
+      if (!this.prefs.strongLogging) return;
+      return this.archive.enable(store, this.project);
+    });
+  }
+
+  /**
+   * The archive as a document, or null when there is nothing to export.
+   *
+   * PUBLIC, because the Preferences panel's download button needs it and the UI
+   * holds only the `Status`/`dispatch` boundary otherwise. Returning the document
+   * rather than triggering the download keeps the DOM out of the Orchestrator --
+   * `preferencesSection.ts` owns the blob and the anchor, as `saveFile.ts` does
+   * for recordings.
+   */
+  async exportArchive(): Promise<ArchiveDocument | null> {
+    const db = await openArchiveDb();
+    if (db === null) return null;
+    return await buildArchiveDocument(db);
+  }
+
   /** Look an entry up, reporting through `saveError` rather than throwing. */
   private resolveEntry(category: string, name: string): ConfigEntry | null {
     const entry = this.store.entry(category, name);
@@ -2845,6 +2944,19 @@ export class Orchestrator implements CommandBus {
     // user aimed at minutes ago.
     if (updated.oneClickSelection && !this.prefs.oneClickSelection) {
       this.clearHighlight();
+    }
+    // STRONG LOGGING FLIPPING IS A SIDE EFFECT OF THE PREFERENCE, so it belongs
+    // here for the reason `oneClickSelection`'s clear does: this is the one place
+    // preferences change, and a second route would be a second thing to forget.
+    //
+    // Enabling opens the database and seeds the dedup set, which is async -- and
+    // deliberately NOT awaited: `adoptPreferences` is called from synchronous
+    // command handlers, and a checkbox must not block a frame on IndexedDB. The
+    // archive records nothing until it settles, which costs at most the first act
+    // after ticking the box.
+    if (updated.strongLogging !== this.prefs.strongLogging) {
+      if (updated.strongLogging) this.startArchiving();
+      else this.archive.disable();
     }
     this.prefs = updated;
     // THE ONE PLACE THE FIELD STRENGTHS REACH THE SIMULATION, because this is the

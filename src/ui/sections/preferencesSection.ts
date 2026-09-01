@@ -57,6 +57,18 @@ export function buildPreferencesSection(
       if (setting.field === 'physicsSteps' && ctx.calibrateRate !== undefined) {
         paintCalibrateButton = addCalibrateButton(sub, ctx.calibrateRate);
       }
+
+      // **DIRECTLY BENEATH THE CHECKBOX IT SERVES**, for the reason the
+      // calibrate button sits under Physics Rate: a download button several rows
+      // away reads as belonging to whatever it happens to sit under.
+      //
+      // Built whether or not logging is currently ON: the archive outlives the
+      // preference, so someone who recorded a session and then unticked the box
+      // must still be able to get their data out. Absent only where the host
+      // supplies no exporter (the DOM tests).
+      if (setting.field === 'strongLogging' && ctx.downloadArchive !== undefined) {
+        addDownloadArchiveButton(sub, ctx.downloadArchive);
+      }
     }
   }
 
@@ -70,6 +82,59 @@ export function buildPreferencesSection(
       paintCalibrateButton?.();
     },
   };
+}
+
+/**
+ * The Download Archive button.
+ *
+ * Full-width for the reason the calibrate button is: it acts on the checkbox
+ * ABOVE it and has nothing to sit beside, and its label changes while it runs.
+ *
+ * **THE LABEL IS THE ONLY PROGRESS REPORT, and that is deliberate.** Reading a
+ * large archive out of IndexedDB and serializing it takes a moment, and the
+ * alternative -- a toast, or a `Status` field -- would put a research feature's
+ * plumbing into the frame loop. A button that says "Preparing…" and then goes
+ * back to its name is the whole of what this needs.
+ */
+function addDownloadArchiveButton(
+  folder: FolderApi,
+  download: NonNullable<SectionContext['downloadArchive']>,
+): void {
+  const TITLE = 'Download Archive';
+  const button = folder.addButton({ title: TITLE });
+  const element = button.element as HTMLElement;
+  element.dataset['setting'] = 'prefs.strongLogging.download';
+
+  // The label column is collapsed exactly as `addCalibrateButton` does it, and
+  // found the same structural way -- see that function for why Tweakpane's own
+  // class names are never used here.
+  const cells = [...element.children].filter(
+    (cell): cell is HTMLElement => cell instanceof HTMLElement,
+  );
+  const label = cells.find((cell) => cell.querySelector('button') === null);
+  if (label !== undefined) label.style.display = 'none';
+  const value = cells.find((cell) => cell.querySelector('button') !== null);
+  if (value !== undefined) value.style.width = '100%';
+
+  let running = false;
+  button.on('click', () => {
+    // A second click while the first export is still reading would start a
+    // second pass over the same database and hand the user two files.
+    if (running) return;
+    running = true;
+    button.title = 'Preparing…';
+    void download()
+      .catch((e: unknown) => {
+        // Reported HERE rather than through `saveError`: that surface is for
+        // lost work, and a failed research export is not that. See
+        // `Orchestrator.startArchiving` for the same argument.
+        console.warn(`Could not export the archive: ${String(e)}`);
+      })
+      .finally(() => {
+        running = false;
+        button.title = TITLE;
+      });
+  });
 }
 
 /**

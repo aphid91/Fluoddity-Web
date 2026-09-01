@@ -830,6 +830,21 @@ export const SETTINGS: readonly Setting[] = [
       'immediately',
     group: 'Behavior',
   }),
+  // A RESEARCH FEATURE, and the only control here that writes a database. Sits
+  // with Behavior rather than earning a group of its own: one checkbox and one
+  // button is not a section, and what it governs -- what happens when you act on
+  // the project -- is what this group is about. See `Preferences.strongLogging`.
+  setting({
+    field: 'strongLogging',
+    label: 'Strong Logging',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'Record every project state you visit to a local archive, so the ' +
+      'exploration can be studied later. Changes nothing on screen',
+    group: 'Behavior',
+  }),
   setting({
     field: 'mobileMode',
     label: 'Touch Layout',

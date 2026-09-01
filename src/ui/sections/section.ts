@@ -75,6 +75,15 @@ export interface SectionContext extends ControlContext {
     /** Whether a run is in flight, so the button can offer to cancel. */
     readonly running: () => boolean;
   };
+  /**
+   * Write the strong-logging archive to a file.
+   *
+   * OPTIONAL, and supplied the same way `calibrateRate` is and for the same
+   * reason: it needs something a section cannot reach -- here the Orchestrator's
+   * database rather than the frame loop. Absent in the DOM tests, where the
+   * button is not built at all rather than built and inert.
+   */
+  readonly downloadArchive?: () => Promise<void>;
 }
 
 /** One built section. */
