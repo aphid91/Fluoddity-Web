@@ -323,6 +323,87 @@ test('a stale cursor defers to the before-state it is handed', async () => {
   assert.notEqual(store.find(at(7)), undefined);
 });
 
+// ---------------------------------------------------------------------------
+// Coalescing
+//
+// A drag calls `recordHistory` once per FRAME. Only `History.record` knows the
+// fortieth call is still the first act, so the archive takes its verdict --
+// without which a two-second slider sweep filed a hundred states while the undo
+// menu showed the one entry it always did.
+// ---------------------------------------------------------------------------
+
+test('a coalesced drag files one node, not one per frame', async () => {
+  const { archive, store } = await enabled();
+  const rootNodes = store.nodes.length;
+
+  // The gesture opens with an appended step, then extends.
+  archive.recordVisit(base, at(2), 'edit Gain', null, 'appended');
+  archive.recordVisit(at(2), at(3), 'edit Gain', null, 'coalesced');
+  archive.recordVisit(at(3), at(4), 'edit Gain', null, 'coalesced');
+  archive.recordVisit(at(4), at(5), 'edit Gain', null, 'coalesced');
+
+  // Four calls, four states genuinely visited -- but the gesture builds on its
+  // ORIGIN rather than chaining, so none of them is parented on another.
+  for (const gain of [2, 3, 4, 5]) {
+    assert.equal(store.find(at(gain))?.parent, hashState(base));
+  }
+  assert.equal(store.nodes.length - rootNodes, 4);
+});
+
+test('a coalesced step derives its delta from the gesture origin', async () => {
+  // A delta means "apply this to my parent". Deriving against the previous FRAME
+  // while parenting on the gesture's start reconstructs to the wrong value --
+  // silently, since both are edits to the same field.
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(2), 'edit Gain', null, 'appended');
+  archive.recordVisit(at(2), at(7), 'edit Gain', null, 'coalesced');
+
+  const node = store.find(at(7));
+  assert.deepEqual(node?.delta, {
+    kind: 'configField',
+    config: 0,
+    field: 'sensorGain',
+    value: 7,
+  });
+});
+
+test('an appended step after a drag parents on where the drag ended', async () => {
+  // The gesture is over; the next act continues from the value the user settled
+  // on, which is what makes a drag read as one step in the graph.
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(2), 'edit Gain', null, 'appended');
+  archive.recordVisit(at(2), at(5), 'edit Gain', null, 'coalesced');
+  archive.recordVisit(at(5), at(6), 'edit Angle', null, 'appended');
+
+  assert.equal(store.find(at(6))?.parent, hashState(at(5)));
+});
+
+test('dragging back to the start files nothing new', async () => {
+  // Constant in practice: a slider swept out and back. The state is already
+  // known, so it is a revisit and the cursor simply follows.
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(2), 'edit Gain', null, 'appended');
+  const after = store.nodes.length;
+  archive.recordVisit(at(2), base, 'edit Gain', null, 'coalesced');
+
+  assert.equal(store.nodes.length, after);
+  assert.equal(archive.cursor, hashState(base));
+});
+
+test('undo ends a gesture, so a later drag cannot parent onto it', async () => {
+  // Mirrors the `breakCoalescing` undo already calls on the timeline. Here the
+  // consequence would be worse than a rewritten label: the gesture's origin
+  // names a state the user has left.
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(2), 'edit Gain', null, 'appended');
+  archive.moveCursor(base);
+
+  // A `coalesced` outcome arriving after the jump must not reach back to the
+  // abandoned gesture; it starts fresh from the cursor.
+  archive.recordVisit(base, at(8), 'edit Gain', null, 'coalesced');
+  assert.equal(store.find(at(8))?.parent, hashState(base));
+});
+
 test('a disabled archive records nothing', async () => {
   const { archive, store } = await enabled();
   const before = store.nodes.length;

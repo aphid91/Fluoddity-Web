@@ -75,7 +75,7 @@ import {
   historyLabelFor,
 } from './notices.ts';
 import { ProjectArchive, openArchiveStore } from '../archive/archive.ts';
-import { openArchiveDb } from '../archive/archiveDb.ts';
+import { clearArchive, openArchiveDb } from '../archive/archiveDb.ts';
 import { type ArchiveDocument, buildArchiveDocument } from '../archive/export.ts';
 import type { ArchiveTag } from '../archive/delta.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
@@ -1897,12 +1897,17 @@ export class Orchestrator implements CommandBus {
     tag: ArchiveTag | null = null,
   ): void {
     if (before !== this.project) {
-      this.history.record(before, this.project, label, coalesceKey);
+      // THE OUTCOME IS PASSED ON, and it is what keeps the archive exactly as
+      // strict as the timeline. A drag calls this once per frame; only `record`
+      // knows the fortieth call is still the first act, so without its answer
+      // the archive filed a node per frame while the undo menu showed the single
+      // entry it always did. See `RecordOutcome`.
+      const outcome = this.history.record(before, this.project, label, coalesceKey);
       // AFTER the history record and inside the same identity guard, so the
       // archive sees exactly the steps the timeline does -- previews and
-      // undo/redo excluded, drags already coalesced. Never throws into a frame:
-      // `recordVisit` is synchronous bookkeeping plus a detached write.
-      this.archive.recordVisit(before, this.project, label, tag);
+      // undo/redo excluded. Never throws into a frame: `recordVisit` is
+      // synchronous bookkeeping plus a detached write.
+      this.archive.recordVisit(before, this.project, label, tag, outcome);
     }
   }
 
@@ -2671,6 +2676,28 @@ export class Orchestrator implements CommandBus {
     const db = await openArchiveDb();
     if (db === null) return null;
     return await buildArchiveDocument(db);
+  }
+
+  /**
+   * Discard every archived state.
+   *
+   * **THE IN-MEMORY DEDUP SET IS CLEARED TOO**, and forgetting that would be the
+   * subtle half of this: `ProjectArchive` mirrors the stored hashes in memory to
+   * keep `recordVisit` synchronous, so a session that emptied the database while
+   * still holding the old set would skip every state it had already seen -- the
+   * user clears the archive, keeps working, and records almost nothing, with no
+   * error anywhere. See `forgetAll`.
+   *
+   * Re-roots afterwards when logging is still on, so the state on screen is
+   * carried into the fresh archive rather than the next act being parented on a
+   * hash that no longer exists.
+   */
+  async clearArchive(): Promise<void> {
+    const db = await openArchiveDb();
+    if (db === null) return;
+    await clearArchive(db);
+    this.archive.forgetAll();
+    if (this.prefs.strongLogging) this.archive.enterState(this.project, 'session');
   }
 
   /** Look an entry up, reporting through `saveError` rather than throwing. */

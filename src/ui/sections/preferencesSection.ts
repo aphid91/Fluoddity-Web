@@ -69,6 +69,12 @@ export function buildPreferencesSection(
       if (setting.field === 'strongLogging' && ctx.downloadArchive !== undefined) {
         addDownloadArchiveButton(sub, ctx.downloadArchive);
       }
+      // AFTER the download button, deliberately: the safe action is the one
+      // reached first, and "keep a copy before discarding it" is the order these
+      // two are meant to be used in.
+      if (setting.field === 'strongLogging' && ctx.clearArchive !== undefined) {
+        addClearArchiveButton(sub, ctx.clearArchive);
+      }
     }
   }
 
@@ -82,6 +88,62 @@ export function buildPreferencesSection(
       paintCalibrateButton?.();
     },
   };
+}
+
+/**
+ * Give a button blade the full row, and tag it for the DOM tests.
+ *
+ * **THE LABEL COLUMN IS COLLAPSED, and it has to be.** Tweakpane lays every
+ * blade out as a fixed label cell beside a value cell, so a button renders in
+ * the right-hand third of the row -- which clipped "Auto-calibrate Physics Rate"
+ * to "Auto-calibrate Physics R". Every button here has a label wide enough to
+ * care, because each is a sentence rather than a word.
+ *
+ * Found STRUCTURALLY, not by class name: Tweakpane's own classes are minified
+ * (`controls.ts` explains at length why the tooling never depends on them), and
+ * what is stable is that the label is the blade's first child cell and holds no
+ * control. Same traversal `perfLabels.ts` uses, and it fails soft the same way --
+ * a Tweakpane change costs the full width, never a crash.
+ *
+ * SHARED BY ALL THREE BUTTONS here rather than copied into each. It was written
+ * once for Auto-calibrate and copied for the archive buttons, which is exactly
+ * the point at which a private helper is cheaper than a third copy.
+ */
+function spanRow(element: HTMLElement, settingId: string): void {
+  element.dataset['setting'] = settingId;
+  const cells = [...element.children].filter(
+    (cell): cell is HTMLElement => cell instanceof HTMLElement,
+  );
+  const label = cells.find((cell) => cell.querySelector('button') === null);
+  if (label !== undefined) label.style.display = 'none';
+  const value = cells.find((cell) => cell.querySelector('button') !== null);
+  if (value !== undefined) value.style.width = '100%';
+}
+
+/**
+ * The Clear Archive button.
+ *
+ * **OPENS A CONFIRMATION; IT DOES NOT CLEAR.** What this destroys cannot be
+ * recreated by any means -- the states are reachable only by having visited
+ * them, and re-visiting means retracing an exploration whose value was that it
+ * was unrepeatable. That is a stronger case for a dialog than Reset Preferences
+ * has, and it gets the same treatment. `Dialogs` owns the wording.
+ *
+ * No running state, unlike the download button: this returns as soon as the
+ * dialog is up, and the work behind it happens after the user has agreed.
+ */
+function addClearArchiveButton(
+  folder: FolderApi,
+  clear: NonNullable<SectionContext['clearArchive']>,
+): void {
+  const button = folder.addButton({ title: 'Clear Archive…' });
+  spanRow(button.element as HTMLElement, 'prefs.strongLogging.clear');
+  // The ellipsis is doing real work: it is the convention for "this opens a
+  // dialog" rather than "this acts now", which is what makes the button safe to
+  // sit one row under a download the user came here for.
+  button.on('click', () => {
+    clear();
+  });
 }
 
 /**
@@ -102,19 +164,7 @@ function addDownloadArchiveButton(
 ): void {
   const TITLE = 'Download Archive';
   const button = folder.addButton({ title: TITLE });
-  const element = button.element as HTMLElement;
-  element.dataset['setting'] = 'prefs.strongLogging.download';
-
-  // The label column is collapsed exactly as `addCalibrateButton` does it, and
-  // found the same structural way -- see that function for why Tweakpane's own
-  // class names are never used here.
-  const cells = [...element.children].filter(
-    (cell): cell is HTMLElement => cell instanceof HTMLElement,
-  );
-  const label = cells.find((cell) => cell.querySelector('button') === null);
-  if (label !== undefined) label.style.display = 'none';
-  const value = cells.find((cell) => cell.querySelector('button') !== null);
-  if (value !== undefined) value.style.width = '100%';
+  spanRow(button.element as HTMLElement, 'prefs.strongLogging.download');
 
   let running = false;
   button.on('click', () => {
@@ -154,27 +204,10 @@ function addCalibrateButton(
   calibrate: NonNullable<SectionContext['calibrateRate']>,
 ): () => void {
   const button = folder.addButton({ title: calibrate.label() });
-  const element = button.element as HTMLElement;
-  element.dataset['setting'] = 'prefs.physicsSteps.calibrate';
-
-  // **THE LABEL COLUMN IS COLLAPSED, and it has to be.** Tweakpane lays every
-  // blade out as a fixed label cell beside a value cell, so a button renders in
-  // the right-hand third of the row -- which clipped this title to
-  // "Auto-calibrate Physics R". This is the one control here wide enough to
-  // care, because its label is a sentence rather than a word.
-  //
-  // Found STRUCTURALLY, not by class name: Tweakpane's own classes are minified
-  // (`controls.ts` explains at length why the tooling never depends on them),
-  // and what is stable is that the label is the blade's first child cell and
-  // holds no control. Same traversal `perfLabels.ts` uses, and it fails soft the
-  // same way -- a Tweakpane change costs the full width, never a crash.
-  const cells = [...element.children].filter(
-    (cell): cell is HTMLElement => cell instanceof HTMLElement,
-  );
-  const label = cells.find((cell) => cell.querySelector('button') === null);
-  if (label !== undefined) label.style.display = 'none';
-  const value = cells.find((cell) => cell.querySelector('button') !== null);
-  if (value !== undefined) value.style.width = '100%';
+  // Full width, for this button's own reason as well as the shared one: it is
+  // the one control here that takes SECONDS to complete, and the width is what
+  // makes its changing label legible while it runs. See `spanRow`.
+  spanRow(button.element as HTMLElement, 'prefs.physicsSteps.calibrate');
 
   // No `isRefreshing` guard: a button's click is always the user's. The guard
   // exists for BINDINGS, whose `change` fires on a programmatic refresh too.

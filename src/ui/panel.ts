@@ -294,6 +294,15 @@ export interface PanelOptions {
    */
   readonly downloadArchive?: () => Promise<void>;
   /**
+   * Discard every archived state. Supplied with `downloadArchive` and for the
+   * same reason -- the database is the Orchestrator's and `CommandBus` admits no
+   * Web APIs.
+   *
+   * The CONFIRMATION is not this function's business: `Dialogs` owns it, and
+   * this runs only after the user has agreed.
+   */
+  readonly clearArchive?: () => Promise<void>;
+  /**
    * The canvas a share image is captured from.
    *
    * PASSED IN rather than found with `getElementById`, matching how `bus` and
@@ -631,6 +640,9 @@ export class Panel {
    */
   private readonly downloadArchive: NonNullable<PanelOptions['downloadArchive']> | null;
 
+  /** See `PanelOptions.clearArchive`. Null where the host supplies none. */
+  private readonly clearArchive: NonNullable<PanelOptions['clearArchive']> | null;
+
   /**
    * Whether a calibration run is in flight.
    *
@@ -668,6 +680,8 @@ export class Panel {
     this.onHiddenChange = opts.onHiddenChange ?? null;
     this.recording = opts.recording ?? null;
     this.downloadArchive = opts.downloadArchive ?? null;
+    // BEFORE `new Dialogs(...)` below, whose clear-archive callback reads it.
+    this.clearArchive = opts.clearArchive ?? null;
 
     // **RESETTING PREFERENCES RE-CALIBRATES.** A reset puts World Size and
     // Physics Rate back to compiled-in defaults the user never chose and their
@@ -691,6 +705,14 @@ export class Panel {
       send,
       onCopyShareLink: () => {
         this.copyShareLink();
+      },
+      onClearArchive: () => {
+        // Fire-and-forget: the dialog has already closed and there is nothing
+        // to report. A failure warns to the console rather than surfacing --
+        // see `preferencesSection`'s download button for the same argument.
+        void this.clearArchive?.().catch((e: unknown) => {
+          console.warn(`Could not clear the archive: ${String(e)}`);
+        });
       },
     });
     // The gear rides the mutation bar now, at its right end -- see the bar's own
@@ -1054,6 +1076,16 @@ export class Panel {
       // its button can only be built in the Preferences tab.
       ...(which === RIGHT && this.downloadArchive !== null
         ? { downloadArchive: this.downloadArchive }
+        : {}),
+      // The button OPENS THE CONFIRMATION rather than clearing: the section
+      // builds a button, and what a destructive one costs is the dialog's
+      // business, not a section's. See `Dialogs.openClearArchive`.
+      ...(which === RIGHT && this.clearArchive !== null
+        ? {
+            clearArchive: () => {
+              this.dialogs.openClearArchive();
+            },
+          }
         : {}),
     };
   }

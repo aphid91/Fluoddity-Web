@@ -481,6 +481,9 @@ async function start(): Promise<void> {
           if (doc === null) return;
           downloadRecording(archiveBlob(doc), archiveFilename());
         },
+        // The other half. Runs only after `Dialogs` has confirmed -- the panel
+        // wires the button to the confirmation, not to this.
+        clearArchive: () => orchestrator.clearArchive(),
         // Omitted under `?nocalibrate`, which leaves `Panel.calibrate()` inert
         // and so also disables the re-run on Reset Editor Preferences.
         ...(params.has('nocalibrate')

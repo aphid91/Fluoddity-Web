@@ -182,3 +182,28 @@ export async function nodeCount(db: IDBDatabase): Promise<number> {
   const tx = db.transaction(NODE_STORE, 'readonly');
   return await promisify(tx.objectStore(NODE_STORE).count());
 }
+
+/**
+ * Empty both stores.
+ *
+ * ONE TRANSACTION, for `putNode`'s reason inverted: roots without their nodes
+ * are unreachable and nodes without their roots are unreconstructable, so the
+ * two stores must never be observed half-cleared. An aborted transaction leaves
+ * the archive exactly as it was, which is the right outcome for a destructive
+ * action that failed partway.
+ *
+ * The DATABASE SURVIVES, only its contents go. Deleting it outright would need
+ * every other tab to close first (`deleteDatabase` blocks on open connections),
+ * so a user with two tabs would get a clear that silently never happened.
+ */
+export async function clearArchive(db: IDBDatabase): Promise<void> {
+  const tx = db.transaction([NODE_STORE, ROOT_STORE], 'readwrite');
+  const done = new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('archive clear failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('archive clear aborted'));
+  });
+  tx.objectStore(NODE_STORE).clear();
+  tx.objectStore(ROOT_STORE).clear();
+  await done;
+}

@@ -60,6 +60,7 @@
  */
 
 import type { Project } from '../project/project.ts';
+import type { RecordOutcome } from '../project/history.ts';
 import { type ArchiveTag, type Delta, deriveDelta } from './delta.ts';
 import { hashState } from './hash.ts';
 import {
@@ -116,6 +117,31 @@ export class ProjectArchive {
   private session = '';
   /** Warn once per session rather than per failed write. */
   private warned = false;
+
+  /**
+   * The gesture currently being extended, if any.
+   *
+   * The state the gesture STARTED from -- the node every frame of the drag
+   * re-parents onto, because a drag's parent is where the hand began, not the
+   * value it passed through last frame.
+   *
+   * Null whenever no gesture is in flight, which is the common case: only a
+   * coalescing key (a slider drag) ever sets it.
+   */
+  private gestureParent: string | null = null;
+  /**
+   * The gesture's ORIGIN STATE, held so a replacement's delta can be derived
+   * against the same node it is parented on.
+   *
+   * A delta means "apply this to my parent". Deriving one against the previous
+   * FRAME while parenting on the gesture's start would produce a delta that
+   * reconstructs to the wrong value -- silently, since both are the same field
+   * and only the number differs. The project itself is held rather than
+   * re-derived because a `Project` is immutable and a reference costs nothing,
+   * which is the same argument `history.ts` makes for storing snapshots.
+   */
+  private gestureOrigin: Project | null = null;
+
   private readonly now: () => number;
 
   constructor(now: () => number = Date.now) {
@@ -157,6 +183,7 @@ export class ProjectArchive {
   disable(): void {
     this.store = null;
     this.cursorHash = null;
+    this.endGesture();
   }
 
   /**
@@ -220,8 +247,29 @@ export class ProjectArchive {
     after: Project,
     label: string,
     tag: ArchiveTag | null = null,
+    outcome: RecordOutcome = 'appended',
   ): void {
     if (this.store === null) return;
+
+    // **A COALESCED STEP CONTINUES THE GESTURE ALREADY ON RECORD, so it REPLACES
+    // the node that gesture is building rather than adding one.**
+    //
+    // Without this the archive files a node per FRAME of a drag: `record` is
+    // called on every one, and only the timeline knew that the fortieth call was
+    // still the same act as the first. A two-second slider sweep became a
+    // hundred states -- exactly the flood coalescing exists to prevent, and
+    // invisible in the undo menu, which showed the one entry it always did.
+    //
+    // The archive is therefore EXACTLY as strict as the undo stack: one node per
+    // entry on the timeline, no more. Deliberately not stricter -- a second
+    // policy would be a second thing to reason about, and the timeline's answer
+    // is the one the user experiences as "a step".
+    if (outcome === 'coalesced' && this.gestureOrigin !== null) {
+      this.replaceGestureNode(after, label, tag);
+      return;
+    }
+    // Any non-coalesced step ends whatever gesture was in progress.
+    this.endGesture();
 
     const fromHash = hashState(before);
     if (fromHash !== this.cursorHash) {
@@ -266,7 +314,68 @@ export class ProjectArchive {
             createdAt: node.visitedAt,
           }
         : null;
+    // REMEMBERED BEFORE the commit moves the cursor: a gesture's parent is where
+    // the hand began, and every later frame of this drag re-parents onto it.
+    // Only a keyed step can be extended, but recording that here unconditionally
+    // costs nothing and keeps the two paths symmetric -- an unkeyed act simply
+    // never sees a `coalesced` outcome to use it.
+    this.gestureParent = this.cursorHash;
+    this.gestureOrigin = before;
     this.commit(hash, node, root);
+  }
+
+  /**
+   * File one frame of a gesture already in progress.
+   *
+   * **THE ARCHIVE'S ANALOGUE OF `History`'s in-place update**, and it keeps that
+   * method's invariant: the gesture's START does not move, only its end. Every
+   * frame is parented on `gestureParent` -- where the drag began -- rather than
+   * on the value it happens to be leaving, which is what stops a slider sweep
+   * laying down a chain of forty nodes each parented on the last.
+   *
+   * **NOTHING IS DELETED, and that is deliberate.** Each state the drag passed
+   * through was genuinely visited: the user held the slider there and saw it.
+   * Under first-visit parentage a state that has been reached stays reached, and
+   * removing it would make the archive disagree with what happened. So a drag
+   * leaves the values it swept through as siblings hanging off its origin, and
+   * the value the user settled on is simply the one the next act continues from.
+   * Nodes are never revised once written, which is what lets `putNode` use `add`
+   * rather than `put`.
+   *
+   * The GRAPH therefore stays honest about what was seen while the TIMELINE
+   * stays honest about what was done -- which is the whole reason these are two
+   * structures rather than one.
+   */
+  private replaceGestureNode(
+    after: Project,
+    label: string,
+    tag: ArchiveTag | null,
+  ): void {
+    const origin = this.gestureOrigin;
+    if (origin === null) return;
+
+    const hash = hashState(after);
+    // Landing back on a state already recorded -- dragging a slider back to where
+    // it started, which happens constantly. Nothing to file; just follow it.
+    if (this.known.has(hash)) {
+      this.cursorHash = hash;
+      return;
+    }
+
+    const node: ArchiveNode = {
+      hash,
+      // BOTH FROM THE GESTURE'S ORIGIN, and they have to agree. A delta means
+      // "apply this to my parent", so deriving against the previous FRAME while
+      // parenting on the gesture's start would reconstruct to the wrong value --
+      // silently, because both are edits to the same field and only the number
+      // differs.
+      parent: this.gestureParent,
+      delta: deriveDelta(origin, after, tag),
+      label,
+      visitedAt: this.now(),
+      session: this.session,
+    };
+    this.commit(hash, node, null);
   }
 
   /**
@@ -283,12 +392,42 @@ export class ProjectArchive {
    */
   moveCursor(project: Project): void {
     if (this.store === null) return;
+    // **A CURSOR JUMP ENDS ANY GESTURE**, mirroring the `breakCoalescing` that
+    // undo and redo already call on the timeline -- and for the same reason
+    // stated there: resuming a drag after undoing must not rewrite the entry the
+    // user just stepped back to. Here the consequence would be worse than a
+    // rewritten label: the gesture's origin now names a state the user has left,
+    // so the next replacement would parent a node onto a branch it never
+    // travelled.
+    this.endGesture();
     const hash = hashState(project);
     if (this.known.has(hash)) {
       this.cursorHash = hash;
       return;
     }
     this.enterState(project, 'session');
+  }
+
+  /**
+   * Forget every state this session believed was already on record.
+   *
+   * **CALLED AFTER THE DATABASE IS EMPTIED, and it is not optional.** The dedup
+   * set is an in-memory mirror of what is stored; leaving it populated after a
+   * clear would make the archive skip every state it had seen before -- so the
+   * user would clear the archive, carry on working, and record almost nothing,
+   * with no error anywhere. The cursor goes too, so the next act re-roots rather
+   * than parenting onto a hash that no longer exists.
+   */
+  forgetAll(): void {
+    this.known.clear();
+    this.cursorHash = null;
+    this.endGesture();
+  }
+
+  /** Forget any gesture in progress, so the next step starts a fresh node. */
+  private endGesture(): void {
+    this.gestureParent = null;
+    this.gestureOrigin = null;
   }
 
   /** How many states are on record. For the Preferences readout. */

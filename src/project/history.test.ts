@@ -185,6 +185,25 @@ test('same-key records within the window merge into one entry', () => {
   assert.equal(gainOf(history.undo()), 0);
 });
 
+test('record reports whether it appended or coalesced', () => {
+  // The decision used to be invisible to callers, and the state archive hooks
+  // this path expecting one node per ACT -- so without the return value it filed
+  // one per FRAME of a drag. Undo was unaffected throughout, which is what made
+  // the bug worth reporting rather than leaving to be inferred.
+  const history = new History();
+  history.seed(base);
+  assert.equal(
+    history.record(base, at(1), 'edit Gain', 'config:sensorGain', 0),
+    'appended',
+  );
+  assert.equal(
+    history.record(at(1), at(2), 'edit Gain', 'config:sensorGain', 100),
+    'coalesced',
+  );
+  // A one-shot act never merges, so it always appends.
+  assert.equal(history.record(at(2), at(3), 'randomize', null, 200), 'appended');
+});
+
 test('a different key starts a new entry', () => {
   // Moving to another slider ends the gesture -- otherwise two sliders dragged
   // in quick succession would undo as one.

@@ -90,6 +90,27 @@ export interface HistoryEntry {
 export type CoalesceKey = string | null;
 
 /**
+ * What `record` did with a step.
+ *
+ * `appended` means a new entry joined the timeline; `coalesced` means the
+ * gesture already in progress was extended in place and the timeline's LENGTH
+ * did not change.
+ *
+ * **THE DECISION USED TO BE INVISIBLE, AND THAT WAS A REAL BUG.** `record`
+ * returned void, so a caller could not tell a fresh act from the fortieth frame
+ * of one drag -- both look like a call with a `before` and an `after`. The state
+ * archive (`archive/`) hooks this path and files a node per act, and without
+ * this it filed one per FRAME: two seconds of dragging one slider became a
+ * hundred states, which is precisely the flood coalescing exists to prevent.
+ * Undo was unaffected and looked correct throughout, which is what made it worth
+ * reporting rather than leaving for the caller to infer.
+ *
+ * A caller that does not care may ignore the return, and every existing one
+ * does.
+ */
+export type RecordOutcome = 'appended' | 'coalesced';
+
+/**
  * A bounded undo/redo timeline of project states.
  *
  * THE MODEL: `states` is the full timeline, oldest first, and `cursor` is the
@@ -137,13 +158,13 @@ export class History {
     label = '',
     coalesceKey: CoalesceKey = null,
     now: number = performance.now(),
-  ): void {
+  ): RecordOutcome {
     if (this.canCoalesce(coalesceKey, now)) {
       // Extend the gesture in place: the start state stays put, so undo still
       // jumps over the whole drag, and only the end moves.
       this.states[this.cursorIndex] = { project: after, label };
       this.lastTime = now;
-      return;
+      return 'coalesced';
     }
 
     if (this.states.length > 0 && this.cursorIndex >= 0) {
@@ -176,6 +197,7 @@ export class History {
 
     this.lastKey = coalesceKey;
     this.lastTime = now;
+    return 'appended';
   }
 
   /** True if this record should extend the previous entry. */

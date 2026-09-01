@@ -84,6 +84,14 @@ export interface SectionContext extends ControlContext {
    * button is not built at all rather than built and inert.
    */
   readonly downloadArchive?: () => Promise<void>;
+  /**
+   * Ask to discard every archived state.
+   *
+   * **OPENS A CONFIRMATION, and does not itself destroy anything** -- which is
+   * why it is synchronous where `downloadArchive` is not. A section builds a
+   * button; what a destructive one costs the user is the dialog's business.
+   */
+  readonly clearArchive?: () => void;
 }
 
 /** One built section. */

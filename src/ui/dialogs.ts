@@ -43,11 +43,21 @@ export interface DialogOptions {
    * construction with one bus at the edge.
    */
   readonly onCopyShareLink: () => void;
+  /**
+   * Discard every archived state, once the user has confirmed.
+   *
+   * A CALLBACK RATHER THAN A COMMAND, for `onCopyShareLink`'s reason: the work
+   * is an IndexedDB transaction, and `CommandBus` is deliberately a value-in,
+   * value-out seam that admits no Web APIs. The host wires this to the
+   * Orchestrator, which owns the database.
+   */
+  readonly onClearArchive: () => void;
 }
 
 export class Dialogs {
   private readonly send: (command: Command) => void;
   private readonly onCopyShareLink: () => void;
+  private readonly onClearArchive: () => void;
 
   private readonly saveEl: HTMLDialogElement;
   private readonly saveInput: HTMLInputElement;
@@ -77,6 +87,8 @@ export class Dialogs {
 
   private readonly resetPrefsEl: HTMLDialogElement;
 
+  private readonly clearArchiveEl: HTMLDialogElement;
+
   // --- the URL settings prompt ----------------------------------------------
   //
   // Built EMPTY and refilled on each opening, unlike the three above whose
@@ -102,6 +114,7 @@ export class Dialogs {
   constructor(opts: DialogOptions) {
     this.send = opts.send;
     this.onCopyShareLink = opts.onCopyShareLink;
+    this.onClearArchive = opts.onClearArchive;
 
     // --- save --------------------------------------------------------------
     const save = dialog('fluoddity-save');
@@ -223,6 +236,48 @@ export class Dialogs {
       ]),
     );
     this.resetPrefsEl = resetPrefs;
+
+    // --- clear the archive ---------------------------------------------------
+    //
+    // CONFIRMED FOR `resetPrefs`'s REASON AND MORE STRONGLY. That one discards
+    // settings a user can set again in a minute; this one discards a RECORD OF
+    // WORK THAT CANNOT BE REDONE -- the states are only reachable by having
+    // visited them, and re-visiting them means retracing an exploration whose
+    // whole value was that it was unrepeatable.
+    //
+    // SAYS WHAT IT DOES NOT TOUCH, exactly as the preferences dialog does, and
+    // the confusion it heads off is sharper here: the archive stores project
+    // STATES, so "clear every project state" reads as though it might take the
+    // saved configs -- or the project on screen -- with it. It takes neither.
+    const clearArchive = dialog('fluoddity-clear-archive');
+    clearArchive.append(heading('Clear the State Archive?'));
+    const clearText = document.createElement('div');
+    clearText.style.cssText = 'font-size:11px;opacity:0.75;line-height:1.5;';
+    clearText.textContent =
+      'Every project state Strong Logging has recorded is discarded, along ' +
+      'with the paths between them. This cannot be undone, and the states are ' +
+      'not recoverable by any other means.\n\n' +
+      'Your saved configs are not affected, and neither is the project you ' +
+      'currently have open. Download the archive first if you want to keep it.';
+    clearText.style.whiteSpace = 'pre-wrap';
+    clearArchive.append(clearText);
+    clearArchive.append(
+      buttonRow([
+        // CANCEL IS THE PRIMARY, for the reason it is in the preferences dialog:
+        // the harmless answer should be the one Enter picks.
+        button('Cancel', () => {
+          this.clearArchiveEl.close();
+        }, true),
+        button('Clear Archive', () => {
+          // Closed FIRST, then the work starts: the clear is async and the
+          // dialog has nothing to report: leaving it up during a database
+          // transaction would read as though it were waiting for something.
+          this.clearArchiveEl.close();
+          this.onClearArchive();
+        }),
+      ]),
+    );
+    this.clearArchiveEl = clearArchive;
 
     // --- the URL settings prompt ---------------------------------------------
     //
@@ -363,6 +418,17 @@ export class Dialogs {
     this.resetPrefsEl.showModal();
   }
 
+  /**
+   * Ask before discarding every archived state.
+   *
+   * Nothing to hold and nothing to name, like `openResetPreferences`: the text is
+   * fixed at construction because what is destroyed does not depend on which
+   * states happen to be in there.
+   */
+  openClearArchive(): void {
+    this.clearArchiveEl.showModal();
+  }
+
   // -- the URL settings prompt ------------------------------------------------
 
   /**
@@ -461,6 +527,7 @@ export class Dialogs {
     this.saveEl.remove();
     this.deleteEl.remove();
     this.resetPrefsEl.remove();
+    this.clearArchiveEl.remove();
     // Settled first: a caller awaiting an answer would otherwise hang forever
     // on a disposed dialog. Disposal changes nothing, so it answers as Cancel.
     this.closeUrlSettings([]);
