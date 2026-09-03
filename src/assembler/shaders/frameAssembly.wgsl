@@ -285,6 +285,12 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
         // Measured in the aspect-corrected metric, like the reticle and like the
         // brush that will paint it, so the preview is the same shape as the result
         // on a non-square canvas.
+        //
+        // ONE RADIUS SERVES BOTH A DRAWING AND AN ERASING LINE (shift+left and
+        // shift+right). `u.reticle.z` is 2 sigma of the brush's gaussian, which is
+        // ALSO the eraser's hard cutoff -- the two coincide by construction, and
+        // that is what lets this preview be honest about a gesture whose effect
+        // depends on which button ends it.
         if (line_enabled()) {
             let from_p = aspect_correct_uv(canvas_uv - u.line.xy, u.canvas_res.xy);
             let to_p = aspect_correct_uv(canvas_uv - u.line.zw, u.canvas_res.xy);

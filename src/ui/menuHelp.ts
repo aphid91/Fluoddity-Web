@@ -33,9 +33,32 @@
  * lead rather than being a paragraph of its own, because at this length it
  * reads as part of the description rather than as a footnote.
  */
+import type { MouseMode } from '../orchestrator/commands.ts';
+
 const PROJECT_SCOPE =
   'Stores all the settings on the project panel and current particle behavior ' +
   '(including mutations)';
+
+/**
+ * What each tool does, keyed by `MouseMode`.
+ *
+ * **SHARED BY THE TWO SURFACES THAT SELECT A TOOL**: the Editor > Tools submenu
+ * and the bar's Tool dropdown. Exported for the same reason
+ * `RANDOMIZE_BEHAVIOR_HELP` below is -- two places offer the same act, and a
+ * user who read one description must not find a different one on the other.
+ *
+ * Keyed by mode rather than by label, so `MENU_HELP`'s capitalized row names are
+ * derived from this and not the other way round; the dropdown has no labels to
+ * key on at all.
+ */
+export const TOOL_HELP: Readonly<Record<MouseMode, string>> = {
+  select:
+    'Click to select a cohort, allowing you to generate children with similar ' +
+    'behavior and conduct artificial selection',
+  shove: 'Left mouse to push particles away. Right mouse to attract them',
+  walls: 'Draw barriers that repel particles',
+  trails: 'Draw trails like the ones particles leave behind, but permanent',
+};
 
 /**
  * Randomize Behavior, shared with the bar's Reroll All Behavior button.
@@ -141,11 +164,18 @@ export const MENU_HELP: Readonly<Record<string, string>> = {
   // the row is most useful.
   'Revert to Saved': 'Equivalent to File->Load <Filename>',
 
-  Select:
-    'Click to select a cohort, allowing you to generate children with similar ' +
-    'behavior and conduct artificial selection',
-  Shove: 'Left mouse to push particles away. Right mouse to attract them',
-  Draw: 'Left mouse to create barriers that repel particles. Right mouse to erase them',
+  // THE FOUR TOOL ROWS. Keyed on the row label, which is derived from
+  // `MOUSE_MODES` -- so the key here IS the mode name, capitalized. `Draw` was
+  // the third tool's label until Trails made the name ambiguous; the entry is
+  // renamed rather than kept as an alias, because a stale key silently resolves
+  // to no tooltip and nothing points at the omission.
+  //
+  // Shared with the toolbar's Tool dropdown through `TOOL_HELP` below, so the
+  // two surfaces that select a tool cannot describe it differently.
+  Select: TOOL_HELP.select,
+  Shove: TOOL_HELP.shove,
+  Walls: TOOL_HELP.walls,
+  Trails: TOOL_HELP.trails,
 
   'Toggle Trail-Map View':
     'View the trails left behind by particles instead of the particles ' +

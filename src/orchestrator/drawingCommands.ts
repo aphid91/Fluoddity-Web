@@ -106,13 +106,16 @@ export function strokeFor(
   // Checked BEFORE the freehand branch, because a committed line is a press and
   // the freehand branch would otherwise treat that same press as the first frame
   // of a new drag.
-  if (state.shift && !erasing) {
+  if (state.shift) {
     if (lineAnchor === null) {
       // ARMING. The anchor is taken the moment Shift goes down -- but NOT while a
       // drag is running, or Shift would seize a stroke in progress. The anchor is
-      // then taken when that drag ends, on the first frame Shift is down and the
-      // button is not, which is exactly this branch.
-      if (drawing) {
+      // then taken when that drag ends, on the first frame Shift is down and no
+      // button is held, which is exactly this branch.
+      //
+      // EITHER BUTTON SUPPRESSES IT, not just the left: a right-drag is an erase
+      // in progress and has the same claim to not being hijacked mid-gesture.
+      if (drawing || erasing) {
         return { stroke: null, prevUv: uv, lineAnchor: null };
       }
       return { stroke: null, prevUv: null, lineAnchor: uv };
@@ -123,9 +126,23 @@ export function strokeFor(
     // ON PRESS, not on release: the press is the moment the user has chosen the
     // endpoint, and waiting for the release would let them drag the endpoint
     // after committing to it.
-    if (state.leftPressed) {
+    //
+    // **BOTH BUTTONS COMMIT, and the button decides whether the line draws or
+    // erases** -- the same left/right split the freehand brush already has, so
+    // the line tool is a modifier on the gesture rather than a separate mode with
+    // its own rules. Erasing a straight corridor through a painted field is
+    // exactly as useful as drawing one.
+    const pressed = state.leftPressed || state.rightPressed;
+    if (pressed) {
       return {
-        stroke: { uv, prevUv: lineAnchor, erasing: false, isLine: true },
+        stroke: {
+          uv,
+          prevUv: lineAnchor,
+          // LEFT WINS if somehow both arrive on one frame, matching the freehand
+          // rule directly above.
+          erasing: !state.leftPressed,
+          isLine: true,
+        },
         // `prevUv` STAYS NULL so the press that committed this line does not also
         // seed a freehand drag from the same point. Without this, holding the
         // button after committing would smear a second stroke out of the endpoint.
@@ -142,9 +159,9 @@ export function strokeFor(
     return { stroke: null, prevUv: null, lineAnchor };
   }
 
-  // Shift is up (or the right button is erasing, which the line tool does not
-  // serve): DISCARD THE ANCHOR. Releasing Shift without clicking abandons the
-  // line, and the preview vanishes with it -- there is no half-committed state.
+  // Shift is up: DISCARD THE ANCHOR. Releasing Shift without clicking abandons
+  // the line, and the preview vanishes with it -- there is no half-committed
+  // state.
   if (!drawing && !erasing) {
     return { stroke: null, prevUv: null, lineAnchor: null };
   }

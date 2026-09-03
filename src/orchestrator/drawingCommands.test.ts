@@ -198,8 +198,8 @@ test('releasing shift without clicking discards the anchor', () => {
 });
 
 test('shift does not arm a line while the right button erases', () => {
-  // Erasing is not a line-tool gesture, and an anchor taken mid-erase would
-  // survive to commit a stroke the user never aimed.
+  // A right-drag is an erase IN PROGRESS, and has the same claim as a left-drag
+  // to not being hijacked mid-gesture. The anchor waits until the button is up.
   const step = strokeFor(
     input({ mousePos: [500, 500], shift: true, rightDragging: true }),
     null,
@@ -207,8 +207,39 @@ test('shift does not arm a line while the right button erases', () => {
     null,
   );
   assert.equal(step.lineAnchor, null);
+  assert.ok(step.stroke === null, 'the line branch owns the frame while shift is held');
+});
+
+test('a right-press while armed commits an ERASING line', () => {
+  // The button decides draw-versus-erase for a line exactly as it does for a
+  // freehand stroke, so the line tool is a modifier on the gesture rather than a
+  // mode with rules of its own.
+  const step = strokeFor(
+    input({ mousePos: [900, 100], shift: true, rightPressed: true }),
+    null,
+    toFieldUv,
+    [0.1, 0.9],
+  );
   assert.ok(step.stroke !== null);
-  assert.equal(step.stroke.erasing, true, 'the erase itself still runs');
+  assert.equal(step.stroke.erasing, true);
+  assert.equal(step.stroke.isLine, true);
+  assert.deepEqual(step.stroke.prevUv, [0.1, 0.9], 'still runs from the anchor');
+  assert.deepEqual(step.stroke.uv, [0.9, 0.1]);
+  // And it chains, so a run of right-clicks erases a connected path.
+  assert.deepEqual(step.lineAnchor, [0.9, 0.1]);
+});
+
+test('a left press still wins if both buttons commit on one frame', () => {
+  // The same LEFT WINS rule the freehand branch carries: a stray right-click
+  // must not turn a line the user is drawing into one that erases.
+  const step = strokeFor(
+    input({ mousePos: [900, 100], shift: true, leftPressed: true, rightPressed: true }),
+    null,
+    toFieldUv,
+    [0.1, 0.9],
+  );
+  assert.ok(step.stroke !== null);
+  assert.equal(step.stroke.erasing, false);
 });
 
 test('an armed line previews without painting until the press', () => {

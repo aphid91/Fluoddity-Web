@@ -52,6 +52,7 @@ import {
   REROLL_MUTATIONS_HELP,
   RESET_HELP,
   TOGGLE_UI_HELP,
+  TOOL_HELP,
 } from './menuHelp.ts';
 import { CONFIG, settingFor } from './settingsSpec.ts';
 import { type TooltipContent, Tooltip } from './tooltip.ts';
@@ -554,6 +555,23 @@ export class MutationOverlay {
       option.style.cssText = TOOL_OPTION_CSS;
       this.tool.append(option);
     }
+
+    // **A LIVE SOURCE, describing the SELECTED tool.** A per-option tooltip is
+    // not available: the popup a `<select>` opens is drawn by the OS, and nothing
+    // in it can be hovered by our own handler. So the one hoverable element --
+    // the closed control -- says what the tool it currently shows does, which is
+    // also the question someone reading it most likely has.
+    //
+    // Read from the ELEMENT rather than from `lastStatus`, so the text is right
+    // during the frame between choosing an option and the status coming back.
+    this.tooltip.attach(this.tool, () => {
+      const mode = mouseModeFromValue(this.tool.value);
+      // An unrecognized value means the element holds something no `MouseMode`
+      // covers, which nothing in the app can produce. Empty content is what
+      // `attach` treats as "no tooltip", so this degrades to silence.
+      if (mode === null) return { title: '', body: '' };
+      return { title: TOOL_LABELS[mode], body: TOOL_HELP[mode] };
+    });
 
     // Reset, between Reroll and the tool selector. `R` is named the way every
     // other label here names its key -- from the hotkey table, so a rebind moves
@@ -2194,9 +2212,15 @@ export function hintFor(status: Status): {
     // whose meaning follows the tool, rather than two buttons here -- the hint
     // bar is a single row about what the mouse does right now, and the Drawing
     // Controls panel is where both layers are addressable at once.
-    const noun = layer === 'walls' ? 'barriers' : 'trails';
+    // "PERMANENT trails", because the word is what distinguishes them from the
+    // ones the swarm lays down and decays away -- which is the thing a user
+    // seeing coloured trails already on screen would otherwise assume these are.
+    // Walls need no such qualifier; nothing else in the app draws a barrier.
+    const noun = layer === 'walls' ? 'barriers' : 'permanent trails';
     return {
-      ...none(`Left click to add ${noun} | Right click to erase them`),
+      ...none(
+        `Left click to add ${noun} | Right click to erase them | Hold shift for lines`,
+      ),
       clearField: true,
     };
   }

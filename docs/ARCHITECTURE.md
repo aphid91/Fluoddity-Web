@@ -52,7 +52,7 @@ Every file belongs to a module folder. Each folder is a Python package
 | `camera/`         | The viewpoint: pan/zoom/mode state, both ways of drawing the world (TRAIL present pass, PARTICLES instanced sprites), and the **temporal supersampler** behind motion blur. Owns `camera.frag`, `cam_brush.vert/frag`, `accumulate.frag`, and `CameraState`. Emits linear HDR. Holds no simulation state. |
 | `assembler/`      | Everything between the finished camera frame and the screen: bloom, the asinh tone curve, and the two drawing overlays (strafe field, brush reticle). Owns `frame_assembly.frag`, `bloom_downsample.frag`, `bloom_upsample.frag`. Holds no simulation state and no preferences. |
 | `particle_system/`| All simulation state and stepping (`advance`/`reset`/`reload`), the canvas double-buffer, the entity SSBO, and the typed `SimulationConfig` preset. Owns `entity_update.glsl`, `brush.vert/frag`, `canvas.frag`. |
-| `strafe_field/`   | The painted Strafe Field: one RG16F texture at canvas resolution, the airbrush shader that writes it (`strafe_draw.frag`), and clear/erase. Live-only — never saved, never in history. |
+| `strafe_field/`   | The user-drawn field: one texture at capped canvas resolution, the airbrush shader that writes it (`strafe_draw.frag`), and clear/erase. **RGBA16F in the port, holding TWO layers** — walls in `rg`, trails in `ba` — kept independent by per-pipeline colour write masks (`fieldLayer.ts`). Live-only: never saved, never in history. |
 | `tooltip_graphic/`| The shader-drawn sensor diagram: an offscreen RGBA8 target and `tooltip_graphic.frag`. Built by the Orchestrator with the shared `ctx` and handed to the UI as a texture id — which is why it is a module of its own rather than a file in `ui/`, the package that must not own GL. |
 | `ui/`             | imgui (docking) + **all** GLFW input. Owns every callback, resolves imgui-vs-canvas capture, freezes input into a per-frame `InputState`, draws the interface, and reports *named commands*. Owns no simulation state and **no GPU resources**. One file per window (`config_menu`, `settings_window`, `preferences_window`, `toolbar`, `drawing_window`), composed onto `UI` as mixins; `settings_spec.py` is the control registry, and `hover_preview.py`, `gated_controls.py`, `sensor_diagram.py` and `curved_slider.py` hold the pieces of behaviour extracted out of those windows. |
 | `orchestrator/`   | Owns one of each module above. Drives the main loop and holds the state. Sole broker of inter-module commands and data. Feature handlers live in command mixins beside it (`project_commands`, `clipboard_commands`, `settings_commands`, `selection_commands`, `drawing_commands`, `shove_commands`). |
@@ -174,12 +174,20 @@ These are the load-bearing constraints. Follow them when extending the project.
    single most important rule for the planned port. `layout.py` enforces it.
 
    *Texture formats follow the same principle.* A format is chosen to work in
-   **base** WebGPU, not to be maximally precise: the canvas and the strafe field
-   are RG16F because base WebGPU can neither filter nor blend `rg32float`
-   without optional device features, while `rg16float` filters, renders, and
-   blends with none. Where that costs precision, the fix lives in the shaders
-   (`CANVAS_VALUE_SCALE` and the saturation clamp in `common.glsl`) rather than
-   in a format upgrade that would narrow the device matrix.
+   **base** WebGPU, not to be maximally precise: the canvas is RG16F because base
+   WebGPU can neither filter nor blend `rg32float` without optional device
+   features, while `rg16float` filters, renders, and blends with none. Where that
+   costs precision, the fix lives in the shaders (`CANVAS_VALUE_SCALE` and the
+   saturation clamp in `common.glsl`) rather than in a format upgrade that would
+   narrow the device matrix.
+
+   The user-drawn field was RG16F for the same reason and is now **RGBA16F**,
+   which clears the same bar — base WebGPU filters, renders and blends it with no
+   optional features, so this is a widening rather than a narrowing of the device
+   matrix. It has its own `FIELD_FORMAT` rather than sharing `CANVAS_FORMAT`:
+   widening the canvas would double the largest texture in the app for two
+   channels it never writes, while the field is capped at `MAX_FIELD_DIM` and pays
+   the cost once, flat.
 
 8. **`common.glsl` is the single source of truth for struct layout.** All
    host/GPU structs (`Entity`, `ConfigData`, `WorldData`, `Rule`) are declared
@@ -786,9 +794,25 @@ entity array with different access qualifiers (`read_write` in the update,
 button -- without one, every click would select on the way down and paint on
 the way across. `SELECT` (default) clicks to adopt and right-clicks to undo;
 `SHOVE` drags to push particles away from the cursor and right-drags to pull
-them in; `DRAW` paints the strafe field and right-drags to erase. Selected
-directly with `1`/`2`/`3`, from the Tools menu, or from the toolbar -- not
-cycled, because there is no sensible "next" tool.
+them in; `WALLS` and `TRAILS` each paint one layer of the user-drawn field and
+right-drag to erase it. Selected directly with `1`/`2`/`3`/`4`, from the Tools
+menu, or from the toolbar -- not cycled, because there is no sensible "next"
+tool.
+
+**`WALLS` and `TRAILS` differ only in which channels they write.** Every
+mechanic -- brush size, power, mode, the eraser, the line tool -- is shared, and
+`layerForMouseMode` is the whole difference. What differs is what the simulation
+does with the result: walls are added to a particle's POSITION, trails to the
+CANVAS SAMPLE its sensors read, so painted trails steer where painted walls
+shove. `DRAW` was this pair's single ancestor and was renamed when "draw" stopped
+naming one thing; the value is runtime-only, so nothing stored carries the old
+name (see `commands.ts`).
+
+**Holding Shift turns either painting tool into a line tool**: the cursor's
+position becomes an anchor, a half-opacity capsule previews the stroke, and a
+press commits it -- left to draw, right to erase, endpoints chaining into a
+polyline. A drag already in progress suppresses arming, so the modifier cannot
+seize a gesture mid-stroke.
 
 **There is no Pan tool.** Navigation is `WASD` to pan, `Q`/`E` to zoom, and the
 scroll wheel, all of which work in every mode. A tool that only moved the view
@@ -994,7 +1018,7 @@ UI -> named command -> Orchestrator handler
      X = show/hide the GUI
      LEFT/RIGHT = prev/next preset
      TAB = toggle camera mode | HOME = reset view
-     1/2/3 = select / shove / draw tool
+     1/2/3/4 = select / shove / walls / trails tool
      (commands also exposed as buttons in the Debug panel)
 
 NAVIGATION -- continuous, read from keys_held in the Orchestrator
@@ -1002,8 +1026,11 @@ NAVIGATION -- continuous, read from keys_held in the Orchestrator
      Works in every tool: navigation is not a tool.
 
 MOUSE, per tool
-     left-drag = select (Select) | push (Shove) | paint (Draw)
-     right-drag = undo (Select) | pull (Shove) | erase (Draw)
+     left-drag  = select (Select) | push (Shove) | paint (Walls, Trails)
+     right-drag = undo (Select)   | pull (Shove) | erase (Walls, Trails)
+     SHIFT      = line tool, in the two painting tools only. Anchor on
+                  press-free movement, commit on click: left draws, right
+                  erases, and the endpoint becomes the next anchor.
 ```
 
 **Why input is polled at the top.** Events are gathered before the physics and
@@ -1517,9 +1544,16 @@ not import a simulation module (rule 10), so the strings are the contract.
 
 Adding a tool today means a `MouseMode` member, a `TOOLS` row, a key in the
 hotkey zip in `ui/ui.py`, and a branch in `_apply_canvas_input`. Member order in
-`MouseMode` is the toolbar's left-to-right order and the `1`/`2`/`3` key order,
-and the enum and `TOOLS` must stay in lockstep -- they are coupled by string
-value only, deliberately, so the UI never imports a simulation module.
+`MouseMode` is the toolbar's left-to-right order and the `1`/`2`/`3`/`4` key
+order, and the enum and `TOOLS` must stay in lockstep -- they are coupled by
+string value only, deliberately, so the UI never imports a simulation module.
+
+*On the web the list is shorter than this, and deliberately so.* `MOUSE_MODES`
+drives the hotkey table, the toolbar `<select>` and the Tools submenu by
+iteration, so the Trails tool needed **one array member** and no edit to any of
+them. What is not derived is the per-tool behaviour: a branch in
+`applyCanvasInput`, and a row in `TOOL_HELP` (which is keyed by mode, so a
+missing entry is a compile error rather than a silently absent tooltip).
 
 **A tool whose effect is continuous rather than an event needs one more thing.**
 `_apply_canvas_input` runs once per frame, which is right for a click or a

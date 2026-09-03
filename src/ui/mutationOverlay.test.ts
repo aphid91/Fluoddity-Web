@@ -79,11 +79,33 @@ test('shove says which button pushes and which pulls', () => {
   assert.equal(hint.tail, '');
 });
 
-test('draw says which button adds and which erases', () => {
-  // Matches `drawingCommands.ts`: leftDragging draws, rightDragging erases.
-  const hint = hintFor(status({ mouseMode: 'walls' }));
-  assert.equal(hint.lead, 'Left click to add barriers | Right click to erase them');
-  assert.equal(hint.cohort, null);
+test('the painting tools say which button adds, which erases, and how to draw a line', () => {
+  // Matches `drawingCommands.ts`: leftDragging draws, rightDragging erases, and
+  // Shift turns either into a line.
+  const walls = hintFor(status({ mouseMode: 'walls' }));
+  assert.equal(
+    walls.lead,
+    'Left click to add barriers | Right click to erase them | Hold shift for lines',
+  );
+  assert.equal(walls.cohort, null);
+
+  // **"PERMANENT trails"** -- the word is the whole point of the sentence. The
+  // swarm is already drawing trails that fade, so without it a user reads this as
+  // naming the thing they can already see rather than something that outlasts it.
+  const trails = hintFor(status({ mouseMode: 'trails' }));
+  assert.equal(
+    trails.lead,
+    'Left click to add permanent trails | Right click to erase them | Hold shift for lines',
+  );
+  assert.match(trails.lead, /permanent/);
+});
+
+test('only the painting tools mention the line modifier', () => {
+  // Shift does nothing for Select or Shove, and a row offering a modifier that
+  // is inert in the tool it is describing is worse than saying nothing.
+  for (const mouseMode of ['select', 'shove'] as const) {
+    assert.doesNotMatch(hintFor(status({ mouseMode })).lead, /shift/i);
+  }
 });
 
 test('draw offers the clear-barriers button, and no other tool does', () => {
