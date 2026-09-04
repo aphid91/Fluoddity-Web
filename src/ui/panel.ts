@@ -303,6 +303,15 @@ export interface PanelOptions {
    */
   readonly clearArchive?: () => Promise<void>;
   /**
+   * Report that the Brush Size slider is being dragged, so a centred reticle can
+   * show the size being chosen. See `Orchestrator.setBrushSizePreview`.
+   *
+   * Supplied by the host for `recording`'s reason -- it lands on the
+   * Orchestrator, and `CommandBus` deliberately admits only commands, which this
+   * must not be: it is editor chrome and belongs in no history.
+   */
+  readonly setBrushSizePreview?: (previewing: boolean) => void;
+  /**
    * The canvas a share image is captured from.
    *
    * PASSED IN rather than found with `getElementById`, matching how `bus` and
@@ -643,6 +652,11 @@ export class Panel {
   /** See `PanelOptions.clearArchive`. Null where the host supplies none. */
   private readonly clearArchive: NonNullable<PanelOptions['clearArchive']> | null;
 
+  /** See `PanelOptions.setBrushSizePreview`. Null where the host supplies none. */
+  private readonly setBrushSizePreview:
+    | NonNullable<PanelOptions['setBrushSizePreview']>
+    | null;
+
   /**
    * Whether a calibration run is in flight.
    *
@@ -682,6 +696,7 @@ export class Panel {
     this.downloadArchive = opts.downloadArchive ?? null;
     // BEFORE `new Dialogs(...)` below, whose clear-archive callback reads it.
     this.clearArchive = opts.clearArchive ?? null;
+    this.setBrushSizePreview = opts.setBrushSizePreview ?? null;
 
     // **RESETTING PREFERENCES RE-CALIBRATES.** A reset puts World Size and
     // Physics Rate back to compiled-in defaults the user never chose and their
@@ -1086,6 +1101,11 @@ export class Panel {
               this.dialogs.openClearArchive();
             },
           }
+        : {}),
+      // RIGHT ONLY, like the three above: Drawing Controls is a tab of the right
+      // panel, so the left one has no Brush Size slider to report on.
+      ...(which === RIGHT && this.setBrushSizePreview !== null
+        ? { setBrushSizePreview: this.setBrushSizePreview }
         : {}),
     };
   }

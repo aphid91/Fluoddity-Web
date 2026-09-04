@@ -979,6 +979,143 @@ if (escFocus.startsWith('PANEL:')) {
 }
 
 // ===========================================================================
+// PASS 7 -- the Brush Size reticle, and the release that must put it away
+// ===========================================================================
+/**
+ * WHY THIS PASS EXISTS. Dragging Brush Size shows the brush reticle in the
+ * MIDDLE of the screen, so you can see the size you are picking while the
+ * cursor is off in the panel. The showing half was never the risk; the CLEARING
+ * half shipped broken.
+ *
+ * The first version ended the gesture on a capturing `pointerup` at the window.
+ * That looked like `recordingSection`'s `commitSteps` and was not the same
+ * situation: a Tweakpane slider calls `setPointerCapture`, so the release is
+ * retargeted to the blade and the capture-phase window listener sees it on the
+ * way DOWN -- strictly before Tweakpane turns that same event into the final
+ * `change`. The flag was cleared and then immediately re-armed by that last
+ * `change`, so the ring stayed centred on screen indefinitely, until some
+ * unrelated later click or keyup happened to clear it again.
+ *
+ * **THE ASSERTION THAT CATCHES IT IS "AFTER RELEASE, WITH NO FURTHER INPUT".**
+ * Any check that clicked, typed or moved the mouse first would have passed
+ * against the broken build -- that is precisely what made the bug survive: every
+ * natural way of poking at it cleared the flag as a side effect.
+ *
+ * `overlayState()` is read directly rather than inferred from the screen. It is
+ * private to TypeScript, which is a compile-time fiction; `?bus` hands out the
+ * real Orchestrator and this is the state the shader is actually handed.
+ */
+console.log('\nPASS 7: the Brush Size reticle (drag centres it, release clears it)\n');
+
+/** The live overlay state, as `{ radius, centred }` -- what the shader gets. */
+const reticleState = () =>
+  evaluate(`(() => {
+    const o = window.__fluoddity.overlayState();
+    return {
+      radius: o.reticleRadius,
+      // The centred ring sits at exactly [0.5, 0.5]; the cursor-following one
+      // essentially never does, so this is a safe discriminator.
+      centred: o.reticleCenter[0] === 0.5 && o.reticleCenter[1] === 0.5,
+      style: o.reticleStyle,
+    };
+  })()`);
+
+// SELECT, deliberately: it is the tool with no reticle of its own, so anything
+// visible here is the sizing preview and nothing else. It is also the tool the
+// original bug was most visible in and the one a user is most likely to be in
+// while setting a brush up.
+await setTool('select');
+
+const resting = await reticleState();
+if (resting.radius === 0) {
+  pass('at rest in Select there is no reticle');
+} else {
+  fail(`Select shows a reticle at rest (radius ${resting.radius}) -- it should show none.`);
+}
+
+// Brush Size lives on the Drawing tab, which the tool switch above did not
+// select. Click it, the same way a user would.
+await evaluate(`(() => {
+  const b = [...document.querySelectorAll('[data-tab]')].find(
+    (e) => e.dataset.tab === 'drawing',
+  );
+  if (b) b.click();
+})()`);
+await sleep(300);
+
+const sizeTrack = await trackOf('prefs.drawSize');
+if (sizeTrack === null) die('Could not find the Brush Size track for PASS 7.');
+
+// --- 7a: mid-drag, the ring is up and centred -----------------------------
+const sy = sizeTrack.y + sizeTrack.h / 2;
+await mouse('mousePressed', sizeTrack.x + sizeTrack.w * 0.3, sy);
+await mouse('mouseMoved', sizeTrack.x + sizeTrack.w * 0.7, sy);
+await sleep(300);
+
+const during = await reticleState();
+if (during.radius > 0 && during.centred) {
+  pass(`mid-drag the reticle is centred and sized (radius ${during.radius.toFixed(4)})`);
+} else {
+  fail(
+    `mid-drag the reticle was ${JSON.stringify(during)}; expected a non-zero ` +
+      'radius centred at [0.5, 0.5].',
+  );
+}
+
+// The bare ring, not Shove's dashes or a brush mode's rays: nothing is armed in
+// Select, so a decorated ring would be describing a stroke no click can produce.
+if (during.style === 'plain') {
+  pass('the sizing ring is undecorated in a non-brush tool');
+} else {
+  fail(`the sizing ring is "${during.style}" in Select; it must be "plain".`);
+}
+
+// --- 7b: THE REGRESSION. Release, and touch NOTHING else. -----------------
+await mouse('mouseReleased', sizeTrack.x + sizeTrack.w * 0.7, sy, 0);
+await sleep(400);
+
+const after = await reticleState();
+if (after.radius === 0) {
+  pass('releasing the slider cleared the reticle with no further input');
+} else {
+  fail(
+    `the reticle is STILL UP after release (${JSON.stringify(after)}). This is ` +
+      'the stuck-ring bug: the gesture must end on Tweakpane\'s `ev.last`, not ' +
+      'on a capturing window `pointerup` -- the slider captures the pointer, so ' +
+      'that listener fires BEFORE the final `change` re-arms the flag.',
+  );
+}
+
+// The value must have actually moved, or 7a and 7b both passed on a drag that
+// missed the track entirely -- the same trap PASS 6 guards against.
+const sizeAfter = await statusOf('editPrefs.drawSize');
+if (sizeAfter > 0) {
+  pass(`the drag really moved Brush Size (now ${sizeAfter.toFixed(4)})`);
+} else {
+  fail(`Brush Size is ${sizeAfter} -- the PASS 7 drag moved nothing.`);
+}
+
+// --- 7c: it comes back for a second drag ----------------------------------
+// A release that cleared the flag by DESTROYING the wiring would pass 7b and
+// fail here, leaving the feature working exactly once per session.
+await mouse('mousePressed', sizeTrack.x + sizeTrack.w * 0.4, sy);
+await mouse('mouseMoved', sizeTrack.x + sizeTrack.w * 0.55, sy);
+await sleep(300);
+const second = await reticleState();
+await mouse('mouseReleased', sizeTrack.x + sizeTrack.w * 0.55, sy, 0);
+await sleep(300);
+const secondAfter = await reticleState();
+
+if (second.radius > 0 && second.centred && secondAfter.radius === 0) {
+  pass('a second drag shows and clears the reticle exactly as the first did');
+} else {
+  fail(
+    `the second drag behaved differently (during ${JSON.stringify(second)}, ` +
+      `after ${JSON.stringify(secondAfter)}) -- the release is a one-shot.`,
+  );
+}
+
+// ===========================================================================
 console.log('');
 if (failures.length > 0 || errors.length > 0) {
   console.error(`${failures.length} check(s) failed, ${errors.length} console error(s).`);

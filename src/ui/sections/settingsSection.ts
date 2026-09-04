@@ -366,15 +366,20 @@ export function buildSettingsSection(
       // `dispose` forwards to Project below.
       linkSection?.refresh(s, input);
     },
-    // Forwarded so the window listeners the recording tab registers are
-    // released when this host is torn down. The other two sections have
-    // nothing outside their folders and define no `dispose`.
+    // Forwarded so the listeners a tab registers outside its own folder are
+    // released when this host is torn down.
+    //
+    // **EVERY TAB, INCLUDING THE ONES THAT DEFINE NO `dispose` TODAY.** This
+    // list once named only three, on the reasoning that the others "have
+    // nothing outside their folders" -- and that went stale the moment Drawing
+    // Controls grew a release listener for the Brush Size reticle: the section
+    // defined `dispose`, the host never called it, and the teardown silently
+    // did nothing. Forwarding unconditionally is what keeps the next one from
+    // repeating it.
     dispose: () => {
       recordingSection?.dispose?.();
-      // Project defines no `dispose` today, and is forwarded anyway: it is a
-      // section like the others, and a host that tears down three of its four
-      // children is the kind of asymmetry that goes unnoticed until the fourth
-      // one grows a window listener.
+      prefs.dispose?.();
+      drawing.dispose?.();
       projectSection?.dispose?.();
       linkSection?.dispose?.();
     },

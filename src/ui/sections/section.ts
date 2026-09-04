@@ -92,6 +92,19 @@ export interface SectionContext extends ControlContext {
    * button; what a destructive one costs the user is the dialog's business.
    */
   readonly clearArchive?: () => void;
+  /**
+   * Report that the Brush Size slider is or is not being dragged.
+   *
+   * Drives the centred reticle -- see `Orchestrator.setBrushSizePreview`. A
+   * callback rather than a command for that method's reason: it says what the
+   * EDITOR is showing, and a command would put a transient hover state into
+   * history.
+   *
+   * Optional like `calibrateRate` and `downloadArchive` above, and absent in
+   * the DOM tests, where the slider then simply drives no overlay rather than
+   * reaching for an orchestrator that is not there.
+   */
+  readonly setBrushSizePreview?: (previewing: boolean) => void;
 }
 
 /** One built section. */

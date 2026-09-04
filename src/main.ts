@@ -484,6 +484,13 @@ async function start(): Promise<void> {
         // The other half. Runs only after `Dialogs` has confirmed -- the panel
         // wires the button to the confirmation, not to this.
         clearArchive: () => orchestrator.clearArchive(),
+        // The centred brush reticle, shown while Brush Size is being dragged.
+        // Supplied here for `setCropPreview`'s reason: it is editor chrome
+        // landing on the Orchestrator, so it takes a plain callback rather than
+        // a command and never reaches history.
+        setBrushSizePreview: (previewing) => {
+          orchestrator.setBrushSizePreview(previewing);
+        },
         // Omitted under `?nocalibrate`, which leaves `Panel.calibrate()` inert
         // and so also disables the re-run on Reset Editor Preferences.
         ...(params.has('nocalibrate')

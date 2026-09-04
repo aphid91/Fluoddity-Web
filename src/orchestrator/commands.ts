@@ -127,6 +127,45 @@ export function usesBrushReticle(mode: MouseMode): boolean {
   return isPaintingTool(mode) || mode === 'shove';
 }
 
+/** Where the brush reticle goes this frame, or null for no reticle. */
+export interface ReticlePlacement {
+  /** True to draw it at the centre of the canvas rather than under the cursor. */
+  readonly centred: boolean;
+  /**
+   * True to keep the tool's own decoration -- Shove's dashes, the brush modes'
+   * rays and arrow. False means the bare ring.
+   */
+  readonly decorated: boolean;
+}
+
+/**
+ * Whether to draw the brush reticle, and where.
+ *
+ * **A PURE FUNCTION so the rule can be tested without a GPU.** `overlayState`
+ * needs a live device, a camera and a field to produce a single boolean pair,
+ * and this is the part of it worth pinning down -- the interaction between the
+ * tool gate and the sizing gesture is the whole of the logic and none of the
+ * plumbing. Same argument `shoveCommands.ts` makes for being a free function.
+ *
+ * `sizing` is an active Brush Size drag. It OVERRIDES the tool gate, because
+ * sizing the brush is precisely when you need to see how big it is -- and it
+ * CENTRES the ring, because during that drag the cursor is over the slider in a
+ * side panel rather than over the artwork.
+ *
+ * It also drops the decoration outside the brush tools: the rays and dashes say
+ * what the armed brush would DO, and in Select nothing is armed. Inside a brush
+ * tool the decoration stays, since the ring still means exactly what it always
+ * meant and only its position has moved.
+ */
+export function reticlePlacement(
+  mode: MouseMode,
+  sizing: boolean,
+): ReticlePlacement | null {
+  const brushing = usesBrushReticle(mode);
+  if (!brushing && !sizing) return null;
+  return { centred: sizing, decorated: brushing };
+}
+
 /**
  * The five drawing preferences, as a closed set.
  *

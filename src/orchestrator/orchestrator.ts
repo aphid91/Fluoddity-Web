@@ -143,7 +143,7 @@ import {
   type MouseMode,
   isPaintingTool,
   layerForMouseMode,
-  usesBrushReticle,
+  reticlePlacement,
   type PreviewSurface,
   type Status,
 } from './commands.ts';
@@ -1326,8 +1326,12 @@ export class Orchestrator implements CommandBus {
    * THE ACTIVE TOOL DECIDES, so this is the Orchestrator's call: the assembler
    * renders what it is told and the UI owns no simulation truth (invariant 10).
    * The field can optionally stay visible outside the Draw tool; the reticle
-   * never does, because it shows where a brush that is not currently usable
-   * would land.
+   * follows the cursor only inside it, because there it shows where a brush
+   * that is not currently usable would land.
+   *
+   * The ONE exception is an active Brush Size drag, which shows a centred ring
+   * in every tool -- it is a measurement of the size being chosen rather than
+   * an aim, and it lasts only as long as the gesture. See `setBrushSizePreview`.
    *
    * The reticle serves BOTH brush tools: Draw and Shove share `drawSize`, so
    * the ring means the same thing in each -- the reach of what the button is
@@ -1341,7 +1345,6 @@ export class Orchestrator implements CommandBus {
   private overlayState(): OverlayState {
     const painting = layerForMouseMode(this.mouseMode);
     const shoving = this.mouseMode === 'shove';
-    const brushing = usesBrushReticle(this.mouseMode);
 
     // **THE ACTIVE PAINTING TOOL FORCES ITS OWN LAYER ON. It does not force the
     // other one off.**
@@ -1371,7 +1374,12 @@ export class Orchestrator implements CommandBus {
     // The FIELDS are still read from prefs, and deliberately: the two
     // `alwaysShow` flags are a real choice between seeing a layer all the time
     // and seeing it only while painting it. The reticle has no such second mode.
-    if (!brushing) {
+    // **THE BRUSH SIZE DRAG OVERRIDES THE TOOL GATE**, which is why the rule is
+    // `reticlePlacement`'s rather than an `if` here: the interaction between the
+    // gate and the gesture is the only real logic in this method, and there it
+    // is a pure function with tests. Null means no ring at all.
+    const placement = reticlePlacement(this.mouseMode, this.brushSizePreview);
+    if (placement === null) {
       return { ...NO_OVERLAYS, showField, showTrails, crop };
     }
     // The brush's VISIBLE extent, which is 2 sigma of its gaussian -- and also
@@ -1384,9 +1392,24 @@ export class Orchestrator implements CommandBus {
       showField,
       showTrails,
       crop,
-      reticleCenter: this.mouseFieldUv(this.input.mousePos),
+      // CENTRED WHILE SIZING, and on the cursor otherwise. See
+      // `setBrushSizePreview` for why the middle rather than the mouse: during
+      // this drag the mouse is on the slider, which is off in a panel.
+      //
+      // The centre of the CANVAS in uv, not of the window -- `[0.5, 0.5]` is
+      // the same point the aspect-corrected metric measures the radius from, so
+      // the ring is round and correctly sized without a second transform.
+      reticleCenter: placement.centred
+        ? [0.5, 0.5]
+        : this.mouseFieldUv(this.input.mousePos),
       reticleRadius: radius,
-      reticleStyle: shoving ? 'dashed' : this.brushReticleStyle(),
+      // The bare ring outside the brush tools -- see `reticlePlacement`, which
+      // owns that call. Inside them the style is the live one it always was.
+      reticleStyle: placement.decorated
+        ? shoving
+          ? 'dashed'
+          : this.brushReticleStyle()
+        : 'plain',
       reticleAngle: this.prefs.drawAngle,
       // The preview exists exactly while a line is armed. `lineAnchor` is
       // cleared by every path that abandons one -- releasing Shift, switching
@@ -1464,6 +1487,28 @@ export class Orchestrator implements CommandBus {
   }
 
   private cropPreview: Resolution | null = null;
+
+  /**
+   * Show a centred reticle while the Brush Size slider is being dragged.
+   *
+   * The same bargain `setCropPreview` above makes, for the same reason: the size
+   * has to be visible while it is being CHOSEN, and the thing that shows it is
+   * an overlay only the Orchestrator can position. A plain setter rather than a
+   * command because it is a statement about what the editor is showing -- it
+   * changes no preference, reaches no history, and survives no reload. The
+   * value itself still travels as `editDrawPref` exactly as before.
+   *
+   * **WHY THE MIDDLE OF THE SCREEN.** The reticle normally rides the cursor,
+   * but during this drag the cursor is on the slider -- off in a side panel,
+   * where a ring would be measured against the panel rather than against the
+   * artwork, and possibly clipped by its edge. The centre is the one place that
+   * is always on screen and always over the picture.
+   */
+  setBrushSizePreview(previewing: boolean): void {
+    this.brushSizePreview = previewing;
+  }
+
+  private brushSizePreview = false;
 
   /**
    * Screen pixel -> field texture uv [0,1].

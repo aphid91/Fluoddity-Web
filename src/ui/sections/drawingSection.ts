@@ -176,6 +176,8 @@ export function buildDrawingSection(
   const proxies = new Map<DrawPrefField, { value: number | boolean }>();
   /** Refreshers for the curved sliders, which hold a position rather than a value. */
   const curvedRefreshers: ((status: Status) => void)[] = [];
+  /** Teardowns for anything that outlives the folder. See `SectionHandle.dispose`. */
+  const teardowns: (() => void)[] = [];
 
   // FIRST, above the controls it governs. See `projectSection.ts`.
   addAdvancedToggle(folder, 'advancedDrawing', ctx);
@@ -194,7 +196,7 @@ export function buildDrawingSection(
     const initial = status.editPrefs[control.field] ?? 0;
 
     if (control.curve !== undefined) {
-      curved(folder, control, asNumber(initial), curvedRefreshers, ctx);
+      curved(folder, control, asNumber(initial), curvedRefreshers, teardowns, ctx);
       continue;
     }
 
@@ -243,6 +245,14 @@ export function buildDrawingSection(
 
   return {
     bindings: [],
+    // The panel rebuilds this section on every Advanced toggle, and the Brush
+    // Size slider watches the WINDOW for the end of a drag -- so without this,
+    // each rebuild would leave a live listener set behind, every one of them
+    // still writing the preview flag. Recording Controls carries the same
+    // hazard and the same answer.
+    dispose: () => {
+      for (const teardown of teardowns) teardown();
+    },
     refresh: (s) => {
       for (const [field, proxy] of proxies) {
         const authoritative = s.editPrefs[field];
@@ -303,6 +313,8 @@ function curved(
    * Owned by the section call, so it dies with the section.
    */
   refreshers: ((status: Status) => void)[],
+  /** Where this control's window listeners register their removal. See `dispose`. */
+  teardowns: (() => void)[],
   ctx: SectionContext,
 ): void {
   const lo = control.params['min'] as number;
@@ -339,12 +351,85 @@ function curved(
     if (box !== null) box.value = format(value);
   };
 
+  /**
+   * Show a centred brush reticle for as long as this slider is being dragged.
+   *
+   * **BRUSH SIZE ONLY**, which is why it is gated on the field rather than
+   * applied to every curved control: the reticle IS the brush's size drawn at
+   * scale, so it reports what this slider does and nothing else. Brush Power
+   * shares this helper and has no such picture -- a ring that sat there
+   * unchanged while its number moved would be a worse answer than no ring.
+   */
+  const previewing = control.field === 'drawSize' ? ctx.setBrushSizePreview : undefined;
+  let shown = false;
+
+  function showPreview(on: boolean): void {
+    // Guarded so a settled slider does not re-report a state it is already in:
+    // `change` fires per pointermove, and this runs on every one of them.
+    if (previewing === undefined || shown === on) return;
+    shown = on;
+    previewing(on);
+  }
+
   blade.on('change', (ev) => {
     if (ctx.isRefreshing()) return;
     const value = curveValueAt(ev.value as number, lo, hi, curve);
     writeReadout(value);
     ctx.send({ kind: 'editDrawPref', field: control.field, value });
+
+    // **`ev.last` IS THE RELEASE SIGNAL, NOT A DOM `pointerup`** -- the same
+    // discriminator `addMapped` in `controls.ts` relies on, and for the same
+    // reason its comment spells out. Tweakpane emits `last: false` from
+    // `onPointerMove_` and `last: true` from `onPointerUp_`.
+    //
+    // A capturing `pointerup` on the WINDOW looked equivalent and was not, in a
+    // way that produced exactly the stuck ring this replaced: the slider calls
+    // `setPointerCapture`, so the release is retargeted to the blade and the
+    // capture-phase window listener sees it on the way DOWN -- strictly before
+    // Tweakpane turns it into the final `change`. The flag was cleared and then
+    // immediately re-armed by that last event, leaving the reticle up until some
+    // unrelated later click or keyup happened to clear it again.
+    //
+    // Driving BOTH edges from this one event is what keeps them ordered: the
+    // arm and the release are now the same stream, so no ordering between two
+    // different event sources can put them the wrong way round.
+    showPreview(!ev.last);
   });
+
+  if (previewing !== undefined) {
+    const element = blade.element as HTMLElement;
+    // The two gestures `change` cannot see the end of, exactly as `addMapped`
+    // guards its gate hold: one the OS interrupted, and one that finished on
+    // the value it started from -- `setRawValue` returns early when nothing
+    // moved, so no final `last: true` ever arrives. Either would strand the
+    // ring on screen.
+    //
+    // ON THE BLADE rather than the window, and that is safe HERE precisely
+    // because of the pointer capture described above: the release is retargeted
+    // to this element, so a drag that ends far away over the canvas still
+    // arrives. These only ever clear, so an extra call is harmless.
+    const release = (): void => {
+      showPreview(false);
+    };
+    element.addEventListener('pointerup', release);
+    element.addEventListener('lostpointercapture', release);
+    // The keyboard half: the slider is focusable and the arrow keys step it,
+    // producing `change` with no pointer and so no `last: true` to end it.
+    element.addEventListener('keyup', release);
+    element.addEventListener('blur', release, true);
+
+    teardowns.push(() => {
+      element.removeEventListener('pointerup', release);
+      element.removeEventListener('lostpointercapture', release);
+      element.removeEventListener('keyup', release);
+      element.removeEventListener('blur', release, true);
+      // **AND THE FLAG ITSELF IS CLEARED.** A rebuild mid-drag -- toggling
+      // Advanced with the pointer still down -- would otherwise dispose the
+      // only listeners that could ever put the reticle away, stranding it on
+      // screen for the rest of the session.
+      release();
+    });
+  }
 
   refreshers.push((s: Status) => {
     const authoritative = s.editPrefs[control.field];
