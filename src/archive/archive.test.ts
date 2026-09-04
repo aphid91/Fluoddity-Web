@@ -32,6 +32,7 @@ import { ProjectArchive, type ArchiveStore } from './archive.ts';
 import { deriveDelta } from './delta.ts';
 import { hashState } from './hash.ts';
 import type { ArchiveNode, ArchiveRoot } from './archiveDb.ts';
+import type { ProjectVisit, VisitRecord } from './visits.ts';
 import {
   type Project,
   editSelected,
@@ -71,7 +72,10 @@ function at(gain: number): Project {
 class FakeStore implements ArchiveStore {
   readonly nodes: ArchiveNode[] = [];
   readonly roots: ArchiveRoot[] = [];
+  readonly visits: VisitRecord[] = [];
   seed: Set<string> = new Set();
+  /** What `lastSeq` reports, so a test can stand in for a prior session's log. */
+  seedSeq = -1;
 
   put(
     node: ArchiveNode,
@@ -95,10 +99,34 @@ class FakeStore implements ArchiveStore {
   count(): Promise<number> {
     return Promise.resolve(this.nodes.length);
   }
+  /**
+   * Models the real store's `add`/`put` split, and the overwrite half matters:
+   * a fake that always appended would show a drag leaving one log entry per
+   * frame, which is the exact behaviour the coalescing tests exist to disprove.
+   */
+  putVisit(record: VisitRecord, overwrite: boolean): Promise<void> {
+    const at = this.visits.findIndex((v) => v.seq === record.seq);
+    if (at >= 0) {
+      if (!overwrite) return Promise.reject(new Error(`duplicate seq ${record.seq}`));
+      this.visits[at] = record;
+    } else {
+      this.visits.push(record);
+    }
+    return Promise.resolve();
+  }
+  lastSeq(): Promise<number> {
+    return Promise.resolve(this.seedSeq);
+  }
   /** The node filed for `project`, or undefined. */
   find(project: Project): ArchiveNode | undefined {
     const hash = hashState(project);
     return this.nodes.find((n) => n.hash === hash);
+  }
+  /** Just the project-state visits, which is what most assertions care about. */
+  projectVisits(): ProjectVisit[] {
+    return this.visits
+      .map((v) => v.visit)
+      .filter((v): v is ProjectVisit => v.type === 'project');
   }
 }
 
@@ -465,4 +493,168 @@ test('a rename produces no node', async () => {
   const before = store.nodes.length;
   archive.recordVisit(base, makeProject({ ...base, name: 'renamed' }), 'rename');
   assert.equal(store.nodes.length, before);
+});
+
+// =============================================================================
+// THE VISIT LOG
+//
+// The node tree's tests above assert what is DISCOVERED. These assert what was
+// DONE -- the revisits, undos and repeats the tree deliberately does not hold.
+// The two datasets are written by the same calls, so several of these are
+// deliberately paired with a node-count assertion: the point is not merely that
+// the log records something, but that it records it WITHOUT the tree changing.
+// =============================================================================
+
+test('a revisit adds no node but does add a visit', async () => {
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(2), 'to B');
+  const nodes = store.nodes.length;
+  const visits = store.visits.length;
+
+  // Back to base, then forward to the same state by the same route.
+  archive.moveCursor(base);
+  archive.recordVisit(base, at(2), 'to B again');
+
+  assert.equal(store.nodes.length, nodes, 'no new node for a known state');
+  // Two entries: the undo-style cursor move, and the act that re-reached B.
+  assert.equal(store.visits.length, visits + 2);
+
+  const last = store.projectVisits().at(-1);
+  assert.equal(last?.hash, hashState(at(2)));
+  assert.equal(last?.repeat, true, 'the second arrival is marked a repeat');
+  assert.equal(last?.from, hashState(base));
+});
+
+test('the first visit to a state is not marked a repeat', async () => {
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(2), 'to B');
+  // Guards the ordering trap: `repeat` is read off the dedup set, so logging
+  // after the commit rather than before would mark every first visit true.
+  assert.equal(store.projectVisits().at(-1)?.repeat, false);
+});
+
+test('undo and redo are logged with their direction, and add no nodes', async () => {
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(2), 'to B');
+  archive.recordVisit(at(2), at(3), 'to C');
+  const nodes = store.nodes.length;
+
+  archive.moveCursor(at(2), 'undo');
+  archive.moveCursor(base, 'undo');
+  archive.moveCursor(at(2), 'redo');
+
+  assert.equal(store.nodes.length, nodes, 'traversal writes no nodes');
+  const kinds = store.projectVisits().slice(-3).map((v) => v.kind);
+  assert.deepEqual(kinds, ['undo', 'undo', 'redo']);
+});
+
+test('backing up and branching records the whole path, not just the fork', async () => {
+  // THE CASE THE VISIT LOG EXISTS FOR. The node tree shows base with two
+  // children and no indication that reaching the second took two steps back;
+  // the log shows the retreat.
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(2), 'to B');
+  archive.recordVisit(at(2), at(3), 'to C');
+  archive.moveCursor(at(2), 'undo');
+  archive.moveCursor(base, 'undo');
+  archive.recordVisit(base, at(9), 'to D');
+
+  const path = store.projectVisits().map((v) => `${v.kind}:${v.hash.slice(0, 4)}`);
+  assert.deepEqual(path, [
+    `enter:${hashState(base).slice(0, 4)}`,
+    `act:${hashState(at(2)).slice(0, 4)}`,
+    `act:${hashState(at(3)).slice(0, 4)}`,
+    `undo:${hashState(at(2)).slice(0, 4)}`,
+    `undo:${hashState(base).slice(0, 4)}`,
+    `act:${hashState(at(9)).slice(0, 4)}`,
+  ]);
+  // And the fork is still in the tree exactly as it was before the log existed.
+  assert.equal(store.find(at(2))?.parent, hashState(base));
+  assert.equal(store.find(at(9))?.parent, hashState(base));
+});
+
+test('a drag is ONE visit, at the value it settled on', async () => {
+  // The log is exactly as strict as the timeline and the node tree: a gesture
+  // is one entry, rewritten in place, not one per frame.
+  const { archive, store } = await enabled();
+  const before = store.visits.length;
+
+  archive.recordVisit(base, at(2), 'edit Gain', null, 'appended');
+  archive.recordVisit(at(2), at(3), 'edit Gain', null, 'coalesced');
+  archive.recordVisit(at(3), at(4), 'edit Gain', null, 'coalesced');
+  archive.recordVisit(at(4), at(5), 'edit Gain', null, 'coalesced');
+
+  assert.equal(store.visits.length, before + 1, 'one entry for the whole sweep');
+  const last = store.projectVisits().at(-1);
+  assert.equal(last?.hash, hashState(at(5)), 'holding the settled value');
+  assert.equal(last?.from, hashState(base), 'parented where the hand began');
+});
+
+test('a drag that starts on a known value is still one visit', async () => {
+  // The regression this guards: a first frame landing on a known state used to
+  // leave no gesture set up, so every later frame took the append path and the
+  // log grew per frame while the node tree stayed correct.
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(2), 'seed', null, 'appended');
+  archive.moveCursor(base);
+  const before = store.visits.length;
+
+  archive.recordVisit(base, at(2), 'edit Gain', null, 'appended');
+  archive.recordVisit(at(2), at(3), 'edit Gain', null, 'coalesced');
+  archive.recordVisit(at(3), at(4), 'edit Gain', null, 'coalesced');
+
+  assert.equal(store.visits.length, before + 1);
+  assert.equal(store.projectVisits().at(-1)?.hash, hashState(at(4)));
+});
+
+test('a new session continues the sequence rather than restarting it', async () => {
+  // A per-session counter would collide with the previous session's ordinals,
+  // and since visits are added strictly the collision loses events silently.
+  const store = new FakeStore();
+  store.seedSeq = 41;
+  const archive = new ProjectArchive(() => 1000);
+  await archive.enable(store, base);
+  archive.recordVisit(base, at(2), 'edit Gain');
+
+  assert.deepEqual(store.visits.map((v) => v.seq), [42, 43]);
+});
+
+test('preferences and commands are logged, and are not project states', async () => {
+  const { archive, store } = await enabled();
+  const nodes = store.nodes.length;
+
+  archive.recordPreference('brightness', 3.0, 2.0, 'set brightness');
+  archive.recordCommand('reset', 'reset simulation');
+
+  assert.equal(store.nodes.length, nodes, 'neither is a project state');
+  const [pref, cmd] = store.visits.slice(-2).map((v) => v.visit);
+  assert.deepEqual(pref, {
+    type: 'preference',
+    field: 'brightness',
+    value: 3.0,
+    previous: 2.0,
+    label: 'set brightness',
+  });
+  assert.deepEqual(cmd, { type: 'command', command: 'reset', label: 'reset simulation' });
+});
+
+test('a disabled archive logs nothing at all', async () => {
+  const { archive, store } = await enabled();
+  archive.disable();
+  const visits = store.visits.length;
+
+  archive.recordVisit(base, at(2), 'edit Gain');
+  archive.recordPreference('brightness', 3.0, 2.0, 'set brightness');
+  archive.recordCommand('reset', 'reset simulation');
+  archive.moveCursor(base, 'undo');
+
+  assert.equal(store.visits.length, visits, 'every path checks the gate');
+});
+
+test('every visit carries the session that produced it', async () => {
+  const { archive, store } = await enabled();
+  archive.recordVisit(base, at(2), 'edit Gain');
+  const sessions = new Set(store.visits.map((v) => v.session));
+  assert.equal(sessions.size, 1);
+  assert.notEqual([...sessions][0], '');
 });

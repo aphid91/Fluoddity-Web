@@ -57,6 +57,7 @@ import {
 } from '../particleSystem/config.ts';
 import { type Project, makeProject } from '../project/project.ts';
 import type { Delta } from './delta.ts';
+import type { VisitRecord } from './visits.ts';
 import type { ArchiveNode, ArchiveRoot } from './archiveDb.ts';
 
 /**
@@ -92,6 +93,16 @@ export interface Archive {
   readonly roots: ReadonlyMap<string, ArchiveRoot>;
   /** Insertion order as exported, which is first-visit order within a session. */
   readonly order: readonly string[];
+  /**
+   * The path walked, in order -- the dataset `order` cannot give you.
+   *
+   * `order` is DISCOVERY order and holds each state once; this is TRAVERSAL
+   * order and holds every arrival, including the revisits, undos and redos that
+   * the node tree does not record. Empty for a document exported before the log
+   * existed, which is why nothing here may assume it is populated. See
+   * `visits.ts`.
+   */
+  readonly visits: readonly VisitRecord[];
   /** The derivation sources the export shipped, for a deriver to compile. */
   readonly derivation: {
     readonly hash: string;
@@ -136,6 +147,16 @@ export function loadArchive(doc: unknown): Archive {
     roots.set(entry.hash, entry);
   }
 
+  // TOLERATED WHEN ABSENT, unlike `nodes` and `roots` above. A document exported
+  // before the visit log existed is still a complete node tree and should read
+  // rather than throw; an empty log is the truthful answer for one, since the
+  // path through those states genuinely was not recorded. Only a `visits` that
+  // is present and malformed is worth rejecting, and `Array.isArray` covers it.
+  const rawVisits = raw['visits'];
+  const visits: readonly VisitRecord[] = Array.isArray(rawVisits)
+    ? (rawVisits as VisitRecord[])
+    : [];
+
   const d = raw['derivation'] as Record<string, unknown> | undefined;
   const derivation =
     d !== undefined && typeof d['hash'] === 'string'
@@ -146,7 +167,7 @@ export function loadArchive(doc: unknown): Archive {
         }
       : null;
 
-  return { nodes, roots, order, derivation };
+  return { nodes, roots, order, visits, derivation };
 }
 
 /** Why a reconstruction could not be completed. */
@@ -397,4 +418,78 @@ export function reconstructAll(
     else failures.push(result.failure);
   }
   return { projects, failures };
+}
+
+/**
+ * One step of a session replayed: the visit, plus the state it landed on.
+ *
+ * `project` is null for the entries that are not project states at all --
+ * preference changes and discrete commands -- and for a project visit whose node
+ * could not be reconstructed, in which case `failure` says why. The three cases
+ * are distinguishable: a non-project step has `visit.type !== 'project'` and no
+ * failure; a broken one has both a project-typed visit and a failure.
+ */
+export interface ReplayStep {
+  readonly record: VisitRecord;
+  readonly project: Project | null;
+  readonly failure: ReconstructFailure | null;
+}
+
+/**
+ * The session replayed in order: every act the user took, with its resulting state.
+ *
+ * **THIS IS WHAT THE VISIT LOG IS FOR.** `reconstructAll` answers "what states
+ * exist"; this answers "what happened, and in what order" -- including the
+ * revisits, the undos and the preference changes that the node tree does not hold
+ * and cannot hold. Walking `archive.visits` rather than `archive.order` is the
+ * entire difference.
+ *
+ * RECONSTRUCTIONS ARE MEMOIZED across the walk, because a path that returns to a
+ * state ten times would otherwise walk its lineage ten times -- and revisits are
+ * common enough in real sessions that this is the difference between linear and
+ * quadratic on the log's length. The cache is keyed by hash, which is sound
+ * precisely because a hash denotes one state forever.
+ *
+ * Returns an empty array for an archive with no log, which is the honest answer
+ * for a document exported before the log existed rather than an error: the
+ * states are all still there, and `reconstructAll` is the function that wants
+ * them.
+ */
+export function replaySession(
+  archive: Archive,
+  deriver: RuleDeriver | null = null,
+): readonly ReplayStep[] {
+  const cache = new Map<string, Project>();
+  const steps: ReplayStep[] = [];
+
+  for (const record of archive.visits) {
+    const visit = record.visit;
+    if (visit?.type !== 'project') {
+      // A preference or a command: a real step in the session with no state of
+      // its own. Passed through so the replay's ORDER is complete -- dropping
+      // these would leave a log that says the user did nothing between two
+      // edits when in fact they changed the world size.
+      steps.push({ record, project: null, failure: null });
+      continue;
+    }
+
+    const cached = cache.get(visit.hash);
+    if (cached !== undefined) {
+      steps.push({ record, project: cached, failure: null });
+      continue;
+    }
+
+    const result = reconstruct(archive, visit.hash, deriver);
+    if (result.ok) {
+      cache.set(visit.hash, result.project);
+      steps.push({ record, project: result.project, failure: null });
+    } else {
+      // NOT FATAL TO THE WALK. One unreconstructable state -- a selection node
+      // with no deriver supplied, most often -- should not cost the caller the
+      // other ten thousand steps. The failure travels with its step.
+      steps.push({ record, project: null, failure: result.failure });
+    }
+  }
+
+  return steps;
 }

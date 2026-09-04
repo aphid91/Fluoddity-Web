@@ -117,6 +117,7 @@ import { type SavedConfig, sanitizeName, toDocument } from '../config/persistenc
 import {
   type Preferences,
   DEFAULT_PREFERENCES,
+  PREFERENCE_KEYS,
   loadPreferences,
   fieldStrengthsFor,
   requiresRestart,
@@ -2148,10 +2149,22 @@ export class Orchestrator implements CommandBus {
   dispatch(command: Command): void {
     switch (command.kind) {
       case 'reset':
+        // TIER 2 OF THE VISIT LOG: a discrete act that moves no project state.
+        // There is no before/after to diff -- a reset returns the simulation to
+        // its initial conditions without touching the config -- so it is
+        // recorded as an EVENT rather than as a state. See `CommandVisit`.
+        this.archive.recordCommand('reset', 'reset simulation');
         this.system.reset();
         return;
 
       case 'togglePause':
+        // The RESULTING state, not the verb, so a reader does not have to
+        // replay every toggle from the start of the session to know whether the
+        // simulation was running. `this.paused` has not flipped yet.
+        this.archive.recordCommand(
+          'togglePause',
+          this.paused ? 'resume' : 'pause',
+        );
         this.paused = !this.paused;
         // PAUSING queues the settle frame; RESUMING cancels one that never got
         // to run. A pause-then-resume inside a single frame must not leave the
@@ -2164,11 +2177,17 @@ export class Orchestrator implements CommandBus {
         this.settledView = null;
         return;
 
+      // THE TWO DISCRETE CAMERA ACTS, and the only two recorded. Camera
+      // MOVEMENT is a continuous per-frame value governed by a blur schedule
+      // with no act to name, and is deliberately absent from the log
+      // (`CommandVisit` says why). These two are button presses like any other.
       case 'toggleCameraMode':
+        this.archive.recordCommand('toggleCameraMode', 'toggle camera mode');
         this.camera.state.toggleMode();
         return;
 
       case 'resetCamera':
+        this.archive.recordCommand('resetCamera', 'reset camera');
         this.camera.state.reset();
         return;
 
@@ -2281,6 +2300,11 @@ export class Orchestrator implements CommandBus {
       }
 
       case 'setMouseMode':
+        // WHICH TOOL, not what it did. The strokes themselves are absent from
+        // the log -- they write into GPU textures no hash covers -- but knowing
+        // the user switched to the brush at this point in the session is both
+        // cheap and exactly the context those missing strokes would have given.
+        this.archive.recordCommand('setMouseMode', `tool: ${command.mode}`);
         // Switching tools abandons any stroke in progress (Step 9), so
         // releasing the button over a different tool cannot resume painting.
         this.mouseMode = command.mode;
@@ -2316,7 +2340,13 @@ export class Orchestrator implements CommandBus {
           // act's parent is read from the cursor, and that is what makes undoing
           // and then working forward record a BRANCH rather than a straight
           // line. See `archive/archive.ts`.
-          this.archive.moveCursor(previous);
+          //
+          // THE DIRECTION IS PASSED so the visit log can say a step BACK was
+          // taken. No node is written either way -- an undo reaches mapped
+          // territory -- but "the user backed up three steps and then went a
+          // different way" is invisible in the node tree, which shows the fork
+          // with no hint of how it was reached.
+          this.archive.moveCursor(previous, 'undo');
           this.resetForUndoRedo();
           // Undoing a rule adoption or a reroll gives the particles a target
           // rule they were not obeying a moment ago, which is a behavior change
@@ -2346,8 +2376,9 @@ export class Orchestrator implements CommandBus {
         if (next !== null) {
           this.notify(describeHistoryStep('redo', redone));
           this.setProject(next);
-          // Follows without recording, exactly as undo does above.
-          this.archive.moveCursor(next);
+          // Follows without adding a node, exactly as undo does above, and logs
+          // the direction for the same reason.
+          this.archive.moveCursor(next, 'redo');
           this.resetForUndoRedo();
           // Redo re-applies the rule change undo just took away, so it is a
           // behavior change by the same argument. See the undo case above.
@@ -2651,6 +2682,13 @@ export class Orchestrator implements CommandBus {
         // ONE LAYER PER COMMAND. Both Clear buttons are on screen at once in the
         // Drawing Controls, so a set is what lets two arrive in the same frame
         // and both take effect.
+        //
+        // LOGGED THOUGH NOT UNDOABLE, and the two are unrelated questions. The
+        // timeline holds Projects and this state is not one, which is why undo
+        // cannot have it; the visit log holds ACTS, and clearing a field is as
+        // deliberate as any button on screen. This is the clearest case of the
+        // log recording something History structurally cannot.
+        this.archive.recordCommand('clearStrafeField', `clear field: ${command.layer}`);
         this.clearFieldPending.add(command.layer);
         return;
 
@@ -3030,6 +3068,18 @@ export class Orchestrator implements CommandBus {
       if (updated.strongLogging) this.startArchiving();
       else this.archive.disable();
     }
+    // **THE ONE PLACE PREFERENCE CHANGES REACH THE VISIT LOG**, and it is here
+    // for the same reason the two side effects above are: this is the single
+    // funnel every preference write in the app passes through, so `editSetting`,
+    // `editDrawPref`, `editViewPref`, `resetPreferences` and the world-size and
+    // calibration paths are all covered without a line at any of them.
+    //
+    // AFTER the strong-logging flip above and BEFORE `this.prefs` moves, so the
+    // diff still has the old values to compare against. A user who just enabled
+    // logging records nothing here -- `startArchiving` is async and the archive
+    // is still inert -- which is the correct outcome and not a lost event: the
+    // preference it would record is `strongLogging` itself, which is excluded.
+    this.logPreferenceChanges(this.prefs, updated);
     this.prefs = updated;
     // THE ONE PLACE THE FIELD STRENGTHS REACH THE SIMULATION, because this is the
     // one place preferences change. Pushed rather than read per frame: the value
@@ -3038,6 +3088,38 @@ export class Orchestrator implements CommandBus {
     this.system.setFieldStrengths(fieldStrengthsFor(this.prefs));
     savePreferences(this.prefs);
     return needsRebuild ? this.rebuildSystem() : Promise.resolve();
+  }
+
+  /**
+   * Record every preference that moved, one visit-log entry per field.
+   *
+   * ITERATES `PREFERENCE_KEYS` RATHER THAN THE OBJECT, so a preference added
+   * later is covered the moment it joins the registry -- there is no second list
+   * here to forget to update. The registry is already the single source of truth
+   * for which preferences exist (`PREFERENCE_KINDS` is `satisfies`-tied to the
+   * interface, so a missing entry is a compile error), and this borrows that
+   * guarantee rather than restating it.
+   *
+   * **`strongLogging` IS SKIPPED, and the asymmetry is the reason.** Enabling it
+   * could be recorded, but disabling it never can -- recording has already
+   * stopped by the time the value changes -- so the pair would appear in the data
+   * as a series of enables with no matching disables, which reads as a bug in the
+   * recorder rather than as the truth. An absent field is honest; a
+   * half-recorded one is not. `visits.ts` says the same from the other side.
+   *
+   * One entry per FIELD rather than one per call: a `resetPreferences` that moves
+   * nine settings is nine entries. See `PreferenceVisit` for why the fine grain
+   * is the cheaper choice in both directions.
+   */
+  private logPreferenceChanges(before: Preferences, after: Preferences): void {
+    if (before === after) return;
+    for (const key of PREFERENCE_KEYS) {
+      if (key === 'strongLogging') continue;
+      const previous = before[key];
+      const value = after[key];
+      if (previous === value) continue;
+      this.archive.recordPreference(key, value, previous, `set ${key}`);
+    }
   }
 
   /**

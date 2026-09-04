@@ -41,18 +41,44 @@
  *   roots  the full state for nodes that have no parent. Keyed by the same hash,
  *          so a root is a node PLUS a stored state rather than a separate kind
  *          of thing.
+ *   visits the PATH walked, one entry per act in the order it happened, keyed by
+ *          an ordinal. See `visits.ts` for why a traversal cannot live in
+ *          `nodes`: that store is keyed by hash so a state has one parent
+ *          forever, and a revisit is by definition a second arrival at the same
+ *          hash from possibly somewhere else.
  *
  * There is no `edges` store. First-visit parentage means every node has exactly
  * one parent, so the edge set IS the `parent` field -- a separate store would be
- * a second copy of the same fact, able to disagree with it.
+ * a second copy of the same fact, able to disagree with it. (The visit log is not
+ * that second copy: it records ARRIVALS, which are many per state, where `parent`
+ * records DISCOVERY, which is one.)
  */
 
 const DB_NAME = 'fluoddity-archive';
-const DB_VERSION = 1;
+/**
+ * Bumped to 2 for the `visits` store.
+ *
+ * **THE BUMP IS WHY `onblocked` REJECTS RATHER THAN HANGS.** A version change
+ * cannot complete while another tab holds the older version open, so a user with
+ * two tabs gets a rejected open here -- which `openArchiveDb` turns into a warning
+ * and a null, and `startArchiving` turns into "strong logging simply does not
+ * run". That is the correct outcome and the reason this database is separate from
+ * `fluoddity` in the first place (see above): the same bump against the config
+ * database would take SAVING down with it, which is the app's core promise. Here
+ * it costs a research feature until the other tab closes.
+ *
+ * The upgrade is ADDITIVE -- `nodes` and `roots` are untouched, so an existing
+ * archive keeps every state it has ever recorded and simply gains an empty visit
+ * log from that point on. There is no backfill and there cannot be one: the path
+ * through those states was never recorded and is not recoverable from the tree.
+ */
+const DB_VERSION = 2;
 export const NODE_STORE = 'nodes';
 export const ROOT_STORE = 'roots';
+export const VISIT_STORE = 'visits';
 
 import type { Delta } from './delta.ts';
+import type { VisitRecord } from './visits.ts';
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
 
 /**
@@ -121,6 +147,15 @@ export async function openArchiveDb(): Promise<IDBDatabase | null> {
         if (!db.objectStoreNames.contains(ROOT_STORE)) {
           db.createObjectStore(ROOT_STORE, { keyPath: 'hash' });
         }
+        // KEYED BY `seq`, NOT BY CONTENT. Every other store here is keyed by
+        // hash because a state is the same state however often it is reached;
+        // a visit is the opposite -- the same state reached twice is two
+        // events, and collapsing them would discard exactly what this store was
+        // added to record. The guard is `contains` rather than a version check
+        // so the v1 -> v2 upgrade and a fresh v2 create take the same path.
+        if (!db.objectStoreNames.contains(VISIT_STORE)) {
+          db.createObjectStore(VISIT_STORE, { keyPath: 'seq' });
+        }
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error('open failed'));
@@ -171,6 +206,77 @@ export async function putNode(
   await done;
 }
 
+/**
+ * Append one visit to the log.
+ *
+ * SEPARATE FROM `putNode` and deliberately not folded into it, despite most
+ * visits accompanying one. The two have different atomicity needs: a node and its
+ * root are meaningless apart and must share a transaction, whereas a visit whose
+ * node failed to write is still a true record of something the user did, and a
+ * node whose visit failed to write is still a state that was reached. Neither
+ * half is corrupt without the other, so pairing them would only widen the
+ * transaction and give a single failure two victims instead of one.
+ *
+ * `add` BY DEFAULT, for `putNode`'s reason: a duplicate `seq` is a bug in the
+ * caller's counter, and silently overwriting one visit with another would lose an
+ * event with nothing to show for it.
+ *
+ * `overwrite` switches to `put`, and exactly one caller passes it -- a coalescing
+ * gesture replacing its own previous frame, which is the one case where landing
+ * on an existing ordinal is intended rather than a bug. Keeping it a parameter
+ * rather than making every write a `put` means the strict path stays strict,
+ * which is where a counter bug would otherwise hide undetected.
+ */
+export async function putVisit(
+  db: IDBDatabase,
+  record: VisitRecord,
+  overwrite = false,
+): Promise<void> {
+  const tx = db.transaction(VISIT_STORE, 'readwrite');
+  const done = new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('archive visit write failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('archive visit write aborted'));
+  });
+  const store = tx.objectStore(VISIT_STORE);
+  if (overwrite) store.put(record);
+  else store.add(record);
+  await done;
+}
+
+/**
+ * Every visit, in the order they happened.
+ *
+ * No sort: `seq` is the keyPath and IndexedDB returns keyed records in key
+ * order, so the store's own ordering IS the traversal order.
+ */
+export async function allVisits(db: IDBDatabase): Promise<readonly VisitRecord[]> {
+  const tx = db.transaction(VISIT_STORE, 'readonly');
+  return (await promisify(tx.objectStore(VISIT_STORE).getAll())) as VisitRecord[];
+}
+
+/**
+ * The highest `seq` on record, or -1 when the log is empty.
+ *
+ * **READ ONCE AT ENABLE so a new session's sequence continues rather than
+ * restarts.** A per-session counter starting at zero would give every session its
+ * own 0, 1, 2 -- and since `seq` is the keyPath, the second session's first visit
+ * would collide with the first session's and be rejected as a duplicate. The log
+ * would then silently stop recording anything after the first few entries of the
+ * second run, which is the kind of failure that looks like "the feature works"
+ * right up until the data is read.
+ *
+ * Opening the cursor in `prev` direction reads one record rather than loading the
+ * whole log to take a maximum, which matters at the hundreds of thousands of
+ * entries this store is expected to reach.
+ */
+export async function lastVisitSeq(db: IDBDatabase): Promise<number> {
+  const tx = db.transaction(VISIT_STORE, 'readonly');
+  const cursor = await promisify(tx.objectStore(VISIT_STORE).openCursor(null, 'prev'));
+  const key = cursor?.key;
+  return typeof key === 'number' ? key : -1;
+}
+
 /** Every node hash already on record, for seeding the in-memory dedup set. */
 export async function loadKnownHashes(db: IDBDatabase): Promise<Set<string>> {
   const tx = db.transaction(NODE_STORE, 'readonly');
@@ -202,12 +308,19 @@ export async function nodeCount(db: IDBDatabase): Promise<number> {
  * the archive exactly as it was, which is the right outcome for a destructive
  * action that failed partway.
  *
+ * **THE VISIT LOG GOES WITH THEM, and leaving it would be the subtle half of
+ * this.** Every project visit names a node by hash; clearing `nodes` while
+ * keeping `visits` would leave a log whose every entry points at a state that no
+ * longer exists, so replay would fail on the first record and the surviving data
+ * would be unreadable rather than merely partial. A clear means the archive is
+ * empty, not that one third of it outlives the rest.
+ *
  * The DATABASE SURVIVES, only its contents go. Deleting it outright would need
  * every other tab to close first (`deleteDatabase` blocks on open connections),
  * so a user with two tabs would get a clear that silently never happened.
  */
 export async function clearArchive(db: IDBDatabase): Promise<void> {
-  const tx = db.transaction([NODE_STORE, ROOT_STORE], 'readwrite');
+  const tx = db.transaction([NODE_STORE, ROOT_STORE, VISIT_STORE], 'readwrite');
   const done = new Promise<void>((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error('archive clear failed'));
@@ -215,5 +328,6 @@ export async function clearArchive(db: IDBDatabase): Promise<void> {
   });
   tx.objectStore(NODE_STORE).clear();
   tx.objectStore(ROOT_STORE).clear();
+  tx.objectStore(VISIT_STORE).clear();
   await done;
 }

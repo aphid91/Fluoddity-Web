@@ -22,8 +22,9 @@ import assert from 'node:assert/strict';
 
 import { ProjectArchive, type ArchiveStore } from './archive.ts';
 import { hashState } from './hash.ts';
-import { latestNode, loadArchive, reconstruct } from './reconstruct.ts';
+import { latestNode, loadArchive, reconstruct, replaySession } from './reconstruct.ts';
 import type { ArchiveNode, ArchiveRoot } from './archiveDb.ts';
+import type { VisitRecord } from './visits.ts';
 import {
   type Project,
   editSelected,
@@ -60,6 +61,7 @@ const at = (gain: number): Project => editSelected(base, 'sensorGain', gain);
 class CaptureStore implements ArchiveStore {
   readonly nodes: ArchiveNode[] = [];
   readonly roots: ArchiveRoot[] = [];
+  readonly visits: VisitRecord[] = [];
 
   put(node: ArchiveNode, root: ArchiveRoot | null, supersedes?: string | null): Promise<void> {
     if (supersedes !== undefined && supersedes !== null) {
@@ -76,9 +78,18 @@ class CaptureStore implements ArchiveStore {
   count(): Promise<number> {
     return Promise.resolve(this.nodes.length);
   }
+  putVisit(record: VisitRecord, overwrite: boolean): Promise<void> {
+    const at = this.visits.findIndex((v) => v.seq === record.seq);
+    if (at >= 0 && overwrite) this.visits[at] = record;
+    else if (at < 0) this.visits.push(record);
+    return Promise.resolve();
+  }
+  lastSeq(): Promise<number> {
+    return Promise.resolve(-1);
+  }
   /** The shape `export.ts` writes, so the tests exercise the real document. */
   document(): unknown {
-    return { version: 1, nodes: this.nodes, roots: this.roots };
+    return { version: 1, nodes: this.nodes, roots: this.roots, visits: this.visits };
   }
 }
 
@@ -289,4 +300,84 @@ test('a node whose own hash is absent is reported as unknown', async () => {
 test('a document without nodes is rejected with a useful message', () => {
   assert.throws(() => loadArchive({ roots: [] }), /nodes/);
   assert.throws(() => loadArchive(null), /not an object/);
+});
+
+// =============================================================================
+// REPLAY
+//
+// `reconstructAll` answers "what states exist". These assert the question only
+// the visit log can answer: what happened, in what order, including the arrivals
+// that added no state.
+// =============================================================================
+
+test('a session replays in order, revisits and all', async () => {
+  const { archive, store } = await recorder();
+  archive.recordVisit(base, at(2), 'to B');
+  archive.recordVisit(at(2), at(3), 'to C');
+  archive.moveCursor(at(2), 'undo');
+  archive.moveCursor(base, 'undo');
+  archive.recordVisit(base, at(9), 'to D');
+
+  const steps = replaySession(loadArchive(store.document()));
+
+  // Six steps for five acts plus the session root -- where the node tree holds
+  // only four states, because the two undos discovered nothing.
+  assert.equal(steps.length, 6);
+  assert.deepEqual(
+    steps.map((s) => (s.record.visit.type === 'project' ? s.record.visit.kind : '?')),
+    ['enter', 'act', 'act', 'undo', 'undo', 'act'],
+  );
+  // Every step rebuilt to a real state, including the ones that added no node.
+  assert.ok(steps.every((s) => s.project !== null && s.failure === null));
+  // And the states are the ones actually visited, in the order visited.
+  assert.deepEqual(
+    steps.map((s) => s.project!.configs[0]!.sensorGain),
+    [1, 2, 3, 2, 1, 9],
+  );
+});
+
+test('a replayed revisit rebuilds the same state as its first visit', async () => {
+  const { archive, store } = await recorder();
+  archive.recordVisit(base, at(2), 'to B');
+  archive.moveCursor(base, 'undo');
+  archive.recordVisit(base, at(2), 'to B again');
+
+  const steps = replaySession(loadArchive(store.document()));
+  const gains = steps.map((s) => s.project?.configs[0]?.sensorGain);
+  assert.deepEqual(gains, [1, 2, 1, 2]);
+});
+
+test('preference and command steps replay in order, with no state', async () => {
+  const { archive, store } = await recorder();
+  archive.recordVisit(base, at(2), 'to B');
+  archive.recordPreference('brightness', 3.0, 2.0, 'set brightness');
+  archive.recordCommand('reset', 'reset simulation');
+  archive.recordVisit(at(2), at(3), 'to C');
+
+  const steps = replaySession(loadArchive(store.document()));
+  assert.deepEqual(steps.map((s) => s.record.visit.type), [
+    'project',
+    'project',
+    'preference',
+    'command',
+    'project',
+  ]);
+  // The two non-project steps hold no state, and that is not a failure.
+  assert.equal(steps[2]!.project, null);
+  assert.equal(steps[2]!.failure, null);
+  assert.equal(steps[3]!.project, null);
+});
+
+test('a document with no visit log replays as empty rather than throwing', async () => {
+  // What a pre-log export looks like. The node tree is intact and
+  // `reconstructAll` still reads it; there is simply no path to replay.
+  const { archive, store } = await recorder();
+  archive.recordVisit(base, at(2), 'to B');
+  const doc = store.document() as Record<string, unknown>;
+  delete doc['visits'];
+
+  const loaded = loadArchive(doc);
+  assert.deepEqual(loaded.visits, []);
+  assert.deepEqual(replaySession(loaded), []);
+  assert.ok(loaded.nodes.size > 0, 'the states are all still there');
 });
