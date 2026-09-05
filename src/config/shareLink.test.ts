@@ -112,7 +112,13 @@ function oneConfig(step: number): Record<string, unknown> {
       sensor_angle_jitter: 0.0,
       sensor_distance_jitter: 0.16,
     },
-    misc3: { radial_gravity: false },
+    misc3: {
+      radial_gravity: false,
+      // NON-ZERO ON PURPOSE, and float64 like the other scalars around it. Zero
+      // here would round-trip through a codec that had dropped the field
+      // entirely, so it would prove nothing about the lane it exists to cover.
+      gravity_trails: -0.42,
+    },
   };
 }
 

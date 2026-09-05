@@ -475,7 +475,7 @@ export const SETTINGS: readonly Setting[] = [
     kind: BOOL,
     help: 'Enables vertical/radial gravity controls',
     group: 'Forces',
-    gates: ['gravityStrafe', 'gravityForce'],
+    gates: ['gravityStrafe', 'gravityTrails', 'gravityForce'],
   }),
   setting({
     field: 'gravityStrafe',
@@ -487,6 +487,22 @@ export const SETTINGS: readonly Setting[] = [
     hi: 1.0,
     help:
       'Applies a fixed offset to particles each frame, shifting them downward',
+    group: 'Forces',
+    revealsOn: 'Gravity',
+  }),
+  setting({
+    field: 'gravityTrails',
+    label: 'Gravity (Trails)',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: SLIDER,
+    lo: -1.0,
+    hi: 1.0,
+    help:
+      'Biases what every particle senses, as though a trail lay downhill. ' +
+      'Nothing is pushed -- each rule decides whether to follow that trail or ' +
+      'flee it, so this can make a population fall or rise, and does nothing at ' +
+      'all to one that ignores its sensors',
     group: 'Forces',
     revealsOn: 'Gravity',
   }),

@@ -108,8 +108,13 @@ test('the bloom trio hangs off a real field', () => {
   }
 });
 
-test('the gravity trio hangs off the Gravity gate', () => {
-  for (const field of ['gravityStrafe', 'gravityForce', 'radialGravity']) {
+test('the gravity controls hang off the Gravity gate', () => {
+  for (const field of [
+    'gravityStrafe',
+    'gravityTrails',
+    'gravityForce',
+    'radialGravity',
+  ]) {
     const setting = SETTINGS.find((s) => s.field === field)!;
     const reveal = revealOf(setting);
     assert.equal(reveal.kind, 'gate', field);
@@ -129,7 +134,11 @@ test('there is exactly one GATES entry and it owns no field', () => {
   const gates = gateSettings();
   assert.equal(gates.length, 1);
   assert.equal(gates[0]!.field, '');
-  assert.deepEqual([...gates[0]!.gates], ['gravityStrafe', 'gravityForce']);
+  assert.deepEqual([...gates[0]!.gates], [
+    'gravityStrafe',
+    'gravityTrails',
+    'gravityForce',
+  ]);
 });
 
 // --- derivation ------------------------------------------------------------

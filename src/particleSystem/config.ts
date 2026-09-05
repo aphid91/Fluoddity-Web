@@ -69,7 +69,7 @@ export const LANE = {
   force2: 92, //  x: gravity_force y: gravity_strafe z: initial_conditions(i) w: cohort_fences(i)
   misc2: 96, //   x: color_sensitivity   y: color_by_cohort(i)
   //              z: sensor_angle_jitter w: sensor_distance_jitter
-  misc3: 100, //  x: radial_gravity(i)   yzw: reserved
+  misc3: 100, //  x: radial_gravity(i)   y: gravity_trails   zw: reserved
 } as const;
 
 /** Float32 lane indices within a `WorldData` record. */
@@ -125,6 +125,17 @@ export interface SimulationConfig {
    */
   readonly gravityForce: number;
   readonly gravityStrafe: number;
+  /**
+   * The THIRD gravity channel, and the only one that is not a motion at all: a
+   * constant bias added to every canvas sensor reading, in exactly the manner
+   * the user-drawn trails layer is added (`get_can`). Particles are not pulled
+   * -- they are told a trail lies downhill, and their rule decides what to make
+   * of that. A rule that flees trails climbs; one that follows them falls.
+   *
+   * Same LINEAR -1..1 control and same `gravity_expand()` curve as the two
+   * above, and it shares their direction, Radial Gravity included.
+   */
+  readonly gravityTrails: number;
   /** How particles are arranged on reset. Indexes the IC_* modes. */
   readonly initialConditions: InitialConditions;
   /**
@@ -201,6 +212,8 @@ export type SimulationConfigRequired = Pick<
  *   sensorDistanceJitter         existed are unchanged."
  *   radialGravity               "False is what every config saved before this
  *                                existed meant."
+ *   gravityTrails               Default 0 (no bias), so configs saved before
+ *                                it existed sense exactly what they always did.
  *
  * Exported as ONE object, not scattered through a function signature, so the
  * config reader can spread it (`{ ...SIMULATION_CONFIG_DEFAULTS, ...parsed }`)
@@ -217,6 +230,7 @@ export const SIMULATION_CONFIG_DEFAULTS = {
   sensorAngleJitter: 0.0,
   sensorDistanceJitter: 0.0,
   radialGravity: false,
+  gravityTrails: 0.0,
   rule: [] as readonly number[],
 } as const satisfies Omit<SimulationConfig, keyof SimulationConfigRequired>;
 

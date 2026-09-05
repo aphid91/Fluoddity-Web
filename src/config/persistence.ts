@@ -240,6 +240,9 @@ function configFromDocument(raw: Record<string, unknown>, where: string): Simula
       // the fixed screen axis, which is what `false` means -- so those configs
       // keep falling exactly the way they did.
       radialGravity: boolOr(misc3, 'radial_gravity', false, where),
+      // Zero means "no bias on the sensors", which is what a file written
+      // before this channel existed was sensing.
+      gravityTrails: numOr(misc3, 'gravity_trails', 0.0, where),
       rule: rule as readonly number[],
     },
   );
@@ -349,6 +352,7 @@ function configToDocument(config: SimulationConfig): unknown {
     },
     misc3: {
       radial_gravity: config.radialGravity,
+      gravity_trails: config.gravityTrails,
     },
   };
 }

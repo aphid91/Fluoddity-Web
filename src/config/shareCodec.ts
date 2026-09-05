@@ -88,8 +88,29 @@
  * The document's own `version` is still written into the payload, so a v9
  * document round-trips through here intact and is rejected by `fromDocument`,
  * which is the layering `shareLink.test.ts` asserts.
+ *
+ * ## 1 -> 2: `gravity_trails`, and why OLD LINKS STILL OPEN
+ *
+ * A SEVENTEENTH SCALAR, and appending one is not free the way a fourth FLAG
+ * would have been. Flags share a byte with five spare bits; scalars are a
+ * positional run, so a new one moves every byte after it. Reading a v1 payload
+ * with today's table would take `initial_conditions` as the tail of a float64
+ * and slide `cohorts` and the flag byte, decoding to a config that is wrong
+ * everywhere and malformed nowhere -- the exact silent failure this file exists
+ * to prevent. Hence a version, which makes the two layouts distinguishable.
+ *
+ * **It is a version, NOT a cutoff.** `SCALARS_BY_CODEC` keeps v1's table beside
+ * v2's, and the decoder picks by the byte it just read, so every link ever
+ * shared still opens. A v1 payload simply carries no `gravity_trails`, and
+ * `persistence.ts` defaults it to 0 -- which is what those configs meant, since
+ * the channel did not exist when they were written. Rejecting them instead
+ * would have been a self-inflicted break: the bytes are perfectly readable, and
+ * only the table needed choosing.
+ *
+ * The ENCODER always writes the current version. There is no path that emits
+ * v1, so this grows by appending a row here and leaving the old ones alone.
  */
-export const CODEC_VERSION = 1;
+export const CODEC_VERSION = 2;
 
 /** Thrown for bytes this decoder will not accept. */
 export class ShareCodecError extends Error {
@@ -109,11 +130,11 @@ const RULE_FLOAT_COUNT = 80;
  * existing link decodes to, which is why it is one table used by BOTH
  * directions rather than two matching lists that could drift apart.
  *
- * All sixteen are float64 -- see the header on why the five that need it are not
- * separated from the eleven that do not. Uniformity here costs 44 bytes per
- * config and removes an entire class of "which one was it?" mistake.
+ * All of them are float64 -- see the header on why the five that need it are not
+ * separated from the rest. Uniformity here costs 44 bytes per config and removes
+ * an entire class of "which one was it?" mistake.
  */
-const SCALARS: readonly (readonly [string, string])[] = [
+const SCALARS_V1: readonly (readonly [string, string])[] = [
   ['sensor', 'gain'],
   ['sensor', 'angle'],
   ['sensor', 'distance'],
@@ -131,6 +152,33 @@ const SCALARS: readonly (readonly [string, string])[] = [
   ['misc2', 'sensor_angle_jitter'],
   ['misc2', 'sensor_distance_jitter'],
 ] as const;
+
+/**
+ * v2 = v1 with `gravity_trails` APPENDED.
+ *
+ * Appended rather than filed beside the other two gravity scalars, which is
+ * where it belongs by meaning. Order is the format: slotting it after
+ * `gravity_strafe` would renumber everything below it for no gain, and this
+ * table is read positionally, never by name.
+ */
+const SCALARS_V2: readonly (readonly [string, string])[] = [
+  ...SCALARS_V1,
+  ['misc3', 'gravity_trails'],
+] as const;
+
+/**
+ * Every layout this decoder can read, by the version byte that selects it.
+ *
+ * A payload names its own table, so old links keep opening -- see the header.
+ * The encoder only ever uses `SCALARS`, the current one.
+ */
+const SCALARS_BY_CODEC: Readonly<Record<number, readonly (readonly [string, string])[]>> = {
+  1: SCALARS_V1,
+  2: SCALARS_V2,
+};
+
+/** The table the ENCODER writes. Always the newest. */
+const SCALARS = SCALARS_V2;
 
 /**
  * The booleans, in bit order within the flag byte.
@@ -194,13 +242,24 @@ function flagOf(raw: Record<string, unknown>, key: string): boolean {
  * Computed rather than written as a literal so that adding a scalar cannot leave
  * a stale constant behind -- the allocation and the writer would disagree by
  * exactly the amount that makes the last config overrun.
+ *
+ * TAKES THE SCALAR TABLE rather than closing over one, because the decoder sizes
+ * against the layout the PAYLOAD names and the encoder against the current one.
+ * A single constant would have made a v1 link fail the length check instead of
+ * decoding.
  */
-const CONFIG_BYTES =
-  RULE_FLOAT_COUNT * 4 + // rule, float32 -- see the header
-  SCALARS.length * 8 + //  scalars, float64 -- see the header
-  4 + //                   cohorts, uint32 (up to 300000 in the shipped configs)
-  1 + //                   initial_conditions
-  1; //                    the flag byte
+function configBytes(scalars: readonly unknown[]): number {
+  return (
+    RULE_FLOAT_COUNT * 4 + // rule, float32 -- see the header
+    scalars.length * 8 + //  scalars, float64 -- see the header
+    4 + //                   cohorts, uint32 (up to 300000 in the shipped configs)
+    1 + //                   initial_conditions
+    1 //                     the flag byte
+  );
+}
+
+/** What the ENCODER allocates: the current layout. */
+const CONFIG_BYTES = configBytes(SCALARS);
 
 /** version + document version + config count + the three world values. */
 const HEADER_BYTES = 1 + 1 + 2 + 8 + 8 + 1;
@@ -324,7 +383,11 @@ export function decodeDocument(bytes: Uint8Array): unknown {
 
   const codec = view.getUint8(at);
   at += 1;
-  if (codec !== CODEC_VERSION) {
+  // THE LAYOUT THE PAYLOAD NAMES, not the current one. Every version this build
+  // knows is read with its own scalar table, so links shared before a layout
+  // change keep opening -- see the `CODEC_VERSION` header.
+  const scalars = SCALARS_BY_CODEC[codec];
+  if (scalars === undefined) {
     // A LINK FROM A FUTURE BUILD, and the message says so rather than calling it
     // damaged -- the user's remedy is to update, not to ask for a fresh copy.
     throw new ShareCodecError(
@@ -348,7 +411,7 @@ export function decodeDocument(bytes: Uint8Array): unknown {
   // real failure (`shareLink.ts` trap 2), and a `DataView` past its end throws a
   // `RangeError`, not something a caller can tell from a bug. Checked up front so
   // the error names truncation, which is what actually happened.
-  const needed = HEADER_BYTES + configCount * CONFIG_BYTES + 4;
+  const needed = HEADER_BYTES + configCount * configBytes(scalars) + 4;
   if (bytes.length < needed) {
     throw new ShareCodecError(
       `the payload claims ${configCount} configs but is ${bytes.length} bytes, ` +
@@ -365,7 +428,7 @@ export function decodeDocument(bytes: Uint8Array): unknown {
     }
 
     const values: number[] = [];
-    for (let i = 0; i < SCALARS.length; i += 1) {
+    for (let i = 0; i < scalars.length; i += 1) {
       values.push(view.getFloat64(at, true));
       at += 8;
     }
@@ -412,7 +475,15 @@ export function decodeDocument(bytes: Uint8Array): unknown {
         sensor_angle_jitter: values[14]!,
         sensor_distance_jitter: values[15]!,
       },
-      misc3: { radial_gravity: (flags & 4) !== 0 },
+      misc3: {
+        radial_gravity: (flags & 4) !== 0,
+        // ABSENT FROM A v1 PAYLOAD, and omitted rather than defaulted to 0 here.
+        // `persistence.ts` owns what a missing field means (`numOr` -> 0.0), and
+        // writing the default in would make this file the second reader the
+        // header says it must not become. The two agree on the value; only one
+        // of them is allowed to decide it.
+        ...(values.length > 16 ? { gravity_trails: values[16]! } : {}),
+      },
     });
   }
 

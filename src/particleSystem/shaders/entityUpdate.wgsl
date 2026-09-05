@@ -196,11 +196,40 @@ fn get_walls(p: vec2f, bc: i32) -> vec2f {
     return get_field(p, bc).rg * walls_strength();
 }
 
+// Which way is "down" for this particle, shared by all three gravity channels.
+//
+// TAKEN ONCE, IN ONE PLACE, so Force, Strafe and Trails can never disagree about
+// it. Radial Gravity swings it from the fixed screen axis to the particle's own
+// position vector, which points AWAY from the origin -- the callers negate, so a
+// positive slider still falls "down", now meaning inwards.
+//
+// A particle sitting exactly on the origin has no direction to fall in.
+// normalize() would hand back NaN there and poison the position for good, so
+// that one case gets vec2(0) -- no pull rather than an arbitrary one.
+//
+// HOISTED OUT OF `main` when Gravity (Trails) arrived: the trails channel biases
+// the SENSOR READ, which happens well before the motion channels are applied, so
+// the direction is now needed at two points in the step rather than one. Sharing
+// a function rather than recomputing it is what keeps the guarantee above true.
+fn gravity_direction(pos: vec2f, config: ConfigData) -> vec2f {
+    if (!cfg_radial_gravity(config)) { return vec2f(0.0, 1.0); }
+    let r = length(pos);
+    // An `if`, not select() -- same reason as safenorm: select() evaluates both
+    // arms, and `pos / r` at r == 0 is the NaN this guard exists to prevent.
+    if (r > 0.0) { return pos / r; }
+    return vec2f(0.0);
+}
+
 // Convert p from worldspace to texture coords and retrieve canvas.
 // The boundary mode decides what a sensor reaching past the edge sees: in
 // BC_WRAP the sampler repeats and it reads the far side; otherwise it clamps
 // and reads the edge, because in those modes the far side is not adjacent.
-fn get_can(p: vec2f, bc: i32) -> vec4f {
+//
+// `bias` is Gravity (Trails): a constant vec2 the caller has already expanded and
+// aimed, added to the reading exactly where the painted trails layer is added.
+// Zero when the slider is centred, which is the whole cost of the feature when
+// it is off.
+fn get_can(p: vec2f, bc: i32, bias: vec2f) -> vec4f {
     // The GLSL calls textureSize() here, twice per invocation. Hoisted to the
     // uniform -- see the header of uniforms.ts.
     let res = canvas_res();
@@ -237,8 +266,21 @@ fn get_can(p: vec2f, bc: i32) -> vec4f {
     // Only xy carry a vector: the canvas is a 2D field (`camera.wgsl:85`
     // colorizes it as atan2(y, x)), so the trails layer is one too and zw stay
     // whatever the canvas put there.
+    // GRAVITY (TRAILS) RIDES THE SAME ADDITION, deliberately.
+    //
+    // It is the painted trails layer with a constant in place of a texture: same
+    // channel, same place in the pipeline, same units. Everything the comment
+    // above says about painted trails is therefore true of it -- a particle
+    // cannot tell this bias from a trail the user drew or one the swarm laid
+    // down, and its rule is what decides whether that means fall or climb.
+    //
+    // Being HERE rather than after `sensor_scaling` means Sensor Gain multiplies
+    // it, which is correct for the same reason: gain is how loudly this
+    // population hears the canvas, and a bias it cannot distinguish from the
+    // canvas must be heard just as loudly. A config with the gain at zero senses
+    // nothing at all, and this is nothing at all along with it.
     let painted = get_field(p, bc).ba * trails_strength();
-    return trail + vec4f(painted, 0.0, 0.0);
+    return trail + vec4f(painted + bias, 0.0, 0.0);
 }
 
 // The Shove tool: a displacement away from (or toward) the cursor while the
@@ -564,10 +606,28 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let left_sensor_offset = pR(orientation * sample_dist, angle * PI);
     let right_sensor_offset = pR(orientation * sample_dist, -angle * PI);
 
+    // Which way is "down", for all three gravity channels. Taken here rather than
+    // beside the two motion channels below because the trails channel needs it
+    // NOW, to bias the reads on the next line.
+    let gravity_dir = gravity_direction(pos, config);
+
+    // GRAVITY (TRAILS): a constant added to what the sensors report, negated on
+    // the same convention as the other two so a positive slider means "down".
+    //
+    // ONE BIAS FOR BOTH SENSORS. Left and right get the identical vector, which
+    // is what makes it a bias rather than a steer: an asymmetric one would push
+    // every particle to one side, reintroducing exactly the handedness that
+    // y_reflect in calculate_entity_behavior exists to cancel.
+    //
+    // NOT scaled by 1/sqrt_world_size, unlike the motion channels. Those are
+    // tuned in world units and must shrink as the world grows; this is a sensor
+    // reading, and `sensor_scaling` below already carries the world-size term.
+    let trail_bias = -gravity_expand(cfg_gravity_trails(config)) * gravity_dir;
+
     // Read the trails from canvas.
     let bc = world_boundary_conditions(u.world);
-    var ltap = get_can(pos + left_sensor_offset, bc);
-    var rtap = get_can(pos + right_sensor_offset, bc);
+    var ltap = get_can(pos + left_sensor_offset, bc, trail_bias);
+    var rtap = get_can(pos + right_sensor_offset, bc, trail_bias);
 
     // The generate-or-mutate branch, and the rule_seed it turns on, live in
     // rule.wgsl -- ONE copy, shared with entityPick.wgsl, so the rule a clicked
@@ -604,29 +664,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Accelerate: Apply drag and add force to e.vel.
     vel = vel * cfg_drag(config) + force;
 
-    // Uniform pull on the whole population, in the same two channels: _force
+    // Uniform pull on the whole population, in the two MOTION channels: _force
     // feeds velocity (after drag, so drag does not damp it away the same frame),
     // _strafe displaces position directly. Negated so a positive slider pulls
     // DOWN the screen. Scaled by 1/sqrt_world_size like every other force here,
     // so the feel survives a World Size change.
     //
-    // Which way is "down" is one direction shared by both channels, taken once
-    // here so Force and Strafe can never disagree about it. Radial Gravity
-    // swings it from the fixed screen axis to the particle's own position
-    // vector, which points AWAY from the origin -- so with the same negation a
-    // positive slider still falls "down", now meaning inwards. A particle
-    // sitting exactly on the origin has no direction to fall in; normalize()
-    // would hand back NaN there and poison the position for good, so that one
-    // case gets no pull rather than an arbitrary one.
-    var gravity_dir = vec2f(0.0, 1.0);
-    if (cfg_radial_gravity(config)) {
-        let r = length(pos);
-        // An `if`, not select() -- same reason as safenorm above: select()
-        // evaluates both arms, and `pos / r` at r == 0 is the NaN this guard
-        // exists to prevent.
-        if (r > 0.0) { gravity_dir = pos / r; } else { gravity_dir = vec2f(0.0); }
-    }
-
+    // The third channel, _trails, is not here and is not a motion: it biases the
+    // sensor read far above, so the particle is persuaded rather than pushed.
+    //
+    // Which way is "down" is one direction shared by all three channels, taken
+    // once by `gravity_direction` so they can never disagree about it. Computed
+    // further up, because the third channel (Trails) biases the sensor read and
+    // so needs it before this point -- see the call there.
     vel += 0.01 / sqrt_world_size * -gravity_expand(cfg_gravity_force(config)) * gravity_dir;
 
     // Move: add vel and strafe to pos.

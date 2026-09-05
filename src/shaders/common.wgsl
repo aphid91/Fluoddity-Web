@@ -181,9 +181,10 @@ struct ConfigData {
     misc2: vec4f,  // x: color_sensitivity     y: color_by_cohort(i)
                    // z: sensor_angle_jitter   w: sensor_distance_jitter
     // misc2 had no spares left, so Radial Gravity is rule 2's "add a whole new
-    // vec4" case again rather than a reclaimed lane. Three spares here for the
-    // next additions.
-    misc3: vec4f,  // x: radial_gravity(i)     yzw: reserved
+    // vec4" case again rather than a reclaimed lane. Gravity (Trails) then took
+    // .y -- rule 2's "claim a reserved lane" case. Two spares left.
+    misc3: vec4f,  // x: radial_gravity(i)     y: gravity_trails
+                   // zw: reserved
 }  // 416 bytes
 
 fn cfg_sensor_gain(c: ConfigData) -> f32     { return c.sensor.x; }
@@ -250,6 +251,21 @@ fn cfg_sensor_distance_jitter(c: ConfigData) -> f32 { return c.misc2.w; }
 // because force2 and misc2 were both full -- read the lane comment, not the
 // name.
 fn cfg_radial_gravity(c: ConfigData) -> bool { return bitcast<i32>(c.misc3.x) != 0; }
+
+// THE THIRD GRAVITY CHANNEL, and the only one that is not a motion.
+//
+// Force and Strafe above move the particle. This one moves what the particle
+// BELIEVES: it is a constant bias added to every canvas sensor reading, in
+// exactly the manner the user-drawn trails layer is added (see `get_can` in
+// entityUpdate.wgsl). Nothing is pushed -- particles are told there is a trail
+// downhill, and each rule decides for itself what to do about that. A rule that
+// chases trails falls; a rule that avoids them rises. So unlike the other two,
+// this channel's SIGN IS NOT ITS DIRECTION, and it does nothing whatsoever to a
+// population whose rule ignores the sensors.
+//
+// LINEAR -1..1 like its siblings, expanded by the same gravity_expand() -- one
+// curve for all three, so the feel of the three sliders matches.
+fn cfg_gravity_trails(c: ConfigData) -> f32 { return c.misc3.y; }
 
 // The width of the Sensor Distance slider (0..5), which is what a distance
 // jitter of 1.0 spans. It lives here rather than being read from the slider

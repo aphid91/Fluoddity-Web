@@ -130,6 +130,10 @@ test('the registry has the same 35 entries the desktop does, plus the web-only o
     // No desktop equivalent: the state archive is a web-only research feature,
     // and there is no IndexedDB behind the desktop to write it to.
     'strongLogging',
+    // No desktop equivalent: the third gravity channel was added here. The
+    // desktop has Force and Strafe only, so this is an addition to the port
+    // rather than one of the 35 it carried across.
+    'gravityTrails',
   ];
   const ported = SETTINGS.filter((s) => !WEB_ONLY.includes(s.field));
   assert.equal(ported.length, 35);

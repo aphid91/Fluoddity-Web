@@ -321,6 +321,11 @@ function parityConfig(): SimulationConfig {
     sensorAngleJitter: r.sensorAngleJitter,
     sensorDistanceJitter: r.sensorDistanceJitter,
     radialGravity: r.radialGravity,
+    // NOT IN THE FIXTURE, and must not be: the reference predates this channel,
+    // so misc3.y was a reserved lane it left at zero. Zero is what reproduces
+    // its bytes, and it is also what `SIMULATION_CONFIG_DEFAULTS` gives a config
+    // saved before the field existed -- the same number for the same reason.
+    gravityTrails: 0,
     rule: r.rule,
   };
 }

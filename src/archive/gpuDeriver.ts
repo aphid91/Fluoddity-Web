@@ -161,6 +161,7 @@ export async function createGpuDeriver(
       sensorAngleJitter: 0,
       sensorDistanceJitter: 0,
       radialGravity: false,
+      gravityTrails: 0,
       rule: request.rule,
     };
   }
