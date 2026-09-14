@@ -651,7 +651,7 @@ export const SETTINGS: readonly Setting[] = [
     source: PREFS,
     kind: INPUT,
     lo: 0.05,
-    hi: 4.0,
+    hi: 40.0,
     help:
       '(Expensive) Determines the particle count and resolution of the trail ' +
       'map. Overall density -- Particles/Trail pixel -- is kept constant.',
