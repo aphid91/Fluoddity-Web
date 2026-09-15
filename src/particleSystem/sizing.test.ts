@@ -28,6 +28,54 @@ test('sizingFor matches the Python at the plan-named world sizes', () => {
   assert.deepEqual(sizingFor(4.0), [2_400_000, 2048]);
 });
 
+// THE REGRESSION GUARD for the world-size black screen.
+//
+// The entity buffer is bound whole as a storage buffer at ENTITY_STRIDE bytes
+// each, so `maxStorageBufferBindingSize` is a ceiling on world size. On WebGPU's
+// DEFAULT limits (128 MiB) that ceiling is 6.99 -- and the failure was silent in
+// the worst way: the buffer allocates (maxBufferSize is 256 MiB), then
+// createBindGroup fails validation and every later submit() is rejected, so the
+// canvas holds its last good frame forever.
+//
+// `gpu/device.ts` now requests the adapter's own maxima, which is what makes the
+// UI's range reachable. This test pins the arithmetic that decides whether that
+// request is still sufficient; it cannot see a real adapter, so it checks the
+// defaults it must NOT be silently subject to.
+test('world size past the default storage-binding limit needs a raised limit', () => {
+  const ENTITY_STRIDE = 32;
+  const DEFAULT_MAX_STORAGE_BINDING = 128 * 1024 * 1024;
+
+  // The exact boundary the bug reported: 6.99 renders, 6.999 is a black screen.
+  const maxEntitiesOnDefaults = DEFAULT_MAX_STORAGE_BINDING / ENTITY_STRIDE;
+  assert.equal(maxEntitiesOnDefaults, 4_194_304);
+  assert.equal(maxEntitiesOnDefaults / ENTITIES_PER_WORLD_UNIT, 6.990506666666667);
+
+  assert.ok(sizingFor(6.99)[0] * ENTITY_STRIDE <= DEFAULT_MAX_STORAGE_BINDING);
+  assert.ok(sizingFor(6.999)[0] * ENTITY_STRIDE > DEFAULT_MAX_STORAGE_BINDING);
+
+  // The UI offers up to 27 (settingsSpec.ts), which is far past the default --
+  // so the raised limit in gpu/device.ts is load-bearing, not an optimisation.
+  // If this ever stops being true the request can be dropped; while it holds,
+  // removing it puts the black screen straight back.
+  assert.ok(sizingFor(27.0)[0] * ENTITY_STRIDE > DEFAULT_MAX_STORAGE_BINDING);
+});
+
+// The OTHER two limits world size spends, recorded so each is a measured fact
+// rather than a guess. Both are raised to the adapter's maxima in gpu/device.ts.
+test('the default buffer-size and texture-dimension ceilings are where they are', () => {
+  // maxBufferSize (256 MiB) is the entity buffer's ALLOCATION, so it binds at
+  // twice the storage-binding ceiling -- which is why raising only the binding
+  // size would have moved the black screen to 13.98 rather than removing it.
+  const DEFAULT_MAX_BUFFER = 256 * 1024 * 1024;
+  assert.ok(sizingFor(13.9)[0] * 32 <= DEFAULT_MAX_BUFFER);
+  assert.ok(sizingFor(14.0)[0] * 32 > DEFAULT_MAX_BUFFER);
+
+  // maxTextureDimension2D (8192) caps the trail canvas edge, i.e. RESOLUTION
+  // rather than particle count. 1024*sqrt(64) is exactly 8192.
+  assert.equal(sizingFor(64.0)[1], 8192);
+  assert.ok(sizingFor(65.0)[1] > 8192);
+});
+
 // Canvas edge goes as sqrt because world size is an AREA: 4x the world is 2x
 // the edge, and density (entities per pixel) stays constant.
 test('quadrupling world size doubles the canvas edge and quadruples the count', () => {

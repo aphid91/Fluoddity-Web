@@ -651,7 +651,23 @@ export const SETTINGS: readonly Setting[] = [
     source: PREFS,
     kind: INPUT,
     lo: 0.05,
-    hi: 40.0,
+    // 27 is a HARD architectural ceiling, not a budget choice. Above it the
+    // entity dispatch needs more than 65535 workgroups in one dimension
+    // (dispatch.test.ts), and `maxComputeWorkgroupsPerDimension` is the one
+    // limit here that raising cannot buy: 65535 is what essentially all
+    // hardware reports, so `gpu/device.ts` has nothing larger to ask for.
+    // Passing it needs a second dispatch dimension -- see dispatch.ts, which
+    // deliberately refuses to clamp because clamping would silently stop
+    // updating the tail of the population.
+    //
+    // The limits that ARE raisable (storage binding, buffer size, texture dim)
+    // no longer bind below this on any normal GPU; before that fix the real
+    // ceiling was 6.99 and anything above it was a permanent black screen.
+    //
+    // Whether a given machine can carry 27 (38.4M particles, a 5322px trail
+    // canvas) is the user's call, per the decision to trust their input. This
+    // bound only keeps them inside what the dispatch can address at all.
+    hi: 27.0,
     help:
       '(Expensive) Determines the particle count and resolution of the trail ' +
       'map. Overall density -- Particles/Trail pixel -- is kept constant.',

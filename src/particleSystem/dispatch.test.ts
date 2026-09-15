@@ -49,10 +49,12 @@ test('the default entity count dispatches 2344 groups', () => {
 });
 
 test('the supported world sizes stay under maxComputeWorkgroupsPerDimension', () => {
-  // 65535 is the guaranteed minimum. World size 4 is the largest the plan's A/B
-  // protocol exercises; this records how much headroom is left, so a future
-  // world-size expansion fails a test rather than dropping entities.
-  for (const worldSize of [0.25, 1.0, 4.0]) {
+  // 65535 is the guaranteed minimum. This is NOT the limit world size hits
+  // first -- see sizing.test.ts, where the storage-buffer binding size binds at
+  // 6.99 on default limits, four times lower. This test once implied the
+  // workgroup ceiling at ~28 was the real one, which is why a world size of 7
+  // shipped as a permanent black screen: the buffer limit had no test at all.
+  for (const worldSize of [0.25, 1.0, 4.0, 27.0]) {
     const [entities] = sizingFor(worldSize);
     assert.ok(
       workgroupsFor(entities) <= 65535,

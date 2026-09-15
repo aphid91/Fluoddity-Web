@@ -33,12 +33,57 @@ export interface GpuContext {
 }
 
 /**
+ * The limits world size spends, each raised from its default to whatever the
+ * adapter actually offers.
+ *
+ * WHY THIS EXISTS AT ALL
+ * A device requested with no `requiredLimits` gets the WebGPU *defaults*, which
+ * are a guaranteed floor, not what the hardware can do -- a discrete GPU that
+ * reports 2 GiB of storage binding still hands you 128 MiB unless you ask. That
+ * default silently capped world size at 6.9905, and the failure was invisible:
+ * the entity buffer ALLOCATES fine (`maxBufferSize` is a roomier 256 MiB), then
+ * `createBindGroup` fails validation, every later `submit()` is rejected, and
+ * the canvas holds its last good frame forever. A permanent black screen that
+ * looks like a physics bug.
+ *
+ * Three limits bind as world size grows, in this order. The world sizes are for
+ * the DEFAULTS, and are what each request buys headroom past:
+ *
+ * - `maxStorageBufferBindingSize` (128 MiB) -- the entity buffer is bound whole,
+ *   at 32 bytes per entity. Hit first, at world size 6.99.
+ * - `maxBufferSize` (256 MiB) -- the same buffer's allocation. Hit at 13.98.
+ * - `maxTextureDimension2D` (8192) -- the trail canvas edge is 1024*sqrt(size),
+ *   so this is the ceiling on RESOLUTION rather than particle count. Hit at 64.
+ *
+ * Asking for the adapter's own value can never fail: `requestDevice` rejects a
+ * limit HIGHER than the adapter's, and every one of these is read straight off
+ * `adapter.limits`. Requesting them does not allocate anything -- it only
+ * declines the browser's offer to cap us below the hardware.
+ *
+ * Deliberately NOT clamped to some supported world size. Per the decision to
+ * trust the user's input, this buys the largest budget the machine can give and
+ * leaves the spending to them; a request beyond it still fails loudly at buffer
+ * creation rather than being silently rounded down.
+ */
+function worldSizeLimits(adapter: GPUAdapter): Record<string, number> {
+  return {
+    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+    maxBufferSize: adapter.limits.maxBufferSize,
+    maxTextureDimension2D: adapter.limits.maxTextureDimension2D,
+  };
+}
+
+/**
  * Acquire an adapter and device.
  *
  * Throws `WebGPUUnavailable` rather than returning null: there is no meaningful
  * degraded mode for "no GPU at all", and the caller's job is to show the
  * message. This is distinct from *shader compilation* failure, which is
  * non-fatal by invariant 5 -- see `compileModule`.
+ *
+ * The device is requested with `worldSizeLimits` raised to the adapter's own
+ * maxima; see that function for which limits world size spends and why the
+ * defaults are not enough.
  *
  * `onLost` fires if the device is lost later. We deliberately do NOT
  * auto-recreate the device: during the port a loss is a bug worth seeing, not
@@ -63,7 +108,7 @@ export async function acquireDevice(onLost?: (info: GPUDeviceLostInfo) => void):
 
   let device: GPUDevice;
   try {
-    device = await adapter.requestDevice();
+    device = await adapter.requestDevice({ requiredLimits: worldSizeLimits(adapter) });
   } catch (err) {
     throw new WebGPUUnavailable('no-device', `Requesting a GPU device failed: ${String(err)}`);
   }
