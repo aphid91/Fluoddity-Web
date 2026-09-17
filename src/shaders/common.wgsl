@@ -282,6 +282,21 @@ fn cfg_gravity_trails(c: ConfigData) -> f32 { return c.misc3.y; }
 // the sensor_distance entry in ui/settings_spec.py.
 const SENSOR_DISTANCE_SPAN: f32 = 5.0;
 
+// The speed below which a particle is considered STALLED and is given a random
+// heading. See the rescue block in entityUpdate.wgsl for why one is needed: a
+// particle's heading is its velocity, so at exactly zero it has no direction,
+// its sensors collapse onto each other, and nothing can ever restore it.
+//
+// 5e-5 is `reset()`'s own spawn magnitude -- the number this codebase already
+// picked for "slow, but moving enough to have a direction". Using the same value
+// makes a rescued particle indistinguishable from a freshly reset one.
+//
+// A FLOOR, NOT AN EPSILON. It is deliberately far above fp32's denormal range:
+// the failure is not underflow to exactly zero, it is a velocity too small for
+// `sample_dist` to place the sensors on different texels, which happens long
+// before the bits run out.
+const MIN_VELOCITY: f32 = 5e-5;
+
 // ---------------------------------------------------------------------------
 // WorldData -- settings that are properties of the world, not of a particle.
 //

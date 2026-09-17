@@ -24,7 +24,13 @@ import { CameraState } from '../camera/cameraState.ts';
 import { Assembler } from '../assembler/assembler.ts';
 import { StrafeField } from '../strafeField/strafeField.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
-import { type ConfigEntry, ConfigStore, DEFAULT_PRESET_NAME } from '../config/configStore.ts';
+import {
+  type ConfigEntry,
+  CUSTOM_CATEGORY,
+  ConfigStore,
+  DEFAULT_PRESET_NAME,
+} from '../config/configStore.ts';
+import { toDocument } from '../config/persistence.ts';
 import { BC, makeWorldSettings } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
 import { loadPreferences } from '../prefs/preferences.ts';
@@ -159,7 +165,7 @@ async function main(): Promise<void> {
   // `live` is what the frame loop reads. A preference change swaps the whole
   // object rather than mutating one, so a frame always renders one coherent set.
   let live = prefs;
-  const prefsWindow = new SandPrefs(prefs, {
+  const prefsWindow = new SandPrefs(prefs, orch.palette, {
     onChange: (next) => {
       live = next;
       system.physicsSteps = next.physicsSteps;
@@ -176,8 +182,39 @@ async function main(): Promise<void> {
         'World Size and Canvas Aspect take effect on reload in this modality.',
       );
     },
+    // A live edit rewrites that ConfigData slot, so every particle already
+    // painted from the square obeys the new settings on the next step -- which
+    // is what makes tweaking gravity to watch its effect useful at all.
+    onConfigEdit: (slot, config, world) => {
+      orch.palette.edit(slot, config, world);
+      orch.applyPalette(fallbackConfig, defaultWorld);
+    },
+    onSaveConfig: (slot, name) => {
+      void (async () => {
+        const entry = orch.palette.at(slot);
+        if (entry.config === null || entry.world === null) return;
+        try {
+          // The SAME custom library the studio writes to, through the same
+          // document writer -- so a config saved here opens there unchanged.
+          await store.write(
+            CUSTOM_CATEGORY,
+            name,
+            toDocument([entry.config], entry.world),
+          );
+          // Rename the square to what was just saved, so the palette reflects
+          // where the settings now live.
+          orch.palette.set(slot, { ...entry, name });
+          ui.setStatus(`Saved "${name}" to ${CUSTOM_CATEGORY}`);
+        } catch (e) {
+          console.error(`Could not save ${name}: ${String(e)}`);
+          ui.setStatus(`Save failed: ${String(e)}`);
+        }
+      })();
+    },
+    onBrushRate: (rate) => {
+      orch.brush.rate = rate;
+    },
   });
-  void prefsWindow;
 
   // --- input --------------------------------------------------------------
   // Owned here, in one place, for the reason `ui/` owns every callback in the
@@ -278,6 +315,9 @@ async function main(): Promise<void> {
       surface.context.getCurrentTexture().createView(),
     );
 
+    // Rebuilds the Config tab only when the selection or a square's contents
+    // actually changed -- see `syncConfig`.
+    prefsWindow.syncConfig();
     ui.refresh(orch.brush.sizeSlot);
     ui.setStatus(
       `${orch.paused ? 'PAUSED — arrange, then SPACE' : 'running'}  ·  ` +

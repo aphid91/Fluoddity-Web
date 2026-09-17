@@ -88,20 +88,51 @@ export class SandOrchestrator {
   private captureArmed = true;
 
   /**
-   * How many dead particles the pool holds, as far as the CPU knows.
+   * How many dead particles the pool holds, for this frame's spawn cap.
    *
-   * AN ESTIMATE, AND DELIBERATELY SO. The true head lives on the GPU and only a
-   * readback could know it, which would stall the pipeline every frame -- the
-   * exact cost the picker's two-phase design exists to avoid. So this tracks
-   * spawns optimistically and is corrected on reset.
+   * ## This is the GPU's number, not a CPU tally
    *
-   * Being wrong is SAFE in both directions: too high and the shader's
-   * reservation refuses the excess (an empty pool is a normal state it already
-   * handles); too low and the brush paints slightly less than it could. Neither
-   * corrupts anything, which is why an estimate is acceptable where a readback
-   * would not be worth its cost.
+   * It was a host-side estimate: decremented on spawn, and deliberately NOT
+   * adjusted on erase, on the reasoning that under-counting was the safe
+   * direction. That was wrong, and the failure is total rather than partial --
+   * spawning is countable while erasing is not, so the estimate only ever fell.
+   * It reached zero, the brush stopped painting, and erasing could not bring it
+   * back: the world looked full while the pool was in fact empty of nothing.
+   *
+   * `system.availableSlots` is the real head, read back asynchronously (a frame
+   * or two stale, which a brush-rate cap does not care about). The one thing the
+   * CPU still tracks is `spawnedThisFrame`, below.
    */
-  private availableEstimate: number;
+  private get availableEstimate(): number {
+    // Subtracting this frame's own spawns matters because the readback predates
+    // them: without it, a fast drag would be told the same free count several
+    // frames running and could ask for slots it had already claimed.
+    return Math.max(0, this.system.availableSlots - this.spawnedSinceRead);
+  }
+
+  /**
+   * Particles requested since the last completed head readback.
+   *
+   * Reset when a fresh head arrives, so it only ever covers the window the
+   * readback does not yet know about.
+   */
+  private spawnedSinceRead = 0;
+  private lastSeenHead = -1;
+
+  /**
+   * Seed for the spawn brush's scatter, advanced every RENDERED frame.
+   *
+   * NOT `system.frameCount`, which is what this used to be and which is frozen
+   * while paused. The scatter is hashed on it, so a paused brush drew the
+   * identical random offsets every frame: holding the mouse still deposited
+   * particles into the same handful of spots forever instead of filling the
+   * disc. Arranging a scene is done PAUSED, so that is precisely when the bug
+   * bit hardest.
+   *
+   * A plain counter rather than a clock: it is a hash input, not a duration, and
+   * a counter cannot repeat or run backwards.
+   */
+  private spawnSeed = 0;
 
   private constructor(opts: {
     device: GPUDevice;
@@ -120,7 +151,6 @@ export class SandOrchestrator {
     this.targets = opts.targets;
     this.passes = opts.passes;
     this.initial = new InitialConditions(opts.device, opts.system, opts.field);
-    this.availableEstimate = opts.system.entityCount;
   }
 
   static async create(opts: {
@@ -160,7 +190,9 @@ export class SandOrchestrator {
   private startEmpty(): void {
     this.system.resetLifetimes();
     this.system.setFrameCount(RESTORE_FRAME);
-    this.availableEstimate = this.system.entityCount;
+    // The pool is full again; the readback will confirm it within a frame or
+    // two, and until then nothing has been spawned against it.
+    this.spawnedSinceRead = 0;
     this._paused = true;
     // An empty world is a fresh arrangement, so the next go captures it.
     this.captureArmed = true;
@@ -238,6 +270,8 @@ export class SandOrchestrator {
    */
   runFrame(input: SandFrameInput, prefs: Preferences, target: GPUTextureView): boolean {
     this.targets.ensure(input.windowSize);
+    // Advanced unconditionally, including while paused -- see `spawnSeed`.
+    this.spawnSeed++;
     const encoder = this.device.createCommandEncoder({ label: 'sand-frame' });
 
     // FIRST, before anything reads the buffers being overwritten.
@@ -245,10 +279,10 @@ export class SandOrchestrator {
       this.restorePending = false;
       if (this.initial.restore(encoder)) {
         this.system.setFrameCount(RESTORE_FRAME);
-        // The restored free list is the captured one, so the CPU's estimate has
-        // to come back to what it was at capture. Not knowing it exactly is why
-        // this is an estimate; the shader tolerates the drift either way.
-        this.availableEstimate = this.capturedAvailable;
+        // The restored free list is the captured one. The head readback will
+        // catch up on its own; all that is needed here is to stop subtracting
+        // spawns that the restore has just undone.
+        this.spawnedSinceRead = 0;
       }
     }
 
@@ -259,6 +293,9 @@ export class SandOrchestrator {
       input.action,
       input.dt,
       this.availableEstimate,
+      // An empty square paints nothing -- see the parameter's note. The eraser
+      // ignores this, so rubbing out still works with an empty square selected.
+      this.palette.at(this.palette.selected).config !== null,
     );
     const world = forUpload(
       this.palette.master.world ?? this.currentWorld(),
@@ -273,9 +310,9 @@ export class SandOrchestrator {
         command.stroke,
         command.count,
         this.palette.selected,
-        this.system.frameCount,
+        this.spawnSeed,
       );
-      this.availableEstimate = Math.max(0, this.availableEstimate - command.count);
+      this.spawnedSinceRead += command.count;
     }
 
     // THE CAPTURE POINT: the scene as it stands the instant the user presses go.
@@ -292,7 +329,6 @@ export class SandOrchestrator {
     if (!this._paused && this.captureArmed) {
       this.captureArmed = false;
       this.initial.capture(encoder);
-      this.capturedAvailable = this.availableEstimate;
     }
 
     if (!this._paused) {
@@ -301,17 +337,31 @@ export class SandOrchestrator {
 
     if (command !== null && command.action === BRUSH_ERASE) {
       this.passes.kill(encoder, world, command.stroke);
-      // Deliberately NOT adjusted: how many particles the eraser actually took
-      // is a GPU-side fact. Leaving the estimate low means the brush under-paints
-      // until the next reset, which is the safe direction to be wrong in.
+      // Nothing is adjusted on the host here: how many particles the eraser took
+      // is a GPU-side fact, which is exactly why the free count is read back
+      // rather than tallied. See `availableEstimate`.
     }
+
+    // LAST, so the head it copies includes this frame's spawns and erases.
+    this.system.recordFreeListRead(encoder);
 
     this.renderInto(encoder, prefs, target, input.cursor);
     this.device.queue.submit([encoder.finish()]);
+
+    // AFTER the submit: mapAsync on a copy that has not been submitted never
+    // resolves, which would wedge the readback in `mapping` forever and freeze
+    // the free count at its startup value.
+    this.system.pollFreeListRead();
+
+    // A fresh head supersedes the spawns counted against the previous one.
+    const head = this.system.availableSlots;
+    if (head !== this.lastSeenHead) {
+      this.lastSeenHead = head;
+      this.spawnedSinceRead = 0;
+    }
+
     return true;
   }
-
-  private capturedAvailable = 0;
 
   private currentWorld(): WorldSettings {
     return this.palette.master.world ?? this.fallbackWorld;

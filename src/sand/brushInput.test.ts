@@ -6,6 +6,7 @@ import {
   BRUSH_SIZES,
   BRUSH_SPAWN,
   BrushInput,
+  DEFAULT_BRUSH_RATE,
   DEFAULT_BRUSH_SIZE,
 } from './brushInput.ts';
 
@@ -123,6 +124,58 @@ test('an exhausted pool produces no command', () => {
   const b = new BrushInput();
   // A full world with the brush still down is NORMAL, not an error.
   assert.equal(b.frame([0, 0], BRUSH_SPAWN, DT, 0), null);
+});
+
+// ---------------------------------------------------------------------------
+// The empty-square guard
+// ---------------------------------------------------------------------------
+
+test('an empty palette square paints nothing', () => {
+  const b = new BrushInput();
+  // The palette fills empty slots with the master's config as a stand-in, so
+  // without this guard an empty square silently painted master particles.
+  assert.equal(b.frame([0, 0], BRUSH_SPAWN, DT, PLENTY, false), null);
+});
+
+test('the ERASER still works with an empty square selected', () => {
+  const b = new BrushInput();
+  const cmd = b.frame([0, 0], BRUSH_ERASE, DT, PLENTY, false);
+  // Rubbing out does not care what is selected, which is what a user reaching
+  // for the eraser expects.
+  assert.ok(cmd);
+  assert.equal(cmd.action, BRUSH_ERASE);
+});
+
+test('an empty square still advances the stroke memory', () => {
+  const b = new BrushInput();
+  b.frame([0, 0], BRUSH_SPAWN, DT, PLENTY, false);
+  const cmd = b.frame([1, 0], BRUSH_SPAWN, DT, PLENTY, true);
+  // Selecting a real square mid-drag resumes from the cursor rather than from
+  // wherever the last real stroke ended.
+  assert.deepEqual(cmd?.stroke.from, [0, 0]);
+});
+
+// ---------------------------------------------------------------------------
+// The rate multiplier
+// ---------------------------------------------------------------------------
+
+test('the brush rate multiplier scales the count', () => {
+  const b = new BrushInput();
+  // dt of exactly 1 second, so the count is `area * SPAWN_RATE * rate` with no
+  // frame-rate division -- comparing two INDEPENDENTLY rounded counts would
+  // otherwise fail on the rounding rather than on the scaling.
+  const atOne = b.frame([0, 0], BRUSH_SPAWN, 1, PLENTY)?.count ?? 0;
+  b.release();
+  b.rate = 2;
+  const atTwo = b.frame([0, 0], BRUSH_SPAWN, 1, PLENTY)?.count ?? 0;
+  assert.ok(atOne > 0);
+  // Within one particle: doubling the rate doubles the deposit.
+  assert.ok(Math.abs(atTwo - atOne * 2) <= 1, `${atTwo} vs ${atOne * 2}`);
+});
+
+test('the default rate is 1.0, meaning the tuned SPAWN_RATE', () => {
+  assert.equal(new BrushInput().rate, DEFAULT_BRUSH_RATE);
+  assert.equal(DEFAULT_BRUSH_RATE, 1.0);
 });
 
 test('an exhausted pool still advances the stroke memory', () => {

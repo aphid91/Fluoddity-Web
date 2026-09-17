@@ -606,6 +606,38 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var pos = e_pos(e);
     var vel = e_vel(e);
 
+    // THE STALLED-PARTICLE RESCUE.
+    //
+    // A particle's heading IS its velocity: `orientation` below is
+    // `safenorm(vel)`, which returns vec2(0) at zero. Both sensor offsets then
+    // collapse onto the particle itself, so it samples the same texel twice,
+    // `calculate_entity_behavior` gets a zero `axis` and builds a degenerate
+    // frame, and the force it produces cannot restore a direction it no longer
+    // has. The particle is stuck for good -- it never moves again, and nothing
+    // in the simulation can dislodge it.
+    //
+    // Reachable from two directions. Drag compounds every step, so any particle
+    // whose rule stops driving it decays toward zero and eventually underflows;
+    // and anything that CREATES a particle at rest starts it there (the sand
+    // modality's spawn brush does exactly that, which is how this was found).
+    //
+    // So: below a floor, give it a random heading at that floor's magnitude.
+    // Cheaper than the alternative of special-casing the degenerate frame
+    // downstream, and it fixes the cause rather than one of its symptoms.
+    //
+    // MIN_VELOCITY is `reset()`'s own spawn magnitude, so a rescued particle is
+    // indistinguishable from a freshly reset one -- a number this file already
+    // chose for the job of "moving enough to have a direction".
+    //
+    // Seeded on (index, frame) like the sensor jitters, so two particles at the
+    // same spot get different headings and one particle re-rolls if it stalls
+    // again. Note this runs BEFORE the sensors read, so the rescue takes effect
+    // on the very step it fires rather than the next one.
+    if (length(vel) < MIN_VELOCITY) {
+        let kick = hash(vec2f(f32(index) + 7.77, f32(fc))) * 2.0 * PI;
+        vel = MIN_VELOCITY * vec2f(cos(kick), sin(kick));
+    }
+
     // Sensor jitter: a random wobble on where this particle looks, resampled
     // EVERY STEP rather than fixed per particle -- so it reads as a shimmer that
     // softens structure, not as a population of individuals with different eyes.

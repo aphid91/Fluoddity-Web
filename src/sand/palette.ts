@@ -93,6 +93,8 @@ export function positionForDigit(key: string): number | null {
 
 export class Palette {
   private readonly slots: PaletteSlot[] = Array.from({ length: SLOT_COUNT }, () => EMPTY_SLOT);
+  /** Replacement counter per square. See `set` and `generationOf`. */
+  private readonly generations: number[] = Array.from({ length: SLOT_COUNT }, () => 0);
 
   /** Which row the number keys address. `X` toggles it. */
   private _topRowActive = true;
@@ -121,9 +123,42 @@ export class Palette {
     return this.slots;
   }
 
+  /**
+   * Replace a square's contents. Bumps its generation.
+   *
+   * ## What the generation is for
+   *
+   * The Config tab binds sliders to a COPY of a square's settings. Loading a
+   * file into that square must throw those sliders away and show the file's
+   * values -- "right-click load always overrides these settings and sets things
+   * back to the saved config's". Comparing configs by identity would not do it
+   * (an edit also produces a new object), and comparing by value would be both
+   * expensive and wrong once an edit happens to restore a saved value.
+   *
+   * A counter is unambiguous: it moves on every replacement and on nothing else.
+   */
   set(slot: number, entry: PaletteSlot): void {
     if (slot < 0 || slot >= SLOT_COUNT) return;
     this.slots[slot] = entry;
+    this.generations[slot] = (this.generations[slot] ?? 0) + 1;
+  }
+
+  /**
+   * Update a square's settings WITHOUT bumping its generation.
+   *
+   * The Config tab's own edits come back through here. Bumping would make the
+   * tab rebuild itself on every slider frame, which resets the drag.
+   */
+  edit(slot: number, config: SimulationConfig, world: WorldSettings): void {
+    if (slot < 0 || slot >= SLOT_COUNT) return;
+    const current = this.slots[slot];
+    if (current === undefined || current.config === null) return;
+    this.slots[slot] = { ...current, config, world };
+  }
+
+  /** How many times this square's contents have been REPLACED. See `set`. */
+  generationOf(slot: number): number {
+    return this.generations[slot] ?? 0;
   }
 
   clear(slot: number): void {

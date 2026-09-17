@@ -39,14 +39,19 @@ export const BRUSH_SIZES: readonly number[] = [0.02, 0.05, 0.1, 0.2, 0.4];
 export const DEFAULT_BRUSH_SIZE = 2;
 
 /**
- * Particles created per unit of world area per second, at full rate.
+ * Particles created per unit of world area per second, at a rate multiplier of 1.
  *
- * Tuned against the default density: the world has area 4 and carries 300k
- * particles at world size 0.5, so filling a brush-sized patch to a comparable
- * density takes a few hundred per frame at the middle size. Adjust by feel --
- * nothing derives from this number.
+ * Tuned by feel against the default density: the world has area 4 and carries
+ * 300k particles at world size 0.5. Nothing derives from this number.
+ *
+ * QUADRUPLED from the first value that shipped (60k), which painted too thinly
+ * to read as material. The multiplier below is what makes further tuning a
+ * slider rather than an edit.
  */
-export const SPAWN_RATE = 60_000;
+export const SPAWN_RATE = 240_000;
+
+/** Default for the dev panel's Brush Rate. 1.0 means exactly `SPAWN_RATE`. */
+export const DEFAULT_BRUSH_RATE = 1.0;
 
 /** What the orchestrator should do this frame. */
 export interface BrushCommand {
@@ -61,6 +66,9 @@ export class BrushInput {
   private sizeIndex = DEFAULT_BRUSH_SIZE;
   /** Last frame's cursor, or null when no stroke is in progress. */
   private previous: Vec2 | null = null;
+
+  /** Multiplier on `SPAWN_RATE`, driven by the dev panel. */
+  rate = DEFAULT_BRUSH_RATE;
 
   get radius(): number {
     return BRUSH_SIZES[this.sizeIndex] ?? BRUSH_SIZES[DEFAULT_BRUSH_SIZE] ?? 0.1;
@@ -99,6 +107,20 @@ export class BrushInput {
     action: BrushAction | null,
     dt: number,
     available: number,
+    /**
+     * Whether the selected palette square actually holds a config.
+     *
+     * An empty square paints NOTHING. It used to paint whatever config happened
+     * to occupy that ConfigData slot -- the palette fills empty slots with the
+     * master's config as a harmless stand-in, so an empty square silently
+     * painted master-config particles. Harmless as a data structure, wrong as a
+     * brush: the square looks empty and must behave empty.
+     *
+     * The ERASER is deliberately exempt. It does not care what is selected --
+     * rubbing out particles works with any square active, including an empty
+     * one, which is what a user reaching for the eraser expects.
+     */
+    canSpawn = true,
   ): BrushCommand | null {
     if (cursor === null || action === null) {
       this.release();
@@ -116,7 +138,12 @@ export class BrushInput {
       return { action, stroke, count: 0 };
     }
 
-    const count = spawnCountFor(this.radius, SPAWN_RATE, dt, available);
+    // The stroke memory is still advanced above, so releasing over an empty
+    // square and selecting a real one mid-drag resumes from the cursor rather
+    // than from wherever the last real stroke ended.
+    if (!canSpawn) return null;
+
+    const count = spawnCountFor(this.radius, SPAWN_RATE * this.rate, dt, available);
     if (count <= 0) return null;
     return { action, stroke, count };
   }

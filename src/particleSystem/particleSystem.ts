@@ -165,6 +165,12 @@ export class ParticleSystem {
    * same one; a minimal dummy when `lifetimes` is off. See `freeList.wgsl`.
    */
   private readonly freeListBuffer: GPUBuffer;
+  /** 4 bytes, for reading the head back. See `recordFreeListRead`. */
+  private readonly headStaging: GPUBuffer;
+  /** Same state machine as `pickPhase`, and for the same reasons. */
+  private headPhase: 'idle' | 'recorded' | 'mapping' = 'idle';
+  /** Last completed head readback. See `availableSlots`. */
+  private freeListHead: number;
   /** Whether particles can be born and die. See `ParticleSystemOptions`. */
   readonly lifetimes: boolean;
 
@@ -332,6 +338,12 @@ export class ParticleSystem {
         // Both directions: COPY_SRC for the initial-conditions snapshot,
         // COPY_DST to restore it and to seed the pool at reset.
         GPUBufferUsage.COPY_SRC,
+    });
+    this.freeListHead = this.lifetimes ? this.entityCount : 0;
+    this.headStaging = device.createBuffer({
+      label: 'free-list-head-staging',
+      size: 4,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
 
     const makeCanvas = (label: string): CanvasTarget => {
@@ -925,6 +937,73 @@ export class ParticleSystem {
   /** The free list, for the sand modality's spawn/kill passes and snapshots. */
   freeListBufferForSand(): GPUBuffer {
     return this.freeListBuffer;
+  }
+
+  /**
+   * Record a copy of the free-list head into the staging buffer.
+   *
+   * ## Why this exists rather than a CPU-side count
+   *
+   * How many particles the ERASER took is a GPU-side fact: only the shader knows
+   * which particles had drifted under the brush. A host that guessed would
+   * ratchet -- spawning is countable and erasing is not, so the estimate would
+   * fall monotonically to zero and the brush would starve with a world full of
+   * dead slots. That bug shipped once.
+   *
+   * ## Deferred, never synchronous
+   *
+   * Exactly the shape `requestPick`/`retrievePick` use, and for the same reason:
+   * reading a buffer the same frame you wrote it forces a GPU sync, and WebGPU
+   * has no synchronous readback at all. The answer is a frame or two stale,
+   * which is harmless -- it feeds a brush-rate cap, not a correctness decision,
+   * and the shader's own reservation refuses anything the pool cannot supply.
+   */
+  recordFreeListRead(encoder: GPUCommandEncoder): void {
+    if (!this.lifetimes) return;
+    // `mapping` means mapAsync is in flight and the buffer is not a legal copy
+    // target; `ready` means an answer is waiting to be taken. Skipping in both
+    // is what keeps this from clobbering a read in progress.
+    if (this.headPhase !== 'idle') return;
+    encoder.copyBufferToBuffer(this.freeListBuffer, 0, this.headStaging, 0, 4);
+    this.headPhase = 'recorded';
+  }
+
+  /**
+   * Start the readback for a recorded copy. Call after submitting the encoder --
+   * `mapAsync` on a buffer whose copy has not been submitted never resolves.
+   */
+  pollFreeListRead(): void {
+    if (this.headPhase !== 'recorded') return;
+    this.headPhase = 'mapping';
+    this.headStaging.mapAsync(GPUMapMode.READ).then(
+      () => {
+        const value = new Uint32Array(this.headStaging.getMappedRange().slice(0))[0];
+        this.headStaging.unmap();
+        // A wrapped head (the shader's guards undo their own overflow, but a
+        // torn read during one is possible) is discarded rather than believed:
+        // it would tell the brush there are four billion slots free.
+        if (value !== undefined && value <= this.entityCount) {
+          this.freeListHead = value;
+        }
+        this.headPhase = 'idle';
+      },
+      () => {
+        // Device lost or buffer destroyed. Invariant 5's shape: a failed
+        // readback drops the answer rather than killing the frame.
+        this.headPhase = 'idle';
+      },
+    );
+  }
+
+  /**
+   * Available dead slots, as of the last completed readback.
+   *
+   * A frame or two stale by construction -- see `recordFreeListRead`. Starts at
+   * the full entity count, which is the truth for a world that has not been
+   * painted in yet.
+   */
+  get availableSlots(): number {
+    return this.freeListHead;
   }
 
   /** The entity buffer, for the sand modality's passes and snapshots. */
