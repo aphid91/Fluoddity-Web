@@ -19,6 +19,7 @@
 import type { Vec2 } from '../particleSystem/coords.ts';
 import type { Stroke } from './sandUniforms.ts';
 import { spawnCountFor } from '../particleSystem/freeList.ts';
+import { uvRadiusToWorld } from '../particleSystem/coords.ts';
 
 /** What a brush does with the button that is down. */
 export const BRUSH_SPAWN = 'spawn';
@@ -26,14 +27,27 @@ export const BRUSH_ERASE = 'erase';
 export type BrushAction = typeof BRUSH_SPAWN | typeof BRUSH_ERASE;
 
 /**
- * The five brush sizes, as world-space radii.
+ * The five brush sizes, as `drawSize` in UV space.
  *
- * Five discrete buttons rather than a slider, per requirement 4. Roughly
- * geometric so each step is a visible change -- a linear ramp would make the
- * top two indistinguishable and the bottom two both tiny. World units, where the
- * world is 2 across at aspect 1, so 0.4 is a fifth of the world.
+ * ## UV, NOT WORLD -- one radius for every tool
+ *
+ * These now measure in the studio's unit, because the same five buttons drive
+ * four tools that historically used two different metrics: Walls, Trails and
+ * Shove take a `drawSize` in uv, while the particle brushes took a world radius.
+ *
+ * `uvRadiusToWorld` converts, and it is a BARE FACTOR OF 2 -- the aspect terms in
+ * the two metrics are identical and cancel. That cancellation is exactly why one
+ * number can describe the same circle for a tool working in uv and one working
+ * in world space, and it is why the reticle (drawn in uv) matches all four.
+ *
+ * Storing the uv value is the direction that removes work: the reticle and the
+ * three field tools use it as-is, and only the particle brushes convert.
+ *
+ * Five discrete buttons rather than a slider. Roughly geometric so each step is
+ * a visible change -- a linear ramp would make the top two indistinguishable and
+ * the bottom two both tiny.
  */
-export const BRUSH_SIZES: readonly number[] = [0.02, 0.05, 0.1, 0.2, 0.4];
+export const BRUSH_SIZES: readonly number[] = [0.01, 0.025, 0.05, 0.1, 0.2];
 
 /** Default index into `BRUSH_SIZES`. The middle one. */
 export const DEFAULT_BRUSH_SIZE = 2;
@@ -50,7 +64,10 @@ export const DEFAULT_BRUSH_SIZE = 2;
  */
 export const SPAWN_RATE = 240_000;
 
-/** Default for the dev panel's Brush Rate. 1.0 means exactly `SPAWN_RATE`. */
+/**
+ * Default Weight. 1.0 means exactly `SPAWN_RATE`, and the studio's own default
+ * draw power and shove gain.
+ */
 export const DEFAULT_BRUSH_RATE = 1.0;
 
 /** What the orchestrator should do this frame. */
@@ -67,11 +84,41 @@ export class BrushInput {
   /** Last frame's cursor, or null when no stroke is in progress. */
   private previous: Vec2 | null = null;
 
-  /** Multiplier on `SPAWN_RATE`, driven by the dev panel. */
-  rate = DEFAULT_BRUSH_RATE;
+  /**
+   * WEIGHT -- how much of itself a stroke deposits, across every tool.
+   *
+   * One number rather than three, because from the user's side it is one
+   * question: how heavy is this brush? It multiplies
+   *
+   *   - `SPAWN_RATE`, so a config square paints denser;
+   *   - `drawPower`, so a Walls or Trails stroke paints stronger;
+   *   - `SHOVE_GAIN`, so a shove pushes harder.
+   *
+   * DELIBERATELY UNCLAMPED. It is a number-drag beside the size buttons, and the
+   * useful range is not yet known -- clamping now would pick a ceiling by guess
+   * and hide whatever is past it.
+   */
+  weight = DEFAULT_BRUSH_RATE;
 
+  /**
+   * The brush radius in UV space -- the studio's `drawSize`.
+   *
+   * What Walls, Trails, Shove and the reticle all take directly. The particle
+   * brushes want world units; `worldRadius` converts.
+   */
   get radius(): number {
-    return BRUSH_SIZES[this.sizeIndex] ?? BRUSH_SIZES[DEFAULT_BRUSH_SIZE] ?? 0.1;
+    return BRUSH_SIZES[this.sizeIndex] ?? BRUSH_SIZES[DEFAULT_BRUSH_SIZE] ?? 0.05;
+  }
+
+  /**
+   * The same circle in world units, for the spawn and kill shaders.
+   *
+   * `uvRadiusToWorld` is the one conversion, and it lives in `coords.ts` rather
+   * than here (invariant 9: only that module and `common.wgsl` may write this
+   * math).
+   */
+  get worldRadius(): number {
+    return uvRadiusToWorld(this.radius);
   }
 
   get sizeSlot(): number {
@@ -130,7 +177,9 @@ export class BrushInput {
     const from = this.previous ?? cursor;
     this.previous = cursor;
 
-    const stroke: Stroke = { from, to: cursor, radius: this.radius };
+    // WORLD units: the spawn and kill shaders measure there. The five size
+    // buttons store uv, which is what the field tools and the reticle want.
+    const stroke: Stroke = { from, to: cursor, radius: this.worldRadius };
 
     if (action === BRUSH_ERASE) {
       // No count: the eraser dispatches over every particle, because only the
@@ -143,7 +192,12 @@ export class BrushInput {
     // than from wherever the last real stroke ended.
     if (!canSpawn) return null;
 
-    const count = spawnCountFor(this.radius, SPAWN_RATE * this.rate, dt, available);
+    const count = spawnCountFor(
+      this.worldRadius,
+      SPAWN_RATE * this.weight,
+      dt,
+      available,
+    );
     if (count <= 0) return null;
     return { action, stroke, count };
   }

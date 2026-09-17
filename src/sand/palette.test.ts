@@ -4,14 +4,18 @@ import assert from 'node:assert/strict';
 import {
   MASTER_SLOT,
   Palette,
+  type PaletteSlot,
   ROW_SIZE,
   SLOT_COUNT,
   positionForDigit,
+  paintsParticles,
   positionOf,
   rowOf,
   slotForKey,
+  toolSlot,
 } from './palette.ts';
 import { makeSimulationConfig, makeWorldSettings } from '../particleSystem/config.ts';
+import { TOOL_CONFIG } from './tool.ts';
 import { COMPATIBILITY_TOLERANCE, isCompatible } from './compatibility.ts';
 
 // Values are arbitrary -- nothing here reads them. What matters is that this is
@@ -33,8 +37,8 @@ const CONFIG = makeSimulationConfig({
 });
 const WORLD = makeWorldSettings();
 
-function entry(name: string) {
-  return { config: CONFIG, world: WORLD, name };
+function entry(name: string): PaletteSlot {
+  return { tool: TOOL_CONFIG, config: CONFIG, world: WORLD, name };
 }
 
 // ---------------------------------------------------------------------------
@@ -190,4 +194,63 @@ test('the tolerance is a fraction of the larger decay', () => {
 test('two zero-decay configs do not divide by zero', () => {
   const w = makeWorldSettings({ trailPersistence: 1 });
   assert.equal(isCompatible(w, w), true);
+});
+
+// ---------------------------------------------------------------------------
+// Tool squares
+//
+// A square is either a CONFIG square or one of the engine's field tools. Both
+// live in the same twenty squares and are chosen the same way, so "is this
+// empty" and "which tool is this" must stay separate questions.
+// ---------------------------------------------------------------------------
+
+test('a tool square is not mistaken for an empty one', () => {
+  const p = new Palette();
+  p.set(3, toolSlot('walls'));
+
+  const slot = p.at(3);
+  assert.equal(slot.tool, 'walls');
+  assert.equal(slot.config, null, 'a field tool carries no config');
+  // The distinction that matters: both have a null config, but only one is an
+  // unloaded square waiting to be filled.
+  assert.equal(paintsParticles(slot), false);
+  assert.equal(slot.name, 'Walls', 'tool squares are named');
+});
+
+test('only a LOADED config square paints particles', () => {
+  const p = new Palette();
+  assert.equal(paintsParticles(p.at(0)), false, 'empty');
+
+  p.set(0, toolSlot('shove'));
+  assert.equal(paintsParticles(p.at(0)), false, 'field tool');
+
+  p.set(0, entry('real'));
+  assert.equal(paintsParticles(p.at(0)), true);
+});
+
+test('a tool square still counts as empty for the palette', () => {
+  const p = new Palette();
+  p.set(0, toolSlot('trails'));
+  // `isEmpty` asks whether any CONFIG is loaded -- a palette of nothing but
+  // tools has no species in it.
+  assert.equal(p.isEmpty, true);
+});
+
+test('editing preserves which tool a square is', () => {
+  const p = new Palette();
+  p.set(2, entry('x'));
+  p.edit(2, CONFIG, WORLD);
+  assert.equal(p.at(2).tool, TOOL_CONFIG);
+});
+
+test('a generation bump marks a REPLACEMENT, not an edit', () => {
+  const p = new Palette();
+  p.set(1, entry('a'));
+  const afterSet = p.generationOf(1);
+
+  p.edit(1, CONFIG, WORLD);
+  assert.equal(p.generationOf(1), afterSet, 'an edit does not rebuild the tab');
+
+  p.set(1, entry('b'));
+  assert.ok(p.generationOf(1) > afterSet, 'a load does');
 });

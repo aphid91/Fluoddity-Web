@@ -6,6 +6,7 @@ import {
   FREE_LIST_HEADER_BYTES,
   FREE_LIST_SLOT_BYTES,
   deadEntityBytes,
+  freeListAfterMigration,
   freeListSize,
   initialFreeList,
   spawnCountFor,
@@ -115,4 +116,39 @@ test('spawn count scales with dt, so a drag is frame-rate independent', () => {
   assert.equal(at30, 60);
   assert.equal(at60, 30);
   assert.equal(at30, at60 * 2);
+});
+
+// ---------------------------------------------------------------------------
+// Migration -- rebuilding the pool after a Max Particles change
+// ---------------------------------------------------------------------------
+
+test('after migration the head is the number of free slots', () => {
+  const list = freeListAfterMigration(10, 4);
+  assert.equal(list[0], 6, '10 slots, 4 live');
+});
+
+test('the migrated pool holds exactly the slots past the live block', () => {
+  const list = freeListAfterMigration(10, 4);
+  const slots = [...list.slice(1, 1 + 6)].sort((a, b) => a - b);
+  assert.deepEqual(slots, [4, 5, 6, 7, 8, 9]);
+});
+
+test('the lowest free index is on top, so allocation runs upward', () => {
+  const list = freeListAfterMigration(10, 4);
+  const head = list[0]!;
+  // The stack pops slots[head-1]; that should be the first slot after the live
+  // block, so a migrated world fills contiguously rather than scattering.
+  assert.equal(list[head], 4);
+});
+
+test('a full buffer after migration has an empty pool', () => {
+  const list = freeListAfterMigration(5, 5);
+  assert.equal(list[0], 0);
+});
+
+test('migration clamps a live count past the buffer', () => {
+  // Truncation is silent and specified: more live particles than slots means
+  // the excess is dropped, and the pool is simply empty.
+  const list = freeListAfterMigration(5, 99);
+  assert.equal(list[0], 0);
 });

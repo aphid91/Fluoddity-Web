@@ -40,11 +40,22 @@ import type { SimulationConfig, WorldSettings } from '../particleSystem/config.t
 import type { Vec2 } from '../particleSystem/coords.ts';
 import type { CameraView } from '../camera/cameraUniforms.ts';
 import { type OverlayState, NO_OVERLAYS } from '../assembler/assemblerUniforms.ts';
-import { uvRadiusToWorld, worldToUv } from '../particleSystem/coords.ts';
+import { worldToUv } from '../particleSystem/coords.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
 import { SandPasses } from './sandPasses.ts';
 import { InitialConditions, RESTORE_FRAME } from './initialConditions.ts';
-import { Palette } from './palette.ts';
+import { type PaletteSlot, Palette, paintsParticles } from './palette.ts';
+import { isFieldTool } from './tool.ts';
+import type { ShoveState } from '../particleSystem/uniforms.ts';
+import type { BrushParams } from '../strafeField/strafeUniforms.ts';
+import type { FieldLayer } from '../strafeField/fieldLayer.ts';
+import { LINE_STROKE_GAIN } from '../strafeField/fieldLayer.ts';
+import { layerForMouseMode } from '../orchestrator/commands.ts';
+import {
+  SHOVE_GAIN,
+  SHOVE_RATE_EXPONENT,
+  SHOVE_REFERENCE_STEPS,
+} from '../orchestrator/shoveCommands.ts';
 import { type BrushAction, BRUSH_ERASE, BRUSH_SPAWN, BrushInput } from './brushInput.ts';
 import { forUpload } from '../particleSystem/config.ts';
 
@@ -55,10 +66,17 @@ export interface SandFrameInput {
   readonly windowSize: readonly [number, number];
   /** Seconds since the last frame. */
   readonly dt: number;
+  /** Whether Shift is held -- arms the line tool in the painting tools. */
+  readonly shift: boolean;
 }
 
 export class SandOrchestrator {
-  readonly system: ParticleSystem;
+  /**
+   * NOT readonly: Max Particles replaces it with a system at a new entity count.
+   * Everything that binds its buffers is rebuilt alongside -- see
+   * `resizeEntities`.
+   */
+  system: ParticleSystem;
   readonly palette = new Palette();
   readonly brush = new BrushInput();
 
@@ -67,8 +85,9 @@ export class SandOrchestrator {
   private readonly assembler: Assembler;
   private readonly field: StrafeField;
   private readonly targets: RenderTargets;
-  private readonly passes: SandPasses;
-  private readonly initial: InitialConditions;
+  // Both hold the entity buffer by reference, so both are replaced when it is.
+  private passes: SandPasses;
+  private initial: InitialConditions;
 
   /**
    * Starts PAUSED, at frame 0. That is the arranging state -- the user paints a
@@ -133,6 +152,19 @@ export class SandOrchestrator {
    * a counter cannot repeat or run backwards.
    */
   private spawnSeed = 0;
+
+  /**
+   * Last frame's cursor in FIELD uv, while a painting stroke is in progress.
+   *
+   * The field tools' equivalent of `BrushInput.previous`, kept separate because
+   * it is in a different space (field uv, not world) and ends on different
+   * events. Null means no stroke, which is what makes the next press start
+   * fresh rather than drawing a line from wherever the last one ended.
+   */
+  private strokePrevUv: readonly [number, number] | null = null;
+
+  /** The line tool's anchor in field uv, or null when nothing is armed. */
+  private lineAnchor: readonly [number, number] | null = null;
 
   private constructor(opts: {
     device: GPUDevice;
@@ -286,6 +318,8 @@ export class SandOrchestrator {
       }
     }
 
+    const selected = this.palette.at(this.palette.selected);
+
     // Brushes run whether or not the simulation is advancing -- arranging a
     // scene while paused is the whole point of the paused state.
     const command = this.brush.frame(
@@ -293,9 +327,10 @@ export class SandOrchestrator {
       input.action,
       input.dt,
       this.availableEstimate,
-      // An empty square paints nothing -- see the parameter's note. The eraser
-      // ignores this, so rubbing out still works with an empty square selected.
-      this.palette.at(this.palette.selected).config !== null,
+      // Only a loaded CONFIG square paints particles. A field tool square and an
+      // unloaded one both deposit nothing; the eraser ignores this, so rubbing
+      // out works whatever is selected.
+      paintsParticles(selected),
     );
     const world = forUpload(
       this.palette.master.world ?? this.currentWorld(),
@@ -315,6 +350,12 @@ export class SandOrchestrator {
       this.spawnedSinceRead += command.count;
     }
 
+    // THE PAINTING TOOLS, recorded here for the same cadence reason the studio
+    // uses: ONCE PER RENDERED FRAME, above the physics. Painting inside the
+    // sub-step loop would make a stroke `physicsSteps` times stronger and tie
+    // its weight to the Physics Rate.
+    this.paintField(encoder, selected, input);
+
     // THE CAPTURE POINT: the scene as it stands the instant the user presses go.
     //
     // Recorded after the frame's spawn so a particle painted on the very frame
@@ -332,7 +373,14 @@ export class SandOrchestrator {
     }
 
     if (!this._paused) {
-      this.system.runFrame(encoder, null);
+      // SHOVE IS NOT A PASS -- it is a value handed to every sub-step, because
+      // it must act AS particles move rather than as one jump at an arbitrary
+      // point in the frame. That is the shape ARCHITECTURE.md describes for a
+      // tool that influences the physics rather than issuing a command, and it
+      // is why the strength is divided by the sub-step count host-side.
+      //
+      // Null while paused, like the studio: a paused frame is untouchable.
+      this.system.runFrame(encoder, this.shoveFor(selected, input));
     }
 
     if (command !== null && command.action === BRUSH_ERASE) {
@@ -361,6 +409,202 @@ export class SandOrchestrator {
     }
 
     return true;
+  }
+
+  // =========================================================================
+  // The field tools -- Shove, Walls, Trails
+  //
+  // All three behave exactly as they do in the studio, and deliberately reuse
+  // its pieces rather than reimplementing them: `StrafeField.draw/erase/clear`
+  // does the painting, `layerForMouseMode` decides which layer a stroke writes,
+  // and the shove tuning constants come from `shoveCommands`.
+  // =========================================================================
+
+  /**
+   * The shove for this frame, or null when the tool is not armed.
+   *
+   * Mirrors `shoveCommands.shoveState`, which cannot be called directly: it
+   * takes the studio's `InputState` and its `mouseMode`. The TUNING is imported
+   * rather than restated, so the two apps cannot disagree about how hard a shove
+   * pushes -- which is the part that would be invisible if it drifted.
+   */
+  private shoveFor(slot: PaletteSlot, input: SandFrameInput): ShoveState | null {
+    if (slot.tool !== 'shove' || input.cursor === null || input.action === null) {
+      return null;
+    }
+
+    // Per sub-step, so the raw value is divided by a power of the rate -- see the
+    // long argument at `shoveCommands.shoveState`. The exponent leaves the brush
+    // relatively stronger at low rates, which is when a user is placing things
+    // carefully and wants it to bite.
+    const steps = Math.max(1, Math.trunc(this.system.physicsSteps));
+    const falloff =
+      steps ** SHOVE_RATE_EXPONENT / SHOVE_REFERENCE_STEPS ** (SHOVE_RATE_EXPONENT - 1);
+    let strength = (SHOVE_GAIN * this.brush.weight) / falloff;
+    // Left pushes away, right pulls in -- the studio's convention.
+    if (input.action === BRUSH_ERASE) strength = -strength;
+
+    return {
+      center: input.cursor,
+      strength,
+      // The shader measures in world space; the buttons store uv.
+      size: this.brush.worldRadius,
+    };
+  }
+
+  /**
+   * Paint or erase the user-drawn field.
+   *
+   * Uv is taken against the FIELD's resolution, not the canvas's -- the field is
+   * capped at `MAX_FIELD_DIM` and the two differ once that bites. `_mouseFieldUv`
+   * in the studio mixes the same two spaces for the same reason.
+   */
+  private paintField(
+    encoder: GPUCommandEncoder,
+    slot: PaletteSlot,
+    input: SandFrameInput,
+  ): void {
+    const layer = isFieldTool(slot.tool) ? layerForMouseMode(slot.tool) : null;
+    if (layer === null) {
+      this.lineAnchor = null;
+      return;
+    }
+    if (input.cursor === null) {
+      this.strokePrevUv = null;
+      return;
+    }
+
+    const uv = worldToUv(input.cursor, this.field.size);
+
+    // THE LINE TOOL. Shift arms an anchor; the next press commits a segment from
+    // it and leaves the endpoint as the new anchor, so endpoints chain into a
+    // polyline. A drag already in progress suppresses arming, so the modifier
+    // cannot seize a gesture mid-stroke.
+    if (input.shift && this.strokePrevUv === null) {
+      if (input.action === null) {
+        // Hovering with Shift held: arm at the cursor if nothing is armed yet.
+        this.lineAnchor ??= uv;
+        return;
+      }
+      const anchor = this.lineAnchor ?? uv;
+      const brush = this.fieldBrush(layer, true);
+      if (input.action === BRUSH_SPAWN) this.field.draw(encoder, uv, anchor, brush);
+      else this.field.erase(encoder, uv, anchor, brush);
+      // The endpoint chains, so a polyline is a sequence of clicks.
+      this.lineAnchor = uv;
+      return;
+    }
+
+    if (input.action === null) {
+      this.strokePrevUv = null;
+      if (!input.shift) this.lineAnchor = null;
+      return;
+    }
+
+    // Freehand: paint the whole segment from last frame's cursor to this one, so
+    // a fast drag is continuous rather than a row of dots.
+    const prev = this.strokePrevUv ?? uv;
+    this.strokePrevUv = uv;
+    this.lineAnchor = null;
+
+    const brush = this.fieldBrush(layer, false);
+    if (input.action === BRUSH_SPAWN) this.field.draw(encoder, uv, prev, brush);
+    else this.field.erase(encoder, uv, prev, brush);
+  }
+
+  private fieldBrush(layer: FieldLayer, isLine: boolean): BrushParams {
+    return {
+      // The five size buttons, in the uv metric this tool measures in.
+      drawSize: this.brush.radius,
+      drawPower: this.brush.weight,
+      mode: 'diverge',
+      layer,
+      drawAngle: 0,
+      // Freehand deposits every frame; a line deposits once.
+      lineGain: isLine ? LINE_STROKE_GAIN : 1.0,
+    };
+  }
+
+  /** Wipe one layer of the painted field. The hint bar's Clear button. */
+  clearField(layer: FieldLayer): void {
+    const encoder = this.device.createCommandEncoder({ label: 'sand-clear-field' });
+    this.field.clear(encoder, layer);
+    this.device.queue.submit([encoder.finish()]);
+  }
+
+  /** Kill every particle. The hint bar's Clear All Particles button. */
+  clearParticles(): void {
+    this.system.resetLifetimes();
+    this.spawnedSinceRead = 0;
+  }
+
+  /**
+   * Rebuild the entity buffer at a new size, carrying the live particles across.
+   *
+   * ## What is replaced, and what is not
+   *
+   * Only the per-entity resources: a new `ParticleSystem` at the new count, with
+   * the SAME canvas size and `physicsSteps`. World Size still drives canvas
+   * resolution and `sqrtWorldSize` -- so the physics feel is untouched and this
+   * is purely a cap on how many particles may exist, which is the decoupling
+   * this control exists for.
+   *
+   * ## Why everything downstream has to be re-handed the buffer
+   *
+   * `SandPasses` binds the entity and free-list buffers into its pipelines, and
+   * `InitialConditions` holds copies sized to the old buffer. Both are rebuilt
+   * rather than patched: a bind group holds a buffer by reference, so a
+   * reallocated buffer needs new groups regardless, and a snapshot of a
+   * differently-sized world cannot be restored into this one.
+   *
+   * THE SNAPSHOT IS DROPPED, not migrated. Carrying it would mean migrating four
+   * resources instead of one and answering what a restore means when the buffer
+   * it was taken from no longer exists. The user is mid-arrangement when they
+   * change a cap; re-pressing go re-captures.
+   */
+  async resizeEntities(
+    count: number,
+    fallbackConfig: SimulationConfig,
+    fallbackWorld: WorldSettings,
+  ): Promise<void> {
+    const wanted = Math.max(1, Math.trunc(count));
+    if (wanted === this.system.entityCount) return;
+
+    const replacement = await ParticleSystem.create({
+      device: this.device,
+      config: fallbackConfig,
+      world: this.palette.master.world ?? fallbackWorld,
+      canvasSize: this.system.canvasSize,
+      entityCount: wanted,
+      physicsSteps: this.system.physicsSteps,
+      lifetimes: true,
+    });
+    // Empty, then filled by the migration -- `resetLifetimes` is what makes the
+    // untouched tail read as dead rather than as live config-0 particles.
+    replacement.resetLifetimes();
+    replacement.setStrafeField(this.field.view(), this.field.size);
+    replacement.applyProject(
+      this.palette.configsForUpload(fallbackConfig),
+      this.palette.master.world ?? fallbackWorld,
+    );
+
+    // Carry the live particles over, truncating silently if the new buffer is
+    // smaller. Reads the old buffer back, which is acceptable here and nowhere
+    // on the frame path -- see `migrateEntitiesTo`.
+    await this.system.migrateEntitiesTo(replacement);
+    replacement.setFrameCount(this.system.frameCount);
+
+    const old = this.system;
+    this.system = replacement;
+    this.passes = await SandPasses.create(this.device, replacement);
+    this.initial.destroy();
+    this.initial = new InitialConditions(this.device, replacement, this.field);
+    // No snapshot survives the resize, so the next go must take a fresh one.
+    this.captureArmed = true;
+    this.spawnedSinceRead = 0;
+    this.lastSeenHead = -1;
+
+    old.destroy();
   }
 
   private currentWorld(): WorldSettings {
@@ -419,7 +663,10 @@ export class SandOrchestrator {
       showTrails: prefs.fieldOpacity > 0,
       reticleCenter:
         cursor === null ? [0, 0] : worldToUv(cursor, this.system.canvasSize),
-      reticleRadius: cursor === null ? 0 : this.brush.radius / uvRadiusToWorld(1),
+      // `brush.radius` IS uv now, which is the metric the assembler draws the
+      // ring in -- so this is a straight hand-off with no conversion. It used to
+      // divide by `uvRadiusToWorld(1)` because the brush stored world units.
+      reticleRadius: cursor === null ? 0 : this.brush.radius,
     };
 
     this.assembler.present(encoder, this.camera.result(), target, view, prefs, overlays);

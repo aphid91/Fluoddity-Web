@@ -98,6 +98,37 @@ export function deadEntityBytes(entityCount: number): ArrayBuffer {
 }
 
 /**
+ * The pool after a migration that packed `liveCount` particles into the front of
+ * a buffer of `entityCount` slots.
+ *
+ * Every slot from `liveCount` upward is dead and available, so the head is the
+ * difference and the slots list is that range. Written as a descending fill so
+ * the LOWEST free index sits on top of the stack and is handed out first --
+ * which keeps a freshly-migrated world allocating contiguously upward from the
+ * live block, rather than scattering new particles across the tail.
+ *
+ * (`initialFreeList` fills ascending for the opposite reason: with every slot
+ * free, filling from the back is arbitrary either way, and ascending is the
+ * simpler statement of "all of them".)
+ */
+export function freeListAfterMigration(
+  entityCount: number,
+  liveCount: number,
+): Uint32Array<ArrayBuffer> {
+  const total = Math.max(0, entityCount);
+  const live = Math.max(0, Math.min(liveCount, total));
+  const free = total - live;
+  const data = new Uint32Array(new ArrayBuffer((1 + total) * 4));
+  data[0] = free;
+  for (let i = 0; i < free; i++) {
+    // Descending: slots[free-1] is `live`, the lowest free index, so it pops
+    // first.
+    data[i + 1] = total - 1 - i;
+  }
+  return data;
+}
+
+/**
  * How many particles a brush should create this frame, given its radius and a
  * spawn rate measured per unit of world area per second.
  *

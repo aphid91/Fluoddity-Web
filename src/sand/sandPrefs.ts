@@ -43,7 +43,6 @@ import {
   WORLD,
 } from '../ui/settingsSpec.ts';
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
-import { DEFAULT_BRUSH_RATE } from './brushInput.ts';
 import { MASTER_SLOT, type Palette } from './palette.ts';
 
 /** Fields a sand world has no use for, and why. */
@@ -70,8 +69,8 @@ export interface SandPrefsCallbacks {
   onConfigEdit(slot: number, config: SimulationConfig, world: WorldSettings): void;
   /** Save As on the Config tab. */
   onSaveConfig(slot: number, name: string): void;
-  /** The brush rate multiplier moved. */
-  onBrushRate(rate: number): void;
+  /** Max Particles was committed. Rebuilds the entity buffer. */
+  onMaxParticles(count: number): void;
 }
 
 export class SandPrefs {
@@ -90,10 +89,19 @@ export class SandPrefs {
   /** Bumped when a square's contents are replaced, to force a rebuild. */
   private shownGeneration = -1;
 
-  private readonly devValues = { brushRate: DEFAULT_BRUSH_RATE };
+  private readonly devValues: Record<string, number>;
+  /** The last committed Max Particles, for reverting a bad entry. */
+  private committedMaxParticles: number;
 
-  constructor(prefs: Preferences, palette: Palette, callbacks: SandPrefsCallbacks) {
+  constructor(
+    prefs: Preferences,
+    palette: Palette,
+    maxParticles: number,
+    callbacks: SandPrefsCallbacks,
+  ) {
     this.committed = prefs;
+    this.committedMaxParticles = maxParticles;
+    this.devValues = { maxParticles };
     this.palette = palette;
     this.callbacks = callbacks;
     this.prefValues = { ...prefs } as Record<string, unknown>;
@@ -174,17 +182,44 @@ export class SandPrefs {
   // Dev
   // -------------------------------------------------------------------------
 
+  /**
+   * The Dev tab.
+   *
+   * Brush Rate moved OUT of here and became the Weight number-drag beside the
+   * size buttons, where it belongs -- it is a brush property, and it now drives
+   * shove strength and draw power as well as spawn density.
+   */
   private buildDev(page: TabPageApi): void {
-    const blade = page.addBinding(this.devValues, 'brushRate', {
-      label: 'Brush Rate',
-      min: 0.1,
-      max: 8,
-      step: 0.1,
+    // MAX PARTICLES: a typed field, not a slider, for exactly the reason
+    // `Preferences.requiresRestart` makes World Size one -- it reallocates every
+    // per-entity GPU buffer, so a slider would rebuild the world on every frame
+    // of a drag. Nothing happens until the value is committed.
+    const blade = page.addBinding(this.devValues, 'maxParticles', {
+      label: 'Max Particles',
+      // A plain number field. `format` keeps it from rendering in exponential
+      // notation at the top of the range, which is unreadable and uneditable.
+      format: (v: number) => String(Math.round(v)),
     });
     blade.element.title =
-      'Multiplier on how fast a dragged brush deposits particles. ' +
-      '1.0 is the tuned default.';
-    blade.on('change', () => this.callbacks.onBrushRate(this.devValues.brushRate));
+      'Overrides the world-size-derived particle cap. Applied on Enter: the ' +
+      'entity buffer is rebuilt and live particles are carried across, ' +
+      'truncated if the new buffer is smaller.';
+
+    blade.on('change', (ev) => {
+      // `ev.last` is the end of the gesture -- for a text field, the commit.
+      // Acting on every keystroke would reallocate the world per character.
+      if (!ev.last) return;
+      const requested = Math.round(Number(this.devValues.maxParticles));
+      if (!Number.isFinite(requested) || requested < 1) {
+        // Put the field back rather than acting on nonsense.
+        this.devValues.maxParticles = this.committedMaxParticles;
+        this.pane.refresh();
+        return;
+      }
+      if (requested === this.committedMaxParticles) return;
+      this.committedMaxParticles = requested;
+      this.callbacks.onMaxParticles(requested);
+    });
   }
 
   // -------------------------------------------------------------------------

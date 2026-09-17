@@ -120,6 +120,82 @@
         white-space: nowrap;
       }
 
+      /* The hint bar, directly above the palette. */
+      #sand-hint {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 4px 10px;
+        border-radius: 4px;
+        background: rgba(20, 20, 24, 0.82);
+        pointer-events: auto;
+        max-width: min(760px, 92vw);
+      }
+
+      #sand-hint-text {
+        opacity: 0.8;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      #sand-hint-clear {
+        flex: none;
+        border: 1px solid #5a4444;
+        border-radius: 3px;
+        background: #2a1e1e;
+        color: #e0b4b4;
+        font: inherit;
+        padding: 2px 8px;
+        cursor: pointer;
+      }
+
+      #sand-hint-clear:hover {
+        background: #3a2626;
+      }
+
+      /* Weight and the brush sizes, as one control group. */
+      #sand-tools {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        pointer-events: auto;
+      }
+
+      #sand-weight {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 3px 8px;
+        border-radius: 4px;
+        background: rgba(20, 20, 24, 0.82);
+        opacity: 0.85;
+        cursor: ew-resize;
+      }
+
+      #sand-weight span {
+        font-size: 11px;
+        opacity: 0.7;
+      }
+
+      #sand-weight input {
+        width: 46px;
+        background: #0e0e12;
+        border: 1px solid #3a3a42;
+        border-radius: 3px;
+        color: #ddd;
+        font: inherit;
+        padding: 1px 4px;
+        text-align: right;
+      }
+
+      /* The spinner arrows would fight the drag gesture. */
+      #sand-weight input::-webkit-inner-spin-button,
+      #sand-weight input::-webkit-outer-spin-button {
+        appearance: none;
+        margin: 0;
+      }
+
       /* Brush sizes: five buttons with circles from small to large. */
       #sand-sizes {
         display: flex;
@@ -236,9 +312,23 @@
     <div id="sand-status"></div>
 
     <div id="sand-ui">
+      <!-- The hint bar. Says what the armed tool does and offers its one
+           destructive action, matching the studio's bar. -->
+      <div id="sand-hint">
+        <span id="sand-hint-text"></span>
+        <button type="button" id="sand-hint-clear"></button>
+      </div>
       <div class="sand-row" id="sand-row-0"></div>
       <div class="sand-row" id="sand-row-1"></div>
-      <div id="sand-sizes"></div>
+      <div id="sand-tools">
+        <!-- Weight sits LEFT of the size buttons: it is the other half of "how
+             heavy is this brush", and the two read as one control group. -->
+        <label id="sand-weight" title="Drag to change how much a stroke deposits">
+          <span>Weight</span>
+          <input type="number" id="sand-weight-input" step="0.1" value="1" />
+        </label>
+        <div id="sand-sizes"></div>
+      </div>
     </div>
 
     <div id="sand-loader">

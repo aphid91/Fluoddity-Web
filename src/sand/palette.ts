@@ -24,6 +24,7 @@
  */
 
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
+import { type SandTool, TOOL_CONFIG, TOOL_LABELS } from './tool.ts';
 
 /** Slots per row. Ten, addressed by `1`-`9` then `0`. */
 export const ROW_SIZE = 10;
@@ -41,16 +42,45 @@ export const SLOT_COUNT = ROW_SIZE * ROW_COUNT;
  */
 export const MASTER_SLOT = 0;
 
-/** One palette square. `config` of null is an empty square. */
+/**
+ * One palette square.
+ *
+ * A square is either a CONFIG square (`tool === 'config'`, carrying a config) or
+ * a FIELD TOOL square (shove/walls/trails, carrying none). An empty square is a
+ * config square whose config is null -- so "empty" and "which tool" stay two
+ * separate questions, and a field tool is never mistaken for an unloaded slot.
+ */
 export interface PaletteSlot {
+  readonly tool: SandTool;
   readonly config: SimulationConfig | null;
   /** The config's own world settings, kept for the compatibility test. */
   readonly world: WorldSettings | null;
-  /** Display name, from the config file. */
+  /** Display name: the config file's, or the tool's. */
   readonly name: string;
 }
 
-export const EMPTY_SLOT: PaletteSlot = { config: null, world: null, name: '' };
+export const EMPTY_SLOT: PaletteSlot = {
+  tool: TOOL_CONFIG,
+  config: null,
+  world: null,
+  name: '',
+};
+
+/** A square holding one of the engine's field tools. */
+export function toolSlot(tool: SandTool): PaletteSlot {
+  return { tool, config: null, world: null, name: TOOL_LABELS[tool] };
+}
+
+/**
+ * Whether this square can paint particles.
+ *
+ * False for a field tool AND for an unloaded config square -- the two reasons a
+ * left-drag deposits nothing. The brush asks this one question rather than
+ * testing both conditions at each call site.
+ */
+export function paintsParticles(slot: PaletteSlot): boolean {
+  return slot.tool === TOOL_CONFIG && slot.config !== null;
+}
 
 /**
  * Which flat index the number keys address.

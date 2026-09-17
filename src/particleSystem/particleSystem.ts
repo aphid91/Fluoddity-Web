@@ -55,7 +55,13 @@ import { ENTITY_STRIDE } from './layout.ts';
 // `strafeField.ts` here would be the cycle (that class already imports this one).
 import { FIELD_FORMAT } from '../strafeField/fieldSize.ts';
 import { packConfigs } from './pack.ts';
-import { deadEntityBytes, freeListSize, initialFreeList } from './freeList.ts';
+import {
+  DEAD_CONFIG,
+  deadEntityBytes,
+  freeListAfterMigration,
+  freeListSize,
+  initialFreeList,
+} from './freeList.ts';
 import { canvasDimensions, ENTITIES_PER_WORLD_UNIT, ENTITY_COUNT } from './sizing.ts';
 import {
   type FieldStrengths,
@@ -937,6 +943,86 @@ export class ParticleSystem {
   /** The free list, for the sand modality's spawn/kill passes and snapshots. */
   freeListBufferForSand(): GPUBuffer {
     return this.freeListBuffer;
+  }
+
+  /**
+   * Copy this system's live entities into a NEW system's buffer, truncating.
+   *
+   * ## Why the host reads the buffer back to do this
+   *
+   * Changing Max Particles reallocates the entity buffer, and the particles the
+   * user has painted should survive that -- rebuilding the world from scratch
+   * because a cap moved is not what a cap moving means. But the host does not
+   * know which entities are alive: that is written GPU-side by the brushes and
+   * by edge-death.
+   *
+   * So the migration reads the old buffer, keeps the LIVE entities (in index
+   * order), and writes them densely into the front of the new one. That gives
+   * two things a blind `copyBufferToBuffer` could not: truncation that drops
+   * dead particles before live ones, and a free list that is correct on the
+   * other side without a second pass to rebuild it.
+   *
+   * THE READBACK IS ACCEPTABLE HERE, unlike anywhere on the frame path. It
+   * happens when the user confirms a typed field -- a deliberate, occasional act
+   * that already reallocates several buffers. The pipeline stall it causes is
+   * invisible against that.
+   *
+   * SILENT TRUNCATION is deliberate, and specified: if the new buffer is
+   * smaller, the excess live particles are dropped without a warning.
+   */
+  async migrateEntitiesTo(target: ParticleSystem): Promise<void> {
+    if (!this.lifetimes || !target.lifetimes) return;
+
+    const stride = ENTITY_STRIDE;
+    const staging = this.device.createBuffer({
+      label: 'entity-migration-staging',
+      size: this.entityCount * stride,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+
+    try {
+      const encoder = this.device.createCommandEncoder({ label: 'entity-migration' });
+      encoder.copyBufferToBuffer(this.entityBuffer, 0, staging, 0, staging.size);
+      this.device.queue.submit([encoder.finish()]);
+
+      await staging.mapAsync(GPUMapMode.READ);
+      const source = new Uint8Array(staging.getMappedRange());
+      // `config_index` is misc.y -- float lane 5 of 8. Read as i32, because a
+      // dead particle is one whose index is negative.
+      const asInt = new Int32Array(
+        source.buffer,
+        source.byteOffset,
+        source.byteLength / 4,
+      );
+
+      const kept = new Uint8Array(target.entityCount * stride);
+      // Everything not written below stays zero, which is NOT dead -- config 0
+      // is a real config. The tail is marked dead explicitly after the copy.
+      let out = 0;
+      for (let i = 0; i < this.entityCount && out < target.entityCount; i++) {
+        if (asInt[i * 8 + 5]! < 0) continue; // dead: skip, do not migrate
+        kept.set(source.subarray(i * stride, (i + 1) * stride), out * stride);
+        out++;
+      }
+      staging.unmap();
+
+      // The tail -- every slot past the migrated ones -- must read as dead.
+      const tail = new Int32Array(kept.buffer, kept.byteOffset, kept.byteLength / 4);
+      for (let i = out; i < target.entityCount; i++) tail[i * 8 + 5] = DEAD_CONFIG;
+
+      target.device.queue.writeBuffer(target.entityBuffer, 0, kept);
+      // The free list holds exactly the slots past the migrated block, with the
+      // head at how many of them there are. Built here rather than by a GPU pass
+      // because the host already knows `out` exactly.
+      target.device.queue.writeBuffer(
+        target.freeListBuffer,
+        0,
+        freeListAfterMigration(target.entityCount, out),
+      );
+      target.freeListHead = target.entityCount - out;
+    } finally {
+      staging.destroy();
+    }
   }
 
   /**

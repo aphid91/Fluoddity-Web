@@ -166,7 +166,7 @@ test('the brush rate multiplier scales the count', () => {
   // otherwise fail on the rounding rather than on the scaling.
   const atOne = b.frame([0, 0], BRUSH_SPAWN, 1, PLENTY)?.count ?? 0;
   b.release();
-  b.rate = 2;
+  b.weight = 2;
   const atTwo = b.frame([0, 0], BRUSH_SPAWN, 1, PLENTY)?.count ?? 0;
   assert.ok(atOne > 0);
   // Within one particle: doubling the rate doubles the deposit.
@@ -174,7 +174,7 @@ test('the brush rate multiplier scales the count', () => {
 });
 
 test('the default rate is 1.0, meaning the tuned SPAWN_RATE', () => {
-  assert.equal(new BrushInput().rate, DEFAULT_BRUSH_RATE);
+  assert.equal(new BrushInput().weight, DEFAULT_BRUSH_RATE);
   assert.equal(DEFAULT_BRUSH_RATE, 1.0);
 });
 

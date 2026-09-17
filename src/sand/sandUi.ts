@@ -20,6 +20,10 @@ import type { WorldSettings } from '../particleSystem/config.ts';
 import { BRUSH_SIZES } from './brushInput.ts';
 import { isCompatible } from './compatibility.ts';
 import { MASTER_SLOT, ROW_SIZE, type Palette, positionOf, rowOf } from './palette.ts';
+import { FIELD_TOOLS, type SandTool, TOOL_CONFIG, TOOL_LABELS } from './tool.ts';
+// The studio's own tool descriptions, so the two apps cannot describe the same
+// tool differently.
+import { TOOL_HELP } from '../ui/menuHelp.ts';
 
 /** The digit printed on a square, Factorio-style: 1-9 then 0. */
 function keyLabel(slot: number): string {
@@ -32,9 +36,29 @@ export interface SandUiCallbacks {
   onSelect(slot: number): void;
   /** A config was chosen for a slot in the browser. */
   onLoad(slot: number, entry: ConfigEntry): void;
+  /** A field tool was chosen for a slot in the browser. */
+  onLoadTool(slot: number, tool: SandTool): void;
   /** A brush-size button was pressed. */
   onBrushSize(index: number): void;
+  /** The Weight number-drag moved. */
+  onWeight(weight: number): void;
+  /** The hint bar's Clear button, for whatever the armed tool clears. */
+  onClear(what: 'walls' | 'trails' | 'particles'): void;
 }
+
+/**
+ * What the hint bar's Clear button wipes for each tool, and what it says.
+ *
+ * The wall/trail wording matches the studio's `CLEAR_FIELD_LABELS` -- these are
+ * the same acts on the same textures, so they should read identically in both
+ * apps. Shove clears nothing: it leaves nothing behind, which is the whole
+ * difference between it and the painting tools.
+ */
+const CLEAR_LABELS: Readonly<Record<string, string>> = {
+  walls: "Clear all barriers (Can't undo)",
+  trails: "Clear all trails (Can't undo)",
+  particles: "Clear all particles (Can't undo)",
+};
 
 export class SandUi {
   private readonly palette: Palette;
@@ -47,6 +71,12 @@ export class SandUi {
   private readonly loaderEl: HTMLElement;
   private readonly loaderSlotEl: HTMLElement;
   private readonly loaderListEl: HTMLElement;
+  private readonly hintText: HTMLElement;
+  private readonly clearButton: HTMLButtonElement;
+  private readonly weightInput: HTMLInputElement;
+
+  /** What the hint bar's Clear button wipes, or null when it is hidden. */
+  private clearTarget: 'walls' | 'trails' | 'particles' | null = null;
 
   /** Which slot the open browser is filling, or null when it is closed. */
   private loadingInto: number | null = null;
@@ -68,9 +98,17 @@ export class SandUi {
     this.loaderEl = byId('sand-loader');
     this.loaderSlotEl = byId('sand-loader-slot');
     this.loaderListEl = byId('sand-loader-list');
+    this.hintText = byId('sand-hint-text');
+    this.clearButton = byId('sand-hint-clear') as HTMLButtonElement;
+    this.weightInput = byId('sand-weight-input') as HTMLInputElement;
 
     this.buildSlots();
     this.buildSizes();
+    this.buildWeight();
+
+    this.clearButton.addEventListener('click', () => {
+      if (this.clearTarget !== null) this.callbacks.onClear(this.clearTarget);
+    });
 
     // Clicking the backdrop closes. Scoped to the backdrop itself so a click
     // inside the panel does not.
@@ -134,8 +172,100 @@ export class SandUi {
     });
   }
 
+  /**
+   * The Weight number-drag.
+   *
+   * A horizontal drag on the label scrubs the value, and the field can still be
+   * typed into -- the same affordance Tweakpane's number inputs offer, built by
+   * hand because this control lives in the palette bar rather than in a pane.
+   *
+   * MULTIPLICATIVE, not additive: weight is a gain, so a fixed step per pixel
+   * would crawl at 8 and overshoot at 0.1. Scaling keeps the feel even across
+   * the range, which matters more here because the value is unclamped.
+   */
+  private buildWeight(): void {
+    const input = this.weightInput;
+
+    const commit = (value: number): void => {
+      if (!Number.isFinite(value) || value <= 0) return;
+      // Trailing zeros removed, so a scrub reads as a number rather than as
+      // fifteen decimal places of float noise.
+      input.value = String(Number(value.toFixed(3)));
+      this.callbacks.onWeight(value);
+    };
+
+    input.addEventListener('change', () => commit(Number(input.value)));
+
+    let dragging = false;
+    let startX = 0;
+    let startValue = 1;
+
+    const label = input.parentElement;
+    label?.addEventListener('pointerdown', (e) => {
+      // Let a click INTO the field place the caret rather than starting a drag.
+      if (e.target === input) return;
+      e.preventDefault();
+      dragging = true;
+      startX = e.clientX;
+      startValue = Number(input.value) || 1;
+      label.setPointerCapture(e.pointerId);
+    });
+    label?.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      // 1% per pixel, so a 100px drag roughly e-folds the value.
+      commit(startValue * Math.exp((e.clientX - startX) * 0.01));
+    });
+    const end = (): void => {
+      dragging = false;
+    };
+    label?.addEventListener('pointerup', end);
+    label?.addEventListener('pointercancel', end);
+  }
+
+  /**
+   * Update the hint bar for the armed tool.
+   *
+   * Reuses the studio's `TOOL_HELP` for the three field tools, so the two apps
+   * cannot describe the same tool differently. The config case has its own line
+   * because no studio tool corresponds to it.
+   */
+  private refreshHint(): void {
+    const slot = this.palette.at(this.palette.selected);
+
+    if (slot.tool === TOOL_CONFIG) {
+      if (slot.config === null) {
+        this.hintText.textContent =
+          'Empty square — right-click it to load a config, or pick a tool';
+        this.clearTarget = 'particles';
+      } else {
+        this.hintText.textContent =
+          `Left click to paint [${slot.name}]  |  Right click to erase particles`;
+        this.clearTarget = 'particles';
+      }
+    } else if (slot.tool === 'shove') {
+      this.hintText.textContent = TOOL_HELP.shove;
+      // Shove leaves nothing behind, so there is nothing to clear.
+      this.clearTarget = null;
+    } else {
+      const noun = slot.tool === 'walls' ? 'barriers' : 'trails';
+      this.hintText.textContent =
+        `${TOOL_HELP[slot.tool]}  |  Left to draw, right to erase  |  ` +
+        `Shift for line tool`;
+      this.clearTarget = slot.tool;
+      void noun;
+    }
+
+    if (this.clearTarget === null) {
+      this.clearButton.style.display = 'none';
+    } else {
+      this.clearButton.style.display = '';
+      this.clearButton.textContent = CLEAR_LABELS[this.clearTarget] ?? 'Clear';
+    }
+  }
+
   /** Repaint selection, names and the master highlight. Cheap; called per frame. */
   refresh(brushSize: number): void {
+    this.refreshHint();
     this.rows.forEach((row, index) => {
       // Which row the NUMBER KEYS address. The squares never move.
       row.dataset['active'] = String((index === 0) === this.palette.topRowActive);
@@ -184,6 +314,25 @@ export class SandUi {
 
   private async fillLoader(slot: number): Promise<void> {
     this.loaderListEl.replaceChildren();
+
+    // THE FIELD TOOLS, ABOVE CORE. They are things a square can be, exactly like
+    // a config is, so they belong in the same list rather than in a separate
+    // selector -- see `tool.ts` on why one selection covers both.
+    const toolsHeading = document.createElement('h3');
+    toolsHeading.textContent = 'Tools';
+    this.loaderListEl.append(toolsHeading);
+    for (const tool of FIELD_TOOLS) {
+      const button = document.createElement('button');
+      button.className = 'sand-entry';
+      button.textContent = TOOL_LABELS[tool];
+      button.title = TOOL_HELP[tool];
+      button.addEventListener('click', () => {
+        this.closeLoader();
+        this.callbacks.onLoadTool(slot, tool);
+      });
+      this.loaderListEl.append(button);
+    }
+
     const catalog = this.store.catalog();
     const master = this.palette.master.world;
 

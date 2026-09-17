@@ -38,7 +38,8 @@ import { screenNdcToWorld, screenToNdc } from '../particleSystem/coords.ts';
 import { SandOrchestrator } from './sandOrchestrator.ts';
 import { SandUi } from './sandUi.ts';
 import { BRUSH_ERASE, BRUSH_SPAWN, type BrushAction } from './brushInput.ts';
-import { positionForDigit } from './palette.ts';
+import { positionForDigit, toolSlot } from './palette.ts';
+import { TOOL_CONFIG } from './tool.ts';
 import { SandPrefs } from './sandPrefs.ts';
 
 /**
@@ -131,6 +132,7 @@ async function main(): Promise<void> {
   // trail persistence from the first frame and the compatibility test has
   // something to compare against.
   orch.palette.set(0, {
+    tool: TOOL_CONFIG,
     config: fallbackConfig,
     world: seed.world,
     name: seedEntry?.name ?? DEFAULT_PRESET_NAME,
@@ -140,12 +142,24 @@ async function main(): Promise<void> {
   const ui = new SandUi(orch.palette, store, {
     onSelect: (slot) => orch.palette.select(slot),
     onBrushSize: (index) => orch.brush.setSize(index),
+    // A field tool square carries no config, so the palette's ConfigData upload
+    // is unaffected -- `configsForUpload` fills it with the master's stand-in
+    // exactly as it does an empty square, and nothing points at it.
+    onLoadTool: (slot, tool) => orch.palette.set(slot, toolSlot(tool)),
+    onWeight: (weight) => {
+      orch.brush.weight = weight;
+    },
+    onClear: (what) => {
+      if (what === 'particles') orch.clearParticles();
+      else orch.clearField(what);
+    },
     onLoad: (slot, entry) => {
       void (async () => {
         try {
           const loaded = await store.read(entry);
           if (loaded.configs[0] === undefined) return;
           orch.palette.set(slot, {
+            tool: TOOL_CONFIG,
             config: loaded.configs[0],
             world: loaded.world,
             name: entry.name,
@@ -165,7 +179,7 @@ async function main(): Promise<void> {
   // `live` is what the frame loop reads. A preference change swaps the whole
   // object rather than mutating one, so a frame always renders one coherent set.
   let live = prefs;
-  const prefsWindow = new SandPrefs(prefs, orch.palette, {
+  const prefsWindow = new SandPrefs(prefs, orch.palette, entityCount, {
     onChange: (next) => {
       live = next;
       system.physicsSteps = next.physicsSteps;
@@ -211,8 +225,20 @@ async function main(): Promise<void> {
         }
       })();
     },
-    onBrushRate: (rate) => {
-      orch.brush.rate = rate;
+    // MAX PARTICLES: rebuild the entity buffer at a new size, carrying the live
+    // particles across. Heavy and deliberate, which is why it only fires on a
+    // committed value -- see the field's note in sandPrefs.
+    onMaxParticles: (count) => {
+      void (async () => {
+        try {
+          ui.setStatus(`Resizing to ${count.toLocaleString()} particles…`);
+          await orch.resizeEntities(count, fallbackConfig, defaultWorld);
+          ui.setStatus(`Max particles: ${count.toLocaleString()}`);
+        } catch (e) {
+          console.error(`Could not resize to ${count}: ${String(e)}`);
+          ui.setStatus(`Resize failed: ${String(e)}`);
+        }
+      })();
     },
   });
 
@@ -223,6 +249,8 @@ async function main(): Promise<void> {
 
   let pointer: { x: number; y: number } | null = null;
   let buttons = 0;
+  /** Shift arms the line tool in the painting tools. Tracked on both edges. */
+  let shiftHeld = false;
 
   canvas.addEventListener('pointermove', (e) => {
     pointer = { x: e.clientX, y: e.clientY };
@@ -249,7 +277,18 @@ async function main(): Promise<void> {
   // Right-drag is the eraser, so the context menu must not interrupt it.
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
+  window.addEventListener('keyup', (e) => {
+    shiftHeld = e.shiftKey;
+  });
+  // Releasing focus mid-gesture would otherwise leave Shift stuck on.
+  window.addEventListener('blur', () => {
+    shiftHeld = false;
+  });
+
   window.addEventListener('keydown', (e) => {
+    shiftHeld = e.shiftKey;
+    // A typed field owns its own keys -- the Weight input in particular, where
+    // `1`-`0` must enter digits rather than switch palette squares.
     if (e.target instanceof HTMLInputElement) return;
 
     if (e.key === 'Escape') {
@@ -308,7 +347,7 @@ async function main(): Promise<void> {
     else if ((buttons & 2) !== 0) action = BRUSH_ERASE;
 
     orch.runFrame(
-      { cursor, action, windowSize: size, dt },
+      { cursor, action, windowSize: size, dt, shift: shiftHeld },
       // `live`, not the startup `prefs`: brightness and bloom apply as the
       // sliders move rather than on the next reload.
       live,
