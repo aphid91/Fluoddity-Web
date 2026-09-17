@@ -40,15 +40,24 @@ export function freeListSize(entityCount: number): number {
  * The pool as it stands in a world where EVERY particle is dead -- which is the
  * state a fresh sand world starts in, and the state a reset returns it to.
  *
- * `head` is the count of available slots, so it starts at `entityCount`, and
- * `slots[i] = i` makes every index available exactly once.
+ * `head` is the count of available slots, so it starts at `entityCount`.
  *
- * ## The order is deliberate: DESCENDING would be wrong to assume away
+ * ## THE ORDER IS LOAD-BEARING, and it is DESCENDING
  *
- * The stack pops from the top (`slots[head - 1]`), so this ascending fill means
- * the first particle created takes the HIGHEST index. That is harmless -- an
- * index is just a slot -- but it is worth knowing when reading a buffer dump,
- * because a freshly-painted world fills the entity buffer from the back.
+ * The stack pops from the top (`slots[head - 1]`), so filling descending means
+ * the first particle created takes index 0, the second index 1, and so on --
+ * allocation runs UPWARD from the bottom of the buffer.
+ *
+ * That is what makes a high-water mark possible, and the high-water mark is what
+ * makes a large particle cap affordable. Every pass over the entities -- the
+ * physics dispatch, the trail splat, the sprite draw -- can stop at the highest
+ * index ever allocated instead of sweeping the whole buffer.
+ *
+ * This file originally filled ASCENDING, which handed out the highest index
+ * first. Live particles then clustered at the END of the buffer, so any bound
+ * computed from "how far up have we allocated" was the whole buffer from the
+ * first particle painted, and a 3M cap cost 3M invocations per pass with one
+ * particle on screen. The fill order was the entire difference.
  */
 export function initialFreeList(entityCount: number): Uint32Array<ArrayBuffer> {
   const count = Math.max(0, entityCount);
@@ -57,7 +66,8 @@ export function initialFreeList(entityCount: number): Uint32Array<ArrayBuffer> {
   // typed loosely enough to include SharedArrayBuffer.
   const data = new Uint32Array(new ArrayBuffer((1 + count) * 4));
   data[0] = count;
-  for (let i = 0; i < count; i++) data[i + 1] = i;
+  // Descending, so slots[count-1] is 0 and pops first.
+  for (let i = 0; i < count; i++) data[i + 1] = count - 1 - i;
   return data;
 }
 

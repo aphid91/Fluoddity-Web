@@ -103,6 +103,11 @@ async function main(): Promise<void> {
     world: defaultWorld,
     canvasSize,
     entityCount,
+    // FROM WORLD SIZE, not from the entity count. They are the same number at
+    // startup, but Max Particles moves the entity count alone -- so the scale
+    // has to come from the thing that actually defines the world's size, or
+    // raising the cap would silently retune every force.
+    sqrtWorldSize: Math.sqrt(prefs.worldSize),
     physicsSteps: prefs.physicsSteps,
     // THE FLAG THAT MAKES THIS A SAND WORLD: particles can be born and die, the
     // free list is sized to the entity count, and the world starts empty.

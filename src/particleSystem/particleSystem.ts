@@ -116,6 +116,25 @@ export interface ParticleSystemOptions {
   readonly canvasSize?: readonly [number, number];
   /** Injectable so World Size can rebuild the system at a different scale. */
   readonly entityCount?: number;
+  /**
+   * The world's SCALE, as `sqrt(worldSize)`. Defaults to deriving it from
+   * `entityCount`, which is what the studio wants.
+   *
+   * ## Why this can be given separately
+   *
+   * `sqrtWorldSize` divides nearly every force in `entityUpdate` -- forces are
+   * tuned in world units and must shrink as the world grows. Deriving it from
+   * the entity count is correct for the STUDIO, where World Size moves particle
+   * count and canvas resolution together and the ratio is fixed by
+   * `ENTITIES_PER_WORLD_UNIT`.
+   *
+   * It is wrong the moment those two decouple. The sand modality's Max Particles
+   * changes the entity count alone, and deriving the scale from it meant raising
+   * the cap silently retuned gravity, drag and every force -- the same config
+   * behaving differently because a buffer got bigger. Passing the scale
+   * explicitly is what keeps a cap a cap.
+   */
+  readonly sqrtWorldSize?: number;
   /** Sub-steps per frame. The desktop's Physics Rate; 30 is the default. */
   readonly physicsSteps?: number;
   /**
@@ -177,6 +196,13 @@ export class ParticleSystem {
   private headPhase: 'idle' | 'recorded' | 'mapping' = 'idle';
   /** Last completed head readback. See `availableSlots`. */
   private freeListHead: number;
+  /**
+   * Highest index any pass needs to visit. See `activeEntityCount`.
+   *
+   * `entityCount` when lifetimes are off: the studio's particles are all alive
+   * from frame 0, so every pass covers the whole buffer exactly as before.
+   */
+  private highWaterMark: number;
   /** Whether particles can be born and die. See `ParticleSystemOptions`. */
   readonly lifetimes: boolean;
 
@@ -299,7 +325,11 @@ export class ParticleSystem {
     this.device = opts.device;
     this.canvasSize = opts.canvasSize ?? canvasDimensions();
     this.entityCount = opts.entityCount ?? ENTITY_COUNT;
-    this.sqrtWorldSize = Math.sqrt(this.entityCount / ENTITIES_PER_WORLD_UNIT);
+    // Derived from the entity count unless given -- see the option's note. The
+    // derivation is the studio's; an explicit value is what lets the sand
+    // modality change the particle cap without retuning the physics.
+    this.sqrtWorldSize =
+      opts.sqrtWorldSize ?? Math.sqrt(this.entityCount / ENTITIES_PER_WORLD_UNIT);
     this.physicsSteps = opts.physicsSteps ?? 30;
     this.configs = [opts.config];
     this.world = opts.world;
@@ -346,6 +376,8 @@ export class ParticleSystem {
         GPUBufferUsage.COPY_SRC,
     });
     this.freeListHead = this.lifetimes ? this.entityCount : 0;
+    // The studio sweeps everything; a sand world starts empty and grows.
+    this.highWaterMark = this.lifetimes ? 0 : this.entityCount;
     this.headStaging = device.createBuffer({
       label: 'free-list-head-staging',
       size: 4,
@@ -938,6 +970,8 @@ export class ParticleSystem {
     // A dead Entity is 32 zero bytes EXCEPT for config_index, which must be
     // negative -- zero is a valid config index and would mean "alive, config 0".
     queue.writeBuffer(this.entityBuffer, 0, deadEntityBytes(this.entityCount));
+    // Nothing is live, so no pass needs to visit anything.
+    this.highWaterMark = 0;
   }
 
   /** The free list, for the sand modality's spawn/kill passes and snapshots. */
@@ -1020,6 +1054,9 @@ export class ParticleSystem {
         freeListAfterMigration(target.entityCount, out),
       );
       target.freeListHead = target.entityCount - out;
+      // The migration packs the live particles into the front of the buffer, so
+      // the mark is exactly how many were kept.
+      target.highWaterMark = out;
     } finally {
       staging.destroy();
     }
@@ -1090,6 +1127,50 @@ export class ParticleSystem {
    */
   get availableSlots(): number {
     return this.freeListHead;
+  }
+
+  /**
+   * How many entities every pass actually has to visit.
+   *
+   * ## THE SINGLE MOST IMPORTANT NUMBER FOR A LARGE PARTICLE CAP
+   *
+   * Every pass over the entities -- the physics dispatch, the trail splat, the
+   * sprite draw -- used to cover `entityCount` regardless of how many particles
+   * existed. Each dead one costs only a buffer read and a branch, which is
+   * genuinely cheap; the mistake was believing cheap-per-invocation made it
+   * cheap. At a 3M cap and the default physics rate that is ~460 MILLION
+   * invocations per frame with an EMPTY WORLD, and the frame rate craters
+   * exactly as one would expect.
+   *
+   * The free list allocates upward from index 0 (see `initialFreeList`), so
+   * every live particle lives below the high-water mark and everything at or
+   * above it is untouched. Stopping there is exact, not approximate: nothing
+   * above the mark has ever been written.
+   *
+   * ## Why the host can track this without a readback
+   *
+   * `entityCount - availableSlots` is the live count, and the mark only ever
+   * needs to be an UPPER BOUND on the highest live index. Spawning `n` can push
+   * it up by at most `n`; nothing else raises it. Deaths lower the live count
+   * but the mark is deliberately NOT lowered -- a freed slot below the mark is
+   * reused before the mark grows, so shrinking it would risk skipping a live
+   * particle for no benefit. `resetLifetimes` is what returns it to zero.
+   */
+  get activeEntityCount(): number {
+    return this.highWaterMark;
+  }
+
+  /**
+   * Raise the high-water mark after spawning `count` particles.
+   *
+   * Conservative by construction: assumes every reservation succeeded and every
+   * one took a fresh index at the top. Over-counting costs a few wasted
+   * invocations; under-counting would silently freeze particles, so the bound
+   * errs upward.
+   */
+  noteSpawned(count: number): void {
+    if (!this.lifetimes || count <= 0) return;
+    this.highWaterMark = Math.min(this.entityCount, this.highWaterMark + count);
   }
 
   /** The entity buffer, for the sand modality's passes and snapshots. */
@@ -1510,7 +1591,10 @@ export class ParticleSystem {
     pass.setPipeline(this.computePipeline);
     pass.setBindGroup(0, this.computeStateGroup, [slot * this.entityUpdateStride]);
     pass.setBindGroup(1, textures);
-    pass.dispatchWorkgroups(workgroupsFor(this.entityCount));
+    // Bounded by the high-water mark, not the buffer size -- see
+    // `activeEntityCount`. In the studio the two are equal, so this dispatches
+    // exactly what it always did.
+    pass.dispatchWorkgroups(workgroupsFor(this.activeEntityCount));
     pass.end();
   }
 
@@ -1569,7 +1653,7 @@ export class ParticleSystem {
     pass.setBindGroup(0, this.brushStateGroup, [slot * this.brushStride]);
     // 4 vertices per entity, instanced. No vertex buffer -- the quad comes from
     // the vertex index and the entity from the instance index.
-    pass.draw(4, this.entityCount);
+    pass.draw(4, this.activeEntityCount);
     pass.end();
   }
 

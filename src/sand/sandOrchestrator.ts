@@ -348,6 +348,9 @@ export class SandOrchestrator {
         this.spawnSeed,
       );
       this.spawnedSinceRead += command.count;
+      // Raise the bound every pass stops at. Conservative: assumes every
+      // reservation succeeded, so the bound errs upward.
+      this.system.noteSpawned(command.count);
     }
 
     // THE PAINTING TOOLS, recorded here for the same cadence reason the studio
@@ -576,6 +579,10 @@ export class SandOrchestrator {
       world: this.palette.master.world ?? fallbackWorld,
       canvasSize: this.system.canvasSize,
       entityCount: wanted,
+      // CARRIED OVER EXPLICITLY, not re-derived. Deriving it from the entity
+      // count is what made raising the cap silently retune gravity and every
+      // other force -- Max Particles is a cap, not a world size.
+      sqrtWorldSize: this.system.sqrtWorldSize,
       physicsSteps: this.system.physicsSteps,
       lifetimes: true,
     });
@@ -637,7 +644,12 @@ export class SandOrchestrator {
       canvasSize: this.system.canvasSize,
       windowSize,
       entities: this.system.entityBufferForRendering(),
-      entityCount: this.system.entityCount,
+      // The HIGH-WATER MARK, not the buffer size. The camera draws one instanced
+      // sprite per entity, so an unbounded count means four vertex invocations
+      // per dead particle per frame -- at a large Max Particles that alone is
+      // tens of millions of invocations with an empty world. See
+      // `activeEntityCount`.
+      entityCount: this.system.activeEntityCount,
       colorSensitivity: this.palette.master.config?.colorSensitivity ?? 0,
       colorByCohort: false,
     };

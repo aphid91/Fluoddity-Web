@@ -152,3 +152,36 @@ test('migration clamps a live count past the buffer', () => {
   const list = freeListAfterMigration(5, 99);
   assert.equal(list[0], 0);
 });
+
+// ---------------------------------------------------------------------------
+// Allocation order -- what makes a high-water mark possible
+//
+// The stack pops slots[head-1]. Filling DESCENDING means index 0 pops first, so
+// allocation runs upward from the bottom of the buffer and every live particle
+// sits below the mark. Filling ascending (which this once did) handed out the
+// highest index first, putting live particles at the END -- so any bound
+// computed from the mark was the whole buffer from the first particle painted.
+// ---------------------------------------------------------------------------
+
+test('the first particle created takes index 0', () => {
+  const list = initialFreeList(5);
+  const head = list[0]!;
+  assert.equal(list[head], 0, 'top of stack is the lowest index');
+});
+
+test('allocation runs upward through the buffer', () => {
+  const list = initialFreeList(5);
+  const head = list[0]!;
+  // Popping in order: slots[head-1], slots[head-2], ...
+  const order = [];
+  for (let i = head; i >= 1; i--) order.push(list[i]);
+  assert.deepEqual(order, [0, 1, 2, 3, 4]);
+});
+
+test('a migrated pool also allocates upward from the live block', () => {
+  const list = freeListAfterMigration(10, 4);
+  const head = list[0]!;
+  const order = [];
+  for (let i = head; i >= 1; i--) order.push(list[i]);
+  assert.deepEqual(order, [4, 5, 6, 7, 8, 9]);
+});
