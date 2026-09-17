@@ -113,6 +113,15 @@ const TRAIL_PERSISTENCE_MAX: f32 = 0.999;
 const BC_BOUNCE: i32 = 0;
 const BC_WRAP: i32 = 1;
 const BC_RESET: i32 = 2;
+// Leaving the world KILLS the particle rather than respawning it: it is marked
+// dead and its index pushed onto the free list. The sand modality's default,
+// and the worked example of the sinks system -- BC_RESET's sibling, differing
+// only in what happens to the particle that crossed.
+//
+// ADDED AS A FOURTH VALUE rather than by redefining BC_RESET, so the studio's
+// three modes keep their exact meanings. A config that has never heard of this
+// mode cannot select it, and nothing in the studio writes a 3.
+const BC_KILL: i32 = 3;
 
 // How particles are placed on reset. A ConfigData setting: different
 // populations can seed differently.
@@ -312,6 +321,30 @@ fn e_vel(e: Entity) -> vec2f          { return e.pos_vel.zw; }
 fn e_size(e: Entity) -> f32           { return e.misc.x; }
 fn e_config_index(e: Entity) -> i32   { return bitcast<i32>(e.misc.y); }
 
+// ---------------------------------------------------------------------------
+// LIFETIME -- a negative config_index means the particle is DEAD.
+//
+// NO LAYOUT CHANGE. Entity is full at 32 bytes and every lane is spoken for, so
+// a dead FLAG would have meant widening the struct and editing
+// layout.fixture.json in lockstep. It is not needed: config_index is already an
+// i32 riding a float lane, and no real config index is ever negative -- so the
+// sign bit was free the whole time.
+//
+// EVERY READER MUST TEST THIS BEFORE THE CONFIG LOOKUP. `entityUpdate` clamps
+// config_index into range (`clamp(idx, 0, count-1)`), which would quietly turn
+// a dead particle into a config-0 particle rather than skipping it. The clamp is
+// correct for its own purpose -- it makes a SHRUNK ConfigBuffer degrade
+// gracefully -- so the dead test goes above it rather than replacing it.
+//
+// The studio never produces one of these: nothing there writes a negative
+// index, so `e_is_dead` is always false and the branch is uniformly not taken.
+// ---------------------------------------------------------------------------
+// `make_entity_dead` is NOT here: it calls make_entity, which is declared below,
+// and WGSL requires declaration before use. It sits under that function instead.
+const DEAD_CONFIG: i32 = -1;
+
+fn e_is_dead(e: Entity) -> bool { return e_config_index(e) < 0; }
+
 // RAW OUTPUT FROM THE PARTICLE'S BRAIN, kept for rendering rather than physics.
 // entity_update writes these; the particle camera turns them into a hue.
 //
@@ -341,6 +374,19 @@ fn make_entity(pos: vec2f, vel: vec2f, size: f32, config_index: i32,
 fn make_entity_reset(pos: vec2f, vel: vec2f, size: f32,
                      config_index: i32) -> Entity {
     return make_entity(pos, vel, size, config_index, vec2f(0.0));
+}
+
+// A DEAD particle -- see the lifetime block above `e_is_dead`.
+//
+// Everything is zeroed rather than left stale: a readback of the buffer stays
+// legible, and nothing downstream can be fooled by a plausible-looking position
+// on a particle that is not there. A size of 0 means that even a consumer which
+// somehow skipped the dead test would draw a zero-area sprite.
+//
+// DECLARED HERE, not beside e_is_dead, because it calls make_entity above and
+// WGSL requires declaration before use.
+fn make_entity_dead() -> Entity {
+    return make_entity(vec2f(0.0), vec2f(0.0), 0.0, DEAD_CONFIG, vec2f(0.0));
 }
 
 // ---------------------------------------------------------------------------

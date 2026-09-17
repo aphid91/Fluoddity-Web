@@ -184,7 +184,12 @@ test('boundary dropdown order matches the BC_* constants', () => {
   assert.equal(modes.indexOf('Bounce'), BC.BOUNCE);
   assert.equal(modes.indexOf('Wrap'), BC.WRAP);
   assert.equal(modes.indexOf('Reset'), BC.RESET);
-  assert.equal(modes.length, 3);
+  // The sand modality's mode: a particle leaving the world is destroyed rather
+  // than respawned. Appended, so the three above keep their stored values.
+  assert.equal(modes.indexOf('Kill'), BC.KILL);
+  // Derived from BC rather than hardcoded, so adding a mode to both files stays
+  // a two-line change while a mode added to only ONE still fails here.
+  assert.equal(modes.length, Object.keys(BC).length);
 });
 
 test('initial-conditions dropdown order matches the IC_* constants', () => {

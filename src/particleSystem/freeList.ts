@@ -1,0 +1,126 @@
+/**
+ * Host-side sizing and seeding for the dead-index pool.
+ *
+ * The GPU-side protocol -- how a slot is taken and returned, and why creation
+ * and deletion must be separate passes -- lives in `src/shaders/freeList.wgsl`.
+ * This module is only the arithmetic and the initial contents, and is a LEAF: it
+ * imports nothing and touches no GPU resource, so it can be unit-tested under
+ * `node --test` without a browser. That is the same reason `dispatch.ts` and
+ * `sizing.ts` are their own modules.
+ */
+
+/**
+ * Bytes before `slots` begins: the `atomic<u32> head`.
+ *
+ * WGSL lays `FreeList { head: atomic<u32>, slots: array<u32> }` out with the
+ * array at offset 4 -- both members are 4-byte aligned, so there is no padding.
+ * Stated here because the host writes this buffer directly and a wrong offset
+ * would shift every index by one slot, which does not crash: it hands out
+ * off-by-one particles and looks like a brush that paints slightly wrong.
+ */
+export const FREE_LIST_HEADER_BYTES = 4;
+
+/** Bytes per slot -- one `u32` index. */
+export const FREE_LIST_SLOT_BYTES = 4;
+
+/**
+ * Buffer size in bytes for a pool that can hold `entityCount` indices.
+ *
+ * `entityCount` of 0 is the STUDIO'S DUMMY and is deliberately legal: it still
+ * returns a header, because a zero-sized storage buffer is invalid in WebGPU and
+ * the binding has to exist regardless (see the allocation in particleSystem.ts).
+ * `arrayLength(&slots)` is then 0, so both guards in `freeList.wgsl` refuse
+ * every operation -- which is exactly right for an app that never kills.
+ */
+export function freeListSize(entityCount: number): number {
+  return FREE_LIST_HEADER_BYTES + Math.max(0, entityCount) * FREE_LIST_SLOT_BYTES;
+}
+
+/**
+ * The pool as it stands in a world where EVERY particle is dead -- which is the
+ * state a fresh sand world starts in, and the state a reset returns it to.
+ *
+ * `head` is the count of available slots, so it starts at `entityCount`, and
+ * `slots[i] = i` makes every index available exactly once.
+ *
+ * ## The order is deliberate: DESCENDING would be wrong to assume away
+ *
+ * The stack pops from the top (`slots[head - 1]`), so this ascending fill means
+ * the first particle created takes the HIGHEST index. That is harmless -- an
+ * index is just a slot -- but it is worth knowing when reading a buffer dump,
+ * because a freshly-painted world fills the entity buffer from the back.
+ */
+export function initialFreeList(entityCount: number): Uint32Array<ArrayBuffer> {
+  const count = Math.max(0, entityCount);
+  // Backed by an explicit ArrayBuffer, not the default ArrayBufferLike: WebGPU's
+  // `writeBuffer` rejects a possibly-shared buffer, and `new Uint32Array(n)` is
+  // typed loosely enough to include SharedArrayBuffer.
+  const data = new Uint32Array(new ArrayBuffer((1 + count) * 4));
+  data[0] = count;
+  for (let i = 0; i < count; i++) data[i + 1] = i;
+  return data;
+}
+
+/**
+ * `DEAD_CONFIG` in `common.wgsl`. Mirrored here BY VALUE, like the `BC_*` modes
+ * in `config.ts`: the shader is the definition, and the host needs to write it.
+ */
+export const DEAD_CONFIG = -1;
+
+/**
+ * An entity buffer in which every particle is dead.
+ *
+ * ONLY ONE LANE IS NON-ZERO. A dead Entity is 32 zero bytes except for
+ * `config_index`, and that exception is the whole point: zero is a perfectly
+ * valid config index meaning "alive, obeying config 0", so a naively zeroed
+ * buffer is a buffer full of LIVE particles stacked at the origin. The
+ * distinction costs one write per particle and is the difference between an
+ * empty world and a solid dot of every species at once.
+ *
+ * `Int32Array` over the same memory is how the `i32` is written into a `f32`
+ * lane -- the host-side spelling of the shader's `bitcast<f32>(config_index)`.
+ *
+ * Offsets come from the layout fixture via `ENTITY_STRIDE` and the lane index
+ * below, so this cannot drift from `common.wgsl` without `layout.ts` noticing.
+ */
+export function deadEntityBytes(entityCount: number): ArrayBuffer {
+  const count = Math.max(0, entityCount);
+  // Entity is { pos_vel: vec4, misc: vec4 }; config_index is misc.y, so float
+  // lane 5 of 8. Asserted against the fixture by `freeList.test.ts`.
+  const FLOATS_PER_ENTITY = 8;
+  const CONFIG_INDEX_LANE = 5;
+  const buffer = new ArrayBuffer(count * FLOATS_PER_ENTITY * 4);
+  const ints = new Int32Array(buffer);
+  for (let i = 0; i < count; i++) {
+    ints[i * FLOATS_PER_ENTITY + CONFIG_INDEX_LANE] = DEAD_CONFIG;
+  }
+  return buffer;
+}
+
+/**
+ * How many particles a brush should create this frame, given its radius and a
+ * spawn rate measured per unit of world area per second.
+ *
+ * PROPORTIONAL TO AREA, not radius: a brush twice as wide covers four times the
+ * canvas and must deposit four times as much to feel like the same density of
+ * material. Requirement 5 says as much, and it is the difference between a big
+ * brush feeling like a wide nozzle and feeling like a thin one.
+ *
+ * Clamped to `available` so a brush cannot ask for more particles than the pool
+ * holds. The shader guards this too (the reservation refuses to underflow), but
+ * clamping here keeps the dispatch from launching invocations that can only
+ * fail, and keeps the count honest for anything that reports it.
+ *
+ * `dt` is seconds, so the rate is frame-rate independent -- a drag deposits the
+ * same material whether the machine renders at 30fps or 144.
+ */
+export function spawnCountFor(
+  radius: number,
+  rate: number,
+  dt: number,
+  available: number,
+): number {
+  if (radius <= 0 || rate <= 0 || dt <= 0) return 0;
+  const area = Math.PI * radius * radius;
+  return Math.max(0, Math.min(Math.round(area * rate * dt), Math.max(0, available)));
+}

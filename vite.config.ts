@@ -32,5 +32,26 @@ export default defineConfig({
   // relative for the same reason, so the whole app is location-independent.
   base: './',
   server: { port: 5173 },
-  build: { target: 'esnext' },
+  build: {
+    target: 'esnext',
+    // TWO ENTRY POINTS, two apps over one engine.
+    //
+    //   index.html  the studio -- discover species
+    //   sand.html   the sand modality -- play with them
+    //
+    // Separate pages rather than a client-side route: they share `src/`
+    // wholesale (ParticleSystem, Camera, Assembler, StrafeField, prefs) but have
+    // entirely different UIs and input models, and a router would make every
+    // visitor download both. Rollup shares the common chunks between them
+    // automatically, so the engine is fetched once and cached.
+    //
+    // `base: './'` above keeps both location-independent, so `/sand` works at a
+    // subpath, at a custom domain, and from `npm run preview` with no config.
+    rollupOptions: {
+      input: {
+        main: path.join(here, 'index.html'),
+        sand: path.join(here, 'sand.html'),
+      },
+    },
+  },
 });

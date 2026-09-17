@@ -34,32 +34,15 @@
 //------------------------------------RANDOM / HASH / NOISE--------------------------------
 //====================================VVVVVVVVVVVVVVVVVVVVV================================
 
-// PCG hash - bit-exact across all platforms.
-// The u32 multiplies wrap in WGSL exactly as they do in GLSL, so this is a
-// verbatim translation. (JavaScript would have needed Math.imul; the GPU does
-// not -- which is part of why Step 6 moves rule derivation onto the GPU.)
-fn pcg_hash(seed: u32) -> u32 {
-    let state = seed * 747796405u + 2891336453u;
-    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-fn hash(co: vec2f) -> f32 {
-    let u_bits = vec2u(bitcast<u32>(co.x), bitcast<u32>(co.y));
-    let h = pcg_hash(u_bits.x ^ pcg_hash(u_bits.y));
-    return f32(h) / f32(0xffffffffu);
-}
-
-// Three implicit promotions in four lines on the GLSL side (:68-70); the int
-// literals are written as floats here and the values are identical.
-fn hash4(co: vec2f) -> vec4f {
-    return vec4f(
-        hash(co),
-        hash(co * -1.0 + 5.0),
-        hash(co.yx - 100.0),
-        hash(co.yx * -1.0 + 25.0)
-    );
-}
+// pcg_hash, hash and hash4 MOVED TO `shaders/hash.wgsl`, and are included here
+// rather than declared. They left because the sand modality's spawn brush needs
+// the same generator and is not a sibling of this file -- including this one to
+// reach `hash` would have dragged `generate_random_centers`, an 80-call hash
+// loop, into a shader that wants three random numbers.
+//
+// Nothing about them changed in the move: the arithmetic is identical, so every
+// rule derived before it is derived identically after. See that file's header.
+#include "hash.wgsl"
 
 // Given a seed, return 10 random FourierCenters: enough for a Rule.
 //

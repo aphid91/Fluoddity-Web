@@ -55,6 +55,7 @@ import { ENTITY_STRIDE } from './layout.ts';
 // `strafeField.ts` here would be the cycle (that class already imports this one).
 import { FIELD_FORMAT } from '../strafeField/fieldSize.ts';
 import { packConfigs } from './pack.ts';
+import { deadEntityBytes, freeListSize, initialFreeList } from './freeList.ts';
 import { canvasDimensions, ENTITIES_PER_WORLD_UNIT, ENTITY_COUNT } from './sizing.ts';
 import {
   type FieldStrengths,
@@ -111,6 +112,18 @@ export interface ParticleSystemOptions {
   readonly entityCount?: number;
   /** Sub-steps per frame. The desktop's Physics Rate; 30 is the default. */
   readonly physicsSteps?: number;
+  /**
+   * Whether particles can be born and die -- the sand modality's mode.
+   *
+   * OFF IS THE STUDIO, exactly as it was: every particle is permanently alive,
+   * the free list is a minimal dummy that nothing writes, and `BC_KILL` is
+   * unreachable because no studio config selects it. On, the pool is sized to
+   * the entity count and `resetLifetimes()` starts the world empty.
+   *
+   * A construction option rather than a setting: it decides how big a GPU buffer
+   * is, so flipping it means rebuilding the system anyway.
+   */
+  readonly lifetimes?: boolean;
 }
 
 /** A canvas texture and the views/bind groups that go with it. */
@@ -147,6 +160,13 @@ export class ParticleSystem {
 
   private readonly entityBuffer: GPUBuffer;
   private configBuffer: GPUBuffer;
+  /**
+   * The dead-index pool. Allocated in both apps so the bind group layout is the
+   * same one; a minimal dummy when `lifetimes` is off. See `freeList.wgsl`.
+   */
+  private readonly freeListBuffer: GPUBuffer;
+  /** Whether particles can be born and die. See `ParticleSystemOptions`. */
+  readonly lifetimes: boolean;
 
   /** front = read/most recent; back = the one being written. */
   private front: CanvasTarget;
@@ -294,6 +314,26 @@ export class ParticleSystem {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
+    // The dead-index pool. See `freeList.wgsl` for the allocation protocol and
+    // `freeListSize` for the sizing.
+    //
+    // ALLOCATED IN BOTH APPS, sized differently. `lifetimes` is off in the
+    // studio, which gets a minimal dummy: WebGPU validates a bind group against
+    // its layout whether or not the shader reads it, so the binding must exist
+    // even where BC_KILL is never selected and nothing ever writes it. This is
+    // the same shape the strafe field's 1x1 dummy texture already uses.
+    this.lifetimes = opts.lifetimes ?? false;
+    this.freeListBuffer = device.createBuffer({
+      label: this.lifetimes ? 'FreeList' : 'FreeList (dummy)',
+      size: freeListSize(this.lifetimes ? this.entityCount : 0),
+      usage:
+        GPUBufferUsage.STORAGE |
+        GPUBufferUsage.COPY_DST |
+        // Both directions: COPY_SRC for the initial-conditions snapshot,
+        // COPY_DST to restore it and to seed the pool at reset.
+        GPUBufferUsage.COPY_SRC,
+    });
+
     const makeCanvas = (label: string): CanvasTarget => {
       const texture = device.createTexture({
         label,
@@ -302,11 +342,15 @@ export class ParticleSystem {
         usage:
           GPUTextureUsage.TEXTURE_BINDING |
           GPUTextureUsage.RENDER_ATTACHMENT |
-          // COPY_SRC is for verification, not for the app: it is what lets the
-          // A/B harness read the canvas back and compare it against the
-          // desktop's own dump. Costs nothing when unused, and without it the
+          // COPY_SRC is for verification and for the sand modality's initial
+          // conditions: it is what lets the A/B harness read the canvas back and
+          // compare it against the desktop's own dump, and what lets a scene's
+          // trails be snapshotted. Costs nothing when unused, and without it the
           // only way to check the physics is to photograph a window.
-          GPUTextureUsage.COPY_SRC,
+          GPUTextureUsage.COPY_SRC |
+          // Restoring that snapshot copies back INTO the canvas. Only the sand
+          // modality does so; the studio's reset rebuilds the canvas on the GPU.
+          GPUTextureUsage.COPY_DST,
       });
       return { texture, view: texture.createView() };
     };
@@ -451,6 +495,14 @@ export class ParticleSystem {
           binding: 2,
           visibility: GPUShaderStage.COMPUTE,
           buffer: { type: 'uniform', hasDynamicOffset: true },
+        },
+        // The free list, written by BC_KILL. Present in BOTH apps -- WebGPU
+        // validates the bind group against this layout whether or not the
+        // shader reaches the branch that uses it.
+        {
+          binding: 3,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'storage' },
         },
       ],
     });
@@ -678,6 +730,7 @@ export class ParticleSystem {
               size: ENTITY_UPDATE_UNIFORM_SIZE,
             },
           },
+          { binding: 3, resource: { buffer: this.freeListBuffer } },
         ],
       });
     }
@@ -840,6 +893,56 @@ export class ParticleSystem {
    */
   reset(): void {
     this._frameCount = 0;
+  }
+
+  /**
+   * Empty the world: every particle dead, every index available.
+   *
+   * THE SAND MODALITY'S "RESET TO NOTHING", and the counterpart of `reset()`
+   * rather than a part of it. `reset()` works by setting the frame-0 sentinel
+   * and letting the GPU rebuild its own state; this cannot, because the state it
+   * wants is "no particles", and frame 0 is precisely the path that REPOPULATES
+   * the world. So it writes both buffers directly and leaves `frameCount` alone.
+   *
+   * Callers set `frameCount` themselves afterwards -- the sand orchestrator
+   * restores to frame 1, never 0, so the studio's regenerate-everything path
+   * never runs there.
+   *
+   * Writing the whole entity buffer is `entityCount * 32` bytes -- 9.6 MB at the
+   * default world size. That is a visible cost, but it happens on reset only,
+   * and the alternative (a compute pass to zero it) would need its own pipeline
+   * for a job the queue does in one call.
+   */
+  resetLifetimes(): void {
+    if (!this.lifetimes) return;
+    const queue = this.device.queue;
+    queue.writeBuffer(this.freeListBuffer, 0, initialFreeList(this.entityCount));
+    // A dead Entity is 32 zero bytes EXCEPT for config_index, which must be
+    // negative -- zero is a valid config index and would mean "alive, config 0".
+    queue.writeBuffer(this.entityBuffer, 0, deadEntityBytes(this.entityCount));
+  }
+
+  /** The free list, for the sand modality's spawn/kill passes and snapshots. */
+  freeListBufferForSand(): GPUBuffer {
+    return this.freeListBuffer;
+  }
+
+  /** The entity buffer, for the sand modality's passes and snapshots. */
+  entityBufferForSand(): GPUBuffer {
+    return this.entityBuffer;
+  }
+
+  /**
+   * Set the frame counter directly.
+   *
+   * EXISTS FOR RESTORE, which must land on frame 1 rather than 0: frame 0 is the
+   * sentinel that regenerates every entity, clears the canvas and discards
+   * splats, which would destroy the very scene being restored. Deliberately
+   * narrow, and deliberately not a setter on `frameCount` -- that property's
+   * read-only-ness is what documents that `advance()` and `reset()` own it.
+   */
+  setFrameCount(value: number): void {
+    this._frameCount = Math.max(0, Math.trunc(value));
   }
 
   /**

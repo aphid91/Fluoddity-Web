@@ -210,7 +210,7 @@ function setting(init: SettingInit): Setting {
  * the comment.
  */
 export const DROPDOWN_MODES = {
-  boundaryConditions: ['Bounce', 'Wrap', 'Reset'],
+  boundaryConditions: ['Bounce', 'Wrap', 'Reset', 'Kill'],
   initialConditions: ['Grid', 'Random', 'Center', 'Ring'],
   // THE LABELS ONLY. `ui/mobile.ts` derives its `MobileMode` union from this
   // tuple rather than declaring its own, so the stored index and the dropdown
@@ -302,11 +302,11 @@ export const SETTINGS: readonly Setting[] = [
     source: WORLD,
     kind: CHOICE,
     lo: 0,
-    hi: 2,
+    hi: 3,
     help:
       'What happens when a particle reaches the edge of the world: Bounce ' +
-      'reflects it, reset returns it to starting position, and wrap carries it ' +
-      'around to the opposite edge.',
+      'reflects it, reset returns it to starting position, wrap carries it ' +
+      'around to the opposite edge, and kill destroys it.',
     group: 'Population',
     options: DROPDOWN_MODES.boundaryConditions,
   }),

@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <!-- Relative, matching `base: './'` in vite.config.ts, so this page works at
+         a subpath, at a custom domain and from `npm run preview` alike. -->
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <title>Fluoddity Sand</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --sand-slot: 44px;
+        --sand-gap: 4px;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #000;
+        color: #ddd;
+        font: 13px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;
+        overflow: hidden;
+      }
+
+      #app {
+        display: block;
+        width: 100%;
+        height: 100%;
+        /* The canvas handles its own gestures; without this the browser would
+           pan and pinch the page instead of letting a drag paint. */
+        touch-action: none;
+      }
+
+      /* ------------------------------------------------------------------
+         The palette. Two rows of ten, Factorio-style, centred at the bottom.
+
+         `pointer-events` is the load-bearing part: the bar sits over the
+         canvas, so it must not swallow drags aimed at the world. The
+         container is transparent to the pointer and only the squares
+         themselves take events.
+         ------------------------------------------------------------------ */
+      #sand-ui {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      .sand-row {
+        display: flex;
+        gap: var(--sand-gap);
+        pointer-events: auto;
+      }
+
+      .sand-slot {
+        width: var(--sand-slot);
+        height: var(--sand-slot);
+        border: 2px solid #444;
+        border-radius: 4px;
+        background: rgba(20, 20, 24, 0.82);
+        color: #bbb;
+        font-size: 11px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        overflow: hidden;
+        padding: 0;
+      }
+
+      .sand-slot:hover {
+        border-color: #777;
+      }
+
+      /* The selected square. */
+      .sand-slot[data-selected='true'] {
+        border-color: #fff;
+        background: rgba(60, 60, 70, 0.9);
+      }
+
+      /* THE MASTER SQUARE. Green, and it follows the ELEMENT through a row
+         swap rather than staying on the top-left square -- see palette.ts,
+         where nothing moves in storage and only the active row changes. */
+      .sand-slot[data-master='true'] {
+        border-color: #3fbf5f;
+      }
+
+      .sand-slot[data-master='true'][data-selected='true'] {
+        background: rgba(40, 90, 50, 0.92);
+      }
+
+      /* The row the number keys currently address. */
+      .sand-row[data-active='false'] .sand-slot {
+        opacity: 0.55;
+      }
+
+      .sand-key {
+        font-size: 9px;
+        opacity: 0.6;
+      }
+
+      .sand-name {
+        max-width: 100%;
+        padding: 0 2px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* Brush sizes: five buttons with circles from small to large. */
+      #sand-sizes {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        pointer-events: auto;
+      }
+
+      .sand-size {
+        width: 30px;
+        height: 30px;
+        border: 1px solid #444;
+        border-radius: 4px;
+        background: rgba(20, 20, 24, 0.82);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+      }
+
+      .sand-size[data-selected='true'] {
+        border-color: #fff;
+      }
+
+      .sand-size span {
+        display: block;
+        border-radius: 50%;
+        background: #ccc;
+      }
+
+      #sand-status {
+        position: fixed;
+        top: calc(8px + env(safe-area-inset-top, 0px));
+        left: 10px;
+        pointer-events: none;
+        font-variant-numeric: tabular-nums;
+        opacity: 0.75;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      /* The right-click config browser. Hidden until a slot is right-clicked. */
+      #sand-loader {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 10;
+      }
+
+      #sand-loader[data-open='true'] {
+        display: flex;
+      }
+
+      .sand-loader-panel {
+        background: #16161a;
+        border: 1px solid #444;
+        border-radius: 6px;
+        width: min(520px, 92vw);
+        max-height: 72vh;
+        overflow: auto;
+        padding: 12px 14px;
+      }
+
+      .sand-loader-panel h2 {
+        margin: 0 0 8px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .sand-loader-panel h3 {
+        margin: 10px 0 4px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        opacity: 0.55;
+      }
+
+      .sand-entry {
+        display: block;
+        width: 100%;
+        text-align: left;
+        background: none;
+        border: 1px solid transparent;
+        border-radius: 3px;
+        color: #ddd;
+        padding: 3px 6px;
+        cursor: pointer;
+        font: inherit;
+      }
+
+      .sand-entry:hover {
+        background: #26262c;
+      }
+
+      /* Compatible with the master element's world settings -- see
+         compatibility.ts. Green means "this will look like it should here". */
+      .sand-entry[data-compatible='true'] {
+        color: #6ee08a;
+      }
+
+      .sand-hint {
+        margin-top: 10px;
+        opacity: 0.5;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+
+    <div id="sand-status"></div>
+
+    <div id="sand-ui">
+      <div class="sand-row" id="sand-row-0"></div>
+      <div class="sand-row" id="sand-row-1"></div>
+      <div id="sand-sizes"></div>
+    </div>
+
+    <div id="sand-loader">
+      <div class="sand-loader-panel">
+        <h2>Load config into slot <span id="sand-loader-slot"></span></h2>
+        <div id="sand-loader-list"></div>
+        <div class="sand-hint">
+          Green entries are compatible with the master element's trail
+          persistence. Esc to cancel.
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/sand/main.ts"></script>
+  </body>
+</html>

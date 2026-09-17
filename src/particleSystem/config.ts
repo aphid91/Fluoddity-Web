@@ -43,7 +43,13 @@ import { assertLaneMap } from './layout.ts';
  * Const objects rather than TypeScript `enum`s: `verbatimModuleSyntax` and
  * `isolatedModules` make real enums awkward (and ban `const enum` outright).
  */
-export const BC = { BOUNCE: 0, WRAP: 1, RESET: 2 } as const;
+/**
+ * `KILL` is the sand modality's default: a particle leaving the world is marked
+ * dead and its index returned to the free list, rather than being respawned.
+ * Added as a fourth value rather than by redefining `RESET`, so the studio's
+ * three modes keep their exact meanings and no saved config changes behaviour.
+ */
+export const BC = { BOUNCE: 0, WRAP: 1, RESET: 2, KILL: 3 } as const;
 export type BoundaryCondition = (typeof BC)[keyof typeof BC];
 
 export const IC = { GRID: 0, RANDOM: 1, CENTER: 2, RING: 3 } as const;

@@ -67,6 +67,12 @@
 // the rule a picked particle ADOPTS is derived by the same code that decides
 // what it obeys here. See that file's header for why it is not in common.wgsl.
 #include "rule.wgsl"
+// The dead-index pool, for BC_KILL. Shared with the sand modality's spawn and
+// kill passes so all three agree about how a slot is taken and returned.
+//
+// THE STRUCT ONLY. Its operations name the `freelist` binding directly, so they
+// are included below it -- see the note in freeList.wgsl.
+#include "freeList.wgsl"
 
 // --- bindings --------------------------------------------------------------
 // Group 0 is the simulation state; group 1 is the textures. They are split
@@ -79,6 +85,17 @@
 
 @group(0) @binding(0) var<storage, read_write> entities : array<Entity>;
 @group(0) @binding(1) var<storage, read>       configs  : array<ConfigData>;
+// The dead-index pool. Written ONLY by the BC_KILL branch, which pushes the
+// index of a particle that has left the world.
+//
+// BOUND IN BOTH APPS, because WebGPU validates a bind group against the layout
+// whether or not the shader reads it -- unlike GL, where an unused binding is
+// simply absent. The studio binds a MINIMAL DUMMY (see `freeListBufferFor` in
+// particleSystem.ts): it never selects BC_KILL, so nothing ever touches it. This
+// is the same shape `strafe_field_texture` already uses with its 1x1 dummy.
+@group(0) @binding(3) var<storage, read_write> freelist : FreeList;
+// The operations, which name the binding above. Must follow it.
+#include "freeListOps.wgsl"
 
 // The desktop's loose uniforms, gathered into one struct. `canvas_res` is the
 // `textureSize()` hoist -- see uniforms.ts.
@@ -549,10 +566,28 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     let e = entities[index];
 
+    let fc = frame_count();
+
+    // DEAD PARTICLES COST ONE READ AND A BRANCH, and nothing else. This is the
+    // whole of "only pay for living particles" in the update path: no sensor
+    // taps, no rule derivation, no black box evaluation.
+    //
+    // ABOVE THE CONFIG LOOKUP DELIBERATELY. That line clamps config_index into
+    // range, which would turn a dead particle's -1 into config 0 and run a full
+    // physics step on it -- the particle would be invisible (the renderers cull
+    // it) while still depositing trails and burning a full step's work. The
+    // clamp is right for its own job (a shrunk ConfigBuffer degrades gracefully)
+    // so this test goes above it rather than replacing it.
+    //
+    // NOT GUARDED ON fc == 0. On a reset frame the studio rebuilds every entity
+    // below, and a dead particle must NOT be resurrected by that path -- the
+    // sand modality restores to frame 1 precisely so it never runs, but a stray
+    // frame 0 must leave the dead dead rather than repopulating the world.
+    if (e_is_dead(e)) { return; }
+
     // Select this entity's config. On a reset frame the entity's stored
     // config_index is not yet meaningful (nothing has been written), so ask
     // assign_config_index() directly rather than reading it back.
-    let fc = frame_count();
     let config_index = select(e_config_index(e), assign_config_index(index), fc == 0);
     let config = configs[clamp(config_index, 0, world_config_count(u.world) - 1)];
 
@@ -775,6 +810,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         if (any(abs(pos) > world_half_extent_from_res(canvas_resolution))) {
             reset(index, config);
             return; // reset writes the entity buffer itself
+        }
+    }
+    // BC_KILL -- BC_RESET's sibling, differing only in what becomes of the
+    // particle that crossed. Rather than being respawned at its initial
+    // position, it dies: marked dead and its index returned to the pool.
+    //
+    // THE ONE PLACE THE FREE LIST IS TOUCHED INSIDE advance(). It only ever
+    // PUSHES (atomicAdd), which is the same direction the deletion pass moves
+    // the head, so the two compose even though they run at different cadences.
+    // Nothing here may take a slot -- see the header of freeList.wgsl.
+    //
+    // The push happens BEFORE the entity is zeroed, so a reader that races this
+    // sees either a live particle or a dead one, never a live index sitting on
+    // the free list.
+    else if (bc == BC_KILL) {
+        if (any(abs(pos) > world_half_extent_from_res(canvas_resolution))) {
+            free_list_give(index);
+            entities[index] = make_entity_dead();
+            return; // the entity buffer is written above
         }
     }
 

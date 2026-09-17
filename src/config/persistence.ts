@@ -153,7 +153,7 @@ function fencesOr(raw: Record<string, unknown>, key: string, where: string): boo
  * physics quirk rather than an error, so an out-of-range value must be loud.
  */
 function asBoundaryCondition(value: number, where: string): BoundaryCondition {
-  const valid: readonly number[] = [BC.BOUNCE, BC.WRAP, BC.RESET];
+  const valid: readonly number[] = [BC.BOUNCE, BC.WRAP, BC.RESET, BC.KILL];
   if (!valid.includes(value)) {
     throw new ConfigFormatError(`${where}: boundary_conditions ${value} is not a BC_* mode`);
   }

@@ -134,11 +134,17 @@ export class StrafeField {
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.RENDER_ATTACHMENT |
-        // For verification only, matching the canvas: it is what lets a test
-        // read the painted field back and compare it against the desktop's own
-        // dump. That comparison is the strongest assertion available for this
-        // pass, because one fullscreen draw with no feedback is deterministic.
-        GPUTextureUsage.COPY_SRC,
+        // For verification, matching the canvas: it is what lets a test read the
+        // painted field back and compare it against the desktop's own dump. That
+        // comparison is the strongest assertion available for this pass, because
+        // one fullscreen draw with no feedback is deterministic.
+        //
+        // AND for the sand modality's initial conditions, which snapshot the
+        // painted walls and trails so a reset restores the scene the user built.
+        GPUTextureUsage.COPY_SRC |
+        // Restoring that snapshot copies back INTO this texture. Costs nothing
+        // when unused; without it the walls could be saved but never returned.
+        GPUTextureUsage.COPY_DST,
     });
     this.textureView = this.texture.createView();
 
@@ -235,6 +241,22 @@ export class StrafeField {
    */
   view(): GPUTextureView {
     return this.textureView;
+  }
+
+  /**
+   * The same texture as an object, for `copyTextureToTexture`.
+   *
+   * A view cannot be a copy source or destination, so the object has to be
+   * reachable for the sand modality to snapshot the painted walls and trails
+   * into its initial conditions and restore them on reset.
+   *
+   * SEPARATE FROM `view()` deliberately, matching the split
+   * `ParticleSystem.currentCanvasTextureObject()` makes: `view()` is the
+   * per-frame render path and must stay free to start double-buffering, while
+   * this is a copy handle used at two moments the user can name.
+   */
+  textureObject(): GPUTexture {
+    return this.texture;
   }
 
   /** Follow the world's boundary mode. See the `wrap` field for what this does. */

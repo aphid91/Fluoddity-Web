@@ -62,6 +62,23 @@ struct VsOut {
 fn vs_main(@builtin(vertex_index) vertex_id : u32,
            @builtin(instance_index) instance_id : u32) -> VsOut {
     let e = entities[instance_id];
+
+    // DEAD PARTICLES DEPOSIT NOTHING.
+    //
+    // Killed in the VERTEX stage, not by a fragment discard. The fragment
+    // already discards outside the splat's circle, so adding a dead test there
+    // would be one line -- but it would pay full setup and rasterization for
+    // every dead particle first, which at a mostly-empty sand world is nearly
+    // the entire cost of the pass. Returning w = 0 makes the clip volume empty,
+    // so the triangle is culled before any fragment exists.
+    if (e_is_dead(e)) {
+        var dead : VsOut;
+        dead.clip = vec4f(0.0, 0.0, 0.0, 0.0);
+        dead.uv = vec2f(0.0);
+        dead.pos_vel = vec4f(0.0);
+        return dead;
+    }
+
     let entity_pos = e_pos(e);
     let entity_vel = e_vel(e);
     let size = e_size(e);

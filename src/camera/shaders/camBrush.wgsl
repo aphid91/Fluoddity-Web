@@ -81,6 +81,19 @@ fn to_velocity_frame(offset: vec2f, vel: vec2f) -> vec2f {
 fn vs_main(@builtin(vertex_index) vertex_id : u32,
            @builtin(instance_index) instance_id : u32) -> VsOut {
     let e = entities[instance_id];
+
+    // DEAD PARTICLES ARE NOT DRAWN. Same vertex-stage cull as brush.wgsl, for
+    // the same reason -- see the longer note there. A w of 0 empties the clip
+    // volume, so nothing is rasterized and no fragment cost is paid.
+    if (e_is_dead(e)) {
+        var dead : VsOut;
+        dead.clip = vec4f(0.0, 0.0, 0.0, 0.0);
+        dead.uv = vec2f(0.0);
+        dead.pos_vel = vec4f(0.0);
+        dead.col_params = vec2f(0.0);
+        return dead;
+    }
+
     let entity_pos = e_pos(e);
     let entity_vel = e_vel(e);
     let size = e_size(e) * u.sprite.x;
