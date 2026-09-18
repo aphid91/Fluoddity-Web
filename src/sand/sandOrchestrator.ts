@@ -35,6 +35,8 @@ import type { Assembler } from '../assembler/assembler.ts';
 import type { Camera } from '../camera/camera.ts';
 import type { RenderTargets } from '../app/renderTargets.ts';
 import type { StrafeField } from '../strafeField/strafeField.ts';
+// The value import as well as the type: `applyWorldSize` builds a replacement.
+import { StrafeField as StrafeFieldClass } from '../strafeField/strafeField.ts';
 import type { Preferences } from '../prefs/preferences.ts';
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
 import type { Vec2 } from '../particleSystem/coords.ts';
@@ -58,6 +60,8 @@ import {
 } from '../orchestrator/shoveCommands.ts';
 import { type BrushAction, BRUSH_ERASE, BRUSH_SPAWN, BrushInput } from './brushInput.ts';
 import { forUpload } from '../particleSystem/config.ts';
+import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
+import { fieldStrengthsFor } from '../prefs/preferences.ts';
 
 export interface SandFrameInput {
   /** Cursor in WORLD space, or null when it is off the canvas. */
@@ -83,7 +87,9 @@ export class SandOrchestrator {
   private readonly device: GPUDevice;
   private readonly camera: Camera;
   private readonly assembler: Assembler;
-  private readonly field: StrafeField;
+  // NOT readonly: a World Size or Canvas Aspect change reshapes the canvas, and
+  // the field takes its shape from the canvas.
+  private field: StrafeField;
   private readonly targets: RenderTargets;
   // Both hold the entity buffer by reference, so both are replaced when it is.
   private passes: SandPasses;
@@ -96,6 +102,14 @@ export class SandOrchestrator {
    */
   private _paused = true;
   private restorePending = false;
+  /**
+   * A world-wide act queued for the top of the next frame.
+   *
+   * Exists so a clear and a restore cannot race -- one is a queue write, the
+   * other is encoder-recorded, and mixing the two ordered them by submission
+   * rather than by intent. See `clearParticles`.
+   */
+  private pendingWorldOp: 'clear' | null = null;
 
   /**
    * Whether the next 0 -> 1 transition should capture the scene.
@@ -152,6 +166,28 @@ export class SandOrchestrator {
    * a counter cannot repeat or run backwards.
    */
   private spawnSeed = 0;
+
+  /** The high-water mark at capture time. Restored with the buffers. */
+  private capturedHighWater = 0;
+
+  /**
+   * An explicit particle cap from the Dev panel, or null to follow World Size.
+   *
+   * Held so a World Size change can REBUILD at the capped count rather than
+   * silently reverting to the derived one -- the cap is a property of the
+   * session, not of the world's shape.
+   */
+  private maxParticles: number | null = null;
+
+  /** The explicit cap, for the session snapshot. Null means follow World Size. */
+  get maxParticlesSetting(): number | null {
+    return this.maxParticles;
+  }
+
+  /** Re-apply a cap restored from a previous session. */
+  setMaxParticlesSetting(value: number | null): void {
+    this.maxParticles = value;
+  }
 
   /**
    * Last frame's cursor in FIELD uv, while a painting stroke is in progress.
@@ -282,6 +318,94 @@ export class SandOrchestrator {
   }
 
   /**
+   * Apply every preference that can change without rebuilding the world.
+   *
+   * ## Why this is one method rather than assignments at the call site
+   *
+   * `main.ts` used to set `system.physicsSteps` inside the prefs callback, which
+   * closed over the `system` captured at startup -- so after a Max Particles
+   * resize replaced it, the slider wrote to a discarded object and appeared to
+   * do nothing until a refresh. Reading `this.system` per call is what makes it
+   * survive the swap, and putting every live preference in one place is what
+   * stops the next one being forgotten (the field strengths already were).
+   */
+  applyPreferences(prefs: Preferences): void {
+    this.system.physicsSteps = prefs.physicsSteps;
+    // Never wired at all before this: the Walls and Trails strength sliders sat
+    // in the panel doing nothing.
+    this.system.setFieldStrengths(fieldStrengthsFor(prefs));
+  }
+
+  /**
+   * Rebuild for a new World Size or Canvas Aspect.
+   *
+   * These reallocate the canvas, the field and the entity buffer, so unlike
+   * everything in `applyPreferences` they cannot be applied in place -- which is
+   * why the registry marks them as typed inputs that commit on Enter.
+   *
+   * THE WORLD IS EMPTIED. The canvas and field are being replaced at a different
+   * resolution and the snapshot describes buffers that will not exist; there is
+   * no honest way to carry a painted scene across a reshape of the world it was
+   * painted in. Saying so in the status line is better than silently keeping
+   * half of it.
+   */
+  async applyWorldSize(
+    prefs: Preferences,
+    fallbackConfig: SimulationConfig,
+    fallbackWorld: WorldSettings,
+  ): Promise<void> {
+    const [derivedCount, canvasDim] = sizingFor(prefs.worldSize);
+    const canvasSize = canvasDimensions(prefs.canvasAspect, canvasDim);
+    // Max Particles, if the user set one, survives a World Size change -- it is
+    // a cap on the buffer, not a property of the world's shape.
+    const entityCount = this.maxParticles ?? derivedCount;
+
+    const replacement = await ParticleSystem.create({
+      device: this.device,
+      config: fallbackConfig,
+      world: this.palette.master.world ?? fallbackWorld,
+      canvasSize,
+      entityCount,
+      // FROM WORLD SIZE, never from the entity count -- see the option's note.
+      sqrtWorldSize: Math.sqrt(prefs.worldSize),
+      physicsSteps: prefs.physicsSteps,
+      lifetimes: true,
+    });
+    replacement.resetLifetimes();
+    replacement.setFieldStrengths(fieldStrengthsFor(prefs));
+
+    // The field takes its SHAPE from the canvas, so a reshape rebuilds it too.
+    const replacementField = await StrafeFieldClass.create(this.device, canvasSize);
+    replacementField.setWrap(false);
+    replacement.setStrafeField(replacementField.view(), replacementField.size);
+    replacement.applyProject(
+      this.palette.configsForUpload(fallbackConfig),
+      this.palette.master.world ?? fallbackWorld,
+    );
+    replacement.setFrameCount(RESTORE_FRAME);
+
+    const oldSystem = this.system;
+    const oldField = this.field;
+    this.system = replacement;
+    this.field = replacementField;
+    this.assembler.setStrafeField(replacementField.view());
+
+    this.passes = await SandPasses.create(this.device, replacement);
+    this.initial.destroy();
+    this.initial = new InitialConditions(this.device, replacement, replacementField);
+
+    this._paused = true;
+    this.captureArmed = true;
+    this.spawnedSinceRead = 0;
+    this.lastSeenHead = -1;
+    this.strokePrevUv = null;
+    this.lineAnchor = null;
+
+    oldSystem.destroy();
+    oldField.destroy();
+  }
+
+  /**
    * World size or canvas aspect changed: the snapshot describes a dead world.
    *
    * Re-arms the capture as well as dropping the copies. Otherwise the session
@@ -307,6 +431,18 @@ export class SandOrchestrator {
     const encoder = this.device.createCommandEncoder({ label: 'sand-frame' });
 
     // FIRST, before anything reads the buffers being overwritten.
+    //
+    // ONE SLOT FOR BOTH ACTS. A clear is an immediate queue write and a restore
+    // is encoder-recorded; doing them from wherever the button was pressed let
+    // the two interleave by submission order rather than by what the user asked
+    // for last. Routing both through here makes "the later request wins" true by
+    // construction. See `clearParticles`.
+    if (this.pendingWorldOp === 'clear') {
+      this.system.resetLifetimes();
+      this.spawnedSinceRead = 0;
+    }
+    this.pendingWorldOp = null;
+
     if (this.restorePending) {
       this.restorePending = false;
       if (this.initial.restore(encoder)) {
@@ -315,6 +451,12 @@ export class SandOrchestrator {
         // catch up on its own; all that is needed here is to stop subtracting
         // spawns that the restore has just undone.
         this.spawnedSinceRead = 0;
+        // THE MARK MUST COME BACK TOO. It bounds every pass, and a clear takes
+        // it to zero -- so restoring the buffers without it would leave the
+        // restored particles above the bound: present in memory, but skipped by
+        // the physics and drawn by nothing. They would look deleted while
+        // occupying their slots.
+        this.system.restoreHighWaterMark(this.capturedHighWater);
       }
     }
 
@@ -373,6 +515,10 @@ export class SandOrchestrator {
     if (!this._paused && this.captureArmed) {
       this.captureArmed = false;
       this.initial.capture(encoder);
+      // Captured alongside the buffers: the mark is part of the scene's state,
+      // and a restore that did not bring it back would leave the restored
+      // particles above the bound every pass stops at.
+      this.capturedHighWater = this.system.activeEntityCount;
     }
 
     if (!this._paused) {
@@ -535,10 +681,27 @@ export class SandOrchestrator {
     this.device.queue.submit([encoder.finish()]);
   }
 
-  /** Kill every particle. The hint bar's Clear All Particles button. */
+  /**
+   * Kill every particle. The hint bar's Clear All Particles button.
+   *
+   * ## DEFERRED, for the same reason the restore is
+   *
+   * This used to call `resetLifetimes()` immediately, which writes the entity
+   * buffer through `queue.writeBuffer`. A pending `R` restore, meanwhile, is
+   * recorded onto the frame's ENCODER and submitted at the end of it. Queue
+   * writes are ordered against submissions, so clearing between pressing R and
+   * the next frame put the clear FIRST and the restore on top of it -- the
+   * cleared particles came back, which is precisely the "old particles return"
+   * symptom.
+   *
+   * Both acts now go through the same per-frame slot, so the last one asked for
+   * is the one that happens and neither can overwrite the other's result.
+   */
   clearParticles(): void {
-    this.system.resetLifetimes();
-    this.spawnedSinceRead = 0;
+    this.pendingWorldOp = 'clear';
+    // A clear supersedes a restore that has not run yet -- the user asked for an
+    // empty world after asking for the old one, and the later request wins.
+    this.restorePending = false;
   }
 
   /**
@@ -571,6 +734,7 @@ export class SandOrchestrator {
     fallbackWorld: WorldSettings,
   ): Promise<void> {
     const wanted = Math.max(1, Math.trunc(count));
+    this.maxParticles = wanted;
     if (wanted === this.system.entityCount) return;
 
     const replacement = await ParticleSystem.create({
@@ -675,10 +839,14 @@ export class SandOrchestrator {
       showTrails: prefs.fieldOpacity > 0,
       reticleCenter:
         cursor === null ? [0, 0] : worldToUv(cursor, this.system.canvasSize),
-      // `brush.radius` IS uv now, which is the metric the assembler draws the
-      // ring in -- so this is a straight hand-off with no conversion. It used to
-      // divide by `uvRadiusToWorld(1)` because the brush stored world units.
-      reticleRadius: cursor === null ? 0 : this.brush.radius,
+      // TWICE `drawSize`, which is the brush's VISIBLE EXTENT -- two sigma of
+      // its gaussian, and exactly the eraser's hard radius (`strafeDraw.wgsl`
+      // tests `hit.dist < draw_size * 2.0`). The studio computes the same
+      // `2.0 * prefs.drawSize`.
+      //
+      // Handing over the bare `drawSize` drew a ring at half the true reach, so
+      // a wall stroke visibly affected far more than the circle promised.
+      reticleRadius: cursor === null ? 0 : this.brush.reticleRadius,
     };
 
     this.assembler.present(encoder, this.camera.result(), target, view, prefs, overlays);

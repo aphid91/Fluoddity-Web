@@ -111,14 +111,39 @@ export class BrushInput {
   }
 
   /**
-   * The same circle in world units, for the spawn and kill shaders.
+   * The brush's VISIBLE EXTENT in uv -- what the reticle ring is drawn at.
    *
-   * `uvRadiusToWorld` is the one conversion, and it lives in `coords.ts` rather
-   * than here (invariant 9: only that module and `common.wgsl` may write this
-   * math).
+   * Two sigma of the painting brush's gaussian, and exactly the eraser's hard
+   * radius (`strafeDraw.wgsl` tests `hit.dist < draw_size * 2.0`). The studio
+   * computes the identical `2.0 * prefs.drawSize`.
+   *
+   * THE RING IS THE CONTRACT: whatever a tool actually reaches must match this,
+   * or the circle lies about what a stroke will do.
+   */
+  get reticleRadius(): number {
+    return 2.0 * this.radius;
+  }
+
+  /**
+   * The same circle the reticle promises, in world units, for the spawn and
+   * kill shaders.
+   *
+   * ## Why the factor of two is HERE and not only in the reticle
+   *
+   * Those two shaders use their radius as a HARD cutoff -- spawn scatters
+   * inside it, kill takes everything within it -- so to affect exactly what the
+   * ring encloses they need the ring's radius, not the gaussian's sigma.
+   *
+   * This returned `uvRadiusToWorld(radius)` (sigma, not extent), which made the
+   * particle brushes cover a quarter of the area the ring showed while the
+   * field tools covered all of it. Deriving both from `reticleRadius` is what
+   * keeps every tool honest about the same circle.
+   *
+   * `uvRadiusToWorld` is the one conversion and lives in `coords.ts` rather than
+   * here (invariant 9: only that module and `common.wgsl` may write this math).
    */
   get worldRadius(): number {
-    return uvRadiusToWorld(this.radius);
+    return uvRadiusToWorld(this.reticleRadius);
   }
 
   get sizeSlot(): number {

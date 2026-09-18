@@ -9,6 +9,7 @@ import {
   DEFAULT_BRUSH_RATE,
   DEFAULT_BRUSH_SIZE,
 } from './brushInput.ts';
+import { uvRadiusToWorld } from '../particleSystem/coords.ts';
 
 const DT = 1 / 60;
 const PLENTY = 1_000_000;
@@ -187,4 +188,47 @@ test('an exhausted pool still advances the stroke memory', () => {
   // must resume from where the cursor actually is, not from where it was when
   // the pool ran dry.
   assert.deepEqual(cmd.stroke.from, [0, 0]);
+});
+
+// ---------------------------------------------------------------------------
+// The three radii, and why they differ
+//
+// `radius` is the gaussian's SIGMA -- the studio's `drawSize`, what the field
+// shaders take. `reticleRadius` is the VISIBLE EXTENT, 2 sigma, which is also
+// the eraser's hard cutoff and what the ring is drawn at. `worldRadius` is that
+// same extent in world units, for the spawn/kill shaders' hard cutoffs.
+//
+// Getting this wrong is invisible in a screenshot: the ring simply lies about
+// what the stroke will touch.
+// ---------------------------------------------------------------------------
+
+test('the reticle is drawn at TWICE the gaussian sigma', () => {
+  const b = new BrushInput();
+  // Matches the studio's `2.0 * prefs.drawSize`, and `strafeDraw.wgsl`'s
+  // `hit.dist < draw_size * 2.0`.
+  assert.equal(b.reticleRadius, 2 * b.radius);
+});
+
+test('the particle brushes cover exactly what the ring promises', () => {
+  const b = new BrushInput();
+  // uvRadiusToWorld is a bare factor of 2, so world extent is 4x sigma. The bug
+  // this pins: `worldRadius` once converted `radius` rather than the extent,
+  // making the particle brushes cover a QUARTER of the ring's area.
+  assert.equal(b.worldRadius, uvRadiusToWorld(b.reticleRadius));
+  assert.equal(b.worldRadius, 4 * b.radius);
+});
+
+test('every size keeps the ring and the reach in step', () => {
+  const b = new BrushInput();
+  for (let i = 0; i < BRUSH_SIZES.length; i++) {
+    b.setSize(i);
+    assert.equal(b.reticleRadius, 2 * b.radius, `size ${i}`);
+    assert.equal(b.worldRadius, uvRadiusToWorld(b.reticleRadius), `size ${i}`);
+  }
+});
+
+test('the stroke handed to the shaders carries the world extent', () => {
+  const b = new BrushInput();
+  const cmd = b.frame([0, 0], BRUSH_SPAWN, DT, PLENTY);
+  assert.equal(cmd?.stroke.radius, b.worldRadius);
 });

@@ -1168,6 +1168,18 @@ export class ParticleSystem {
    * invocations; under-counting would silently freeze particles, so the bound
    * errs upward.
    */
+  /**
+   * Put the mark back to a captured value, on an initial-conditions restore.
+   *
+   * Separate from `noteSpawned` because it ASSIGNS rather than accumulates: the
+   * restore replaces the entity buffer wholesale, so the mark that goes with it
+   * is the captured one, not the current one plus anything.
+   */
+  restoreHighWaterMark(value: number): void {
+    if (!this.lifetimes) return;
+    this.highWaterMark = Math.max(0, Math.min(this.entityCount, Math.trunc(value)));
+  }
+
   noteSpawned(count: number): void {
     if (!this.lifetimes || count <= 0) return;
     this.highWaterMark = Math.min(this.entityCount, this.highWaterMark + count);
@@ -1699,6 +1711,16 @@ export class ParticleSystem {
     this.pickStaging.destroy();
     this.pickUniforms.destroy();
     this.dummyTexture.destroy();
+    // The lifetime buffers. Small in the studio (a dummy header and 4 bytes) and
+    // megabytes in the sand modality, where Max Particles and World Size both
+    // rebuild the system -- so leaking these would accumulate per change.
+    this.freeListBuffer.destroy();
+    // `headPhase` is set so the in-flight `mapAsync` callback, which fires after
+    // this buffer is gone, takes its failure path instead of reading a destroyed
+    // buffer. It already catches, but leaving the phase at `mapping` would also
+    // strand the readback if the object somehow outlived the destroy.
+    this.headPhase = 'idle';
+    this.headStaging.destroy();
   }
 
   /** True when every pipeline compiled. Surfaced for the startup summary. */

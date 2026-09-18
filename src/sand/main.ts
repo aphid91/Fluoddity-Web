@@ -40,6 +40,13 @@ import { SandUi } from './sandUi.ts';
 import { BRUSH_ERASE, BRUSH_SPAWN, type BrushAction } from './brushInput.ts';
 import { positionForDigit, toolSlot } from './palette.ts';
 import { TOOL_CONFIG } from './tool.ts';
+import {
+  type SandSession,
+  loadSession,
+  readSlotDocument,
+  saveSession,
+  slotDocument,
+} from './session.ts';
 import { SandPrefs } from './sandPrefs.ts';
 
 /**
@@ -73,8 +80,13 @@ async function main(): Promise<void> {
   const surface = createSurface(canvas, device);
 
   const prefs = loadPreferences();
-  const [entityCount, canvasDim] = sizingFor(prefs.worldSize);
+  // BEFORE sizing: a saved Max Particles has to size the buffer from the start,
+  // rather than being applied afterwards as a resize the user did not ask for.
+  const session = loadSession();
+
+  const [derivedCount, canvasDim] = sizingFor(prefs.worldSize);
   const canvasSize = canvasDimensions(prefs.canvasAspect, canvasDim);
+  const entityCount = session.maxParticles ?? derivedCount;
 
   // The world a sand scene runs under until a master config is loaded.
   //
@@ -133,26 +145,115 @@ async function main(): Promise<void> {
   });
   orch.fallbackWorld = defaultWorld;
 
+  // ---------------------------------------------------------------------
+  // Restore the previous session, or open a fresh one.
+  //
+  // The palette is stored BY VALUE, so a square edited on the Config tab comes
+  // back edited rather than reverting to the file it was loaded from. See
+  // `session.ts`.
+  // ---------------------------------------------------------------------
+  let restoredAny = false;
+  session.slots.forEach((stored, slot) => {
+    if (stored.tool !== TOOL_CONFIG) {
+      orch.palette.set(slot, toolSlot(stored.tool));
+      restoredAny = true;
+      return;
+    }
+    const saved = readSlotDocument(stored.document);
+    if (saved === null || saved.configs[0] === undefined) return;
+    orch.palette.set(slot, {
+      tool: TOOL_CONFIG,
+      config: saved.configs[0],
+      world: saved.world,
+      name: stored.name,
+    });
+    restoredAny = true;
+  });
+
   // The master square opens holding the default preset, so the world has a
   // trail persistence from the first frame and the compatibility test has
-  // something to compare against.
-  orch.palette.set(0, {
-    tool: TOOL_CONFIG,
-    config: fallbackConfig,
-    world: seed.world,
-    name: seedEntry?.name ?? DEFAULT_PRESET_NAME,
-  });
+  // something to compare against. Only when nothing was restored -- otherwise
+  // this would overwrite the square the user left there.
+  if (!restoredAny && orch.palette.at(0).config === null) {
+    orch.palette.set(0, {
+      tool: TOOL_CONFIG,
+      config: fallbackConfig,
+      world: seed.world,
+      name: seedEntry?.name ?? DEFAULT_PRESET_NAME,
+    });
+  }
+  orch.palette.select(session.selected);
+  if (!session.topRowActive) orch.palette.swapRows();
+  orch.brush.setSize(session.brushSize);
+  orch.brush.weight = session.weight;
+  // So a later World Size change rebuilds at the capped count rather than
+  // silently reverting to the derived one.
+  orch.setMaxParticlesSetting(session.maxParticles);
   orch.applyPalette(fallbackConfig, defaultWorld);
+  // From frame one, so a strength the user set in an earlier session applies
+  // immediately rather than from whenever they next touch a control.
+  orch.applyPreferences(prefs);
+
+  /** The current palette and brush state, as stored. */
+  const snapshot = (): SandSession => ({
+    slots: orch.palette.all().map((slot) => ({
+      tool: slot.tool,
+      name: slot.name,
+      // BY VALUE, so a square edited on the Config tab restores as edited
+      // rather than reverting to the file it came from.
+      document: slotDocument(slot.config, slot.world),
+    })),
+    selected: orch.palette.selected,
+    topRowActive: orch.palette.topRowActive,
+    brushSize: orch.brush.sizeSlot,
+    weight: orch.brush.weight,
+    maxParticles: orch.maxParticlesSetting,
+  });
+
+  /**
+   * Write the session to storage, debounced.
+   *
+   * The callers include a Config-tab slider that fires per frame of a drag, so
+   * serializing twenty configs on each would be thousands of JSON writes for one
+   * gesture. A short delay collapses a gesture into one write.
+   */
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  const persist = (): void => {
+    if (saveTimer !== null) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      saveSession(snapshot());
+    }, 400);
+  };
+
+  // A tab closing mid-debounce would otherwise lose the pending write.
+  // `pagehide` rather than `beforeunload`: it fires on mobile backgrounding too.
+  window.addEventListener('pagehide', () => {
+    if (saveTimer === null) return;
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    saveSession(snapshot());
+  });
 
   const ui = new SandUi(orch.palette, store, {
-    onSelect: (slot) => orch.palette.select(slot),
-    onBrushSize: (index) => orch.brush.setSize(index),
+    onSelect: (slot) => {
+      orch.palette.select(slot);
+      persist();
+    },
+    onBrushSize: (index) => {
+      orch.brush.setSize(index);
+      persist();
+    },
     // A field tool square carries no config, so the palette's ConfigData upload
     // is unaffected -- `configsForUpload` fills it with the master's stand-in
     // exactly as it does an empty square, and nothing points at it.
-    onLoadTool: (slot, tool) => orch.palette.set(slot, toolSlot(tool)),
+    onLoadTool: (slot, tool) => {
+      orch.palette.set(slot, toolSlot(tool));
+      persist();
+    },
     onWeight: (weight) => {
       orch.brush.weight = weight;
+      persist();
     },
     onClear: (what) => {
       if (what === 'particles') orch.clearParticles();
@@ -170,6 +271,7 @@ async function main(): Promise<void> {
             name: entry.name,
           });
           orch.applyPalette(fallbackConfig, defaultWorld);
+          persist();
         } catch (e) {
           console.error(`Could not load ${entry.name}: ${String(e)}`);
         }
@@ -187,19 +289,24 @@ async function main(): Promise<void> {
   const prefsWindow = new SandPrefs(prefs, orch.palette, entityCount, {
     onChange: (next) => {
       live = next;
-      system.physicsSteps = next.physicsSteps;
+      // Through the orchestrator, NOT by assigning to a captured `system`: a Max
+      // Particles resize replaces that object, and a closure over the old one
+      // wrote to a discarded system -- which is why these sliders appeared to
+      // need a page refresh.
+      orch.applyPreferences(next);
     },
     onRestartRequired: (next) => {
       live = next;
-      // The snapshot holds copies of buffers that a resize replaces, so it
-      // describes a world that will no longer exist. Dropping it is better than
-      // keeping one that errors on use.
-      orch.invalidateInitialConditions();
-      // Rebuilding the whole system at a new size is a larger change than this
-      // step takes on; the user is told rather than silently ignored.
-      console.warn(
-        'World Size and Canvas Aspect take effect on reload in this modality.',
-      );
+      void (async () => {
+        try {
+          ui.setStatus('Rebuilding world…');
+          await orch.applyWorldSize(next, fallbackConfig, defaultWorld);
+          ui.setStatus('World rebuilt — the scene was cleared');
+        } catch (e) {
+          console.error(`Could not rebuild the world: ${String(e)}`);
+          ui.setStatus(`World rebuild failed: ${String(e)}`);
+        }
+      })();
     },
     // A live edit rewrites that ConfigData slot, so every particle already
     // painted from the square obeys the new settings on the next step -- which
@@ -207,6 +314,8 @@ async function main(): Promise<void> {
     onConfigEdit: (slot, config, world) => {
       orch.palette.edit(slot, config, world);
       orch.applyPalette(fallbackConfig, defaultWorld);
+      // Debounced, so a slider drag is one write rather than one per frame.
+      persist();
     },
     onSaveConfig: (slot, name) => {
       void (async () => {
@@ -223,6 +332,7 @@ async function main(): Promise<void> {
           // Rename the square to what was just saved, so the palette reflects
           // where the settings now live.
           orch.palette.set(slot, { ...entry, name });
+          persist();
           ui.setStatus(`Saved "${name}" to ${CUSTOM_CATEGORY}`);
         } catch (e) {
           console.error(`Could not save ${name}: ${String(e)}`);
@@ -238,6 +348,7 @@ async function main(): Promise<void> {
         try {
           ui.setStatus(`Resizing to ${count.toLocaleString()} particles…`);
           await orch.resizeEntities(count, fallbackConfig, defaultWorld);
+          persist();
           ui.setStatus(`Max particles: ${count.toLocaleString()}`);
         } catch (e) {
           console.error(`Could not resize to ${count}: ${String(e)}`);
@@ -307,10 +418,12 @@ async function main(): Promise<void> {
     const digit = positionForDigit(e.key);
     if (digit !== null) {
       orch.palette.selectPosition(digit);
+      persist();
       return;
     }
     if (e.key === 'x' || e.key === 'X') {
       orch.palette.swapRows();
+      persist();
     } else if (e.key === ' ') {
       e.preventDefault();
       orch.togglePause();
