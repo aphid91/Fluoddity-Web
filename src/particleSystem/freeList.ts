@@ -26,14 +26,27 @@ export const FREE_LIST_SLOT_BYTES = 4;
 /**
  * Buffer size in bytes for a pool that can hold `entityCount` indices.
  *
- * `entityCount` of 0 is the STUDIO'S DUMMY and is deliberately legal: it still
- * returns a header, because a zero-sized storage buffer is invalid in WebGPU and
- * the binding has to exist regardless (see the allocation in particleSystem.ts).
- * `arrayLength(&slots)` is then 0, so both guards in `freeList.wgsl` refuse
- * every operation -- which is exactly right for an app that never kills.
+ * `entityCount` of 0 is the STUDIO'S DUMMY and is deliberately legal, but it is
+ * NOT a bare header: `FreeList` ends in a runtime-sized `array<u32>`, and
+ * WebGPU's minimum binding size for such a struct is the header PLUS ONE
+ * ELEMENT. A 4-byte buffer satisfies "non-zero" and still fails validation:
+ *
+ *     Buffer "FreeList (dummy)" bound with size 4 at group 0, binding 3 is too
+ *     small. The pipeline requires a buffer binding which is at least 8 bytes.
+ *
+ * That error rejects every submit() for the whole frame, so the canvas holds its
+ * last good frame forever -- a black screen in the STUDIO, caused entirely by a
+ * buffer the studio never reads. Hence the floor of one slot below.
+ *
+ * The dummy still refuses every operation, which is what the studio wants:
+ * `arrayLength(&slots)` is 1 but the head starts at 0, so `free_list_take`
+ * underflows and puts the reservation back, and nothing in the studio ever
+ * selects BC_KILL to call it in the first place.
  */
 export function freeListSize(entityCount: number): number {
-  return FREE_LIST_HEADER_BYTES + Math.max(0, entityCount) * FREE_LIST_SLOT_BYTES;
+  // At least one slot -- see above. `max(1, ...)` is the whole fix.
+  const slots = Math.max(1, Math.max(0, entityCount));
+  return FREE_LIST_HEADER_BYTES + slots * FREE_LIST_SLOT_BYTES;
 }
 
 /**

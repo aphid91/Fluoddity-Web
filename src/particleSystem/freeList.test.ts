@@ -14,14 +14,31 @@ import {
 import { ENTITY, ENTITY_STRIDE } from './layout.ts';
 
 test('freeListSize is a header plus one u32 per entity', () => {
-  assert.equal(freeListSize(0), FREE_LIST_HEADER_BYTES);
   assert.equal(freeListSize(10), FREE_LIST_HEADER_BYTES + 10 * FREE_LIST_SLOT_BYTES);
 });
 
-test('the studio dummy is still a legal buffer', () => {
-  // A zero-sized storage buffer is invalid in WebGPU, and the binding must exist
-  // in both apps. The header alone is what keeps the dummy allocatable.
-  assert.ok(freeListSize(0) > 0);
+// THE REGRESSION GUARD for the studio black screen.
+//
+// `FreeList` ends in a runtime-sized `array<u32>`, so WebGPU's minimum binding
+// size is the header PLUS ONE ELEMENT -- 8 bytes, not 4. The dummy was sized at
+// 4, which is non-zero and allocates fine, then fails at dispatch:
+//
+//     Buffer "FreeList (dummy)" bound with size 4 ... is too small. The
+//     pipeline requires a buffer binding which is at least 8 bytes.
+//
+// That rejects every submit() for the frame, so the studio's canvas froze on its
+// last good frame while the UI kept working -- a black screen on load, caused by
+// a buffer the studio never reads.
+//
+// This test previously asserted only `freeListSize(0) > 0`, which is exactly the
+// weaker property that let 4 through. Assert the real minimum instead.
+test('the studio dummy meets the minimum binding size for a runtime array', () => {
+  const MIN_BINDING_BYTES = FREE_LIST_HEADER_BYTES + FREE_LIST_SLOT_BYTES;
+  assert.equal(MIN_BINDING_BYTES, 8);
+  assert.ok(
+    freeListSize(0) >= MIN_BINDING_BYTES,
+    'a header-only dummy fails validation and freezes every frame',
+  );
 });
 
 test('initialFreeList marks every index available exactly once', () => {
