@@ -686,10 +686,30 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // every particle to one side, reintroducing exactly the handedness that
     // y_reflect in calculate_entity_behavior exists to cancel.
     //
-    // NOT scaled by 1/sqrt_world_size, unlike the motion channels. Those are
-    // tuned in world units and must shrink as the world grows; this is a sensor
-    // reading, and `sensor_scaling` below already carries the world-size term.
-    let trail_bias = -gravity_expand(cfg_gravity_trails(config)) * gravity_dir;
+    // DIVIDED BY sqrt_world_size, to CANCEL the multiply in `sensor_scaling`.
+    //
+    // This is not the same 1/sqrt_world_size the two motion channels apply, and
+    // it is not applied for the same reason -- it is the inverse of a term this
+    // value is about to be multiplied by, and it exists to make the bias
+    // world-invariant like the other two gravity channels.
+    //
+    // WHY THE MULTIPLY IS RIGHT FOR EVERYTHING ELSE. `sensor_scaling` below is
+    // `sqrt_world_size * 38.855 * gain`. The canvas is a DENSITY: the same
+    // population spread over a larger world lays fainter trails per texel, so a
+    // real reading dilutes as the world grows and the multiply is what undoes
+    // that. Sensor readings therefore stay world-invariant.
+    //
+    // A CONSTANT HAS NOTHING TO DILUTE. `trail_bias` is not sampled from the
+    // canvas -- it is a fixed vector added at the same point (see `get_can`), so
+    // it never shrank in the first place. Riding the multiply unopposed made
+    // Gravity (Trails) grow as sqrt_world_size while Gravity (Force) and Gravity
+    // (Strafe) shrank as 1/sqrt_world_size, leaving the trails channel scaling
+    // with world size where the other two are invariant.
+    //
+    // Dividing here rather than moving the addition after `sensor_scaling` keeps
+    // Sensor Gain applying to the bias, which is deliberate -- see `get_can`.
+    let trail_bias =
+        -gravity_expand(cfg_gravity_trails(config)) * gravity_dir / sqrt_world_size;
 
     // Read the trails from canvas.
     let bc = world_boundary_conditions(u.world);
