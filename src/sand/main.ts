@@ -8,12 +8,12 @@
  *
  * ## Hotkeys
  *
- *   1-9, 0   select a palette square in the active row
- *   X        swap which row the number keys address
+ *   1-9, 0   select one of the first ten swatches
  *   SPACE    pause / resume. The world starts PAUSED, arranging.
- *   R        restore the initial conditions
- *   left     paint particles from the selected square
- *   right    erase
+ *   R        restore the initial conditions (does nothing while authoring them)
+ *   Shift+V  load a config from the clipboard into the first empty swatch
+ *   left     apply the armed tool
+ *   right    apply its inverse
  */
 
 import { acquireDevice, showUnavailableOverlay } from '../gpu/device.ts';
@@ -33,12 +33,12 @@ import {
 import { toDocument } from '../config/persistence.ts';
 import { BC, makeWorldSettings } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
-import { loadPreferences } from '../prefs/preferences.ts';
+import { DEFAULT_PREFERENCES, loadPreferences } from '../prefs/preferences.ts';
 import { screenNdcToWorld, screenToNdc } from '../particleSystem/coords.ts';
 import { SandOrchestrator } from './sandOrchestrator.ts';
 import { SandUi } from './sandUi.ts';
 import { BRUSH_ERASE, BRUSH_SPAWN, type BrushAction } from './brushInput.ts';
-import { positionForDigit, toolSlot } from './palette.ts';
+import { slotForDigit } from './palette.ts';
 import { TOOL_CONFIG } from './tool.ts';
 import {
   type SandSession,
@@ -48,6 +48,10 @@ import {
   slotDocument,
 } from './session.ts';
 import { SandPrefs } from './sandPrefs.ts';
+import { themeById } from './theme.ts';
+import { readText } from '../ui/clipboard.ts';
+import { decodeShareText } from '../config/shareLink.ts';
+import { fromDocument } from '../config/persistence.ts';
 
 /**
  * The first config in the catalog, in the order the menu shows.
@@ -79,10 +83,34 @@ async function main(): Promise<void> {
   });
   const surface = createSurface(canvas, device);
 
-  const prefs = loadPreferences();
+  // `let`: the sand modality overrides `canvasAspect` for a fresh install, just
+  // below, once the saved value has been read.
+  let prefs = loadPreferences();
   // BEFORE sizing: a saved Max Particles has to size the buffer from the start,
   // rather than being applied afterwards as a resize the user did not ask for.
   const session = loadSession();
+
+  // ---------------------------------------------------------------------
+  // THE SAND WORLD IS 4:3.
+  //
+  // The studio defaults to a square canvas; this modality does not. The UI is a
+  // tool rail down the left and a swatch tray along the bottom, so the space the
+  // canvas is fitted into is landscape -- and a square world inside a landscape
+  // hole wastes the width on either side of it.
+  //
+  // It is applied to the PREFERENCE rather than to the element, because
+  // `canvasAspect` defines the shape of the SIMULATED WORLD (`sizing.ts`: "world
+  // space is area-preserving, so the canvas keeps roughly the same pixel count
+  // and the same particle density; it just gets wider and shorter"). Cropping
+  // the element alone would letterbox a square world rather than give us a wide
+  // one, which is not what "crop to the space the trail map fills" asks for.
+  //
+  // A saved `canvasAspect` still wins: this is a DEFAULT for a fresh install,
+  // not an override of a value the user set in the Prefs tab.
+  const SAND_CANVAS_ASPECT = 4 / 3;
+  if (prefs.canvasAspect === DEFAULT_PREFERENCES.canvasAspect) {
+    prefs = { ...prefs, canvasAspect: SAND_CANVAS_ASPECT };
+  }
 
   const [derivedCount, canvasDim] = sizingFor(prefs.worldSize);
   const canvasSize = canvasDimensions(prefs.canvasAspect, canvasDim);
@@ -154,11 +182,6 @@ async function main(): Promise<void> {
   // ---------------------------------------------------------------------
   let restoredAny = false;
   session.slots.forEach((stored, slot) => {
-    if (stored.tool !== TOOL_CONFIG) {
-      orch.palette.set(slot, toolSlot(stored.tool));
-      restoredAny = true;
-      return;
-    }
     const saved = readSlotDocument(stored.document);
     if (saved === null || saved.configs[0] === undefined) return;
     orch.palette.set(slot, {
@@ -182,10 +205,11 @@ async function main(): Promise<void> {
       name: seedEntry?.name ?? DEFAULT_PRESET_NAME,
     });
   }
+  orch.palette.setVisibleCount(session.visibleCount);
   orch.palette.select(session.selected);
-  if (!session.topRowActive) orch.palette.swapRows();
   orch.brush.setSize(session.brushSize);
-  orch.brush.weight = session.weight;
+  orch.brush.tool = session.tool;
+  orch.brush.restoreStrengths(session.strengths);
   // So a later World Size change rebuilds at the capped count rather than
   // silently reverting to the derived one.
   orch.setMaxParticlesSetting(session.maxParticles);
@@ -194,20 +218,25 @@ async function main(): Promise<void> {
   // immediately rather than from whenever they next touch a control.
   orch.applyPreferences(prefs);
 
+  // Which comp is up. Mutable: the Dev tab's dropdown swaps it, and `snapshot`
+  // reads it so the choice survives a reload.
+  let theme = themeById(session.theme);
+
   /** The current palette and brush state, as stored. */
   const snapshot = (): SandSession => ({
     slots: orch.palette.all().map((slot) => ({
-      tool: slot.tool,
       name: slot.name,
-      // BY VALUE, so a square edited on the Config tab restores as edited
+      // BY VALUE, so a swatch edited on the Config tab restores as edited
       // rather than reverting to the file it came from.
       document: slotDocument(slot.config, slot.world),
     })),
     selected: orch.palette.selected,
-    topRowActive: orch.palette.topRowActive,
     brushSize: orch.brush.sizeSlot,
-    weight: orch.brush.weight,
+    tool: orch.brush.tool,
+    strengths: orch.brush.allStrengths(),
+    visibleCount: orch.palette.visibleCount,
     maxParticles: orch.maxParticlesSetting,
+    theme: theme.id,
   });
 
   /**
@@ -244,15 +273,19 @@ async function main(): Promise<void> {
       orch.brush.setSize(index);
       persist();
     },
-    // A field tool square carries no config, so the palette's ConfigData upload
-    // is unaffected -- `configsForUpload` fills it with the master's stand-in
-    // exactly as it does an empty square, and nothing points at it.
-    onLoadTool: (slot, tool) => {
-      orch.palette.set(slot, toolSlot(tool));
+    onTool: (tool) => {
+      orch.brush.tool = tool;
       persist();
     },
-    onWeight: (weight) => {
-      orch.brush.weight = weight;
+    // "None". The palette refuses this for the master, so the menu hiding the
+    // option and the model rejecting it agree -- see `Palette.clear`.
+    onClearSlot: (slot) => {
+      orch.palette.clear(slot);
+      orch.applyPalette(fallbackConfig, defaultWorld);
+      persist();
+    },
+    onStrength: (tool, value) => {
+      orch.brush.setStrength(tool, value);
       persist();
     },
     onClear: (what) => {
@@ -279,6 +312,12 @@ async function main(): Promise<void> {
     },
   });
 
+  // The comp the session left us on, and the shape the canvas is cropped to.
+  // Both before the first frame, so nothing renders in the wrong skin or at the
+  // wrong aspect and then jumps.
+  ui.applyTheme(theme);
+  ui.setCanvasAspect(system.canvasSize[0] / system.canvasSize[1]);
+
   // Preferences: world size, canvas aspect, physics rate, brightness, bloom.
   // Driven by the shared settings registry, so this window is a filter over
   // data the studio already declares rather than a second list of controls.
@@ -286,7 +325,22 @@ async function main(): Promise<void> {
   // `live` is what the frame loop reads. A preference change swaps the whole
   // object rather than mutating one, so a frame always renders one coherent set.
   let live = prefs;
-  const prefsWindow = new SandPrefs(prefs, orch.palette, entityCount, {
+  const prefsWindow = new SandPrefs(
+    prefs,
+    orch.palette,
+    entityCount,
+    { theme: theme.id, visibleCount: orch.palette.visibleCount },
+    {
+    onTheme: (next) => {
+      theme = next;
+      ui.applyTheme(next);
+      persist();
+    },
+    // Display only -- capacity is fixed. See `palette.ts`.
+    onVisibleCount: (count) => {
+      orch.palette.setVisibleCount(count);
+      persist();
+    },
     onChange: (next) => {
       live = next;
       // Through the orchestrator, NOT by assigning to a captured `system`: a Max
@@ -301,6 +355,8 @@ async function main(): Promise<void> {
         try {
           ui.setStatus('Rebuilding world…');
           await orch.applyWorldSize(next, fallbackConfig, defaultWorld);
+          // A Canvas Aspect change reshapes the world, so the crop follows it.
+          ui.setCanvasAspect(orch.system.canvasSize[0] / orch.system.canvasSize[1]);
           ui.setStatus('World rebuilt — the scene was cleared');
         } catch (e) {
           console.error(`Could not rebuild the world: ${String(e)}`);
@@ -356,7 +412,8 @@ async function main(): Promise<void> {
         }
       })();
     },
-  });
+    },
+  );
 
   // --- input --------------------------------------------------------------
   // Owned here, in one place, for the reason `ui/` owns every callback in the
@@ -415,22 +472,97 @@ async function main(): Promise<void> {
     // responding to keys aimed at a list of configs.
     if (ui.loaderOpen) return;
 
-    const digit = positionForDigit(e.key);
+    // Shift+V: adopt a config from the clipboard. Before the digit check, since
+    // `V` is not a digit but the modifier makes the ordering worth being
+    // explicit about.
+    if (e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+      e.preventDefault();
+      void pasteIntoEmptySwatch();
+      return;
+    }
+
+    const digit = slotForDigit(e.key);
     if (digit !== null) {
-      orch.palette.selectPosition(digit);
+      orch.palette.select(digit);
       persist();
       return;
     }
-    if (e.key === 'x' || e.key === 'X') {
-      orch.palette.swapRows();
-      persist();
-    } else if (e.key === ' ') {
+    if (e.key === ' ') {
       e.preventDefault();
       orch.togglePause();
     } else if (e.key === 'r' || e.key === 'R') {
-      orch.reset();
+      // Refused while the initial conditions are being authored -- the scene on
+      // screen IS the arrangement, and restoring would discard it in favour of
+      // an older one. Saying so beats a key that silently does nothing.
+      if (!orch.reset()) {
+        ui.setStatus('Already editing the initial conditions — nothing to reset to');
+      }
     }
   });
+
+  /**
+   * Shift+V -- decode a config from the clipboard into the first empty swatch.
+   *
+   * ## The decode is the studio's, exactly
+   *
+   * `decodeShareText` then `fromDocument`, which is the same two-step
+   * `Panel.applyShareText` uses: the codec decides what the bytes ARE and
+   * `persistence.ts` remains the only thing that decides what they MEAN. Doing
+   * anything else here would make this a second reader of the format.
+   *
+   * The clipboard read falls back to a prompt for the reason `ui/clipboard.ts`
+   * gives: Firefox does not implement `readText()` for page script at all, and
+   * Chrome gates it behind a permission prompt, so `null` is an ordinary outcome
+   * rather than an error.
+   */
+  async function pasteIntoEmptySwatch(): Promise<void> {
+    const slot = orch.palette.firstEmpty();
+    if (slot === null) {
+      ui.setStatus('No empty swatch — right-click one to load into it');
+      return;
+    }
+
+    const clip = await readText();
+    const text =
+      clip !== null && clip.trim() !== ''
+        ? clip
+        : (window.prompt('Paste a Fluoddity share link or config:') ?? '');
+    if (text.trim() === '') return;
+
+    let saved;
+    try {
+      const doc = decodeShareText(text);
+      if (doc === null) {
+        ui.setStatus('That does not look like a Fluoddity config');
+        return;
+      }
+      saved = fromDocument(doc, 'clipboard');
+    } catch (err: unknown) {
+      ui.setStatus('That config could not be read — it may have been truncated');
+      console.warn(`Rejected a pasted config: ${String(err)}`);
+      return;
+    }
+
+    const config = saved.configs[0];
+    if (config === undefined) {
+      ui.setStatus('That config held no elements');
+      return;
+    }
+
+    orch.palette.set(slot, {
+      tool: TOOL_CONFIG,
+      config,
+      world: saved.world,
+      name: 'Pasted',
+    });
+    // Selected as well as filled: the user pasted it to use it, and leaving the
+    // selection on whatever was armed before would make the paste look like it
+    // had gone somewhere else.
+    orch.palette.select(slot);
+    orch.applyPalette(fallbackConfig, defaultWorld);
+    persist();
+    ui.setStatus(`Loaded into swatch ${slot + 1}`);
+  }
 
   // --- frame loop ----------------------------------------------------------
 
@@ -475,7 +607,12 @@ async function main(): Promise<void> {
     // Rebuilds the Config tab only when the selection or a square's contents
     // actually changed -- see `syncConfig`.
     prefsWindow.syncConfig();
-    ui.refresh(orch.brush.sizeSlot);
+    ui.refresh({
+      tool: orch.brush.tool,
+      brushSize: orch.brush.sizeSlot,
+      strength: orch.brush.weight,
+      editingInitialConditions: orch.editingInitialConditions,
+    });
     ui.setStatus(
       `${orch.paused ? 'PAUSED — arrange, then SPACE' : 'running'}  ·  ` +
         `~${orch.liveEstimate.toLocaleString()} particles  ·  ` +

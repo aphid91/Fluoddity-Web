@@ -46,8 +46,8 @@ import { worldToUv } from '../particleSystem/coords.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
 import { SandPasses } from './sandPasses.ts';
 import { InitialConditions, RESTORE_FRAME } from './initialConditions.ts';
-import { type PaletteSlot, Palette, paintsParticles } from './palette.ts';
-import { isFieldTool } from './tool.ts';
+import { Palette, isLoaded } from './palette.ts';
+import { type SandTool, isFieldTool, usesSwatch } from './tool.ts';
 import type { ShoveState } from '../particleSystem/uniforms.ts';
 import type { BrushParams } from '../strafeField/strafeUniforms.ts';
 import type { FieldLayer } from '../strafeField/fieldLayer.ts';
@@ -72,6 +72,32 @@ export interface SandFrameInput {
   readonly dt: number;
   /** Whether Shift is held -- arms the line tool in the painting tools. */
   readonly shift: boolean;
+}
+
+/**
+ * What a pressed button means for the armed tool.
+ *
+ * ## The button is a MODIFIER now, not the verb
+ *
+ * It used to be the verb outright: left spawned, right erased, over whatever
+ * square was selected. With Brush and Erase as separate tools that would leave
+ * two ways to reach the same act and one of them contradicting the rail -- right
+ * -dragging with Brush armed would erase while the Brush button stayed lit.
+ *
+ * So the tool picks the verb and the right button INVERTS it, which is the
+ * convention the field tools already use (`paintField` erases on right) and the
+ * one the studio uses throughout. Erase inverted is spawn, which is a slightly
+ * odd but harmless reading -- and it keeps "right undoes what left does" true
+ * for every tool rather than for all but one.
+ */
+function actionFor(tool: SandTool, pressed: BrushAction | null): BrushAction | null {
+  if (pressed === null) return null;
+  // The field tools do their own painting in `paintField`; the particle brush
+  // must not also fire for them.
+  if (tool !== 'brush' && tool !== 'erase') return pressed;
+  const inverted = pressed === BRUSH_SPAWN;
+  if (tool === 'brush') return inverted ? BRUSH_SPAWN : BRUSH_ERASE;
+  return inverted ? BRUSH_ERASE : BRUSH_SPAWN;
 }
 
 export class SandOrchestrator {
@@ -243,6 +269,26 @@ export class SandOrchestrator {
     return this.initial.hasSnapshot;
   }
 
+  /**
+   * Whether the user is authoring the initial conditions right now.
+   *
+   * ## Derived, not a fourth flag
+   *
+   * It is exactly `paused && captureArmed`, which is the state the frame loop
+   * already uses to decide whether the next 0 -> 1 transition captures. Adding a
+   * separate boolean for the UI to read would create a second source of truth
+   * that could drift from the one the capture actually consults -- and the
+   * symptom of that drift would be a dashed border promising an edit that the
+   * next unpause quietly discards.
+   *
+   * True at startup, true after `R`, true after a world rebuild; false the
+   * instant the scene is captured, and true again when a reset re-arms it. The
+   * dashed canvas border and the banner both read this, and so does `reset()`.
+   */
+  get editingInitialConditions(): boolean {
+    return this._paused && this.captureArmed;
+  }
+
   /** Live particles, by the same estimate `availableEstimate` tracks. */
   get liveEstimate(): number {
     return this.system.entityCount - this.availableEstimate;
@@ -291,15 +337,28 @@ export class SandOrchestrator {
    * Without this the very first arrangement would be frozen for the session and
    * every later edit silently discarded on the next R, which looks like the
    * reset key being broken rather than like a capture that never re-ran.
+   *
+   * ## IT DOES NOTHING WHILE THE INITIAL CONDITIONS ARE BEING EDITED
+   *
+   * In that state the scene on screen IS the arrangement being authored, and the
+   * snapshot is whatever was captured before it -- an older, superseded scene.
+   * Restoring would throw away work the user is in the middle of and replace it
+   * with something they had already decided to move on from, which is the
+   * opposite of what a reset key is for. Returning false lets the caller say so
+   * rather than leaving the keypress looking broken.
+   *
+   * Returns whether anything happened.
    */
-  reset(): void {
+  reset(): boolean {
+    if (this.editingInitialConditions) return false;
     if (this.initial.hasSnapshot) {
       this.restorePending = true;
       this._paused = true;
       this.captureArmed = true;
-      return;
+      return true;
     }
     this.startEmpty();
+    return true;
   }
 
   /**
@@ -460,19 +519,26 @@ export class SandOrchestrator {
       }
     }
 
+    const tool = this.brush.tool;
     const selected = this.palette.at(this.palette.selected);
+
+    // WHAT THE STROKE MEANS now comes from the TOOL, not from the swatch -- see
+    // `tool.ts` on the split. The two painting verbs are explicit tools, so the
+    // mouse button no longer decides between them on its own: Brush spawns and
+    // Erase kills, and within each the right button is still the inverse.
+    const action = actionFor(tool, input.action);
 
     // Brushes run whether or not the simulation is advancing -- arranging a
     // scene while paused is the whole point of the paused state.
     const command = this.brush.frame(
       input.cursor,
-      input.action,
+      action,
       input.dt,
       this.availableEstimate,
-      // Only a loaded CONFIG square paints particles. A field tool square and an
-      // unloaded one both deposit nothing; the eraser ignores this, so rubbing
+      // Only the Brush over a LOADED swatch deposits particles. Every other tool
+      // and every empty swatch spawn nothing; the eraser ignores this, so rubbing
       // out works whatever is selected.
-      paintsParticles(selected),
+      usesSwatch(tool) && isLoaded(selected),
     );
     const world = forUpload(
       this.palette.master.world ?? this.currentWorld(),
@@ -499,7 +565,7 @@ export class SandOrchestrator {
     // uses: ONCE PER RENDERED FRAME, above the physics. Painting inside the
     // sub-step loop would make a stroke `physicsSteps` times stronger and tie
     // its weight to the Physics Rate.
-    this.paintField(encoder, selected, input);
+    this.paintField(encoder, tool, input);
 
     // THE CAPTURE POINT: the scene as it stands the instant the user presses go.
     //
@@ -529,7 +595,7 @@ export class SandOrchestrator {
       // is why the strength is divided by the sub-step count host-side.
       //
       // Null while paused, like the studio: a paused frame is untouchable.
-      this.system.runFrame(encoder, this.shoveFor(selected, input));
+      this.system.runFrame(encoder, this.shoveFor(tool, input));
     }
 
     if (command !== null && command.action === BRUSH_ERASE) {
@@ -577,8 +643,8 @@ export class SandOrchestrator {
    * rather than restated, so the two apps cannot disagree about how hard a shove
    * pushes -- which is the part that would be invisible if it drifted.
    */
-  private shoveFor(slot: PaletteSlot, input: SandFrameInput): ShoveState | null {
-    if (slot.tool !== 'shove' || input.cursor === null || input.action === null) {
+  private shoveFor(tool: SandTool, input: SandFrameInput): ShoveState | null {
+    if (tool !== 'shove' || input.cursor === null || input.action === null) {
       return null;
     }
 
@@ -610,10 +676,10 @@ export class SandOrchestrator {
    */
   private paintField(
     encoder: GPUCommandEncoder,
-    slot: PaletteSlot,
+    tool: SandTool,
     input: SandFrameInput,
   ): void {
-    const layer = isFieldTool(slot.tool) ? layerForMouseMode(slot.tool) : null;
+    const layer = isFieldTool(tool) ? layerForMouseMode(tool) : null;
     if (layer === null) {
       this.lineAnchor = null;
       return;

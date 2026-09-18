@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="system7" data-layout="rail">
   <head>
     <meta charset="UTF-8" />
     <meta
@@ -11,331 +11,863 @@
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <title>Fluoddity Sand</title>
     <style>
+      /* ==================================================================
+         TOKENS
+
+         Every comp is one block of custom properties and nothing else --
+         see `theme.ts`. Components below style themselves THROUGH these
+         names and never name a colour directly, which is what makes
+         switching a comp an attribute swap on <html> rather than a
+         rebuild.
+
+         The one comp that is not purely visual is `compact`, which moves
+         the furniture. Its rules key on `[data-layout='dock']` rather
+         than on its id, so a later comp can adopt either arrangement
+         without the CSS learning its name.
+         ================================================================== */
+
       :root {
         color-scheme: dark;
-        --sand-slot: 44px;
-        --sand-gap: 4px;
+
+        /* --- geometry, shared by every comp -------------------------
+           The rail is wide enough for two tool buttons side by side WITH
+           their labels -- 76px clipped "Erase" and "Walls" to four
+           characters, which is exactly the kind of thing that only shows
+           up on screen. */
+        --rail-w: 112px;
+        --tray-h: auto;
+        --gap: 8px;
+        --pad: 10px;
+
+        /* --- SYSTEM 7 (default): 1-bit, hard edges, inverted selection.
+               No shadows and no rounding anywhere -- the whole character
+               of the reference is that nothing is soft. ---------------- */
+        --bg: #5f5f5f;
+        --chrome: #ffffff;
+        --chrome-2: #ffffff;
+        --edge: #000000;
+        --edge-soft: #000000;
+        --ink: #000000;
+        --ink-dim: #6b6b6b;
+        --accent: #000000;
+        --accent-ink: #ffffff;
+        --sel-bg: #000000;
+        --sel-ink: #ffffff;
+        --sel-edge: #000000;
+        --radius: 0px;
+        --border: 2px;
+        --shadow: none;
+        --font: ui-monospace, "Chicago", "Geneva", Monaco, monospace;
+        --font-label: var(--font);
+        --label-spacing: 0.02em;
+        --label-transform: none;
+        --canvas-edge: #000000;
+        --ic-line: #ffffff;
+        --ic-ink: #ffffff;
+        --ic-bg: rgba(0, 0, 0, 0.72);
       }
+
+      /* --- DARKROOM: near-black ground, neutrals biased cool, one amber
+             accent. Soft 1px edges and a little depth -- the opposite
+             read from System 7 on every axis except the layout. -------- */
+      :root[data-theme='darkroom'] {
+        --bg: #0b0c0f;
+        --chrome: #16181d;
+        --chrome-2: #1d2027;
+        --edge: #2a2e37;
+        --edge-soft: #21242b;
+        --ink: #d6d9e0;
+        --ink-dim: #767c8a;
+        --accent: #e8a33d;
+        --accent-ink: #1a1305;
+        --sel-bg: #2a2118;
+        --sel-ink: #f0c078;
+        --sel-edge: #e8a33d;
+        --radius: 5px;
+        --border: 1px;
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+        --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+        --font-label: var(--font);
+        --label-spacing: 0.06em;
+        --label-transform: uppercase;
+        --canvas-edge: #2a2e37;
+        --ic-line: #e8a33d;
+        --ic-ink: #f0c078;
+        --ic-bg: rgba(11, 12, 15, 0.86);
+      }
+
+      /* --- BLUEPRINT: indigo drafting paper, cyan hairlines, monospace
+             labels. The chrome carries a faint grid, which is the one
+             texture in any of the four. ------------------------------- */
+      :root[data-theme='blueprint'] {
+        --bg: #0a1020;
+        --chrome: #121a2e;
+        --chrome-2: #18223a;
+        --edge: #2d4468;
+        --edge-soft: #223451;
+        --ink: #c4d6ec;
+        --ink-dim: #6d86a8;
+        --accent: #7fd4e8;
+        --accent-ink: #06222c;
+        --sel-bg: #123040;
+        --sel-ink: #a8e8f6;
+        --sel-edge: #7fd4e8;
+        --radius: 2px;
+        --border: 1px;
+        --shadow: none;
+        --font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        --font-label: var(--font);
+        --label-spacing: 0.1em;
+        --label-transform: uppercase;
+        --canvas-edge: #2d4468;
+        --ic-line: #7fd4e8;
+        --ic-ink: #a8e8f6;
+        --ic-bg: rgba(10, 16, 32, 0.86);
+      }
+
+      /* --- COMPACT DOCK: the structural variant. Tokens close to
+             Darkroom so the comparison is about the LAYOUT rather than
+             about colour -- the whole point of this one is the
+             arrangement, and changing both at once would make it
+             impossible to judge either. ------------------------------- */
+      :root[data-theme='compact'] {
+        --bg: #101115;
+        --chrome: #1a1c22;
+        --chrome-2: #22252c;
+        --edge: #32363f;
+        --edge-soft: #282b33;
+        --ink: #dcdfe6;
+        --ink-dim: #7d838f;
+        --accent: #5fb0e8;
+        --accent-ink: #04161f;
+        --sel-bg: #16303f;
+        --sel-ink: #9fd6f5;
+        --sel-edge: #5fb0e8;
+        --radius: 4px;
+        --border: 1px;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+        --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+        --font-label: var(--font);
+        --label-spacing: 0.05em;
+        --label-transform: uppercase;
+        --canvas-edge: #32363f;
+        --ic-line: #5fb0e8;
+        --ic-ink: #9fd6f5;
+        --ic-bg: rgba(16, 17, 21, 0.86);
+      }
+
+      /* ==================================================================
+         PAGE
+         ================================================================== */
 
       html,
       body {
         margin: 0;
         padding: 0;
         height: 100%;
-        background: #000;
-        color: #ddd;
-        font: 13px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+        font: 13px/1.4 var(--font);
         overflow: hidden;
+      }
+
+      *:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      /* ------------------------------------------------------------------
+         THE SHELL
+
+         A grid rather than a stack of `position: fixed` bars, which is
+         what makes "the canvas occupies only the space the trail texture
+         fills, and the UI does not overlap it" true BY CONSTRUCTION
+         rather than by matching paddings to bar heights. The rail claims
+         a column and the tray claims a row; the canvas cell is what is
+         left, and the canvas is fitted inside it by aspect.
+         ------------------------------------------------------------------ */
+      #shell {
+        display: grid;
+        height: 100%;
+        grid-template-columns: var(--rail-w) 1fr;
+        grid-template-rows: 1fr auto;
+        grid-template-areas:
+          'rail stage'
+          'tray tray';
+        gap: var(--gap);
+        padding: var(--gap);
+        box-sizing: border-box;
+      }
+
+      /* The dock comp: one bottom strip, no rail column. The canvas gets
+         the entire width above it. */
+      :root[data-layout='dock'] #shell {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          'stage'
+          'tray';
+      }
+
+      :root[data-layout='dock'] #rail {
+        display: none;
+      }
+
+      /* ------------------------------------------------------------------
+         THE STAGE AND THE CANVAS
+
+         `#stage` is the free area; `#app` is fitted inside it at the
+         simulation's aspect by `sandUi.fitCanvas`. The canvas is sized in
+         PIXELS by script rather than by `aspect-ratio` because the
+         surface's ResizeObserver drives the WebGPU backing store off the
+         element's real box -- so the element must settle at an exact size
+         rather than at whatever a percentage resolves to mid-layout.
+         ------------------------------------------------------------------ */
+      #stage {
+        grid-area: stage;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+        min-height: 0;
+      }
+
+      /* Shrink-wraps the canvas, so `position: absolute` overlays inside it
+         measure against the picture rather than against the free area. */
+      #canvas-wrap {
+        position: relative;
+        display: block;
+        line-height: 0;
       }
 
       #app {
         display: block;
-        width: 100%;
-        height: 100%;
-        /* The canvas handles its own gestures; without this the browser would
-           pan and pinch the page instead of letting a drag paint. */
+        background: #000;
+        border: var(--border) solid var(--canvas-edge);
+        box-sizing: border-box;
+        /* The canvas handles its own gestures; without this the browser
+           would pan and pinch the page instead of letting a drag paint. */
         touch-action: none;
       }
 
-      /* ------------------------------------------------------------------
-         The palette. Two rows of ten, Factorio-style, centred at the bottom.
+      /* EDITING INITIAL CONDITIONS. A dashed border rather than a tinted
+         overlay: the scene underneath is the thing being judged, so the
+         signal has to sit outside it. `outline` rather than `border` so
+         it does not change the element's box -- a border swap here would
+         resize the WebGPU backing store on every pause. */
+      #app[data-editing='true'] {
+        outline: 2px dashed var(--ic-line);
+        outline-offset: 3px;
+      }
 
-         `pointer-events` is the load-bearing part: the bar sits over the
-         canvas, so it must not swallow drags aimed at the world. The
-         container is transparent to the pointer and only the squares
-         themselves take events.
-         ------------------------------------------------------------------ */
-      #sand-ui {
-        position: fixed;
-        left: 0;
-        right: 0;
-        bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 8px;
+      #ic-banner {
+        position: absolute;
+        /* Clear of the dashed edit outline, which sits 3px outside the
+           canvas box -- at 10px the two collided. */
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 4px 12px;
+        background: var(--ic-bg);
+        color: var(--ic-ink);
+        border: var(--border) solid var(--ic-line);
+        border-radius: var(--radius);
+        font-family: var(--font-label);
+        font-size: 11px;
+        letter-spacing: var(--label-spacing);
+        text-transform: var(--label-transform);
+        white-space: nowrap;
         pointer-events: none;
+        display: none;
+        z-index: 3;
+      }
+
+      #ic-banner[data-visible='true'] {
+        display: block;
+      }
+
+      /* Inside the canvas's own box rather than the stage's, so it cannot
+         spill across the dashed edit border or under the rail -- the
+         stage is wider than the canvas whenever the window is. */
+      #sand-status {
+        position: absolute;
+        bottom: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        max-width: 92%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        /* On its own plate. It sits over the picture, which is black at
+           rest and anything at all once particles are painted -- dim grey
+           text alone was unreadable against both. */
+        padding: 2px 8px;
+        border-radius: var(--radius);
+        background: var(--ic-bg);
+        font-size: 11px;
+        line-height: 1.4;
+        color: var(--ink-dim);
+        font-variant-numeric: tabular-nums;
+        pointer-events: none;
+        z-index: 2;
+      }
+
+      /* ------------------------------------------------------------------
+         PANELS -- the shared chrome of the rail and the tray
+         ------------------------------------------------------------------ */
+      .panel {
+        background: var(--chrome);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        box-sizing: border-box;
+      }
+
+      :root[data-theme='blueprint'] .panel {
+        /* The one texture in the set: drafting-paper grid, kept far enough
+           down in contrast that it reads as paper rather than as content. */
+        background-image:
+          linear-gradient(var(--edge-soft) 1px, transparent 1px),
+          linear-gradient(90deg, var(--edge-soft) 1px, transparent 1px);
+        background-size: 16px 16px;
+      }
+
+      .group-label {
+        font-family: var(--font-label);
+        font-size: 9px;
+        letter-spacing: var(--label-spacing);
+        text-transform: var(--label-transform);
+        color: var(--ink-dim);
+        padding: 0 2px 4px;
         user-select: none;
       }
 
-      .sand-row {
+      /* ------------------------------------------------------------------
+         THE TOOL RAIL
+         ------------------------------------------------------------------ */
+      #rail {
+        grid-area: rail;
         display: flex;
-        gap: var(--sand-gap);
-        pointer-events: auto;
+        flex-direction: column;
+        gap: var(--gap);
+        min-height: 0;
+        overflow-y: auto;
       }
 
-      .sand-slot {
-        width: var(--sand-slot);
-        height: var(--sand-slot);
-        border: 2px solid #444;
-        border-radius: 4px;
-        background: rgba(20, 20, 24, 0.82);
-        color: #bbb;
-        font-size: 11px;
+      .rail-block {
+        padding: var(--pad);
+      }
+
+      #tools {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+      }
+
+      .tool {
+        aspect-ratio: 1;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        cursor: pointer;
-        overflow: hidden;
+        gap: 2px;
         padding: 0;
-      }
-
-      .sand-slot:hover {
-        border-color: #777;
-      }
-
-      /* The selected square. */
-      .sand-slot[data-selected='true'] {
-        border-color: #fff;
-        background: rgba(60, 60, 70, 0.9);
-      }
-
-      /* THE MASTER SQUARE. Green, and it follows the ELEMENT through a row
-         swap rather than staying on the top-left square -- see palette.ts,
-         where nothing moves in storage and only the active row changes. */
-      .sand-slot[data-master='true'] {
-        border-color: #3fbf5f;
-      }
-
-      .sand-slot[data-master='true'][data-selected='true'] {
-        background: rgba(40, 90, 50, 0.92);
-      }
-
-      /* The row the number keys currently address. */
-      .sand-row[data-active='false'] .sand-slot {
-        opacity: 0.55;
-      }
-
-      .sand-key {
-        font-size: 9px;
-        opacity: 0.6;
-      }
-
-      .sand-name {
-        max-width: 100%;
-        padding: 0 2px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      /* The hint bar, directly above the palette. */
-      #sand-hint {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 4px 10px;
-        border-radius: 4px;
-        background: rgba(20, 20, 24, 0.82);
-        pointer-events: auto;
-        max-width: min(760px, 92vw);
-      }
-
-      #sand-hint-text {
-        opacity: 0.8;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      #sand-hint-clear {
-        flex: none;
-        border: 1px solid #5a4444;
-        border-radius: 3px;
-        background: #2a1e1e;
-        color: #e0b4b4;
+        background: var(--chrome-2);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--radius);
+        color: var(--ink);
         font: inherit;
-        padding: 2px 8px;
         cursor: pointer;
       }
 
-      #sand-hint-clear:hover {
-        background: #3a2626;
+      .tool:hover:not([data-selected='true']) {
+        border-color: var(--accent);
       }
 
-      /* Weight and the brush sizes, as one control group. */
-      #sand-tools {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        pointer-events: auto;
+      .tool[data-selected='true'] {
+        background: var(--sel-bg);
+        border-color: var(--sel-edge);
+        color: var(--sel-ink);
       }
 
-      #sand-weight {
+      /* System 7 selects by INVERTING, which is how the reference shows a
+         chosen tool -- a coloured border would be an anachronism in a
+         comp whose whole premise is one bit of colour. */
+      :root[data-theme='system7'] .tool[data-selected='true'] {
+        background: var(--sel-bg);
+        color: var(--sel-ink);
+      }
+
+      :root[data-theme='system7'] .tool[data-selected='true'] .tool-icon {
+        color: var(--sel-ink);
+      }
+
+      /* Stamp: declared, not built. Dimmed so the rail is honest about it
+         without the button moving when it becomes real. */
+      .tool[data-todo='true'] {
+        opacity: 0.45;
+      }
+
+      .tool-icon {
+        width: 20px;
+        height: 20px;
+        display: block;
+        color: var(--ink);
+        pointer-events: none;
+      }
+
+      .tool-name {
+        font-family: var(--font-label);
+        font-size: 8px;
+        letter-spacing: var(--label-spacing);
+        text-transform: var(--label-transform);
+        pointer-events: none;
+      }
+
+      /* --- brush sizes ------------------------------------------------- */
+      #sizes {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .size {
+        width: 30px;
+        height: 30px;
         display: flex;
         align-items: center;
-        gap: 5px;
-        padding: 3px 8px;
-        border-radius: 4px;
-        background: rgba(20, 20, 24, 0.82);
-        opacity: 0.85;
+        justify-content: center;
+        padding: 0;
+        background: var(--chrome-2);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--radius);
+        cursor: pointer;
+      }
+
+      .size:hover:not([data-selected='true']) {
+        border-color: var(--accent);
+      }
+
+      .size[data-selected='true'] {
+        background: var(--sel-bg);
+        border-color: var(--sel-edge);
+      }
+
+      .size span {
+        display: block;
+        border-radius: 50%;
+        background: var(--ink);
+        pointer-events: none;
+      }
+
+      .size[data-selected='true'] span {
+        background: var(--sel-ink);
+      }
+
+      /* --- Strength: a DEV control, and deliberately plain -------------
+         STACKED in the rail. Laid out as a row, the label took the width
+         and crushed the field to a few pixels -- the label is two words
+         and the rail is narrow, so they cannot share a line. */
+      #strength {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 3px;
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid var(--edge-soft);
         cursor: ew-resize;
+        user-select: none;
       }
 
-      #sand-weight span {
-        font-size: 11px;
-        opacity: 0.7;
+      #strength[data-disabled='true'] {
+        opacity: 0.4;
+        cursor: not-allowed;
       }
 
-      #sand-weight input {
-        width: 46px;
-        background: #0e0e12;
-        border: 1px solid #3a3a42;
-        border-radius: 3px;
-        color: #ddd;
+      #strength span {
+        font-family: var(--font-label);
+        font-size: 9px;
+        letter-spacing: var(--label-spacing);
+        text-transform: var(--label-transform);
+        color: var(--ink-dim);
+      }
+
+      #strength input {
+        width: 100%;
+        min-width: 0;
+        background: var(--bg);
+        border: 1px solid var(--edge);
+        border-radius: var(--radius);
+        color: var(--ink);
         font: inherit;
+        font-size: 11px;
         padding: 1px 4px;
         text-align: right;
+        font-variant-numeric: tabular-nums;
       }
 
       /* The spinner arrows would fight the drag gesture. */
-      #sand-weight input::-webkit-inner-spin-button,
-      #sand-weight input::-webkit-outer-spin-button {
+      #strength input::-webkit-inner-spin-button,
+      #strength input::-webkit-outer-spin-button {
         appearance: none;
         margin: 0;
       }
 
-      /* Brush sizes: five buttons with circles from small to large. */
-      #sand-sizes {
+      /* ------------------------------------------------------------------
+         THE SWATCH TRAY
+         ------------------------------------------------------------------ */
+      #tray {
+        grid-area: tray;
+        padding: var(--pad);
         display: flex;
+        flex-direction: column;
         gap: 6px;
-        align-items: center;
-        pointer-events: auto;
+        max-height: 34vh;
       }
 
-      .sand-size {
-        width: 30px;
-        height: 30px;
-        border: 1px solid #444;
-        border-radius: 4px;
-        background: rgba(20, 20, 24, 0.82);
+      #tray-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      #hint {
+        font-size: 11px;
+        color: var(--ink-dim);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #clear {
+        flex: none;
+        background: var(--chrome-2);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--radius);
+        color: var(--ink-dim);
+        font: inherit;
+        font-size: 10px;
+        padding: 2px 8px;
         cursor: pointer;
+      }
+
+      #clear:hover {
+        color: var(--ink);
+        border-color: var(--accent);
+      }
+
+      #swatches {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        overflow-y: auto;
+        min-height: 0;
+      }
+
+      .swatch {
+        width: 92px;
+        height: 30px;
+        flex: none;
         display: flex;
         align-items: center;
-        justify-content: center;
-        padding: 0;
+        gap: 4px;
+        padding: 0 5px;
+        background: var(--chrome-2);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--radius);
+        color: var(--ink);
+        font: inherit;
+        font-size: 10px;
+        cursor: pointer;
+        overflow: hidden;
+        text-align: left;
       }
 
-      .sand-size[data-selected='true'] {
-        border-color: #fff;
+      .swatch:hover:not([data-selected='true']) {
+        border-color: var(--accent);
       }
 
-      .sand-size span {
-        display: block;
-        border-radius: 50%;
-        background: #ccc;
+      /* THE ACTIVE SWATCH. A highlighted border, per the brief -- and in
+         System 7 an inversion as well, since a border alone is not a
+         strong enough signal when every border is already black. */
+      .swatch[data-selected='true'] {
+        background: var(--sel-bg);
+        border-color: var(--sel-edge);
+        color: var(--sel-ink);
+        box-shadow: inset 0 0 0 1px var(--sel-edge);
       }
 
-      #sand-status {
-        position: fixed;
-        top: calc(8px + env(safe-area-inset-top, 0px));
-        left: 10px;
-        pointer-events: none;
+      /* THE MASTER SWATCH. It grounds the world's trail settings, so it is
+         marked -- and it is the one swatch the load menu offers no "None"
+         for. A left edge rule rather than a full border, so "master" and
+         "selected" can both be visible at once. */
+      .swatch[data-master='true'] {
+        border-left-width: 4px;
+        border-left-color: var(--accent);
+      }
+
+      .swatch[data-empty='true'] .swatch-name {
+        color: var(--ink-dim);
+        font-style: italic;
+      }
+
+      .swatch-key {
+        flex: none;
+        font-size: 8px;
+        color: var(--ink-dim);
         font-variant-numeric: tabular-nums;
-        opacity: 0.75;
-        text-shadow: 0 1px 2px #000;
+        min-width: 6px;
       }
 
-      /* The right-click config browser. Hidden until a slot is right-clicked. */
-      #sand-loader {
+      .swatch[data-selected='true'] .swatch-key {
+        color: var(--sel-ink);
+      }
+
+      .swatch-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ------------------------------------------------------------------
+         THE DOCK LAYOUT
+
+         The structural comp. Tools, sizes, Strength and swatches all live
+         in the tray as one horizontal strip; the rail is hidden entirely
+         and the canvas takes the full width. The DOM is unchanged -- only
+         which container the script parents the tool and size groups into,
+         which `sandUi.applyLayout` does.
+         ------------------------------------------------------------------ */
+      :root[data-layout='dock'] #tray {
+        flex-direction: row;
+        align-items: stretch;
+        gap: 10px;
+        max-height: 26vh;
+      }
+
+      :root[data-layout='dock'] #dock-tools {
+        display: flex;
+        gap: 10px;
+        align-items: stretch;
+        flex: none;
+      }
+
+      :root[data-layout='dock'] #tools {
+        grid-template-columns: repeat(5, 40px);
+        align-content: center;
+      }
+
+      :root[data-layout='dock'] .tool {
+        width: 40px;
+      }
+
+      :root[data-layout='dock'] #sizes {
+        flex-wrap: nowrap;
+        align-content: center;
+      }
+
+      :root[data-layout='dock'] #strength {
+        margin-top: 0;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+        justify-content: center;
+      }
+
+      :root[data-layout='dock'] #strength input {
+        width: 64px;
+      }
+
+      :root[data-layout='dock'] #tray-body {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        flex: 1;
+        min-width: 0;
+      }
+
+      /* Two rows that scroll, rather than one row that wraps forever --
+         the dock is short by design, so the swatches have to be dense. */
+      :root[data-layout='dock'] #swatches {
+        align-content: flex-start;
+      }
+
+      :root[data-layout='dock'] .swatch {
+        width: 78px;
+        height: 26px;
+      }
+
+      .dock-divider {
+        display: none;
+      }
+
+      :root[data-layout='dock'] .dock-divider {
+        display: block;
+        width: var(--border);
+        background: var(--edge);
+        flex: none;
+      }
+
+      /* In the rail layout the dock wrapper is transparent -- the rail
+         blocks provide their own chrome. */
+      #dock-tools {
+        display: contents;
+      }
+
+      #tray-body {
+        display: contents;
+      }
+
+      /* ------------------------------------------------------------------
+         THE LOAD MENU -- right-click a swatch. A dev surface; style is
+         deliberately minimal.
+         ------------------------------------------------------------------ */
+      #loader {
         position: fixed;
         inset: 0;
         background: rgba(0, 0, 0, 0.6);
         display: none;
         align-items: center;
         justify-content: center;
-        z-index: 10;
+        z-index: 20;
       }
 
-      #sand-loader[data-open='true'] {
+      #loader[data-open='true'] {
         display: flex;
       }
 
-      .sand-loader-panel {
-        background: #16161a;
-        border: 1px solid #444;
-        border-radius: 6px;
+      .loader-panel {
+        background: var(--chrome);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--radius);
         width: min(520px, 92vw);
         max-height: 72vh;
         overflow: auto;
         padding: 12px 14px;
       }
 
-      .sand-loader-panel h2 {
+      .loader-panel h2 {
         margin: 0 0 8px;
         font-size: 14px;
         font-weight: 600;
       }
 
-      .sand-loader-panel h3 {
+      .loader-panel h3 {
         margin: 10px 0 4px;
-        font-size: 11px;
+        font-size: 10px;
+        font-family: var(--font-label);
+        letter-spacing: var(--label-spacing);
         text-transform: uppercase;
-        letter-spacing: 0.06em;
-        opacity: 0.55;
+        color: var(--ink-dim);
       }
 
-      .sand-entry {
+      .entry {
         display: block;
         width: 100%;
         text-align: left;
         background: none;
         border: 1px solid transparent;
-        border-radius: 3px;
-        color: #ddd;
+        border-radius: var(--radius);
+        color: var(--ink);
         padding: 3px 6px;
         cursor: pointer;
         font: inherit;
       }
 
-      .sand-entry:hover {
-        background: #26262c;
+      .entry:hover {
+        background: var(--chrome-2);
+        border-color: var(--edge);
+      }
+
+      /* "None" -- clears the swatch. Set apart from the configs because it
+         is the only destructive row in the list. */
+      .entry[data-none='true'] {
+        color: var(--ink-dim);
+        font-style: italic;
+        border-bottom: 1px solid var(--edge-soft);
+        border-radius: 0;
+        margin-bottom: 6px;
+        padding-bottom: 6px;
       }
 
       /* Compatible with the master element's world settings -- see
          compatibility.ts. Green means "this will look like it should here". */
-      .sand-entry[data-compatible='true'] {
+      .entry[data-compatible='true'] {
         color: #6ee08a;
       }
 
-      .sand-hint {
+      .loader-hint {
         margin-top: 10px;
-        opacity: 0.5;
+        color: var(--ink-dim);
         font-size: 11px;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+          animation: none !important;
+        }
       }
     </style>
   </head>
   <body>
-    <canvas id="app"></canvas>
-
-    <div id="sand-status"></div>
-
-    <div id="sand-ui">
-      <!-- The hint bar. Says what the armed tool does and offers its one
-           destructive action, matching the studio's bar. -->
-      <div id="sand-hint">
-        <span id="sand-hint-text"></span>
-        <button type="button" id="sand-hint-clear"></button>
+    <div id="shell">
+      <!-- THE TOOL RAIL. Hidden by the dock comp, which re-parents these
+           two blocks into the tray -- see `sandUi.applyLayout`. -->
+      <div id="rail">
+        <div class="panel rail-block" id="rail-tools">
+          <div class="group-label">Tools</div>
+          <div id="tools"></div>
+        </div>
+        <div class="panel rail-block" id="rail-sizes">
+          <div class="group-label">Size</div>
+          <div id="sizes"></div>
+          <!-- Strength is a DEV control being dialled in constantly, so it
+               sits with the size buttons rather than in the panel. Its
+               value is per-tool; the label says which. -->
+          <label id="strength" title="Drag to scrub. Per tool.">
+            <span id="strength-label">Strength</span>
+            <input type="number" id="strength-input" step="0.1" value="1" />
+          </label>
+        </div>
       </div>
-      <div class="sand-row" id="sand-row-0"></div>
-      <div class="sand-row" id="sand-row-1"></div>
-      <div id="sand-tools">
-        <!-- Weight sits LEFT of the size buttons: it is the other half of "how
-             heavy is this brush", and the two read as one control group. -->
-        <label id="sand-weight" title="Drag to change how much a stroke deposits">
-          <span>Weight</span>
-          <input type="number" id="sand-weight-input" step="0.1" value="1" />
-        </label>
-        <div id="sand-sizes"></div>
+
+      <div id="stage">
+        <!-- The overlays anchor to the CANVAS, not the stage: the stage is
+             the free area and is wider than the canvas whenever the window
+             is, so a banner centred on it would sit off-picture. -->
+        <div id="canvas-wrap">
+          <canvas id="app"></canvas>
+          <div id="ic-banner">Editing Initial Conditions</div>
+          <div id="sand-status"></div>
+        </div>
+      </div>
+
+      <div class="panel" id="tray">
+        <!-- The dock comp packs these two wrappers side by side; in the
+             rail layout they are `display: contents` and contribute no box
+             of their own. -->
+        <div id="dock-tools"></div>
+        <div class="dock-divider"></div>
+        <div id="tray-body">
+          <div id="tray-head">
+            <span id="hint"></span>
+            <button type="button" id="clear"></button>
+          </div>
+          <div id="swatches"></div>
+        </div>
       </div>
     </div>
 
-    <div id="sand-loader">
-      <div class="sand-loader-panel">
-        <h2>Load config into slot <span id="sand-loader-slot"></span></h2>
-        <div id="sand-loader-list"></div>
-        <div class="sand-hint">
+    <div id="loader">
+      <div class="loader-panel">
+        <h2>Load into swatch <span id="loader-slot"></span></h2>
+        <div id="loader-list"></div>
+        <div class="loader-hint">
           Green entries are compatible with the master element's trail
           persistence. Esc to cancel.
         </div>

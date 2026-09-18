@@ -43,7 +43,13 @@ import {
   WORLD,
 } from '../ui/settingsSpec.ts';
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
-import { MASTER_SLOT, type Palette } from './palette.ts';
+import {
+  MASTER_SLOT,
+  MIN_VISIBLE_COUNT,
+  type Palette,
+  SLOT_COUNT,
+} from './palette.ts';
+import { type SandTheme, THEMES, themeById } from './theme.ts';
 
 /** Fields a sand world has no use for, and why. */
 const HIDDEN_PREFS: ReadonlySet<string> = new Set([
@@ -71,6 +77,10 @@ export interface SandPrefsCallbacks {
   onSaveConfig(slot: number, name: string): void;
   /** Max Particles was committed. Rebuilds the entity buffer. */
   onMaxParticles(count: number): void;
+  /** A UI comp was chosen from the Dev tab's dropdown. */
+  onTheme(theme: SandTheme): void;
+  /** The swatch-count slider moved. Display only -- see `palette.ts`. */
+  onVisibleCount(count: number): void;
 }
 
 export class SandPrefs {
@@ -89,7 +99,7 @@ export class SandPrefs {
   /** Bumped when a square's contents are replaced, to force a rebuild. */
   private shownGeneration = -1;
 
-  private readonly devValues: Record<string, number>;
+  private readonly devValues: Record<string, number | string>;
   /** The last committed Max Particles, for reverting a bad entry. */
   private committedMaxParticles: number;
 
@@ -97,11 +107,16 @@ export class SandPrefs {
     prefs: Preferences,
     palette: Palette,
     maxParticles: number,
+    initial: { theme: string; visibleCount: number },
     callbacks: SandPrefsCallbacks,
   ) {
     this.committed = prefs;
     this.committedMaxParticles = maxParticles;
-    this.devValues = { maxParticles };
+    this.devValues = {
+      maxParticles,
+      theme: initial.theme,
+      visibleCount: initial.visibleCount,
+    };
     this.palette = palette;
     this.callbacks = callbacks;
     this.prefValues = { ...prefs } as Record<string, unknown>;
@@ -190,6 +205,36 @@ export class SandPrefs {
    * shove strength and draw power as well as spawn density.
    */
   private buildDev(page: TabPageApi): void {
+    // THE UI COMP. Four of them -- see `theme.ts`. Three are a token swap and
+    // one moves the furniture; the dropdown does not distinguish, because from
+    // here they are all just "which front end".
+    const themeBlade = page.addBinding(this.devValues, 'theme', {
+      label: 'UI style',
+      options: Object.fromEntries(THEMES.map((t) => [t.label, t.id])),
+    });
+    themeBlade.element.title = THEMES.map((t) => `${t.label}: ${t.note}`).join('\n');
+    themeBlade.on('change', () => {
+      this.callbacks.onTheme(themeById(String(this.devValues['theme'])));
+    });
+
+    // SWATCH COUNT. A slider, unlike Max Particles, because it is genuinely
+    // free: capacity is a fixed `SLOT_COUNT` and this only changes how many
+    // buttons are DRAWN. Nothing reallocates and no particle is repointed --
+    // see the header of `palette.ts` on why the array itself cannot follow it.
+    const countBlade = page.addBinding(this.devValues, 'visibleCount', {
+      label: 'Swatches',
+      min: MIN_VISIBLE_COUNT,
+      max: SLOT_COUNT,
+      step: 1,
+    });
+    countBlade.element.title =
+      `How many swatch buttons the tray shows, ${MIN_VISIBLE_COUNT}-${SLOT_COUNT}. ` +
+      'Display only: configs in hidden slots keep running and keep their ' +
+      'particles. Lowering this does not delete anything.';
+    countBlade.on('change', () => {
+      this.callbacks.onVisibleCount(Number(this.devValues['visibleCount']));
+    });
+
     // MAX PARTICLES: a typed field, not a slider, for exactly the reason
     // `Preferences.requiresRestart` makes World Size one -- it reallocates every
     // per-entity GPU buffer, so a slider would rebuild the world on every frame

@@ -167,7 +167,7 @@ test('the brush rate multiplier scales the count', () => {
   // otherwise fail on the rounding rather than on the scaling.
   const atOne = b.frame([0, 0], BRUSH_SPAWN, 1, PLENTY)?.count ?? 0;
   b.release();
-  b.weight = 2;
+  b.setStrength('brush', 2);
   const atTwo = b.frame([0, 0], BRUSH_SPAWN, 1, PLENTY)?.count ?? 0;
   assert.ok(atOne > 0);
   // Within one particle: doubling the rate doubles the deposit.
@@ -177,6 +177,45 @@ test('the brush rate multiplier scales the count', () => {
 test('the default rate is 1.0, meaning the tuned SPAWN_RATE', () => {
   assert.equal(new BrushInput().weight, DEFAULT_BRUSH_RATE);
   assert.equal(DEFAULT_BRUSH_RATE, 1.0);
+});
+
+// ---------------------------------------------------------------------------
+// Strength is PER TOOL
+//
+// One number could not be right for more than one tool at a time: the three
+// quantities it multiplies -- spawn rate, draw power, shove gain -- have
+// unrelated natural scales. See `ToolStrengths`.
+// ---------------------------------------------------------------------------
+
+test('each tool keeps its own strength', () => {
+  const b = new BrushInput();
+  b.setStrength('brush', 3);
+  b.setStrength('shove', 0.25);
+
+  b.tool = 'brush';
+  assert.equal(b.weight, 3);
+  b.tool = 'shove';
+  assert.equal(b.weight, 0.25);
+  b.tool = 'walls';
+  assert.equal(b.weight, DEFAULT_BRUSH_RATE, 'untouched tools stay at the default');
+});
+
+test('a nonsense strength is refused rather than stored', () => {
+  const b = new BrushInput();
+  b.tool = 'brush';
+  b.setStrength('brush', 0);
+  b.setStrength('brush', Number.NaN);
+  b.setStrength('brush', -1);
+  // A zero gain is a tool that silently does nothing, and a NaN one propagates
+  // into the spawn count.
+  assert.equal(b.weight, DEFAULT_BRUSH_RATE);
+});
+
+test('restoreStrengths takes a partial map', () => {
+  const b = new BrushInput();
+  b.restoreStrengths({ shove: 4 });
+  assert.equal(b.strengthFor('shove'), 4);
+  assert.equal(b.strengthFor('brush'), DEFAULT_BRUSH_RATE);
 });
 
 test('an exhausted pool still advances the stroke memory', () => {

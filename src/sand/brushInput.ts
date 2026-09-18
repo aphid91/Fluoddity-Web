@@ -20,6 +20,7 @@ import type { Vec2 } from '../particleSystem/coords.ts';
 import type { Stroke } from './sandUniforms.ts';
 import { spawnCountFor } from '../particleSystem/freeList.ts';
 import { uvRadiusToWorld } from '../particleSystem/coords.ts';
+import type { SandTool } from './tool.ts';
 
 /** What a brush does with the button that is down. */
 export const BRUSH_SPAWN = 'spawn';
@@ -46,8 +47,21 @@ export type BrushAction = typeof BRUSH_SPAWN | typeof BRUSH_ERASE;
  * Five discrete buttons rather than a slider. Roughly geometric so each step is
  * a visible change -- a linear ramp would make the top two indistinguishable and
  * the bottom two both tiny.
+ *
+ * ## SCALED DOWN 35% from the values that first shipped
+ *
+ * They were `[0.01, 0.025, 0.05, 0.1, 0.2]` and every one of them painted too
+ * broadly to place anything deliberately -- the smallest still covered a
+ * noticeable patch of the world. The ratio between steps is unchanged, so the
+ * ramp still reads the same; the whole set simply moved down. `SIZE_SCALE` is
+ * named rather than folded into the literals so the original tuning stays
+ * legible and a future re-scale is one number.
  */
-export const BRUSH_SIZES: readonly number[] = [0.01, 0.025, 0.05, 0.1, 0.2];
+const SIZE_SCALE = 0.65;
+
+export const BRUSH_SIZES: readonly number[] = [0.01, 0.025, 0.05, 0.1, 0.2].map(
+  (r) => r * SIZE_SCALE,
+);
 
 /** Default index into `BRUSH_SIZES`. The middle one. */
 export const DEFAULT_BRUSH_SIZE = 2;
@@ -65,10 +79,47 @@ export const DEFAULT_BRUSH_SIZE = 2;
 export const SPAWN_RATE = 240_000;
 
 /**
- * Default Weight. 1.0 means exactly `SPAWN_RATE`, and the studio's own default
+ * Default Strength. 1.0 means exactly `SPAWN_RATE`, and the studio's own default
  * draw power and shove gain.
  */
 export const DEFAULT_BRUSH_RATE = 1.0;
+
+/**
+ * Strength per tool, rather than one number for all of them.
+ *
+ * ## Why this had to be split
+ *
+ * It was a single `weight` multiplying three quantities with three unrelated
+ * natural scales: `SPAWN_RATE` (particles per second), `drawPower` (field ink)
+ * and `SHOVE_GAIN` (an impulse). A value that made the Brush deposit pleasantly
+ * made Shove either imperceptible or violent, so the control had to be re-dialled
+ * on every tool change -- which is not a preference, it is three preferences
+ * wearing one field.
+ *
+ * Erase has an entry for uniformity and nothing reads it: the eraser is a hard
+ * radius kill with no gain term. `usesStrength` is what the UI asks before
+ * enabling the field.
+ */
+export type ToolStrengths = Readonly<Record<SandTool, number>>;
+
+/**
+ * Every tool at the default. The shape a fresh session starts from.
+ *
+ * Written out rather than built from `TOOLS`, because `TOOLS` is the RAIL's
+ * list and `SandTool` is the type's -- `trails` is a real tool that the rail
+ * does not currently show a button for. Deriving from the rail would leave it
+ * undefined and push a `?? DEFAULT` onto every read.
+ */
+export function defaultStrengths(): ToolStrengths {
+  return {
+    brush: DEFAULT_BRUSH_RATE,
+    erase: DEFAULT_BRUSH_RATE,
+    shove: DEFAULT_BRUSH_RATE,
+    walls: DEFAULT_BRUSH_RATE,
+    trails: DEFAULT_BRUSH_RATE,
+    stamp: DEFAULT_BRUSH_RATE,
+  };
+}
 
 /** What the orchestrator should do this frame. */
 export interface BrushCommand {
@@ -85,20 +136,64 @@ export class BrushInput {
   private previous: Vec2 | null = null;
 
   /**
-   * WEIGHT -- how much of itself a stroke deposits, across every tool.
+   * STRENGTH, per tool -- how much of itself a stroke deposits.
    *
-   * One number rather than three, because from the user's side it is one
-   * question: how heavy is this brush? It multiplies
+   * One number PER TOOL rather than one overall: the three things it multiplies
+   * have unrelated natural scales, so a shared value could not be right for more
+   * than one of them at a time. See `ToolStrengths`.
    *
-   *   - `SPAWN_RATE`, so a config square paints denser;
+   *   - `SPAWN_RATE`, so the Brush paints denser;
    *   - `drawPower`, so a Walls or Trails stroke paints stronger;
    *   - `SHOVE_GAIN`, so a shove pushes harder.
    *
-   * DELIBERATELY UNCLAMPED. It is a number-drag beside the size buttons, and the
-   * useful range is not yet known -- clamping now would pick a ceiling by guess
-   * and hide whatever is past it.
+   * DELIBERATELY UNCLAMPED. It is a dev number-drag under the size buttons, and
+   * the useful range is not yet known -- clamping now would pick a ceiling by
+   * guess and hide whatever is past it.
    */
-  weight = DEFAULT_BRUSH_RATE;
+  private strengths: Record<SandTool, number> = defaultStrengths();
+
+  /**
+   * Which tool the left rail has armed.
+   *
+   * Lives here rather than in the palette because it is brush state, not swatch
+   * state -- see `tool.ts` on the split. `spawnCount` and the orchestrator both
+   * read it to decide what a stroke means.
+   */
+  tool: SandTool = 'brush';
+
+  /** The armed tool's Strength. What every gain term multiplies by. */
+  get weight(): number {
+    return this.strengths[this.tool];
+  }
+
+  /** Read one tool's Strength without arming it -- for the session snapshot. */
+  strengthFor(tool: SandTool): number {
+    return this.strengths[tool];
+  }
+
+  /** Every tool's Strength, for the session snapshot. */
+  allStrengths(): ToolStrengths {
+    return { ...this.strengths };
+  }
+
+  /**
+   * Set one tool's Strength.
+   *
+   * Non-finite and non-positive values are refused rather than stored: a zero
+   * gain is a tool that silently does nothing, and a NaN one propagates into
+   * the spawn count and the shove impulse.
+   */
+  setStrength(tool: SandTool, value: number): void {
+    if (!Number.isFinite(value) || value <= 0) return;
+    this.strengths[tool] = value;
+  }
+
+  /** Re-apply strengths restored from a previous session. */
+  restoreStrengths(values: Partial<Record<SandTool, number>>): void {
+    for (const [tool, value] of Object.entries(values)) {
+      if (typeof value === 'number') this.setStrength(tool as SandTool, value);
+    }
+  }
 
   /**
    * The brush radius in UV space -- the studio's `drawSize`.

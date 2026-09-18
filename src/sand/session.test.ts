@@ -13,7 +13,7 @@ import {
   slotDocument,
 } from './session.ts';
 import { TOOL_CONFIG } from './tool.ts';
-import { SLOT_COUNT } from './palette.ts';
+import { MIN_VISIBLE_COUNT, SLOT_COUNT } from './palette.ts';
 import { makeSimulationConfig, makeWorldSettings } from '../particleSystem/config.ts';
 
 const CONFIG = makeSimulationConfig({
@@ -78,38 +78,95 @@ test('a malformed document costs one square, not the palette', () => {
 test('a session round-trips through storage', () => {
   const storage = memory();
   const session: SandSession = {
+    ...EMPTY_SESSION,
     slots: [
-      { tool: TOOL_CONFIG, name: 'Tangle', document: slotDocument(CONFIG, makeWorldSettings()) },
-      { tool: 'walls', name: 'Walls', document: null },
+      { name: 'Tangle', document: slotDocument(CONFIG, makeWorldSettings()) },
+      { name: '', document: null },
     ],
     selected: 5,
-    topRowActive: false,
     brushSize: 4,
-    weight: 2.5,
+    tool: 'shove',
+    strengths: { ...EMPTY_SESSION.strengths, shove: 2.5, walls: 0.4 },
+    visibleCount: 24,
     maxParticles: 50_000,
+    theme: 'blueprint',
   };
 
   saveSession(session, storage);
   const back = loadSession(storage);
 
   assert.equal(back.selected, 5);
-  assert.equal(back.topRowActive, false);
   assert.equal(back.brushSize, 4);
-  assert.equal(back.weight, 2.5);
+  assert.equal(back.tool, 'shove');
+  assert.equal(back.strengths.shove, 2.5);
+  assert.equal(back.strengths.walls, 0.4);
+  assert.equal(back.visibleCount, 24);
   assert.equal(back.maxParticles, 50_000);
-  assert.equal(back.slots[1]?.tool, 'walls');
+  assert.equal(back.theme, 'blueprint');
   assert.ok(readSlotDocument(back.slots[0]?.document));
 });
 
-test('a tool square round-trips without a config', () => {
-  const storage = memory();
-  saveSession(
-    { ...EMPTY_SESSION, slots: [{ tool: 'shove', name: 'Shove', document: null }] },
-    storage,
+// ---------------------------------------------------------------------------
+// Migration off the pre-rail model
+// ---------------------------------------------------------------------------
+
+test('a square that used to hold a field tool comes back EMPTY', () => {
+  // Before the tool rail, a square could BE Shove or Walls. There is nothing to
+  // convert that into: the verb now lives in the rail and the swatch is a noun
+  // slot with no noun in it. Keeping it would resurrect the two-selectors-armed
+  // ambiguity the split exists to remove.
+  const parsed = parseSession(
+    JSON.stringify({ slots: [{ tool: 'walls', name: 'Walls', document: null }] }),
   );
-  const back = loadSession(storage);
-  assert.equal(back.slots[0]?.tool, 'shove');
-  assert.equal(back.slots[0]?.document, null);
+  assert.equal(parsed.slots[0]?.name, '', 'the tool name would be a lie on an empty swatch');
+  assert.equal(parsed.slots[0]?.document, null);
+});
+
+test('a config square survives the migration untouched', () => {
+  const doc = slotDocument(CONFIG, makeWorldSettings());
+  const parsed = parseSession(
+    JSON.stringify({ slots: [{ tool: TOOL_CONFIG, name: 'Tangle', document: doc }] }),
+  );
+  assert.equal(parsed.slots[0]?.name, 'Tangle');
+  assert.ok(readSlotDocument(parsed.slots[0]?.document));
+});
+
+test('the pre-split single weight becomes the BRUSH strength', () => {
+  // The old number was tuned against whatever tool was last touched, and Brush
+  // is both the likeliest and the only one where a wrong guess is immediately
+  // visible rather than subtly off.
+  const parsed = parseSession(JSON.stringify({ weight: 3.5 }));
+  assert.equal(parsed.strengths.brush, 3.5);
+  assert.equal(parsed.strengths.shove, EMPTY_SESSION.strengths.shove, 'others default');
+});
+
+test('an explicit strengths block wins over the legacy weight', () => {
+  const parsed = parseSession(
+    JSON.stringify({ weight: 3.5, strengths: { brush: 1.25, shove: 8 } }),
+  );
+  assert.equal(parsed.strengths.brush, 1.25);
+  assert.equal(parsed.strengths.shove, 8);
+});
+
+test('a nonsense strength is refused rather than stored', () => {
+  // A zero gain is a tool that silently does nothing; a NaN one propagates into
+  // the spawn count and the shove impulse.
+  const parsed = parseSession(
+    JSON.stringify({ strengths: { brush: 0, shove: null, walls: 'heavy' } }),
+  );
+  assert.equal(parsed.strengths.brush, EMPTY_SESSION.strengths.brush);
+  assert.equal(parsed.strengths.shove, EMPTY_SESSION.strengths.shove);
+  assert.equal(parsed.strengths.walls, EMPTY_SESSION.strengths.walls);
+});
+
+test('an unknown tool degrades to the default rather than arming nothing', () => {
+  assert.equal(parseSession(JSON.stringify({ tool: 'teleport' })).tool, EMPTY_SESSION.tool);
+  assert.equal(parseSession(JSON.stringify({ tool: 'shove' })).tool, 'shove');
+});
+
+test('the visible count is clamped on the way in', () => {
+  assert.equal(parseSession(JSON.stringify({ visibleCount: 999 })).visibleCount, SLOT_COUNT);
+  assert.equal(parseSession(JSON.stringify({ visibleCount: 0 })).visibleCount, MIN_VISIBLE_COUNT);
 });
 
 // ---------------------------------------------------------------------------
@@ -128,17 +185,17 @@ test('unparseable JSON falls back rather than throwing', () => {
 
 test('unknown keys are ignored and missing ones defaulted', () => {
   // A downgrade must not break on a field a newer build wrote.
-  const parsed = parseSession(JSON.stringify({ somethingNew: 1, weight: 3 }));
-  assert.equal(parsed.weight, 3);
-  assert.equal(parsed.brushSize, EMPTY_SESSION.brushSize);
+  const parsed = parseSession(JSON.stringify({ somethingNew: 1, brushSize: 3 }));
+  assert.equal(parsed.brushSize, 3);
+  assert.equal(parsed.tool, EMPTY_SESSION.tool);
   assert.deepEqual(parsed.slots, []);
 });
 
 test('non-finite numbers are rejected, not stored', () => {
   // A NaN brush size is not a visible mistake -- it is a control that silently
   // stops working.
-  const parsed = parseSession(JSON.stringify({ weight: null, brushSize: 'x' }));
-  assert.equal(parsed.weight, EMPTY_SESSION.weight);
+  const parsed = parseSession(JSON.stringify({ visibleCount: null, brushSize: 'x' }));
+  assert.equal(parsed.visibleCount, EMPTY_SESSION.visibleCount);
   assert.equal(parsed.brushSize, EMPTY_SESSION.brushSize);
 });
 
@@ -154,13 +211,6 @@ test('more stored slots than the palette holds are truncated', () => {
     document: null,
   }));
   assert.equal(parseSession(JSON.stringify({ slots })).slots.length, SLOT_COUNT);
-});
-
-test('an unknown tool name degrades to a config square', () => {
-  const parsed = parseSession(
-    JSON.stringify({ slots: [{ tool: 'teleport', name: 'x', document: null }] }),
-  );
-  assert.equal(parsed.slots[0]?.tool, TOOL_CONFIG);
 });
 
 test('a storage that throws does not take the app down', () => {

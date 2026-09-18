@@ -1,110 +1,203 @@
 /**
- * The palette bar, the brush-size buttons and the config browser.
+ * The MacPaint-style shell: a tool rail, a swatch tray and the load menu.
  *
- * Plain DOM rather than Tweakpane. The studio's panel is a registry-driven wall
- * of sliders and Tweakpane is exactly right for that; this is twenty squares and
- * five buttons that want to look like a game's hotbar, which is a job for a few
- * divs and a stylesheet. The PREFERENCES window is the opposite case and does
- * use the shared registry -- see `sandPrefs.ts`.
+ * Plain DOM rather than Tweakpane, for the reason it always was: the studio's
+ * panel is a registry-driven wall of sliders and Tweakpane is exactly right for
+ * that, while this is a dozen buttons that want to look like a paint program.
+ * The PREFERENCES window is the opposite case and does use the shared registry
+ * -- see `sandPrefs.ts`.
  *
- * ## The row swap
+ * ## What this file owns, and what the stylesheet owns
  *
- * `X` changes which row the number keys address. Nothing moves in storage (see
- * `palette.ts`), so rendering is a straight map over the flat array and the
- * green master highlight lands on whichever square holds slot 0 -- which is what
- * makes it follow the element rather than the position.
+ * Every comp is one block of custom properties in `sand.html`; this file sets
+ * `data-theme` and `data-layout` on `<html>` and otherwise knows nothing about
+ * how any of them look. The single exception is `applyLayout`, which RE-PARENTS
+ * the tool and size groups for the dock comp -- that is a structural difference
+ * CSS cannot express, since the two arrangements need the groups inside
+ * different containers.
+ *
+ * ## The canvas is fitted here
+ *
+ * `fitCanvas` sizes `#app` to the largest box of the simulation's aspect that
+ * fits the stage cell. In pixels, by script, rather than with `aspect-ratio`:
+ * the surface's `ResizeObserver` drives the WebGPU backing store off the
+ * element's real box, so the element has to settle at an exact size rather than
+ * at whatever a percentage resolves to part-way through layout.
  */
 
 import type { ConfigEntry, ConfigStore } from '../config/configStore.ts';
 import type { WorldSettings } from '../particleSystem/config.ts';
 import { BRUSH_SIZES } from './brushInput.ts';
 import { isCompatible } from './compatibility.ts';
-import { MASTER_SLOT, ROW_SIZE, type Palette, positionOf, rowOf } from './palette.ts';
-import { FIELD_TOOLS, type SandTool, TOOL_CONFIG, TOOL_LABELS } from './tool.ts';
+import { MASTER_SLOT, type Palette, keyLabel } from './palette.ts';
+import {
+  type SandTool,
+  TOOLS,
+  TOOL_LABELS,
+  clearTargetFor,
+  isImplemented,
+  usesStrength,
+  usesSwatch,
+} from './tool.ts';
+import { LAYOUT_DOCK, type SandTheme, themeById } from './theme.ts';
 // The studio's own tool descriptions, so the two apps cannot describe the same
 // tool differently.
 import { TOOL_HELP } from '../ui/menuHelp.ts';
 
-/** The digit printed on a square, Factorio-style: 1-9 then 0. */
-function keyLabel(slot: number): string {
-  const pos = positionOf(slot);
-  return pos === ROW_SIZE - 1 ? '0' : String(pos + 1);
-}
-
-export interface SandUiCallbacks {
-  /** A square was left-clicked or selected by key. */
-  onSelect(slot: number): void;
-  /** A config was chosen for a slot in the browser. */
-  onLoad(slot: number, entry: ConfigEntry): void;
-  /** A field tool was chosen for a slot in the browser. */
-  onLoadTool(slot: number, tool: SandTool): void;
-  /** A brush-size button was pressed. */
-  onBrushSize(index: number): void;
-  /** The Weight number-drag moved. */
-  onWeight(weight: number): void;
-  /** The hint bar's Clear button, for whatever the armed tool clears. */
-  onClear(what: 'walls' | 'trails' | 'particles'): void;
-}
-
 /**
- * What the hint bar's Clear button wipes for each tool, and what it says.
+ * What the tray's Clear button wipes for each target, and what it says.
  *
  * The wall/trail wording matches the studio's `CLEAR_FIELD_LABELS` -- these are
  * the same acts on the same textures, so they should read identically in both
- * apps. Shove clears nothing: it leaves nothing behind, which is the whole
- * difference between it and the painting tools.
+ * apps.
  */
 const CLEAR_LABELS: Readonly<Record<string, string>> = {
-  walls: "Clear all barriers (Can't undo)",
-  trails: "Clear all trails (Can't undo)",
-  particles: "Clear all particles (Can't undo)",
+  walls: "Clear barriers (Can't undo)",
+  trails: "Clear trails (Can't undo)",
+  particles: "Clear particles (Can't undo)",
 };
+
+/**
+ * One line per tool, for the hint.
+ *
+ * The three field tools defer to the studio's `TOOL_HELP` so the two apps cannot
+ * disagree. Brush, Erase and Stamp have no studio counterpart and are described
+ * here.
+ */
+function hintFor(tool: SandTool, swatchName: string, loaded: boolean): string {
+  switch (tool) {
+    case 'brush':
+      return loaded
+        ? `Paint [${swatchName}]  ·  right-drag erases`
+        : 'This swatch is empty — right-click a swatch to load a config into it';
+    case 'erase':
+      return 'Rub out particles  ·  right-drag paints the selected swatch';
+    case 'stamp':
+      return 'Stamp is not built yet';
+    case 'shove':
+      return `${TOOL_HELP.shove}  ·  right-drag pulls`;
+    default:
+      return `${TOOL_HELP[tool]}  ·  right to erase  ·  Shift for line tool`;
+  }
+}
+
+/**
+ * Tool glyphs, as inline SVG paths on a 24-box.
+ *
+ * Drawn rather than lettered because the rail is the one place in either app
+ * where a shape is faster to read than a word -- and `currentColor` throughout
+ * so a comp that inverts the selected button inverts the icon with it.
+ */
+const TOOL_ICONS: Readonly<Record<SandTool, string>> = {
+  // A brush: ferrule and bristles, angled the way a held brush sits.
+  brush: '<path d="M17 3l4 4-9 9-4-4z"/><path d="M8 12l4 4-2 3a4 4 0 01-5 1 4 4 0 001-5z"/>',
+  // An eraser block on its edge.
+  erase: '<path d="M4 16l8-8a2 2 0 013 0l4 4a2 2 0 010 3l-5 5H7z"/><path d="M9 21h12"/>',
+  // Two arrows pushing outward -- the displacement the tool actually does.
+  shove: '<path d="M12 4v16"/><path d="M8 8l4-4 4 4"/><path d="M8 16l4 4 4-4"/><path d="M3 12h4"/><path d="M17 12h4"/>',
+  // A brick course.
+  walls: '<path d="M3 6h18v12H3z"/><path d="M3 12h18"/><path d="M9 6v6"/><path d="M15 12v6"/>',
+  // A trail: the smear a particle leaves.
+  trails: '<path d="M3 17c4-8 14 2 18-6"/>',
+  // A stamp block with its handle.
+  stamp: '<path d="M8 3h8v5l2 4H6l2-4z"/><path d="M5 16h14v5H5z"/>',
+};
+
+export interface SandUiCallbacks {
+  /** A swatch was left-clicked or selected by key. */
+  onSelect(slot: number): void;
+  /** A tool was chosen in the rail. */
+  onTool(tool: SandTool): void;
+  /** A config was chosen for a swatch in the load menu. */
+  onLoad(slot: number, entry: ConfigEntry): void;
+  /** "None" was chosen: empty this swatch. */
+  onClearSlot(slot: number): void;
+  /** A brush-size button was pressed. */
+  onBrushSize(index: number): void;
+  /** The Strength number-drag moved, for the tool it belongs to. */
+  onStrength(tool: SandTool, value: number): void;
+  /** The tray's Clear button, for whatever the armed tool clears. */
+  onClear(what: 'walls' | 'trails' | 'particles'): void;
+}
 
 export class SandUi {
   private readonly palette: Palette;
   private readonly store: ConfigStore;
   private readonly callbacks: SandUiCallbacks;
 
-  private readonly rows: readonly HTMLElement[];
+  private readonly root: HTMLElement;
+  private readonly canvas: HTMLCanvasElement;
+  private readonly stageEl: HTMLElement;
+  private readonly toolsEl: HTMLElement;
   private readonly sizesEl: HTMLElement;
+  private readonly swatchesEl: HTMLElement;
   private readonly statusEl: HTMLElement;
+  private readonly bannerEl: HTMLElement;
+  private readonly hintEl: HTMLElement;
+  private readonly clearButton: HTMLButtonElement;
+  private readonly strengthEl: HTMLElement;
+  private readonly strengthLabel: HTMLElement;
+  private readonly strengthInput: HTMLInputElement;
   private readonly loaderEl: HTMLElement;
   private readonly loaderSlotEl: HTMLElement;
   private readonly loaderListEl: HTMLElement;
-  private readonly hintText: HTMLElement;
-  private readonly clearButton: HTMLButtonElement;
-  private readonly weightInput: HTMLInputElement;
 
-  /** What the hint bar's Clear button wipes, or null when it is hidden. */
+  /** The rail blocks, kept so the dock comp can re-parent them. */
+  private readonly toolsBlock: HTMLElement;
+  private readonly sizesBlock: HTMLElement;
+  private readonly railEl: HTMLElement;
+  private readonly dockToolsEl: HTMLElement;
+
+  /** What the tray's Clear button wipes, or null when it is hidden. */
   private clearTarget: 'walls' | 'trails' | 'particles' | null = null;
 
-  /** Which slot the open browser is filling, or null when it is closed. */
+  /** Which swatch the open menu is filling, or null when it is closed. */
   private loadingInto: number | null = null;
+
+  /** The armed tool. Mirrored from the brush so the rail can render it. */
+  private tool: SandTool = 'brush';
+
+  /** The simulation's aspect (w/h), for fitting the canvas. */
+  private canvasAspect = 1;
+
+  /** How many swatch buttons exist right now, so `refresh` can notice a change. */
+  private builtCount = -1;
 
   constructor(palette: Palette, store: ConfigStore, callbacks: SandUiCallbacks) {
     this.palette = palette;
     this.store = store;
     this.callbacks = callbacks;
 
-    const byId = (id: string): HTMLElement => {
+    const byId = <T extends HTMLElement>(id: string): T => {
       const el = document.getElementById(id);
       if (el === null) throw new Error(`sand.html is missing #${id}`);
-      return el;
+      return el as T;
     };
 
-    this.rows = [byId('sand-row-0'), byId('sand-row-1')];
-    this.sizesEl = byId('sand-sizes');
+    this.root = document.documentElement;
+    this.canvas = byId<HTMLCanvasElement>('app');
+    this.stageEl = byId('stage');
+    this.toolsEl = byId('tools');
+    this.sizesEl = byId('sizes');
+    this.swatchesEl = byId('swatches');
     this.statusEl = byId('sand-status');
-    this.loaderEl = byId('sand-loader');
-    this.loaderSlotEl = byId('sand-loader-slot');
-    this.loaderListEl = byId('sand-loader-list');
-    this.hintText = byId('sand-hint-text');
-    this.clearButton = byId('sand-hint-clear') as HTMLButtonElement;
-    this.weightInput = byId('sand-weight-input') as HTMLInputElement;
+    this.bannerEl = byId('ic-banner');
+    this.hintEl = byId('hint');
+    this.clearButton = byId<HTMLButtonElement>('clear');
+    this.strengthEl = byId('strength');
+    this.strengthLabel = byId('strength-label');
+    this.strengthInput = byId<HTMLInputElement>('strength-input');
+    this.loaderEl = byId('loader');
+    this.loaderSlotEl = byId('loader-slot');
+    this.loaderListEl = byId('loader-list');
+    this.toolsBlock = byId('rail-tools');
+    this.sizesBlock = byId('rail-sizes');
+    this.railEl = byId('rail');
+    this.dockToolsEl = byId('dock-tools');
 
-    this.buildSlots();
+    this.buildTools();
     this.buildSizes();
-    this.buildWeight();
+    this.buildStrength();
 
     this.clearButton.addEventListener('click', () => {
       if (this.clearTarget !== null) this.callbacks.onClear(this.clearTarget);
@@ -115,56 +208,139 @@ export class SandUi {
     this.loaderEl.addEventListener('click', (e) => {
       if (e.target === this.loaderEl) this.closeLoader();
     });
+
+    // The stage's size is what the canvas is fitted into, and it changes on
+    // window resize AND whenever the tray wraps to a different height.
+    new ResizeObserver(() => this.fitCanvas()).observe(this.stageEl);
   }
 
   get loaderOpen(): boolean {
     return this.loadingInto !== null;
   }
 
-  private buildSlots(): void {
-    for (const row of this.rows) row.replaceChildren();
+  // -------------------------------------------------------------------------
+  // Layout and comps
+  // -------------------------------------------------------------------------
 
-    for (let slot = 0; slot < ROW_SIZE * this.rows.length; slot++) {
-      const button = document.createElement('button');
-      button.className = 'sand-slot';
-      button.dataset['slot'] = String(slot);
+  /**
+   * Fit the canvas to the stage at the simulation's aspect.
+   *
+   * THE CROP THE BRIEF ASKS FOR. The element ends up exactly the size of the
+   * trail texture's shape, so nothing of the canvas extends under the rail or
+   * the tray -- the grid already reserves those, and this fills what is left
+   * without overflowing it.
+   *
+   * `border-box` sizing means the 1-2px frame is inside these numbers, so the
+   * element never exceeds the cell and the grid never scrolls.
+   */
+  fitCanvas(): void {
+    const availW = this.stageEl.clientWidth;
+    const availH = this.stageEl.clientHeight;
+    if (availW <= 0 || availH <= 0) return;
 
-      const key = document.createElement('span');
-      key.className = 'sand-key';
-      key.textContent = keyLabel(slot);
-      const name = document.createElement('span');
-      name.className = 'sand-name';
-      button.append(key, name);
+    const byWidth = availW / this.canvasAspect <= availH;
+    const w = byWidth ? availW : availH * this.canvasAspect;
+    const h = byWidth ? availW / this.canvasAspect : availH;
 
-      button.addEventListener('click', () => this.callbacks.onSelect(slot));
-      // Right-click opens the browser for THIS square -- requirement 4's
-      // Factorio-style "set what this button paints".
-      button.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        this.openLoader(slot);
-      });
+    this.canvas.style.width = `${Math.max(1, Math.floor(w))}px`;
+    this.canvas.style.height = `${Math.max(1, Math.floor(h))}px`;
+  }
 
-      this.rows[rowOf(slot)]?.append(button);
+  /** Tell the shell what shape the simulation is, and refit. */
+  setCanvasAspect(aspect: number): void {
+    if (!Number.isFinite(aspect) || aspect <= 0) return;
+    this.canvasAspect = aspect;
+    this.fitCanvas();
+  }
+
+  /**
+   * Switch comps.
+   *
+   * Three of the four are a pure attribute swap. The dock comp additionally
+   * needs the tool and size groups INSIDE the tray rather than in the rail,
+   * which is a parent change no stylesheet can make -- so it is done here, and
+   * the blocks move back when a rail comp is chosen.
+   */
+  applyTheme(theme: SandTheme): void {
+    this.root.dataset['theme'] = theme.id;
+    this.root.dataset['layout'] = theme.layout;
+    this.applyLayout(theme);
+    // The tray's height changes with the arrangement, so the stage does too.
+    this.fitCanvas();
+  }
+
+  private applyLayout(theme: SandTheme): void {
+    if (theme.layout === LAYOUT_DOCK) {
+      this.dockToolsEl.append(this.toolsBlock, this.sizesBlock);
+    } else {
+      this.railEl.prepend(this.toolsBlock, this.sizesBlock);
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Building
+  // -------------------------------------------------------------------------
+
+  private buildTools(): void {
+    this.toolsEl.replaceChildren();
+
+    for (const tool of TOOLS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'tool';
+      button.dataset['tool'] = tool;
+      button.title = hintFor(tool, '', true);
+      if (!isImplemented(tool)) button.dataset['todo'] = 'true';
+
+      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      icon.setAttribute('viewBox', '0 0 24 24');
+      icon.setAttribute('fill', 'none');
+      icon.setAttribute('stroke', 'currentColor');
+      icon.setAttribute('stroke-width', '1.6');
+      icon.setAttribute('stroke-linecap', 'round');
+      icon.setAttribute('stroke-linejoin', 'round');
+      icon.setAttribute('aria-hidden', 'true');
+      icon.classList.add('tool-icon');
+      icon.innerHTML = TOOL_ICONS[tool];
+
+      const name = document.createElement('span');
+      name.className = 'tool-name';
+      name.textContent = TOOL_LABELS[tool];
+
+      button.append(icon, name);
+      button.addEventListener('click', () => this.callbacks.onTool(tool));
+      this.toolsEl.append(button);
+    }
+  }
+
+  /**
+   * The five size buttons.
+   *
+   * ## The dots span a much wider range than they used to
+   *
+   * They were `6 + 16 * sqrt(r / largest)` -- 6.5px to 22px, a ramp so gentle
+   * that the top three were hard to tell apart at a glance. The brief asked for
+   * more variance, so the floor drops to 3px and the ceiling rises to 26px.
+   *
+   * Still sqrt rather than linear: the radii span a factor of twenty, so a
+   * linear map would put the smallest at a single pixel against the largest.
+   * What changed is the RANGE the curve is fitted into, not the curve.
+   */
   private buildSizes(): void {
     this.sizesEl.replaceChildren();
     const largest = BRUSH_SIZES[BRUSH_SIZES.length - 1] ?? 1;
 
     BRUSH_SIZES.forEach((radius, index) => {
       const button = document.createElement('button');
-      button.className = 'sand-size';
+      button.type = 'button';
+      button.className = 'size';
       button.dataset['size'] = String(index);
       button.title = `Brush size ${index + 1}`;
 
-      // The dot's diameter tracks the brush's, so the buttons read as a ramp.
-      // sqrt, not linear: the smallest brush would otherwise be a single pixel
-      // against the largest, since the radii span a factor of twenty.
       const dot = document.createElement('span');
-      const px = 6 + 16 * Math.sqrt(radius / largest);
-      dot.style.width = `${px}px`;
-      dot.style.height = `${px}px`;
+      const px = 3 + 23 * Math.sqrt(radius / largest);
+      dot.style.width = `${px.toFixed(1)}px`;
+      dot.style.height = `${px.toFixed(1)}px`;
       button.append(dot);
 
       button.addEventListener('click', () => this.callbacks.onBrushSize(index));
@@ -173,25 +349,29 @@ export class SandUi {
   }
 
   /**
-   * The Weight number-drag.
+   * The Strength number-drag.
    *
    * A horizontal drag on the label scrubs the value, and the field can still be
    * typed into -- the same affordance Tweakpane's number inputs offer, built by
-   * hand because this control lives in the palette bar rather than in a pane.
+   * hand because this control lives in the rail rather than in a pane.
    *
-   * MULTIPLICATIVE, not additive: weight is a gain, so a fixed step per pixel
+   * MULTIPLICATIVE, not additive: Strength is a gain, so a fixed step per pixel
    * would crawl at 8 and overshoot at 0.1. Scaling keeps the feel even across
    * the range, which matters more here because the value is unclamped.
+   *
+   * IT WRITES TO WHICHEVER TOOL IS ARMED. That is the whole point of the split
+   * -- see `brushInput.ToolStrengths`.
    */
-  private buildWeight(): void {
-    const input = this.weightInput;
+  private buildStrength(): void {
+    const input = this.strengthInput;
 
     const commit = (value: number): void => {
       if (!Number.isFinite(value) || value <= 0) return;
+      if (!usesStrength(this.tool)) return;
       // Trailing zeros removed, so a scrub reads as a number rather than as
       // fifteen decimal places of float noise.
       input.value = String(Number(value.toFixed(3)));
-      this.callbacks.onWeight(value);
+      this.callbacks.onStrength(this.tool, value);
     };
 
     input.addEventListener('change', () => commit(Number(input.value)));
@@ -200,17 +380,18 @@ export class SandUi {
     let startX = 0;
     let startValue = 1;
 
-    const label = input.parentElement;
-    label?.addEventListener('pointerdown', (e) => {
+    const label = this.strengthEl;
+    label.addEventListener('pointerdown', (e) => {
       // Let a click INTO the field place the caret rather than starting a drag.
       if (e.target === input) return;
+      if (!usesStrength(this.tool)) return;
       e.preventDefault();
       dragging = true;
       startX = e.clientX;
       startValue = Number(input.value) || 1;
       label.setPointerCapture(e.pointerId);
     });
-    label?.addEventListener('pointermove', (e) => {
+    label.addEventListener('pointermove', (e) => {
       if (!dragging) return;
       // 1% per pixel, so a 100px drag roughly e-folds the value.
       commit(startValue * Math.exp((e.clientX - startX) * 0.01));
@@ -218,82 +399,137 @@ export class SandUi {
     const end = (): void => {
       dragging = false;
     };
-    label?.addEventListener('pointerup', end);
-    label?.addEventListener('pointercancel', end);
+    label.addEventListener('pointerup', end);
+    label.addEventListener('pointercancel', end);
   }
 
   /**
-   * Update the hint bar for the armed tool.
+   * Rebuild the swatch buttons.
    *
-   * Reuses the studio's `TOOL_HELP` for the three field tools, so the two apps
-   * cannot describe the same tool differently. The config case has its own line
-   * because no studio tool corresponds to it.
+   * Only when the count actually changed -- the dev slider is the one thing that
+   * moves it, and rebuilding per frame would drop the right-click menu mid-open.
    */
-  private refreshHint(): void {
-    const slot = this.palette.at(this.palette.selected);
+  private buildSwatches(count: number): void {
+    this.swatchesEl.replaceChildren();
+    this.builtCount = count;
 
-    if (slot.tool === TOOL_CONFIG) {
-      if (slot.config === null) {
-        this.hintText.textContent =
-          'Empty square — right-click it to load a config, or pick a tool';
-        this.clearTarget = 'particles';
-      } else {
-        this.hintText.textContent =
-          `Left click to paint [${slot.name}]  |  Right click to erase particles`;
-        this.clearTarget = 'particles';
-      }
-    } else if (slot.tool === 'shove') {
-      this.hintText.textContent = TOOL_HELP.shove;
-      // Shove leaves nothing behind, so there is nothing to clear.
-      this.clearTarget = null;
-    } else {
-      const noun = slot.tool === 'walls' ? 'barriers' : 'trails';
-      this.hintText.textContent =
-        `${TOOL_HELP[slot.tool]}  |  Left to draw, right to erase  |  ` +
-        `Shift for line tool`;
-      this.clearTarget = slot.tool;
-      void noun;
+    for (let slot = 0; slot < count; slot++) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'swatch';
+      button.dataset['slot'] = String(slot);
+
+      const key = document.createElement('span');
+      key.className = 'swatch-key';
+      key.textContent = keyLabel(slot);
+      const name = document.createElement('span');
+      name.className = 'swatch-name';
+      button.append(key, name);
+
+      button.addEventListener('click', () => this.callbacks.onSelect(slot));
+      // Right-click opens the menu for THIS swatch -- the Factorio-style "set
+      // what this button paints", minus the tools, which moved to the rail.
+      button.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        this.openLoader(slot);
+      });
+
+      this.swatchesEl.append(button);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Per-frame refresh
+  // -------------------------------------------------------------------------
+
+  /** Repaint selection, names, the hint and the banner. Cheap; called per frame. */
+  refresh(state: {
+    tool: SandTool;
+    brushSize: number;
+    strength: number;
+    editingInitialConditions: boolean;
+  }): void {
+    this.tool = state.tool;
+
+    if (this.palette.visibleCount !== this.builtCount) {
+      this.buildSwatches(this.palette.visibleCount);
     }
 
+    const selected = this.palette.at(this.palette.selected);
+    const loaded = selected.config !== null;
+
+    // --- the rail ---------------------------------------------------------
+    for (const el of this.toolsEl.children) {
+      if (!(el instanceof HTMLElement)) continue;
+      el.dataset['selected'] = String(el.dataset['tool'] === state.tool);
+    }
+
+    for (const el of this.sizesEl.children) {
+      if (!(el instanceof HTMLElement)) continue;
+      el.dataset['selected'] = String(Number(el.dataset['size']) === state.brushSize);
+    }
+
+    // --- Strength, which belongs to the armed tool ------------------------
+    const enabled = usesStrength(state.tool);
+    this.strengthEl.dataset['disabled'] = String(!enabled);
+    this.strengthInput.disabled = !enabled;
+    this.strengthLabel.textContent = enabled
+      ? `${TOOL_LABELS[state.tool]} strength`
+      : 'Strength (n/a)';
+    this.strengthEl.title = enabled
+      ? `Drag to scrub ${TOOL_LABELS[state.tool]}'s strength. Each tool keeps its own.`
+      : 'Erase is a hard-radius kill — there is no strength to set.';
+    // Not while the field has focus: rewriting it mid-edit would fight the
+    // caret and discard a half-typed number.
+    if (document.activeElement !== this.strengthInput) {
+      this.strengthInput.value = String(Number(state.strength.toFixed(3)));
+    }
+
+    // --- the hint and its Clear button ------------------------------------
+    this.hintEl.textContent = hintFor(state.tool, selected.name, loaded);
+    this.clearTarget = clearTargetFor(state.tool);
     if (this.clearTarget === null) {
       this.clearButton.style.display = 'none';
     } else {
       this.clearButton.style.display = '';
       this.clearButton.textContent = CLEAR_LABELS[this.clearTarget] ?? 'Clear';
     }
-  }
 
-  /** Repaint selection, names and the master highlight. Cheap; called per frame. */
-  refresh(brushSize: number): void {
-    this.refreshHint();
-    this.rows.forEach((row, index) => {
-      // Which row the NUMBER KEYS address. The squares never move.
-      row.dataset['active'] = String((index === 0) === this.palette.topRowActive);
-    });
-
-    for (const el of this.rows.flatMap((r) => [...r.children])) {
+    // --- the swatches -----------------------------------------------------
+    for (const el of this.swatchesEl.children) {
       if (!(el instanceof HTMLElement)) continue;
       const slot = Number(el.dataset['slot']);
       const entry = this.palette.at(slot);
       el.dataset['selected'] = String(slot === this.palette.selected);
       el.dataset['master'] = String(slot === MASTER_SLOT);
-      const name = el.querySelector('.sand-name');
-      if (name !== null) name.textContent = entry.name;
-      el.title = entry.name === '' ? 'Empty — right-click to load' : entry.name;
+      el.dataset['empty'] = String(entry.config === null);
+      const name = el.querySelector('.swatch-name');
+      if (name !== null) name.textContent = entry.name === '' ? 'empty' : entry.name;
+      el.title =
+        entry.name === ''
+          ? 'Empty — right-click to load a config'
+          : `${entry.name}${slot === MASTER_SLOT ? ' (master — grounds the world settings)' : ''}`;
     }
 
-    for (const el of this.sizesEl.children) {
-      if (!(el instanceof HTMLElement)) continue;
-      el.dataset['selected'] = String(Number(el.dataset['size']) === brushSize);
-    }
+    // --- editing the initial conditions ------------------------------------
+    this.canvas.dataset['editing'] = String(state.editingInitialConditions);
+    this.bannerEl.dataset['visible'] = String(state.editingInitialConditions);
+
+    // Only Brush reads the swatch, so dim the tray for the tools that do not --
+    // it is the cheapest way to say "this selection is not in play right now".
+    this.swatchesEl.style.opacity = usesSwatch(state.tool) ? '1' : '0.55';
   }
 
   setStatus(text: string): void {
     this.statusEl.textContent = text;
   }
 
+  // -------------------------------------------------------------------------
+  // The load menu
+  // -------------------------------------------------------------------------
+
   /**
-   * Open the config browser for a slot.
+   * Open the config menu for a swatch.
    *
    * Entries compatible with the MASTER element's world settings are marked
    * green. Reading every config to test it would mean fetching the whole
@@ -302,7 +538,9 @@ export class SandUi {
    */
   openLoader(slot: number): void {
     this.loadingInto = slot;
-    this.loaderSlotEl.textContent = keyLabel(slot) + (slot === MASTER_SLOT ? ' (master)' : '');
+    const label = keyLabel(slot);
+    this.loaderSlotEl.textContent =
+      (label === '' ? `#${slot + 1}` : label) + (slot === MASTER_SLOT ? ' (master)' : '');
     this.loaderEl.dataset['open'] = 'true';
     void this.fillLoader(slot);
   }
@@ -315,22 +553,24 @@ export class SandUi {
   private async fillLoader(slot: number): Promise<void> {
     this.loaderListEl.replaceChildren();
 
-    // THE FIELD TOOLS, ABOVE CORE. They are things a square can be, exactly like
-    // a config is, so they belong in the same list rather than in a separate
-    // selector -- see `tool.ts` on why one selection covers both.
-    const toolsHeading = document.createElement('h3');
-    toolsHeading.textContent = 'Tools';
-    this.loaderListEl.append(toolsHeading);
-    for (const tool of FIELD_TOOLS) {
-      const button = document.createElement('button');
-      button.className = 'sand-entry';
-      button.textContent = TOOL_LABELS[tool];
-      button.title = TOOL_HELP[tool];
-      button.addEventListener('click', () => {
+    // "NONE", ABOVE EVERYTHING ELSE -- it empties the swatch.
+    //
+    // ABSENT ON THE MASTER, which is the rule: the engine has one `WorldData`
+    // and one trail field, and the master is where the scene's answer about
+    // trail persistence and boundary comes from. An empty master would leave
+    // the world running on a fallback nobody chose, so the option is not
+    // offered rather than offered and refused.
+    if (slot !== MASTER_SLOT) {
+      const none = document.createElement('button');
+      none.type = 'button';
+      none.className = 'entry';
+      none.dataset['none'] = 'true';
+      none.textContent = 'None — clear this swatch';
+      none.addEventListener('click', () => {
         this.closeLoader();
-        this.callbacks.onLoadTool(slot, tool);
+        this.callbacks.onClearSlot(slot);
       });
-      this.loaderListEl.append(button);
+      this.loaderListEl.append(none);
     }
 
     const catalog = this.store.catalog();
@@ -348,7 +588,8 @@ export class SandUi {
         if (entry === null) continue;
 
         const button = document.createElement('button');
-        button.className = 'sand-entry';
+        button.type = 'button';
+        button.className = 'entry';
         button.textContent = name;
         button.addEventListener('click', () => {
           this.closeLoader();
@@ -379,3 +620,5 @@ export class SandUi {
     }
   }
 }
+
+export { themeById };

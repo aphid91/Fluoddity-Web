@@ -32,36 +32,50 @@
  */
 
 import { type SavedConfig, fromDocument, toDocument } from '../config/persistence.ts';
-import { type SandTool, TOOL_CONFIG } from './tool.ts';
-import { SLOT_COUNT } from './palette.ts';
+import { type SandTool, DEFAULT_TOOL, TOOL_CONFIG, TOOL_LABELS } from './tool.ts';
+import { DEFAULT_VISIBLE_COUNT, SLOT_COUNT, clampVisibleCount } from './palette.ts';
+import { type ToolStrengths, defaultStrengths } from './brushInput.ts';
 
 export const SESSION_KEY = 'fluoddity.sand.session';
 
-/** One square, as stored. `document` is null for tools and empty squares. */
+/**
+ * One swatch, as stored. `document` is null for an empty swatch.
+ *
+ * `tool` is retained for backward compatibility ONLY -- see `asSlot`. Swatches
+ * are config-only now; a stored one naming a field tool comes from a session
+ * written before the tool rail existed and migrates to empty.
+ */
 export interface StoredSlot {
-  readonly tool: SandTool;
   readonly name: string;
-  /** A v8 config document -- the square's LIVE values, edits included. */
+  /** A v8 config document -- the swatch's LIVE values, edits included. */
   readonly document: unknown | null;
 }
 
 export interface SandSession {
   readonly slots: readonly StoredSlot[];
   readonly selected: number;
-  readonly topRowActive: boolean;
   readonly brushSize: number;
-  readonly weight: number;
+  /** Which tool the left rail has armed. */
+  readonly tool: SandTool;
+  /** Strength per tool -- see `ToolStrengths`. */
+  readonly strengths: ToolStrengths;
+  /** How many swatches the bar draws. Capacity is fixed; see `palette.ts`. */
+  readonly visibleCount: number;
   /** An explicit particle cap, or null to follow World Size. */
   readonly maxParticles: number | null;
+  /** Which of the UI comps is active. A dev control -- see `theme.ts`. */
+  readonly theme: string;
 }
 
 export const EMPTY_SESSION: SandSession = {
   slots: [],
   selected: 0,
-  topRowActive: true,
   brushSize: 2,
-  weight: 1,
+  tool: DEFAULT_TOOL,
+  strengths: defaultStrengths(),
+  visibleCount: DEFAULT_VISIBLE_COUNT,
   maxParticles: null,
+  theme: '',
 };
 
 /** The subset of `localStorage` this needs, so tests can supply their own. */
@@ -108,20 +122,65 @@ export function readSlotDocument(document: unknown): SavedConfig | null {
   }
 }
 
+const EMPTY_STORED: StoredSlot = { name: '', document: null };
+
+/**
+ * One stored swatch, migrating the pre-rail shape.
+ *
+ * ## THE MIGRATION: a swatch that used to hold a field tool becomes empty
+ *
+ * Before the tool rail, a square could BE Shove, Walls or Trails -- one
+ * selection answered both "what does the mouse do" and "what does it paint".
+ * Those squares carry `tool: 'walls'` and no document. There is nothing to
+ * convert them into: the verb they held now lives in the left rail, and the
+ * swatch they occupied is a noun slot with no noun in it.
+ *
+ * So they come back EMPTY rather than as a config. The alternative -- keeping a
+ * tool in a swatch -- would resurrect the two-selectors-armed ambiguity that the
+ * split exists to remove, for the sake of a square the user can refill with one
+ * right-click.
+ */
 function asSlot(raw: unknown): StoredSlot {
-  if (typeof raw !== 'object' || raw === null) {
-    return { tool: TOOL_CONFIG, name: '', document: null };
-  }
+  if (typeof raw !== 'object' || raw === null) return EMPTY_STORED;
   const o = raw as Record<string, unknown>;
+
+  // A pre-rail tool square. Its name is the tool's label, which would be a lie
+  // on an empty swatch, so the whole entry is dropped rather than half-kept.
   const tool = o['tool'];
+  if (typeof tool === 'string' && tool !== TOOL_CONFIG) return EMPTY_STORED;
+
   return {
-    tool:
-      tool === 'shove' || tool === 'walls' || tool === 'trails' || tool === TOOL_CONFIG
-        ? tool
-        : TOOL_CONFIG,
     name: typeof o['name'] === 'string' ? o['name'] : '',
     document: o['document'] ?? null,
   };
+}
+
+/** A stored tool name, or the default if it is absent or unrecognised. */
+function asTool(raw: unknown): SandTool {
+  return typeof raw === 'string' && raw in TOOL_LABELS ? (raw as SandTool) : DEFAULT_TOOL;
+}
+
+/**
+ * Stored strengths, filling anything missing from the defaults.
+ *
+ * A session written before the split carries a single `weight`. It is adopted
+ * as the BRUSH's strength and the others start at their defaults -- the old
+ * number was tuned against whatever tool the user last touched, and Brush is
+ * both the likeliest and the only one where a wrong guess is immediately
+ * visible rather than subtly off.
+ */
+function asStrengths(raw: unknown, legacyWeight: number | null): ToolStrengths {
+  const out = defaultStrengths() as Record<SandTool, number>;
+  if (legacyWeight !== null) out.brush = legacyWeight;
+  if (typeof raw === 'object' && raw !== null) {
+    for (const [tool, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (!(tool in TOOL_LABELS)) continue;
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        out[tool as SandTool] = value;
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -152,16 +211,23 @@ export function parseSession(raw: string): SandSession {
   };
 
   const max = o['maxParticles'];
+  // The pre-split single Strength, adopted as the Brush's -- see `asStrengths`.
+  const legacy = o['weight'];
+  const legacyWeight =
+    typeof legacy === 'number' && Number.isFinite(legacy) && legacy > 0 ? legacy : null;
+
   return {
     slots,
     selected: Math.max(0, Math.min(SLOT_COUNT - 1, Math.trunc(num('selected', 0)))),
-    topRowActive: typeof o['topRowActive'] === 'boolean' ? o['topRowActive'] : true,
     brushSize: Math.trunc(num('brushSize', EMPTY_SESSION.brushSize)),
-    weight: num('weight', EMPTY_SESSION.weight),
+    tool: asTool(o['tool']),
+    strengths: asStrengths(o['strengths'], legacyWeight),
+    visibleCount: clampVisibleCount(num('visibleCount', DEFAULT_VISIBLE_COUNT)),
     maxParticles:
       typeof max === 'number' && Number.isFinite(max) && max >= 1
         ? Math.trunc(max)
         : null,
+    theme: typeof o['theme'] === 'string' ? o['theme'] : '',
   };
 }
 

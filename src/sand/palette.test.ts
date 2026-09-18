@@ -2,17 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  DEFAULT_VISIBLE_COUNT,
+  KEYED_SLOTS,
   MASTER_SLOT,
+  MIN_VISIBLE_COUNT,
   Palette,
   type PaletteSlot,
-  ROW_SIZE,
   SLOT_COUNT,
-  positionForDigit,
-  paintsParticles,
-  positionOf,
-  rowOf,
-  slotForKey,
-  toolSlot,
+  clampVisibleCount,
+  isLoaded,
+  keyLabel,
+  slotForDigit,
 } from './palette.ts';
 import { makeSimulationConfig, makeWorldSettings } from '../particleSystem/config.ts';
 import { TOOL_CONFIG } from './tool.ts';
@@ -45,84 +45,111 @@ function entry(name: string): PaletteSlot {
 // Key mapping -- the Factorio convention
 // ---------------------------------------------------------------------------
 
-test('digits map 1-9 then 0 to positions 0-9', () => {
-  assert.equal(positionForDigit('1'), 0);
-  assert.equal(positionForDigit('9'), 8);
+test('digits map 1-9 then 0 to the first ten slots', () => {
+  assert.equal(slotForDigit('1'), 0);
+  assert.equal(slotForDigit('9'), 8);
   // `0` is the TENTH slot, not the first -- the printed digit is one-based.
-  assert.equal(positionForDigit('0'), 9);
-  assert.equal(positionForDigit('x'), null);
+  assert.equal(slotForDigit('0'), 9);
+  assert.equal(slotForDigit('x'), null);
 });
 
-test('slotForKey addresses the active row', () => {
-  assert.equal(slotForKey(0, true), 0);
-  assert.equal(slotForKey(9, true), 9);
-  assert.equal(slotForKey(0, false), ROW_SIZE);
-  assert.equal(slotForKey(9, false), ROW_SIZE + 9);
-});
-
-test('rowOf and positionOf invert slotForKey', () => {
-  for (let slot = 0; slot < SLOT_COUNT; slot++) {
-    assert.equal(slotForKey(positionOf(slot), rowOf(slot) === 0), slot);
-  }
+test('only the first ten swatches carry a printed digit', () => {
+  assert.equal(keyLabel(0), '1');
+  assert.equal(keyLabel(KEYED_SLOTS - 1), '0');
+  // Past the tenth there is no key to print, and labelling them anyway would
+  // promise a shortcut that does nothing.
+  assert.equal(keyLabel(KEYED_SLOTS), '');
+  assert.equal(keyLabel(SLOT_COUNT - 1), '');
 });
 
 // ---------------------------------------------------------------------------
-// The master slot and row swapping
+// The visible count
 //
-// THE REQUIREMENT: the green master highlight follows the ELEMENT through a row
-// swap, showing which palette element is the master one. That works because
-// nothing moves in storage -- `X` changes which row the keys address, not where
-// configs live.
+// THE INVARIANT: capacity is fixed and only the DISPLAY varies, because a slot's
+// index in `configsForUpload` is its `config_index` on the GPU. See palette.ts.
 // ---------------------------------------------------------------------------
 
-test('the master is slot 0 regardless of which row is active', () => {
+test('the visible count never changes the upload length', () => {
+  const p = new Palette();
+  p.set(35, entry('far'));
+
+  p.setVisibleCount(MIN_VISIBLE_COUNT);
+
+  // Still forty configs, and the one in slot 35 is still at index 35 -- every
+  // particle painted from it keeps pointing at the right species.
+  const configs = p.configsForUpload(CONFIG);
+  assert.equal(configs.length, SLOT_COUNT);
+  assert.equal(configs[35], CONFIG);
+  assert.equal(p.at(35).name, 'far', 'hiding a swatch does not clear it');
+});
+
+test('the visible count is clamped to what the palette can show', () => {
+  assert.equal(clampVisibleCount(0), MIN_VISIBLE_COUNT);
+  assert.equal(clampVisibleCount(1000), SLOT_COUNT);
+  assert.equal(clampVisibleCount(Number.NaN), DEFAULT_VISIBLE_COUNT);
+  assert.equal(clampVisibleCount(22), 22);
+});
+
+test('shrinking the bar pulls the selection back into view', () => {
+  const p = new Palette();
+  p.select(30);
+  p.setVisibleCount(10);
+  // Otherwise the selected swatch would be one nobody can see or click back to.
+  assert.equal(p.selected, 9);
+});
+
+// ---------------------------------------------------------------------------
+// The master slot
+// ---------------------------------------------------------------------------
+
+test('the master is slot 0', () => {
   const p = new Palette();
   p.set(MASTER_SLOT, entry('master'));
-  assert.equal(p.master.name, 'master');
-
-  p.swapRows();
-  // Still the same element. The highlight follows it because the slot index
-  // never changed -- only which row the number keys reach.
   assert.equal(p.master.name, 'master');
   assert.equal(MASTER_SLOT, 0);
 });
 
-test('swapping rows keeps the same POSITION selected', () => {
+test('the master refuses to be cleared', () => {
   const p = new Palette();
-  p.selectPosition(3);
-  assert.equal(p.selected, 3);
+  p.set(MASTER_SLOT, entry('master'));
 
-  p.swapRows();
-  // Same column, other row -- flipping a toolbar, not jumping somewhere new.
-  assert.equal(p.selected, ROW_SIZE + 3);
+  p.clear(MASTER_SLOT);
 
-  p.swapRows();
-  assert.equal(p.selected, 3);
+  // The load menu hides "None" for the master; the model refuses it as well, so
+  // the invariant does not depend on the menu being the only caller. The scene
+  // needs one authored answer about trail persistence.
+  assert.equal(p.master.name, 'master');
+  assert.equal(p.master.config, CONFIG);
 });
 
-test('swapping rows does not move any config', () => {
+test('any other swatch clears to empty', () => {
   const p = new Palette();
-  p.set(0, entry('a'));
-  p.set(ROW_SIZE, entry('b'));
-
-  p.swapRows();
-
-  assert.equal(p.at(0).name, 'a', 'storage order is stable');
-  assert.equal(p.at(ROW_SIZE).name, 'b');
+  p.set(4, entry('x'));
+  p.clear(4);
+  assert.equal(p.at(4).config, null);
+  assert.equal(p.at(4).name, '');
 });
 
-test('clicking a square on the other row makes that row active', () => {
+// ---------------------------------------------------------------------------
+// firstEmpty -- what Shift+V fills
+// ---------------------------------------------------------------------------
+
+test('firstEmpty skips the master and finds the lowest free swatch', () => {
   const p = new Palette();
-  assert.equal(p.topRowActive, true);
+  // The master is empty here, and must still be skipped: quietly making a pasted
+  // config govern the world is not what "put this somewhere free" asked for.
+  p.set(1, entry('a'));
+  assert.equal(p.firstEmpty(), 2);
+});
 
-  p.select(ROW_SIZE + 2);
+test('firstEmpty searches only the VISIBLE range', () => {
+  const p = new Palette();
+  p.setVisibleCount(MIN_VISIBLE_COUNT);
+  for (let slot = 1; slot < MIN_VISIBLE_COUNT; slot++) p.set(slot, entry(`s${slot}`));
 
-  // Otherwise `1` would select a top-row square while a bottom-row one is lit.
-  assert.equal(p.topRowActive, false);
-  assert.equal(p.selected, ROW_SIZE + 2);
-
-  p.selectPosition(0);
-  assert.equal(p.selected, ROW_SIZE);
+  // Slots past the visible count are free, but filling one would look exactly
+  // like the paste having failed.
+  assert.equal(p.firstEmpty(), null);
 });
 
 test('out-of-range selections and writes are ignored', () => {
@@ -197,43 +224,18 @@ test('two zero-decay configs do not divide by zero', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tool squares
+// Swatches are config-only
 //
-// A square is either a CONFIG square or one of the engine's field tools. Both
-// live in the same twenty squares and are chosen the same way, so "is this
-// empty" and "which tool is this" must stay separate questions.
+// The verb moved to the left rail, so a swatch is a noun slot and nothing else
+// -- see `tool.ts` on the split.
 // ---------------------------------------------------------------------------
 
-test('a tool square is not mistaken for an empty one', () => {
+test('only a LOADED swatch has something to paint', () => {
   const p = new Palette();
-  p.set(3, toolSlot('walls'));
-
-  const slot = p.at(3);
-  assert.equal(slot.tool, 'walls');
-  assert.equal(slot.config, null, 'a field tool carries no config');
-  // The distinction that matters: both have a null config, but only one is an
-  // unloaded square waiting to be filled.
-  assert.equal(paintsParticles(slot), false);
-  assert.equal(slot.name, 'Walls', 'tool squares are named');
-});
-
-test('only a LOADED config square paints particles', () => {
-  const p = new Palette();
-  assert.equal(paintsParticles(p.at(0)), false, 'empty');
-
-  p.set(0, toolSlot('shove'));
-  assert.equal(paintsParticles(p.at(0)), false, 'field tool');
+  assert.equal(isLoaded(p.at(0)), false, 'empty');
 
   p.set(0, entry('real'));
-  assert.equal(paintsParticles(p.at(0)), true);
-});
-
-test('a tool square still counts as empty for the palette', () => {
-  const p = new Palette();
-  p.set(0, toolSlot('trails'));
-  // `isEmpty` asks whether any CONFIG is loaded -- a palette of nothing but
-  // tools has no species in it.
-  assert.equal(p.isEmpty, true);
+  assert.equal(isLoaded(p.at(0)), true);
 });
 
 test('editing preserves which tool a square is', () => {

@@ -1,19 +1,30 @@
 /**
- * The brush palette: twenty config slots in two rows of ten, Factorio-style.
+ * The swatch palette: forty config slots, of which a settable number are shown.
  *
  * ## The model
  *
- * A FLAT ARRAY OF TWENTY, plus a flag for which row the number keys currently
- * address. Slots 0-9 are the first row, 10-19 the second, and they never move --
- * `X` changes which row `1`-`0` select from, not where anything lives.
+ * A FLAT ARRAY OF FORTY. Slot 0 is the master. Nothing moves, ever.
  *
- * That distinction is the whole design. The obvious alternative -- two arrays
- * that get swapped -- makes `X` a mutation of the data, which means the master
- * slot's identity has to be chased through the swap. Here nothing moves, so the
- * master is permanently slot 0 and the green highlight follows it for free,
- * appearing on the top row or the bottom depending only on which row is active.
- * Requirement 4 asks for exactly that behaviour and it falls out of the model
- * rather than being implemented.
+ * It was twenty in two rows of ten with an `X` key that swapped which row the
+ * number keys addressed. Both the second row and the swap are gone: the swatch
+ * bar is now a free-flowing strip along the bottom whose length is a dev slider,
+ * and a "which row is active" flag has no visible referent in a strip that wraps
+ * wherever the window happens to end. `1`-`0` now address the first ten slots
+ * and nothing else, which is a smaller promise that stays true at every count.
+ *
+ * ## CAPACITY IS FIXED; ONLY THE DISPLAY VARIES
+ *
+ * `SLOT_COUNT` is a compile-time forty and the upload is always forty configs
+ * long, because **a slot's index in `configsForUpload` IS its `config_index` on
+ * the GPU** and every painted particle stores that index. A slider that actually
+ * resized the array would renumber live slots on every change and silently
+ * repoint every particle above the edit -- and shrinking it below a slot that
+ * particles point at would leave them indexing past the end of `ConfigData`.
+ *
+ * So `visibleCount` draws fewer buttons and nothing else. A config parked in
+ * slot 35 while the slider sits at 30 keeps its particles alive and correct; it
+ * is merely not on screen. That is the whole reason the slider is safe to expose
+ * as a dev control.
  *
  * ## The master slot
  *
@@ -21,41 +32,59 @@
  * because the engine has exactly one `WorldData` and one trail field. Every
  * other slot contributes its `ConfigData` (rule and physics) and its world
  * settings are discarded, read only by `isCompatible` to warn in the load menu.
+ * It is also the one slot the load menu refuses to offer "None" for: an empty
+ * master would leave the scene with no authored answer about trail persistence.
  */
 
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
-import { type SandTool, TOOL_CONFIG, TOOL_LABELS } from './tool.ts';
+import { TOOL_CONFIG, type SandTool } from './tool.ts';
 
-/** Slots per row. Ten, addressed by `1`-`9` then `0`. */
-export const ROW_SIZE = 10;
-/** Two rows. */
-export const ROW_COUNT = 2;
-/** Total slots. */
-export const SLOT_COUNT = ROW_SIZE * ROW_COUNT;
+/**
+ * How many slots exist, and therefore how long the GPU's `ConfigData` array is.
+ *
+ * FIXED, and larger than any sane visible count -- see the header on why this
+ * cannot follow the slider. Forty is the ceiling the dev slider is clamped to,
+ * so every reachable display count fits inside the allocation with no slack
+ * logic anywhere.
+ */
+export const SLOT_COUNT = 40;
+
+/** How many swatches a fresh session shows. */
+export const DEFAULT_VISIBLE_COUNT = 30;
+
+/** The fewest swatches the slider may show. Below this the bar is unusable. */
+export const MIN_VISIBLE_COUNT = 5;
+
+/**
+ * How many swatches the number keys reach: `1`-`9` then `0`.
+ *
+ * Ten regardless of how many are shown. With the row swap gone this addresses
+ * the first ten slots and nothing else -- see the header.
+ */
+export const KEYED_SLOTS = 10;
 
 /**
  * The slot whose world settings govern the whole scene.
  *
- * Zero, and fixed. It is an index into the flat array, so it is unaffected by
- * which row is active -- which is what makes the green highlight follow the
- * element through a row swap rather than staying on the top-left square.
+ * Zero, and fixed. The load menu offers no "None" for it and the UI marks it,
+ * so the scene always has an authored world to run under.
  */
 export const MASTER_SLOT = 0;
 
 /**
- * One palette square.
+ * One swatch.
  *
- * A square is either a CONFIG square (`tool === 'config'`, carrying a config) or
- * a FIELD TOOL square (shove/walls/trails, carrying none). An empty square is a
- * config square whose config is null -- so "empty" and "which tool" stay two
- * separate questions, and a field tool is never mistaken for an unloaded slot.
+ * ALWAYS A CONFIG SWATCH now. `tool` is retained as a field so stored sessions
+ * keep their shape and so a slot carries its own discriminator, but the field
+ * tools moved to the left rail and nothing writes anything but `TOOL_CONFIG`
+ * here. An empty swatch is one whose `config` is null.
  */
 export interface PaletteSlot {
-  readonly tool: SandTool;
+  readonly tool: SandTool | typeof TOOL_CONFIG;
   readonly config: SimulationConfig | null;
   /** The config's own world settings, kept for the compatibility test. */
   readonly world: WorldSettings | null;
-  /** Display name: the config file's, or the tool's. */
+  /** Display name: the config file's, or empty. */
   readonly name: string;
 }
 
@@ -66,77 +95,70 @@ export const EMPTY_SLOT: PaletteSlot = {
   name: '',
 };
 
-/** A square holding one of the engine's field tools. */
-export function toolSlot(tool: SandTool): PaletteSlot {
-  return { tool, config: null, world: null, name: TOOL_LABELS[tool] };
+/** Whether this swatch holds something the Brush could paint. */
+export function isLoaded(slot: PaletteSlot): boolean {
+  return slot.config !== null;
 }
 
 /**
- * Whether this square can paint particles.
+ * Clamp a requested display count into what the palette can show.
  *
- * False for a field tool AND for an unloaded config square -- the two reasons a
- * left-drag deposits nothing. The brush asks this one question rather than
- * testing both conditions at each call site.
+ * Exposed so the dev slider and the session parser clamp identically rather
+ * than each picking their own bounds.
  */
-export function paintsParticles(slot: PaletteSlot): boolean {
-  return slot.tool === TOOL_CONFIG && slot.config !== null;
+export function clampVisibleCount(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_VISIBLE_COUNT;
+  return Math.max(MIN_VISIBLE_COUNT, Math.min(SLOT_COUNT, Math.trunc(value)));
 }
 
 /**
- * Which flat index the number keys address.
+ * Map a keyboard digit to a slot.
  *
- * `position` is 0-9 within the active row. `topRowActive` false addresses the
- * second row, which is what `X` toggles.
+ * `1`-`9` are slots 0-8 and `0` is slot 9 -- the Factorio convention, where the
+ * key's printed digit is one-based and `0` means "the tenth". Returns null for
+ * anything else.
  */
-export function slotForKey(position: number, topRowActive: boolean): number {
-  const clamped = Math.max(0, Math.min(ROW_SIZE - 1, Math.trunc(position)));
-  return topRowActive ? clamped : clamped + ROW_SIZE;
-}
-
-/**
- * Which row a flat slot index belongs to. 0 is the first row.
- *
- * Used by the UI to decide which squares to draw on top when the rows are
- * swapped -- the DISPLAY order changes, the storage order never does.
- */
-export function rowOf(slot: number): number {
-  return Math.floor(slot / ROW_SIZE);
-}
-
-/** Position within its row, 0-9. */
-export function positionOf(slot: number): number {
-  return slot % ROW_SIZE;
-}
-
-/**
- * Map a keyboard digit to a row position.
- *
- * `1`-`9` are positions 0-8 and `0` is position 9 -- the Factorio convention,
- * where the key's printed digit is one-based and `0` means "the tenth". Returns
- * null for anything else.
- */
-export function positionForDigit(key: string): number | null {
-  if (key === '0') return ROW_SIZE - 1;
+export function slotForDigit(key: string): number | null {
+  if (key === '0') return KEYED_SLOTS - 1;
   if (key >= '1' && key <= '9') return Number(key) - 1;
   return null;
 }
 
+/** The digit printed on a swatch, or empty past the tenth. */
+export function keyLabel(slot: number): string {
+  if (slot < 0 || slot >= KEYED_SLOTS) return '';
+  return slot === KEYED_SLOTS - 1 ? '0' : String(slot + 1);
+}
+
 export class Palette {
   private readonly slots: PaletteSlot[] = Array.from({ length: SLOT_COUNT }, () => EMPTY_SLOT);
-  /** Replacement counter per square. See `set` and `generationOf`. */
+  /** Replacement counter per swatch. See `set` and `generationOf`. */
   private readonly generations: number[] = Array.from({ length: SLOT_COUNT }, () => 0);
 
-  /** Which row the number keys address. `X` toggles it. */
-  private _topRowActive = true;
-  /** The flat index of the selected square. */
+  /** The flat index of the selected swatch. */
   private _selected = 0;
 
-  get topRowActive(): boolean {
-    return this._topRowActive;
-  }
+  /** How many swatches the bar draws. Capacity is unaffected -- see the header. */
+  private _visibleCount = DEFAULT_VISIBLE_COUNT;
 
   get selected(): number {
     return this._selected;
+  }
+
+  get visibleCount(): number {
+    return this._visibleCount;
+  }
+
+  /**
+   * Set how many swatches are DRAWN.
+   *
+   * Does not touch storage, the upload, or any particle. If the selection falls
+   * off the end of the shortened bar it moves to the last visible swatch --
+   * otherwise the selected swatch would be one nobody can see or click back to.
+   */
+  setVisibleCount(value: number): void {
+    this._visibleCount = clampVisibleCount(value);
+    if (this._selected >= this._visibleCount) this._selected = this._visibleCount - 1;
   }
 
   /** The master slot's config, which governs the world. Null if unset. */
@@ -148,18 +170,37 @@ export class Palette {
     return this.slots[slot] ?? EMPTY_SLOT;
   }
 
-  /** Every slot, in storage order. The UI decides how to lay them out. */
+  /** Every slot, in storage order. The UI decides how many to lay out. */
   all(): readonly PaletteSlot[] {
     return this.slots;
   }
 
   /**
-   * Replace a square's contents. Bumps its generation.
+   * The first swatch holding no config, or null when every one is full.
+   *
+   * SEARCHES THE VISIBLE RANGE ONLY. Filling a slot the user cannot see would
+   * look exactly like the paste having failed. The master is skipped as well:
+   * it is seeded at startup and is never empty in practice, but if it ever were,
+   * quietly making a pasted config govern the world's trail settings is not what
+   * "put this somewhere free" asked for.
+   *
+   * Drives Shift+V -- see `main.ts`.
+   */
+  firstEmpty(): number | null {
+    for (let slot = 0; slot < this._visibleCount; slot++) {
+      if (slot === MASTER_SLOT) continue;
+      if (this.slots[slot]?.config == null) return slot;
+    }
+    return null;
+  }
+
+  /**
+   * Replace a swatch's contents. Bumps its generation.
    *
    * ## What the generation is for
    *
-   * The Config tab binds sliders to a COPY of a square's settings. Loading a
-   * file into that square must throw those sliders away and show the file's
+   * The Config tab binds sliders to a COPY of a swatch's settings. Loading a
+   * file into that swatch must throw those sliders away and show the file's
    * values -- "right-click load always overrides these settings and sets things
    * back to the saved config's". Comparing configs by identity would not do it
    * (an edit also produces a new object), and comparing by value would be both
@@ -174,7 +215,7 @@ export class Palette {
   }
 
   /**
-   * Update a square's settings WITHOUT bumping its generation.
+   * Update a swatch's settings WITHOUT bumping its generation.
    *
    * The Config tab's own edits come back through here. Bumping would make the
    * tab rebuild itself on every slider frame, which resets the drag.
@@ -186,49 +227,37 @@ export class Palette {
     this.slots[slot] = { ...current, config, world };
   }
 
-  /** How many times this square's contents have been REPLACED. See `set`. */
+  /** How many times this swatch's contents have been REPLACED. See `set`. */
   generationOf(slot: number): number {
     return this.generations[slot] ?? 0;
   }
 
+  /**
+   * Empty a swatch. The load menu's "None".
+   *
+   * REFUSES THE MASTER, which is the rule the menu enforces by hiding the
+   * option: the scene needs one authored answer about trail persistence and
+   * boundary, and the master is where it comes from. Guarded here as well so
+   * the invariant does not depend on the menu being the only caller.
+   */
   clear(slot: number): void {
+    if (slot === MASTER_SLOT) return;
     this.set(slot, EMPTY_SLOT);
   }
 
-  /** Select a flat slot index directly -- what clicking a square does. */
+  /** Select a flat slot index -- what clicking a swatch does. */
   select(slot: number): void {
     if (slot < 0 || slot >= SLOT_COUNT) return;
     this._selected = slot;
-    // Selecting a square on the other row makes THAT row active, so the number
-    // keys keep addressing what the user is looking at. Without this, clicking a
-    // bottom-row square would leave `1` selecting a top-row one.
-    this._topRowActive = rowOf(slot) === 0;
-  }
-
-  /** Select by number key within the active row. */
-  selectPosition(position: number): void {
-    this._selected = slotForKey(position, this._topRowActive);
-  }
-
-  /**
-   * Swap which row the number keys address, keeping the SAME SQUARE selected.
-   *
-   * The selection moves to the corresponding position in the newly active row,
-   * which is what makes `X` feel like flipping a toolbar rather than jumping to
-   * an arbitrary square.
-   */
-  swapRows(): void {
-    this._topRowActive = !this._topRowActive;
-    this._selected = slotForKey(positionOf(this._selected), this._topRowActive);
   }
 
   /**
    * The configs to upload, as a dense array indexed by slot.
    *
-   * EVERY SLOT GETS AN ENTRY, empty ones included, so that a slot's index in
-   * this array is its `config_index` on the GPU. Compacting would renumber the
-   * live slots and silently repoint every particle already painted from a slot
-   * above a gap.
+   * EVERY SLOT GETS AN ENTRY, empty ones and invisible ones included, so that a
+   * slot's index in this array is its `config_index` on the GPU. Compacting --
+   * or shortening this to the visible count -- would renumber the live slots and
+   * silently repoint every particle already painted from a slot above the cut.
    *
    * Empty slots are filled with the master's config as a harmless stand-in --
    * nothing points at them, since a particle can only be painted from a slot the
@@ -240,7 +269,7 @@ export class Palette {
     return this.slots.map((s) => s.config ?? fallback);
   }
 
-  /** Whether any square holds a config. */
+  /** Whether any swatch holds a config. */
   get isEmpty(): boolean {
     return this.slots.every((s) => s.config === null);
   }
