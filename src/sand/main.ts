@@ -107,7 +107,13 @@ async function main(): Promise<void> {
   //
   // A saved `canvasAspect` still wins: this is a DEFAULT for a fresh install,
   // not an override of a value the user set in the Prefs tab.
-  const SAND_CANVAS_ASPECT = 4 / 3;
+  //
+  // 5:3 rather than 4:3, which is what this first shipped as. The rail and the
+  // tray take a fixed bite out of a landscape window, so the hole the canvas is
+  // fitted into is wider than 4:3 and a 4:3 world left a visible margin either
+  // side of it. 5:3 is a closer fit without going so wide that the world starts
+  // reading as a strip.
+  const SAND_CANVAS_ASPECT = 5 / 3;
   if (prefs.canvasAspect === DEFAULT_PREFERENCES.canvasAspect) {
     prefs = { ...prefs, canvasAspect: SAND_CANVAS_ASPECT };
   }

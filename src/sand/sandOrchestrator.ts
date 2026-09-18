@@ -484,7 +484,28 @@ export class SandOrchestrator {
    * crashing.
    */
   runFrame(input: SandFrameInput, prefs: Preferences, target: GPUTextureView): boolean {
-    this.targets.ensure(input.windowSize);
+    // THE RETURN VALUE IS NOT OPTIONAL. `ensure` reallocates the HDR and
+    // accumulator textures when the window size changes, and destroys the old
+    // ones -- but the camera and the assembler cache BIND GROUPS holding views
+    // of them. Dropping this on the floor left both pointing at destroyed
+    // textures, so every subsequent submit failed validation with
+    //
+    //     Destroyed texture [Texture "hdr"] used in a submit
+    //
+    // and NOTHING RENDERED. Painted particles existed and were counted -- the
+    // compute passes were unaffected -- but the screen stayed black and the
+    // scene looked empty. The studio has always done this (`orchestrator.ts`
+    // does the same two calls); the sand path simply never did.
+    //
+    // It went unnoticed until the UI overhaul because the studio's canvas fills
+    // the window and settles on its size before the first frame. The grid shell
+    // sizes the canvas from the stage cell, which moves once after layout --
+    // so here the reallocation lands AFTER the first frames have cached their
+    // bind groups, which is exactly the case this guards.
+    if (this.targets.ensure(input.windowSize)) {
+      this.camera.invalidateTargets();
+      this.assembler.invalidateTargets();
+    }
     // Advanced unconditionally, including while paused -- see `spawnSeed`.
     this.spawnSeed++;
     const encoder = this.device.createCommandEncoder({ label: 'sand-frame' });

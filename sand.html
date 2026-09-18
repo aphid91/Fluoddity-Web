@@ -33,8 +33,13 @@
            The rail is wide enough for two tool buttons side by side WITH
            their labels -- 76px clipped "Erase" and "Walls" to four
            characters, which is exactly the kind of thing that only shows
-           up on screen. */
-        --rail-w: 112px;
+           up on screen. Widened again with the 30% tool bump below. */
+        --rail-w: 140px;
+        /* Tool buttons, 30% up from the 44px they shipped at. */
+        --tool-size: 57px;
+        /* Swatch buttons, 25% up from 92x30. */
+        --swatch-w: 115px;
+        --swatch-h: 38px;
         --tray-h: auto;
         --gap: 8px;
         --pad: 10px;
@@ -267,7 +272,8 @@
         top: 16px;
         left: 50%;
         transform: translateX(-50%);
-        padding: 4px 12px;
+        /* Roomy: at 4px/12px the text sat right on the rule. */
+        padding: 8px 20px;
         background: var(--ic-bg);
         color: var(--ic-ink);
         border: var(--border) solid var(--ic-line);
@@ -365,7 +371,8 @@
       }
 
       .tool {
-        aspect-ratio: 1;
+        width: var(--tool-size);
+        height: var(--tool-size);
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -409,8 +416,8 @@
       }
 
       .tool-icon {
-        width: 20px;
-        height: 20px;
+        width: 26px;
+        height: 26px;
         display: block;
         color: var(--ink);
         pointer-events: none;
@@ -418,16 +425,19 @@
 
       .tool-name {
         font-family: var(--font-label);
-        font-size: 8px;
+        font-size: 9px;
         letter-spacing: var(--label-spacing);
         text-transform: var(--label-transform);
         pointer-events: none;
       }
 
       /* --- brush sizes ------------------------------------------------- */
+      /* ONE VERTICAL COLUMN, so the five read as a ramp from smallest to
+         largest. Wrapped into a grid they made an arbitrary 2-2-1 shape
+         that said nothing about the ordering. */
       #sizes {
         display: flex;
-        flex-wrap: wrap;
+        flex-direction: column;
         gap: 4px;
         justify-content: center;
         align-items: center;
@@ -569,19 +579,19 @@
       }
 
       .swatch {
-        width: 92px;
-        height: 30px;
+        width: var(--swatch-w);
+        height: var(--swatch-h);
         flex: none;
         display: flex;
         align-items: center;
-        gap: 4px;
-        padding: 0 5px;
+        gap: 5px;
+        padding: 0 7px;
         background: var(--chrome-2);
         border: var(--border) solid var(--edge);
         border-radius: var(--radius);
         color: var(--ink);
         font: inherit;
-        font-size: 10px;
+        font-size: 11px;
         cursor: pointer;
         overflow: hidden;
         text-align: left;
@@ -617,7 +627,7 @@
 
       .swatch-key {
         flex: none;
-        font-size: 8px;
+        font-size: 9px;
         color: var(--ink-dim);
         font-variant-numeric: tabular-nums;
         min-width: 6px;
@@ -657,15 +667,14 @@
       }
 
       :root[data-layout='dock'] #tools {
-        grid-template-columns: repeat(5, 40px);
+        grid-template-columns: repeat(5, var(--tool-size));
         align-content: center;
       }
 
-      :root[data-layout='dock'] .tool {
-        width: 40px;
-      }
-
+      /* The dock is a short strip, so the size ramp goes back to a row
+         here -- a vertical column of five would set the dock's height. */
       :root[data-layout='dock'] #sizes {
+        flex-direction: row;
         flex-wrap: nowrap;
         align-content: center;
       }
@@ -697,8 +706,8 @@
       }
 
       :root[data-layout='dock'] .swatch {
-        width: 78px;
-        height: 26px;
+        width: 98px;
+        height: 33px;
       }
 
       .dock-divider {
