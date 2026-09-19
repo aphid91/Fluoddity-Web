@@ -81,6 +81,10 @@ export interface SandPrefsCallbacks {
   onCompactNow(): void;
   /** The Dev tab's compaction kill switch. */
   onCompactionPaused(paused: boolean): void;
+  /** The Dev tab's Audit pool button. Diagnostic; stalls the pipeline. */
+  onAuditPool(): void;
+  /** The Dev tab's "audit after every sweep" switch. */
+  onAuditAfterSweep(enabled: boolean): void;
   /** A UI comp was chosen from the Dev tab's dropdown. */
   onTheme(theme: SandTheme): void;
   /** The swatch-count slider moved. Display only -- see `palette.ts`. */
@@ -120,6 +124,7 @@ export class SandPrefs {
     occupancy: '—',
     sweep: 'idle',
     compactionPaused: false,
+    auditAfterSweep: false,
   };
   /** Refreshed per frame, but only when a displayed value actually moved. */
   private poolFolder: FolderApi | null = null;
@@ -378,6 +383,39 @@ export class SandPrefs {
       'pipeline; the sweep then runs in budgeted chunks over a second or two ' +
       'and is reported above. Painting aborts the sweep.';
     button.on('click', () => this.callbacks.onCompactNow());
+
+    // THE AUDIT BUTTON. Reads both buffers back and checks the pool's
+    // invariants, so a suspicion becomes a specific, named violation with a
+    // count. Every compaction bug so far has been one of these, found by eye
+    // and reported after the fact -- this is what closes that gap.
+    //
+    // The full report goes to the CONSOLE, not the status line: it is several
+    // lines with example indices, and it is worth keeping a scrollback of.
+    // AUDIT AUTOMATICALLY AFTER EVERY SWEEP. The single most useful setting
+    // here while hunting: a violation is reported the instant the operation
+    // that caused it finishes, rather than whenever someone thinks to press the
+    // button. Without it the evidence of WHICH operation broke things is gone
+    // by the time the symptom is visible.
+    //
+    // Off by default because it stalls the pipeline once per sweep.
+    const afterSweep = folder.addBinding(this.poolValues, 'auditAfterSweep', {
+      label: 'Audit after sweep',
+    });
+    afterSweep.element.title =
+      'Run the audit automatically whenever a sweep ends, aborted or ' +
+      'completed, and log the result. Catches a violation at the moment it ' +
+      'appears instead of minutes later. Costs one pipeline stall per sweep.';
+    afterSweep.on('change', () => {
+      this.callbacks.onAuditAfterSweep(Boolean(this.poolValues['auditAfterSweep']));
+    });
+
+    const audit = folder.addButton({ title: 'Audit pool' });
+    audit.element.title =
+      'Read the entity buffer and the free list and check that they agree: ' +
+      'no live index offered as free, no double frees, no leaked dead slots, ' +
+      'and nothing alive above the mark. Full report in the console. ' +
+      'STALLS THE PIPELINE — it is a diagnostic, not a frame-path operation.';
+    audit.on('click', () => this.callbacks.onAuditPool());
   }
 
   /**

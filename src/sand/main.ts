@@ -52,6 +52,7 @@ import { themeById } from './theme.ts';
 import { readText } from '../ui/clipboard.ts';
 import { decodeShareText } from '../config/shareLink.ts';
 import { fromDocument } from '../config/persistence.ts';
+import { formatAudit, summarizeAudit } from '../particleSystem/poolAudit.ts';
 
 /**
  * The first config in the catalog, in the order the menu shows.
@@ -367,6 +368,8 @@ async function main(): Promise<void> {
   let markBefore: number | null = null;
   /** True on the previous frame, to catch the edge where a sweep ends. */
   let wasSweeping = false;
+  /** Dev tab switch: audit the pool every time a sweep ends. */
+  let auditAfterSweep = false;
 
   const prefsWindow = new SandPrefs(
     prefs,
@@ -461,6 +464,29 @@ async function main(): Promise<void> {
     onCompactionPaused: (paused) => {
       orch.setCompactionPaused(paused);
       notify(paused ? 'Compaction paused' : 'Compaction resumed');
+    },
+    // THE AUDIT. Full report to the console, headline to the status line -- the
+    // report is several lines with example indices and is worth a scrollback,
+    // while the status line only has room for the verdict.
+    onAuditAfterSweep: (enabled) => {
+      auditAfterSweep = enabled;
+      notify(enabled ? 'Auditing after every sweep' : 'Sweep auditing off');
+    },
+    onAuditPool: () => {
+      void (async () => {
+        try {
+          const audit = await orch.auditPool();
+          const report = formatAudit(audit);
+          if (audit.ok) console.log(report);
+          // `console.error` on a violation, so it stands out in a log and
+          // carries a stack showing which operation preceded it.
+          else console.error(report);
+          notify(summarizeAudit(audit));
+        } catch (e) {
+          console.error(`Pool audit failed: ${String(e)}`);
+          notify(`Pool audit failed: ${String(e)}`);
+        }
+      })();
     },
     onCompactNow: () => {
       void (async () => {
@@ -691,7 +717,8 @@ async function main(): Promise<void> {
     // from the button that started it. The edge -- was sweeping, now is not --
     // is what marks the end, whether the sweep completed or was aborted by the
     // user picking up the brush.
-    if (wasSweeping && !poolStats.sweeping && markBefore !== null) {
+    const sweepJustEnded = wasSweeping && !poolStats.sweeping;
+    if (sweepJustEnded && markBefore !== null) {
       const before = markBefore;
       markBefore = null;
       notify(
@@ -701,6 +728,17 @@ async function main(): Promise<void> {
           : `Sweep ended with the mark unchanged at ${poolStats.mark.toLocaleString()}` +
               ' — aborted, or nothing could be moved',
       );
+    }
+    // AUDIT AT THE MOMENT THE SWEEP ENDS, when the operation that may have
+    // broken the pool is the most recent thing that happened. Waiting for
+    // someone to press the button loses that association entirely.
+    if (sweepJustEnded && auditAfterSweep) {
+      void (async () => {
+        const audit = await orch.auditPool();
+        const label = `[after sweep] ${formatAudit(audit)}`;
+        if (audit.ok) console.log(label);
+        else console.error(label);
+      })().catch((e: unknown) => console.error(`Audit failed: ${String(e)}`));
     }
     wasSweeping = poolStats.sweeping;
     ui.refresh({

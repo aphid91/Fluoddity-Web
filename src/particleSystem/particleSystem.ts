@@ -62,6 +62,7 @@ import {
   freeListSize,
   initialFreeList,
 } from './freeList.ts';
+import { type PoolAudit, auditPool } from './poolAudit.ts';
 import { canDropMarkToZero, sortedFreeList } from './compaction.ts';
 import { canvasDimensions, ENTITIES_PER_WORLD_UNIT, ENTITY_COUNT } from './sizing.ts';
 import {
@@ -1187,6 +1188,46 @@ export class ParticleSystem {
   }
 
   /**
+   * Apply a mark the GPU computed during a compaction. Returns whether it was
+   * taken.
+   *
+   * ## THE DIRECTION RULE, which is the whole safety argument
+   *
+   * The mark now has two authors. The host raises it on every spawn
+   * (`noteSpawned`), because it knows immediately how many particles it asked
+   * for. The GPU lowers it after a compaction, because only it knows how many
+   * survived. The readback is a frame or two late, and that lag is safe in
+   * exactly one direction:
+   *
+   *   TOO HIGH is harmless -- a few wasted invocations per pass until the next
+   *   compaction, and the bound is still an upper bound.
+   *
+   *   TOO LOW hides live particles. They stay in memory, every pass skips
+   *   them, nothing draws them, and they reappear only if the mark rises past
+   *   them again. That is the worst failure this subsystem has produced and it
+   *   must not be reachable.
+   *
+   * So a GPU mark is applied only when it LOWERS the bound, and only when
+   * nothing has been spawned since the readback was taken -- a spawn in that
+   * window would have raised the mark for a particle the compaction never saw.
+   * `spawnedSinceRead` is the caller's count of exactly that, the same number
+   * that already guards `dropMarkIfEmpty`.
+   *
+   * A refused mark costs nothing: the next compaction computes a fresh one.
+   */
+  noteCompactedMark(mark: number, spawnedSinceRead: number): boolean {
+    if (!this.lifetimes) return false;
+    if (spawnedSinceRead > 0) return false;
+    const want = Math.max(0, Math.min(this.entityCount, Math.trunc(mark)));
+    // NEVER RAISES. A GPU mark above the current one means the readback
+    // predates a spawn the host already accounted for, so believing it would
+    // undo that accounting.
+    if (want >= this.highWaterMark) return false;
+    this.highWaterMark = want;
+    return true;
+  }
+
+  /**
    * Drop the mark to zero IF the pool is provably empty -- TIER 1's one mark
    * reduction. Returns whether it fired.
    *
@@ -1361,6 +1402,100 @@ export class ParticleSystem {
    *
    * Returns the number of slots sorted, for the status line.
    */
+  /**
+   * Read both buffers and check the pool's invariants. A DIAGNOSTIC.
+   *
+   * ## Why a readback is fine here and nowhere else
+   *
+   * It stalls the pipeline, which the frame path must never do. This is not the
+   * frame path: it runs when a developer presses a button, to answer a question
+   * that cannot be answered any other way. The stall is the cost of the answer.
+   *
+   * ## What it is for
+   *
+   * Compaction bugs present as something other than themselves, minutes after
+   * the operation that caused them. This collapses that gap: press the button
+   * after any suspicious operation and find out precisely which invariant broke
+   * and by how many indices. See `poolAudit.ts` for the invariants and why each
+   * matters.
+   *
+   * THE ENTITY BUFFER IS THE GROUND TRUTH. The live count here comes from
+   * scanning it, never from the free-list head -- the head is exactly what is
+   * under suspicion, and a check that trusted it could not detect the bug that
+   * has bitten most often.
+   */
+  async auditPoolNow(): Promise<PoolAudit> {
+    const capacity = this.entityCount;
+    if (!this.lifetimes) {
+      return auditPool({
+        liveFlags: new Array(capacity).fill(true),
+        poolSlots: [],
+        mark: capacity,
+        capacity,
+      });
+    }
+
+    const stride = ENTITY_STRIDE;
+    const entityStaging = this.device.createBuffer({
+      label: 'pool-audit-entities',
+      size: capacity * stride,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const poolStaging = this.device.createBuffer({
+      label: 'pool-audit-freelist',
+      size: freeListSize(capacity),
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+
+    try {
+      // BOTH COPIES IN ONE ENCODER, so they describe the same instant. Two
+      // submissions could straddle a frame, and a mismatch caused by that would
+      // look exactly like the bug being hunted.
+      const encoder = this.device.createCommandEncoder({ label: 'pool-audit' });
+      encoder.copyBufferToBuffer(this.entityBuffer, 0, entityStaging, 0, capacity * stride);
+      encoder.copyBufferToBuffer(this.freeListBuffer, 0, poolStaging, 0, poolStaging.size);
+      this.device.queue.submit([encoder.finish()]);
+
+      await Promise.all([
+        entityStaging.mapAsync(GPUMapMode.READ),
+        poolStaging.mapAsync(GPUMapMode.READ),
+      ]);
+
+      const entityBytes = new Uint8Array(entityStaging.getMappedRange());
+      const asInt = new Int32Array(
+        entityBytes.buffer,
+        entityBytes.byteOffset,
+        entityBytes.byteLength / 4,
+      );
+      const liveFlags: boolean[] = new Array(capacity);
+      for (let i = 0; i < capacity; i++) {
+        // `config_index` is misc.y -- float lane 5 of 8. Negative means dead.
+        liveFlags[i] = asInt[i * 8 + 5]! >= 0;
+      }
+      entityStaging.unmap();
+
+      const poolImage = new Uint32Array(poolStaging.getMappedRange().slice(0));
+      poolStaging.unmap();
+      const head = poolImage[0] ?? 0;
+      // ONLY `slots[0 .. head)`. Entries above the head are stale residue from
+      // indices already taken, and counting them as available is itself one of
+      // the mistakes this audit exists to catch.
+      const usable = Math.min(head, poolImage.length - 1);
+      const poolSlots = Array.from(poolImage.slice(1, 1 + usable));
+
+      return auditPool({
+        liveFlags,
+        poolSlots,
+        mark: this.highWaterMark,
+        capacity,
+        cachedHead: this.freeListHead,
+      });
+    } finally {
+      entityStaging.destroy();
+      poolStaging.destroy();
+    }
+  }
+
   async sortFreeListNow(): Promise<number> {
     if (!this.lifetimes) return 0;
     const bytes = freeListSize(this.entityCount);

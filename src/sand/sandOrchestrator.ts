@@ -69,6 +69,7 @@ import {
   sweepProgress,
   sweepTargetFor,
 } from '../particleSystem/compaction.ts';
+import type { PoolAudit } from '../particleSystem/poolAudit.ts';
 import { COMPACT_SLOT_BUDGET } from './sandPasses.ts';
 import { fieldStrengthsFor } from '../prefs/preferences.ts';
 
@@ -424,6 +425,16 @@ export class SandOrchestrator {
         this.sweep === null ? 1 : sweepProgress(this.sweep, this.sweepStartMark),
       relocated: this.passes.relocated,
     };
+  }
+
+  /**
+   * Check the pool's invariants and report. The Dev panel's Audit button.
+   *
+   * Stalls the pipeline, which is acceptable for a diagnostic pressed by hand.
+   * See `auditPoolNow` and `poolAudit.ts`.
+   */
+  async auditPool(): Promise<PoolAudit> {
+    return this.system.auditPoolNow();
   }
 
   /** The Dev panel's kill switch. See `compactionPaused`. */
