@@ -366,8 +366,6 @@ async function main(): Promise<void> {
    * be reported"; the frame loop watches for it to end.
    */
   let markBefore: number | null = null;
-  /** True on the previous frame, to catch the edge where a sweep ends. */
-  let wasSweeping = false;
   /** Dev tab switch: audit the pool every time a sweep ends. */
   let auditAfterSweep = false;
 
@@ -488,30 +486,18 @@ async function main(): Promise<void> {
         }
       })();
     },
+    // NOT ASYNC ANY MORE. The compaction is queued for the next frame and runs
+    // entirely on the GPU; there is no readback to await and nothing to block
+    // on. The frame loop reports the outcome once the mark comes back.
     onCompactNow: () => {
-      void (async () => {
-        try {
-          // Said BEFORE the await: this stalls the pipeline, so the message has
-          // to land before the hitch rather than after it, or the user sees a
-          // freeze with nothing explaining it.
-          notify('Ordering the pool…');
-          markBefore = orch.compactionStats.mark;
-          const { started, reason } = await orch.compactNow();
-          // The sweep is NOT awaited -- it runs in budgeted chunks over the
-          // next second or two, and blocking on it would be the stutter this
-          // whole design exists to avoid. The frame loop announces the result
-          // when it lands; see `sweepWatch`.
-          if (!started) {
-            markBefore = null;
-            notify(`Pool ordered — no sweep needed (${reason})`);
-          } else {
-            notify('Sweeping — relocating particles…');
-          }
-        } catch (e) {
-          console.error(`Could not compact: ${String(e)}`);
-          notify(`Compaction failed: ${String(e)}`);
-        }
-      })();
+      markBefore = orch.compactionStats.mark;
+      const { queued, reason } = orch.requestCompaction();
+      if (!queued) {
+        markBefore = null;
+        notify(`Not compacting — ${reason}`);
+      } else {
+        notify('Compacting…');
+      }
     },
     },
   );
@@ -713,34 +699,32 @@ async function main(): Promise<void> {
     const poolStats = orch.compactionStats;
     prefsWindow.setCompactionStats(poolStats);
 
-    // A SWEEP ENDS ON ITS OWN FRAME, so its result is reported here rather than
-    // from the button that started it. The edge -- was sweeping, now is not --
-    // is what marks the end, whether the sweep completed or was aborted by the
-    // user picking up the brush.
-    const sweepJustEnded = wasSweeping && !poolStats.sweeping;
-    if (sweepJustEnded && markBefore !== null) {
+    // THE COMPACTION RAN ON A KNOWN FRAME, so no edge detection is needed --
+    // `justCompacted` is true on exactly that frame. The MARK, though, arrives
+    // a frame or two later through the readback, so the report waits for it to
+    // actually move rather than announcing on the frame the passes ran.
+    if (markBefore !== null && poolStats.mark < markBefore) {
       const before = markBefore;
       markBefore = null;
       notify(
-        poolStats.mark < before
-          ? `Compacted — mark ${before.toLocaleString()} → ` +
-              `${poolStats.mark.toLocaleString()}`
-          : `Sweep ended with the mark unchanged at ${poolStats.mark.toLocaleString()}` +
-              ' — aborted, or nothing could be moved',
+        `Compacted — mark ${before.toLocaleString()} → ` +
+          `${poolStats.mark.toLocaleString()}`,
       );
     }
-    // AUDIT AT THE MOMENT THE SWEEP ENDS, when the operation that may have
-    // broken the pool is the most recent thing that happened. Waiting for
-    // someone to press the button loses that association entirely.
-    if (sweepJustEnded && auditAfterSweep) {
+
+    // AUDIT IMMEDIATELY AFTER THE COMPACTION FRAME, when the operation that
+    // may have broken the pool is the most recent thing that happened.
+    //
+    // The compaction is recorded into the frame's encoder, which has been
+    // submitted by now, so the audit's own copies are ordered behind it.
+    if (orch.justCompacted && auditAfterSweep) {
       void (async () => {
         const audit = await orch.auditPool();
-        const label = `[after sweep] ${formatAudit(audit)}`;
+        const label = `[after compaction] ${formatAudit(audit)}`;
         if (audit.ok) console.log(label);
         else console.error(label);
       })().catch((e: unknown) => console.error(`Audit failed: ${String(e)}`));
     }
-    wasSweeping = poolStats.sweeping;
     ui.refresh({
       tool: orch.brush.tool,
       brushSize: orch.brush.sizeSlot,

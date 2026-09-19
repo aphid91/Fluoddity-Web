@@ -357,10 +357,9 @@ export class SandPrefs {
       readonly: true,
     });
     sweep.element.title =
-      'Tier 2 compaction: relocating live particles down so the mark can ' +
-      'fall. Runs in budgeted chunks over a second or two. Painting aborts ' +
-      'it — the relocations already made are kept, the mark simply does not ' +
-      'come down that time.';
+      'Compaction packs the live particles to the front of the buffer so the ' +
+      'mark can fall. It runs entirely on the GPU in a single frame, which ' +
+      'that frame gives up its physics step for. Nothing can interrupt it.';
 
     // THE KILL SWITCH. Compaction is the only thing on the Dev tab that changes
     // a bound the physics reads, so being able to take it out of the picture in
@@ -378,10 +377,10 @@ export class SandPrefs {
 
     const button = folder.addButton({ title: 'Compact now' });
     button.element.title =
-      'Order the pool exactly, then sweep: relocate live particles down so ' +
-      'the mark can fall. The sort is immediate and briefly stalls the ' +
-      'pipeline; the sweep then runs in budgeted chunks over a second or two ' +
-      'and is reported above. Painting aborts the sweep.';
+      'Pack the live particles to the front of the buffer and rebuild the ' +
+      'free list, so every pass stops sweeping dead slots. Runs on the GPU in ' +
+      'one frame, which skips its physics step. No readback, nothing to ' +
+      'interrupt.';
     button.on('click', () => this.callbacks.onCompactNow());
 
     // THE AUDIT BUTTON. Reads both buffers back and checks the pool's
@@ -434,13 +433,11 @@ export class SandPrefs {
     capacity: number;
     occupancy: number;
     paused: boolean;
-    sweeping: boolean;
-    sweepProgress: number;
-    relocated: number;
+    compactPending: boolean;
   }): void {
-    const sweep = stats.sweeping
-      ? `${Math.round(stats.sweepProgress * 100)}% · ${stats.relocated.toLocaleString()} moved`
-      : 'idle';
+    // ONE FRAME, so there is no progress to show -- only whether a compaction
+    // is queued for the next frame or nothing is happening.
+    const sweep = stats.compactPending ? 'queued' : 'idle';
     const live = stats.live.toLocaleString();
     // WITH THE CAPACITY, because the mark is meaningless alone: 400,000 is
     // excellent against a 3M cap and catastrophic against a 400k one.

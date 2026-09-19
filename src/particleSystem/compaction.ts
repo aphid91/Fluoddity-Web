@@ -122,133 +122,17 @@ export function liveCountFrom(head: number, entityCount: number): number {
   return Math.max(0, Math.min(entityCount, entityCount - head));
 }
 
-// ===========================================================================
-// TIER 2 -- the sweep that actually moves particles.
+// The Tier 2 sweep's arithmetic lived here -- target, chunk cursor, progress,
+// and an auto-trigger with quiet and cooldown windows. ALL OF IT IS GONE.
 //
-// Tier 1 stops the mark CREEPING. It cannot bring a mark down that has already
-// risen, because lowering the bound is only safe once you know where the
-// highest live particle is -- and the only way to know that is to put it
-// somewhere. Tier 2 relocates live particles into the dead holes below them,
-// which is what makes a lower bound provable rather than hopeful.
+// Every one of those existed to describe a compaction that ran across many
+// frames while the world changed underneath it: how far had it got, was its
+// answer still valid, had the brush invalidated it, when was it safe to start
+// another. GPU compaction runs in a single frame, so none of those questions
+// can be asked, let alone answered wrongly.
 //
-// ## WHY IT IS A SWEEP AND NOT ONE PASS
-//
-// A whole-buffer compaction at a 3M cap is exactly the stutter this work exists
-// to avoid. So the range is walked in BUDGETED CHUNKS, one per frame, and the
-// budget is flat: cost per frame is independent of world size, and only the
-// number of frames to finish varies.
-//
-// ## WHY A PARTIAL SWEEP IS SAFE TO ABANDON
-//
-// Every chunk leaves a VALID WORLD. Relocating a particle changes which index
-// holds it, and nothing outside the free list attaches meaning to an entity's
-// index -- no pass, no render, no config lookup. A sweep stopped halfway has
-// simply moved some particles and not others, which is a legal arrangement
-// that happens not to be packed yet.
-//
-// That is the whole reason abort is free, and it is what makes this
-// stutter-proof in practice: the sweep never has to finish. It only lowers the
-// mark on COMPLETION, so an abandoned sweep costs nothing but the work already
-// done, and that work is kept.
-// ===========================================================================
-
-/**
- * A sweep in progress.
- *
- * `hi` walks DOWNWARD from the mark; everything at or above it has been dealt
- * with. `target` is where the live particles are being packed below. The sweep
- * is finished when `hi` reaches `target`, at which point nothing live remains
- * above it and the mark can become `target`.
- */
-export interface SweepState {
-  /** Exclusive upper bound of the range still to examine. Walks down. */
-  readonly hi: number;
-  /** The packed size being aimed at. Fixed for the life of the sweep. */
-  readonly target: number;
-}
-
-/**
- * Where a sweep should aim, given what is live now.
- *
- * ## THE HEADROOM IS NOT OPTIONAL
- *
- * Aiming at exactly `live` would be correct only if `live` were exact, and it
- * is not: it comes from a head readback that is a frame or two stale, and the
- * sweep itself takes many frames during which the eraser may run. A target
- * below the true live count cannot be reached -- the sweep would walk `hi` all
- * the way down to `target` with live particles still above it, and completing
- * on that would set a mark that SKIPS them.
- *
- * The margin makes the target reachable under a live count that moved after it
- * was chosen. It costs a little unpacked space and buys the invariant that
- * completion means what it says.
- *
- * Rounded up to a multiple of the budget so the final chunk is a whole one
- * rather than a ragged remainder.
- */
-export function sweepTargetFor(live: number, mark: number, budget: number): number {
-  if (mark <= 0) return 0;
-  // 12.5% headroom, floored at one budget's worth so a nearly-empty world still
-  // gets a sane target rather than zero.
-  const margin = Math.max(budget, Math.ceil(live * 0.125));
-  const target = Math.min(mark, live + margin);
-  return Math.max(0, Math.min(mark, Math.ceil(target / budget) * budget));
-}
-
-/**
- * Whether a sweep is worth starting.
- *
- * A packed world has nothing to gain and a sweep over it is pure cost, so the
- * trigger is the occupancy ratio rather than the live count: what matters is
- * how much of the swept range is wasted, not how big the world is.
- *
- * The mark floor keeps this from firing on worlds too small for the saving to
- * be measurable -- at a 20k mark the passes are cheap whatever the occupancy.
- */
-export function sweepWorthwhile(
-  live: number,
-  mark: number,
-  minMark = 65536,
-  maxOccupancy = 0.6,
-): boolean {
-  if (mark < minMark) return false;
-  return occupancy(live, mark) < maxOccupancy;
-}
-
-/**
- * The next chunk of a sweep, or null when it is finished.
- *
- * Returns the half-open range `[lo, hi)` to examine and the state to carry to
- * the next frame. The range is clamped at `target`: the sweep examines only the
- * region ABOVE where it is packing, because a live particle already below the
- * target is already where it belongs.
- */
-export function nextSweepChunk(
-  state: SweepState,
-  budget: number,
-): { lo: number; hi: number; next: SweepState } | null {
-  if (state.hi <= state.target) return null;
-  const size = Math.max(1, Math.trunc(budget));
-  const lo = Math.max(state.target, state.hi - size);
-  return { lo, hi: state.hi, next: { hi: lo, target: state.target } };
-}
-
-/** Whether a sweep has examined everything above its target. */
-export function sweepComplete(state: SweepState): boolean {
-  return state.hi <= state.target;
-}
-
-/**
- * How far along a sweep is, 0..1 -- for the Dev panel's readout.
- *
- * Measured over the range the sweep actually walks (`mark` down to `target`),
- * not over the whole buffer, so it reaches 1.0 exactly when the sweep ends.
- */
-export function sweepProgress(state: SweepState, mark: number): number {
-  const span = mark - state.target;
-  if (span <= 0) return 1;
-  return Math.max(0, Math.min(1, (mark - state.hi) / span));
-}
+// `compactPlan.ts` has what replaced it: dispatch sizing, and one predicate for
+// whether compacting is worth the frame.
 
 /**
  * Occupancy below the mark: what fraction of the swept range is actually live.

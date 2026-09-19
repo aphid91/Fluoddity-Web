@@ -113,32 +113,3 @@ export function packSortUniforms(parity: number, window: number): ArrayBuffer {
   return buffer;
 }
 
-/** One `vec4u`, for the same reason the sort's uniform is: no world needed. */
-export const COMPACT_UNIFORM_SIZE = 16;
-
-/**
- * Pack the compaction pass's uniforms -- TIER 2.
- *
- * `[lo, hi)` is the window of SOURCE indices this chunk examines, walking down
- * from the mark. `target` is the packing boundary: destinations must land
- * strictly below it, and sources at or below it are already in place.
- *
- * `maxProbes` bounds the destination search per particle. It is a HANG GUARD
- * rather than a tuning value -- see `COMPACT_MAX_PROBES`.
- */
-export function packCompactUniforms(
-  lo: number,
-  hi: number,
-  target: number,
-  maxProbes: number,
-): ArrayBuffer {
-  const buffer = new ArrayBuffer(COMPACT_UNIFORM_SIZE);
-  const u32 = new Uint32Array(buffer);
-  u32[0] = Math.max(0, Math.trunc(lo));
-  u32[1] = Math.max(0, Math.trunc(hi));
-  u32[2] = Math.max(0, Math.trunc(target));
-  // At least one probe: a zero limit would make every relocation fail silently
-  // and the sweep would run to completion having moved nothing.
-  u32[3] = Math.max(1, Math.trunc(maxProbes));
-  return buffer;
-}

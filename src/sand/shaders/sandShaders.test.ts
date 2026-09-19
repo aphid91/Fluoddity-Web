@@ -28,8 +28,6 @@ import { resolveIncludes } from '../../../tools/wgslInclude.ts';
 // From the LEAF, not from `sandPasses.ts`: that module imports `.wgsl`, which
 // only resolves through the Vite plugin and cannot be imported under node.
 import {
-  COMPACT_MAX_PROBES,
-  COMPACT_WORKGROUP_SIZE,
   KILL_WORKGROUP_SIZE,
   SORT_WORKGROUP_SIZE,
   SPAWN_WORKGROUP_SIZE,
@@ -46,7 +44,6 @@ function expand(name: string): string {
 const SPAWN = expand('spawn.wgsl');
 const KILL = expand('kill.wgsl');
 const SORT = expand('freeListSort.wgsl');
-const COMPACT = expand('compact.wgsl');
 
 // ---------------------------------------------------------------------------
 // Workgroup sizes
@@ -250,98 +247,12 @@ test('the ordering pass alternates which pairs it compares', () => {
   assert.ok(SORT.includes('parity()'), 'the pair offset comes from the uniform');
 });
 
-// ---------------------------------------------------------------------------
-// The compaction pass -- Tier 2
-//
-// This one MOVES PARTICLES, so its failure modes are the worst available: a
-// duplicated particle, a vanished particle, or a hang. None is visible in a
-// screenshot and none is caught by a compiler.
-// ---------------------------------------------------------------------------
 
-test('compact.wgsl declares the workgroup size the host dispatches with', () => {
-  assert.match(COMPACT, new RegExp(`@workgroup_size\\(${COMPACT_WORKGROUP_SIZE}\\)`));
-});
-
-// THE LOAD-BEARING ONE, and the whole reason this pass has its own cursor.
-//
-// Taking destinations from the free list would put this pass into the
-// monotonic-head protocol while the ERASER is also moving the head -- the exact
-// interleaving freeList.wgsl forbids, and the one that hands a single slot to
-// two particles. The pass does not even bind the free list.
-test('the compaction pass never touches the free list', () => {
-  // Matched against the CODE, not the whole file: the header names both
-  // operations while explaining why it uses neither, and an explanation of a
-  // rejected approach is exactly where that belongs. Same reason the
-  // storage-pointer test below matches on declarations rather than prose.
-  const body = COMPACT.slice(COMPACT.indexOf('#include'));
-  assert.ok(!body.includes('free_list_take('), 'destinations come from its own cursor');
-  assert.ok(!body.includes('free_list_give('), 'it never returns slots either');
-  assert.ok(
-    !body.includes('freelist : FreeList'),
-    'it does not bind the pool at all, which is the strongest form of the rule',
-  );
-});
-
-// THE REGRESSION GUARD for a hang.
-//
-// A particle that cannot find a destination would otherwise probe until the
-// cursor passed the target. A whole workgroup doing that at once is a hang, not
-// a slowdown -- the tab stops responding rather than the frame rate dropping.
-test('the destination search is bounded', () => {
-  assert.ok(COMPACT.includes('max_probes()'), 'the probe loop has a limit');
-  assert.match(COMPACT, /probe < max_probes\(\)/, 'and the limit bounds the loop');
-  assert.ok(COMPACT_MAX_PROBES > 0, 'a zero limit would relocate nothing');
-});
-
-// THE REGRESSION GUARD for a vanished particle.
-//
-// Writing the destination before clearing the source means a racing reader sees
-// the particle at one index or at both -- never at neither. Both-at-once is a
-// one-frame cosmetic duplicate; neither-at-once is a particle that ceased to
-// exist, which is unrecoverable.
-test('the relocation writes the destination before clearing the source', () => {
-  const body = COMPACT.slice(COMPACT.indexOf('fn main'));
-  const write = body.indexOf('entities[dest] = e');
-  const clear = body.indexOf('entities[index] = make_entity_dead()');
-  assert.ok(write >= 0 && clear >= 0, 'both halves of the move are present');
-  assert.ok(write < clear, 'destination first, or a particle can vanish');
-});
-
-test('the compaction pass skips dead sources', () => {
-  // The common case on a sparse world -- which is the only kind of world a
-  // sweep runs on -- so it must be the cheap path.
-  assert.ok(COMPACT.includes('e_is_dead(e)'), 'dead sources return early');
-});
-
-// A source already below the target is where it belongs. Moving it is churn,
-// and worse, it could pull a particle out from under a destination another
-// invocation has already claimed.
-test('the compaction pass leaves sources below the target alone', () => {
-  assert.match(COMPACT, /index < pack_to\(\)/);
-});
-
-test('destinations land strictly below the target', () => {
-  // A destination at or above the target defeats the entire sweep: the mark
-  // could not then be lowered to the target, because something live is at it.
-  assert.match(COMPACT, /candidate >= pack_to\(\)/);
-});
-
-// THE REGRESSION GUARD for the reserved-keyword class of failure.
-//
-// `target` is reserved in WGSL, and naming a function with it is a PARSE ERROR
-// -- the module does not compile, the pipeline stays null, and the pass
-// silently does nothing. That shipped once: the only symptom was one console
-// line, because a null pipeline is guarded rather than thrown.
-//
-// These are the reserved words this project is plausibly tempted by. WGSL
-// reserves far more; the point is not to enumerate them but to catch a
-// recurrence of the ones that read as natural names for what these passes do.
 test('no pass declares a function with a WGSL reserved keyword', () => {
   const RESERVED = ['target', 'filter', 'sample', 'texture', 'binding', 'access'];
   for (const [name, source] of [
     ...ORDERED,
     ['freeListSort.wgsl', SORT] as const,
-    ['compact.wgsl', COMPACT] as const,
   ]) {
     for (const word of RESERVED) {
       assert.ok(
@@ -350,10 +261,4 @@ test('no pass declares a function with a WGSL reserved keyword', () => {
       );
     }
   }
-});
-
-test('the compaction pass verifies a candidate is dead before claiming it', () => {
-  // Without this the sweep would overwrite live particles with other live
-  // particles -- destroying one and duplicating the other.
-  assert.match(COMPACT, /e_is_dead\(entities\[candidate\]\)/);
 });

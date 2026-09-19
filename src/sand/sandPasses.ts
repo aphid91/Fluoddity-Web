@@ -22,19 +22,15 @@ import type { ParticleSystem } from '../particleSystem/particleSystem.ts';
 import type { WorldConfig } from '../particleSystem/config.ts';
 import {
   type Stroke,
-  COMPACT_UNIFORM_SIZE,
   KILL_UNIFORM_SIZE,
   SPAWN_UNIFORM_SIZE,
   SORT_UNIFORM_SIZE,
-  packCompactUniforms,
   packKillUniforms,
   packSpawnUniforms,
   packSortUniforms,
 } from './sandUniforms.ts';
 
 import {
-  COMPACT_MAX_PROBES,
-  COMPACT_WORKGROUP_SIZE,
   KILL_WORKGROUP_SIZE,
   SORT_SLOT_BUDGET,
   SORT_WORKGROUP_SIZE,
@@ -45,15 +41,11 @@ import {
 import spawnSource from './shaders/spawn.wgsl';
 import killSource from './shaders/kill.wgsl';
 import sortSource from './shaders/freeListSort.wgsl';
-import compactSource from './shaders/compact.wgsl';
 
 // Re-exported so callers have one import for the passes. The definitions live in
 // `sandDispatch.ts` because this module imports `.wgsl`, which only resolves
 // through the Vite plugin -- the same split `particleSystem.ts` makes.
 export {
-  COMPACT_MAX_PROBES,
-  COMPACT_SLOT_BUDGET,
-  COMPACT_WORKGROUP_SIZE,
   KILL_WORKGROUP_SIZE,
   SORT_SLOT_BUDGET,
   SORT_WORKGROUP_SIZE,
@@ -68,33 +60,14 @@ export class SandPasses {
   private spawnPipeline: GPUComputePipeline | null = null;
   private killPipeline: GPUComputePipeline | null = null;
   private sortPipeline: GPUComputePipeline | null = null;
-  private compactPipeline: GPUComputePipeline | null = null;
   private spawnGroup: GPUBindGroup | null = null;
   private killGroup: GPUBindGroup | null = null;
   private sortGroup: GPUBindGroup | null = null;
-  private compactGroup: GPUBindGroup | null = null;
 
   private readonly spawnUniforms: GPUBuffer;
   private readonly killUniforms: GPUBuffer;
   private readonly sortUniforms: GPUBuffer;
-  private readonly compactUniforms: GPUBuffer;
 
-  /**
-   * The sweep's own allocator: `{ next, moved }`, both atomics.
-   *
-   * DELIBERATELY NOT THE FREE LIST. Taking destinations from the pool would put
-   * this pass into the monotonic-head protocol while the eraser is also moving
-   * the head, which is the one interleaving `freeList.wgsl` forbids. This cursor
-   * is owned outright by the compaction pass and touched by nothing else. See
-   * the header of `compact.wgsl`.
-   */
-  private readonly compactCursor: GPUBuffer;
-  /** 8 bytes, for reading `moved` back. Same deferred shape as the head read. */
-  private readonly compactStaging: GPUBuffer;
-  /** Same state machine as the free-list head readback, for the same reasons. */
-  private compactPhase: 'idle' | 'recorded' | 'mapping' = 'idle';
-  /** Relocations counted by the last completed readback. */
-  private movedTotal = 0;
 
   /**
    * Which disjoint pairs the next ordering phase compares. Flipped every time
@@ -125,23 +98,6 @@ export class SandPasses {
       label: 'freelist-sort-uniforms',
       size: SORT_UNIFORM_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.compactUniforms = device.createBuffer({
-      label: 'compact-uniforms',
-      size: COMPACT_UNIFORM_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.compactCursor = device.createBuffer({
-      label: 'compact-cursor',
-      // Two u32 atomics: `next` and `moved`.
-      size: 8,
-      usage:
-        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    });
-    this.compactStaging = device.createBuffer({
-      label: 'compact-cursor-staging',
-      size: 8,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
   }
 
@@ -188,27 +144,11 @@ export class SandPasses {
       bindGroupLayouts: [sortLayout],
     });
 
-    // The compaction pass binds entities, its own cursor, and a uniform. It
-    // does NOT bind the free list -- it must not touch the pool while the
-    // eraser is moving the head, and not binding it is the strongest available
-    // statement of that. See the header of `compact.wgsl`.
-    const compactLayout = device.createBindGroupLayout({
-      label: 'compact',
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      ],
-    });
-    const compactPipelineLayout = device.createPipelineLayout({
-      bindGroupLayouts: [compactLayout],
-    });
 
-    const [spawnModule, killModule, sortModule, compactModule] = await Promise.all([
+    const [spawnModule, killModule, sortModule] = await Promise.all([
       compileModule(device, 'spawn', spawnSource),
       compileModule(device, 'kill', killSource),
       compileModule(device, 'freeListSort', sortSource),
-      compileModule(device, 'compact', compactSource),
     ]);
 
     const entities = this.system.entityBufferForSand();
@@ -264,22 +204,6 @@ export class SandPasses {
       });
     }
 
-    if (compactModule !== null) {
-      this.compactPipeline = device.createComputePipeline({
-        label: 'compact',
-        layout: compactPipelineLayout,
-        compute: { module: compactModule, entryPoint: 'main' },
-      });
-      this.compactGroup = device.createBindGroup({
-        label: 'compact',
-        layout: compactLayout,
-        entries: [
-          { binding: 0, resource: { buffer: entities } },
-          { binding: 1, resource: { buffer: this.compactCursor } },
-          { binding: 2, resource: { buffer: this.compactUniforms } },
-        ],
-      });
-    }
   }
 
   /**
@@ -390,107 +314,17 @@ export class SandPasses {
     pass.end();
   }
 
-  // =========================================================================
-  // TIER 2 -- the compaction sweep
-  // =========================================================================
-
-  /** Whether the compaction pass compiled. The Dev panel refuses to start a
-   *  sweep without it, rather than running one that silently moves nothing. */
-  get canCompact(): boolean {
-    return this.compactPipeline !== null && this.compactGroup !== null;
-  }
-
-  /**
-   * Reset the sweep's allocator to the start of a new sweep.
-   *
-   * `next` begins at 0 so destinations are handed out from the bottom of the
-   * buffer upward -- the same direction `initialFreeList` allocates, and for the
-   * same reason: packing must run toward index 0, not away from it.
-   *
-   * Called once per sweep, never per chunk. A per-chunk reset would send every
-   * chunk back to probing from zero over ground the previous chunk already
-   * filled, turning a linear sweep into a quadratic one.
-   */
-  beginSweep(): void {
-    this.device.queue.writeBuffer(this.compactCursor, 0, new Uint32Array([0, 0]));
-    this.movedTotal = 0;
-  }
-
-  /**
-   * Record one chunk of the sweep: relocate live particles in `[lo, hi)` down
-   * into dead slots below `target`.
-   *
-   * MUST NOT BE RECORDED ALONGSIDE A SPAWN. Mid-sweep the free list may still
-   * list slots this pass has filled, so a brush taking one would overwrite a
-   * live particle. The host refuses to spawn while a sweep is in flight, and
-   * painting aborts the sweep outright -- see `sandOrchestrator.ts`.
-   *
-   * Safe alongside the ERASER, which only marks particles dead and pushes their
-   * indices. A particle erased while being relocated is erased at one index or
-   * the other; either way it ends up dead, and the slot it vacated is dead too.
-   */
-  compactChunk(
-    encoder: GPUCommandEncoder,
-    lo: number,
-    hi: number,
-    target: number,
-  ): void {
-    if (this.compactPipeline === null || this.compactGroup === null) return;
-    if (hi <= lo) return;
-
-    this.device.queue.writeBuffer(
-      this.compactUniforms,
-      0,
-      packCompactUniforms(lo, hi, target, COMPACT_MAX_PROBES),
-    );
-
-    const pass = encoder.beginComputePass({ label: 'compact' });
-    pass.setPipeline(this.compactPipeline);
-    pass.setBindGroup(0, this.compactGroup);
-    pass.dispatchWorkgroups(workgroupsFor(hi - lo, COMPACT_WORKGROUP_SIZE));
-    pass.end();
-  }
-
-  /**
-   * Record a copy of the sweep cursor, for the progress readout.
-   *
-   * DEFERRED, never synchronous -- the same shape and the same reason as
-   * `recordFreeListRead`. The count feeds a readout, not a decision: whether the
-   * sweep completes is determined by the host's own cursor arithmetic, which
-   * does not depend on this at all.
-   */
-  recordSweepRead(encoder: GPUCommandEncoder): void {
-    if (this.compactPhase !== 'idle') return;
-    encoder.copyBufferToBuffer(this.compactCursor, 0, this.compactStaging, 0, 8);
-    this.compactPhase = 'recorded';
-  }
-
-  /** Start the readback. Call after submitting the encoder. */
-  pollSweepRead(): void {
-    if (this.compactPhase !== 'recorded') return;
-    this.compactPhase = 'mapping';
-    this.compactStaging.mapAsync(GPUMapMode.READ).then(
-      () => {
-        const data = new Uint32Array(this.compactStaging.getMappedRange().slice(0));
-        this.compactStaging.unmap();
-        // Lane 1 is `moved`; lane 0 is the allocator cursor, which is an
-        // implementation detail the host has no use for.
-        const moved = data[1];
-        if (moved !== undefined) this.movedTotal = moved;
-        this.compactPhase = 'idle';
-      },
-      () => {
-        // Device lost or buffer destroyed. Invariant 5: drop the answer rather
-        // than killing the frame.
-        this.compactPhase = 'idle';
-      },
-    );
-  }
-
-  /** Relocations so far in this sweep, as of the last completed readback. */
-  get relocated(): number {
-    return this.movedTotal;
-  }
+  // The old probe-and-claim compaction sweep lived here. It is GONE, replaced
+  // by `compactor.ts`, and the reason is worth keeping: it claimed destination
+  // slots with an atomic cursor and never told the free list they were
+  // consumed, leaking one slot per relocation -- 69,184 of them in the audit
+  // that finally caught it. The leak surfaced as particles that could not be
+  // erased and a mark that would not come down.
+  //
+  // It was not fixable in place. The pool had two writers that could not see
+  // each other, so the host was reconstructing by inference what only the GPU
+  // knew. The replacement writes the free list from scratch on the GPU, where
+  // leaking is not possible to express.
 
   /**
    * Free the buffers this module owns.
@@ -503,11 +337,5 @@ export class SandPasses {
     this.spawnUniforms.destroy();
     this.killUniforms.destroy();
     this.sortUniforms.destroy();
-    this.compactUniforms.destroy();
-    this.compactCursor.destroy();
-    // Set first, so an in-flight mapAsync callback finds a phase it will not
-    // act on rather than touching a destroyed buffer.
-    this.compactPhase = 'mapping';
-    this.compactStaging.destroy();
   }
 }

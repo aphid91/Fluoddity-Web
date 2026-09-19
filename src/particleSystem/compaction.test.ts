@@ -2,17 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  type SweepState,
   canDropMarkToZero,
   liveCountFrom,
-  nextSweepChunk,
   occupancy,
   sortBudgetFor,
   sortedFreeList,
-  sweepComplete,
-  sweepProgress,
-  sweepTargetFor,
-  sweepWorthwhile,
 } from './compaction.ts';
 import { initialFreeList } from './freeList.ts';
 
@@ -22,6 +16,7 @@ import { initialFreeList } from './freeList.ts';
 // backwards would be silent -- the pool would still be valid, still hand out
 // every index exactly once, and the mark would creep exactly as it does now.
 // ---------------------------------------------------------------------------
+
 
 test('sortedFreeList puts the lowest index on top of the stack', () => {
   // head = 4, slots scattered as the eraser would have left them.
@@ -180,9 +175,6 @@ test('occupancy calls an empty world packed rather than dividing by zero', () =>
   assert.equal(occupancy(0, 0), 1);
 });
 
-// ---------------------------------------------------------------------------
-// TIER 2 -- the sweep
-// ---------------------------------------------------------------------------
 
 // THE REGRESSION GUARD for a sweep that completes on a lie.
 //
@@ -194,79 +186,3 @@ test('occupancy calls an empty world packed rather than dividing by zero', () =>
 //
 // The headroom is what makes "the sweep finished" and "everything live is below
 // the target" the same statement.
-test('the sweep target leaves headroom above the live count', () => {
-  const target = sweepTargetFor(100_000, 1_000_000, 16_384);
-  assert.ok(target > 100_000, 'a target at or below live could not be reached');
-});
-
-test('the sweep target never exceeds the mark it is packing under', () => {
-  // Nothing is gained by aiming above the current bound -- that is where the
-  // particles already are.
-  assert.equal(sweepTargetFor(900_000, 1_000_000, 16_384), 1_000_000);
-});
-
-test('the sweep target is a whole number of budget chunks', () => {
-  const budget = 16_384;
-  const target = sweepTargetFor(100_000, 1_000_000, budget);
-  assert.equal(target % budget, 0, 'a ragged final chunk is avoidable, so avoid it');
-});
-
-test('an empty world has a zero target', () => {
-  assert.equal(sweepTargetFor(0, 0, 16_384), 0);
-});
-
-test('a sweep is worthwhile only when the range is mostly dead', () => {
-  assert.ok(sweepWorthwhile(100_000, 1_000_000), 'ten percent live: worth packing');
-  assert.ok(!sweepWorthwhile(900_000, 1_000_000), 'ninety percent live: already packed');
-});
-
-// A sweep over a small world costs more than it saves: the passes are cheap at
-// that scale whatever the occupancy, and the relocation is not free.
-test('a sweep is not worthwhile on a world too small to matter', () => {
-  assert.ok(!sweepWorthwhile(10, 20_000), 'below the mark floor, however sparse');
-});
-
-test('the sweep walks downward in budgeted chunks', () => {
-  const budget = 1000;
-  let state: SweepState = { hi: 10_000, target: 5000 };
-  const first = nextSweepChunk(state, budget);
-  assert.deepEqual(first?.lo, 9000);
-  assert.deepEqual(first?.hi, 10_000);
-  state = first!.next;
-  assert.equal(state.hi, 9000, 'the next chunk resumes where this one stopped');
-});
-
-// The region BELOW the target is where particles are being packed to. Examining
-// it would relocate particles that are already where they belong, and could
-// move one out from under a destination another invocation had claimed.
-test('the sweep never walks below its target', () => {
-  const chunk = nextSweepChunk({ hi: 5500, target: 5000 }, 1000);
-  assert.equal(chunk?.lo, 5000, 'the final chunk is clamped, not overshot');
-});
-
-test('a finished sweep yields no further chunks', () => {
-  assert.equal(nextSweepChunk({ hi: 5000, target: 5000 }, 1000), null);
-  assert.ok(sweepComplete({ hi: 5000, target: 5000 }));
-  assert.ok(!sweepComplete({ hi: 5001, target: 5000 }));
-});
-
-test('a sweep walked to its target completes', () => {
-  let state: SweepState = { hi: 10_000, target: 5000 };
-  let guard = 0;
-  while (!sweepComplete(state) && guard++ < 100) {
-    state = nextSweepChunk(state, 1000)!.next;
-  }
-  assert.ok(sweepComplete(state), 'the walk terminates');
-  assert.equal(state.hi, 5000, 'and lands exactly on the target');
-});
-
-test('sweep progress spans the walked range, not the whole buffer', () => {
-  const mark = 10_000;
-  assert.equal(sweepProgress({ hi: 10_000, target: 5000 }, mark), 0);
-  assert.equal(sweepProgress({ hi: 7500, target: 5000 }, mark), 0.5);
-  assert.equal(sweepProgress({ hi: 5000, target: 5000 }, mark), 1);
-});
-
-test('sweep progress is complete when there is no range to walk', () => {
-  assert.equal(sweepProgress({ hi: 5000, target: 5000 }, 5000), 1);
-});

@@ -45,6 +45,7 @@ import { type OverlayState, NO_OVERLAYS } from '../assembler/assemblerUniforms.t
 import { worldToUv } from '../particleSystem/coords.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
 import { SandPasses } from './sandPasses.ts';
+import { Compactor } from './compactor.ts';
 import { InitialConditions, RESTORE_FRAME } from './initialConditions.ts';
 import { Palette, isLoaded } from './palette.ts';
 import { type SandTool, isFieldTool, usesSwatch } from './tool.ts';
@@ -61,16 +62,8 @@ import {
 import { type BrushAction, BRUSH_ERASE, BRUSH_SPAWN, BrushInput } from './brushInput.ts';
 import { forUpload } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
-import {
-  type SweepState,
-  nextSweepChunk,
-  occupancy,
-  sweepComplete,
-  sweepProgress,
-  sweepTargetFor,
-} from '../particleSystem/compaction.ts';
+import { occupancy } from '../particleSystem/compaction.ts';
 import type { PoolAudit } from '../particleSystem/poolAudit.ts';
-import { COMPACT_SLOT_BUDGET } from './sandPasses.ts';
 import { fieldStrengthsFor } from '../prefs/preferences.ts';
 
 export interface SandFrameInput {
@@ -129,6 +122,12 @@ export class SandOrchestrator {
   private readonly targets: RenderTargets;
   // Both hold the entity buffer by reference, so both are replaced when it is.
   private passes: SandPasses;
+  /**
+   * GPU-only compaction. NOT readonly: a Max Particles or World Size change
+   * rebuilds the system, and the compactor's scratch buffers are sized to the
+   * entity count.
+   */
+  private compactor: Compactor;
   private initial: InitialConditions;
 
   /**
@@ -245,44 +244,38 @@ export class SandOrchestrator {
   private markDropHeld = false;
 
   /**
-   * The TIER 2 sweep in flight, or null when none is running.
+   * A compaction requested for the next frame.
    *
-   * `hi` walks down from the mark; `target` is the packed size being aimed at.
-   * Held here rather than in `SandPasses` because the sweep is a policy -- when
-   * to start, when to abandon, what to do on completion -- and the passes module
-   * records GPU work rather than deciding whether it should happen.
+   * ## WHY THIS IS A SINGLE BOOLEAN NOW
+   *
+   * It replaces a cursor, a target, a start mark, a "finishing" flag and two
+   * generation counters. All of that existed because the old compaction ran
+   * across many frames while the world kept changing underneath it, so every
+   * one of those fields answered a question about a partially-applied state:
+   * how far had it got, was its answer still valid, had something invalidated
+   * it since.
+   *
+   * GPU compaction runs in ONE FRAME. It either happened or it did not, so
+   * there is no partial state to describe, nothing to abort, and no window for
+   * anything to invalidate. The five fields collapse to "do it next frame".
+   *
+   * That simplification is the point of the rewrite as much as the correctness
+   * is: the old bugs all lived in the gaps between those fields.
    */
-  private sweep: SweepState | null = null;
+  private compactRequested = false;
 
   /**
-   * The mark the running sweep started from, for the progress readout.
+   * True on the frame a compaction was recorded, so the caller can report it.
    *
-   * Captured rather than re-read, because the mark does not move during a sweep
-   * and progress measured against a moving denominator would jump around.
+   * Cleared at the top of every frame. For the UI only -- nothing depends on it
+   * for correctness.
    */
-  private sweepStartMark = 0;
+  private compactedThisFrame = false;
 
-  /**
-   * True while a completed sweep's confirmation readback is in flight.
-   *
-   * `this.sweep` is cleared the instant the last chunk is recorded (see
-   * `beginFinish`), so without this the UI would report "no sweep" for the
-   * frame or two the confirmation takes -- and `startSweep` would happily begin
-   * a second one against a mark that is about to change.
-   */
-  private finishing = false;
-
-  /**
-   * Bumped whenever a sweep is abandoned, so an in-flight confirmation can tell
-   * that the world it was confirming is gone.
-   *
-   * A generation counter rather than a cancellation token because the thing
-   * being cancelled is a `mapAsync` that cannot be cancelled -- it will resolve
-   * regardless. What is controllable is whether its RESULT is applied, and
-   * comparing the generation it started under against the current one is the
-   * cheapest correct way to decide that.
-   */
-  private sweepGeneration = 0;
+  /** Whether a compaction was recorded on the frame just rendered. */
+  get justCompacted(): boolean {
+    return this.compactedThisFrame;
+  }
 
   /**
    * An explicit particle cap from the Dev panel, or null to follow World Size.
@@ -324,6 +317,7 @@ export class SandOrchestrator {
     field: StrafeField;
     targets: RenderTargets;
     passes: SandPasses;
+    compactor: Compactor;
   }) {
     this.device = opts.device;
     this.system = opts.system;
@@ -332,6 +326,7 @@ export class SandOrchestrator {
     this.field = opts.field;
     this.targets = opts.targets;
     this.passes = opts.passes;
+    this.compactor = opts.compactor;
     this.initial = new InitialConditions(opts.device, opts.system, opts.field);
   }
 
@@ -344,7 +339,8 @@ export class SandOrchestrator {
     targets: RenderTargets;
   }): Promise<SandOrchestrator> {
     const passes = await SandPasses.create(opts.device, opts.system);
-    const orch = new SandOrchestrator({ ...opts, passes });
+    const compactor = await Compactor.create(opts.device, opts.system);
+    const orch = new SandOrchestrator({ ...opts, passes, compactor });
     orch.startEmpty();
     return orch;
   }
@@ -402,9 +398,7 @@ export class SandOrchestrator {
     capacity: number;
     occupancy: number;
     paused: boolean;
-    sweeping: boolean;
-    sweepProgress: number;
-    relocated: number;
+    compactPending: boolean;
   } {
     const capacity = this.system.entityCount;
     const mark = this.system.activeEntityCount;
@@ -417,13 +411,9 @@ export class SandOrchestrator {
       capacity,
       occupancy: occupancy(live, mark),
       paused: this.compactionPaused,
-      sweeping: this.sweeping,
-      // Against the mark the sweep STARTED from, so the bar does not jump when
-      // the mark finally moves. 1 when nothing is running, which reads as
-      // "not in progress" beside the `sweeping` flag rather than as stalled.
-      sweepProgress:
-        this.sweep === null ? 1 : sweepProgress(this.sweep, this.sweepStartMark),
-      relocated: this.passes.relocated,
+      // NO PROGRESS FIGURE. The compaction is one frame, so there is no
+      // in-between to report -- only whether one is queued for the next.
+      compactPending: this.compactRequested,
     };
   }
 
@@ -440,221 +430,56 @@ export class SandOrchestrator {
   /** The Dev panel's kill switch. See `compactionPaused`. */
   setCompactionPaused(paused: boolean): void {
     this.compactionPaused = paused;
-    // A pause mid-sweep abandons it rather than freezing it in place: a
-    // suspended sweep holds cursors into a world that keeps changing, and the
-    // kill switch exists to take compaction OUT of the picture entirely.
-    if (paused) this.abortSweep();
+    // A pause cancels a pending request. Nothing else to undo: a compaction
+    // either ran on a frame or it did not, so there is no in-flight state for
+    // the kill switch to unwind.
+    if (paused) this.compactRequested = false;
   }
 
   /**
-   * Whether a Tier 2 sweep is running -- INCLUDING the confirmation readback
-   * that lands it. See `finishing`.
-   */
-  get sweeping(): boolean {
-    return this.sweep !== null || this.finishing;
-  }
-
-  /**
-   * Start a Tier 2 sweep -- relocate live particles down so the mark can fall.
+   * Whether a compaction is queued for the next frame.
    *
-   * Returns false, with a reason, when a sweep cannot or should not start. The
-   * refusals are explicit rather than silent because this is a button: a user
-   * who presses Compact and sees nothing deserves to know which of "already
-   * running", "nothing to gain" or "did not compile" applied.
+   * There is no "running" state to report. The compaction occupies exactly one
+   * frame, so by the time anything could observe it, it is done.
    */
-  startSweep(): { started: boolean; reason: string } {
-    if (this.sweeping) {
-      return { started: false, reason: 'already running' };
-    }
-    if (!this.passes.canCompact) {
-      // The pass failed to compile. Invariant 5's shape -- the app runs without
-      // it -- but a button that cannot work should say so.
-      return { started: false, reason: 'the compaction pass did not compile' };
-    }
+  get compactPending(): boolean {
+    return this.compactRequested;
+  }
 
+  /**
+   * Ask for a compaction on the next frame.
+   *
+   * Returns why not, rather than failing silently, because this is a button: a
+   * user who presses Compact and sees nothing deserves to know which of
+   * "already queued", "nothing to gain" or "did not compile" applied.
+   *
+   * ## Why it is queued rather than done here
+   *
+   * The compaction rewrites the entity buffer and the free list wholesale, so
+   * it needs a frame on which nothing else touches either -- no spawn, no kill,
+   * no `advance()`. `runFrame` is the only thing that can arrange that, so the
+   * request is left for it.
+   */
+  requestCompaction(): { queued: boolean; reason: string } {
+    if (this.compactionPaused) {
+      return { queued: false, reason: 'compaction is paused' };
+    }
+    if (this.compactRequested) {
+      return { queued: false, reason: 'already queued' };
+    }
+    if (!this.compactor.ready) {
+      // A pipeline failed to compile. Invariant 5's shape -- the app runs
+      // without it -- but a button that cannot work should say so.
+      return { queued: false, reason: 'the compaction passes did not compile' };
+    }
     const stats = this.compactionStats;
     if (stats.mark === 0) {
-      return { started: false, reason: 'the world is empty' };
+      return { queued: false, reason: 'the world is empty' };
     }
-
-    const target = sweepTargetFor(stats.live, stats.mark, COMPACT_SLOT_BUDGET);
-    if (target >= stats.mark) {
-      // Nothing to gain: the live particles already need the whole range. This
-      // is the honest answer on a packed world, not a failure.
-      return { started: false, reason: 'already packed' };
-    }
-
-    this.sweep = { hi: stats.mark, target };
-    this.sweepStartMark = stats.mark;
-    this.passes.beginSweep();
-    return { started: true, reason: '' };
+    this.compactRequested = true;
+    return { queued: true, reason: '' };
   }
 
-  /**
-   * Abandon a running sweep, KEEPING the relocations already made.
-   *
-   * ## Why this is cheap enough to do on any provocation
-   *
-   * A partly-swept world is a valid world. Relocating a particle changes which
-   * index holds it, and nothing outside the free list attaches meaning to an
-   * entity's index -- so a sweep stopped halfway has simply moved some
-   * particles and not others. The mark is not lowered, which is the only thing
-   * completion would have bought.
-   *
-   * THE FREE LIST MUST BE REBUILT, and that is the one substantive act here.
-   * Mid-sweep the pool may still list slots now holding relocated particles;
-   * handing one to a brush would overwrite a live particle. Rebuilding from the
-   * high-water mark is conservative in the safe direction: it offers only slots
-   * at or above the mark, every one of which is genuinely dead.
-   */
-  private abortSweep(): void {
-    // `finishing` counts as running: a confirmation readback is in flight and
-    // its `packMarkTo` will write the mark and rebuild the pool when it
-    // resolves. Without cancelling it, a clear or restore during that window
-    // would have its own pool rebuild silently overwritten a frame later, by a
-    // sweep landing on a world that no longer exists.
-    if (this.sweep === null && !this.finishing) return;
-    this.sweep = null;
-    this.sweepStartMark = 0;
-    // Bumped so an in-flight confirmation knows its world is gone and drops its
-    // result rather than applying it. See `finishSweep`.
-    this.sweepGeneration++;
-    this.finishing = false;
-    this.system.rebuildFreeListAbove(this.system.activeEntityCount);
-    // The rebuild replaced the pool, so the cached head describes a pool that
-    // no longer exists -- the same hazard a restore creates.
-    this.markDropHeld = true;
-  }
-
-  /**
-   * Record one chunk of the running sweep, and finish it when the range is
-   * walked. Does nothing when no sweep is in flight.
-   */
-  private stepSweep(encoder: GPUCommandEncoder): void {
-    if (this.sweep === null) return;
-
-    const chunk = nextSweepChunk(this.sweep, COMPACT_SLOT_BUDGET);
-    if (chunk === null) {
-      this.beginFinish();
-      return;
-    }
-
-    this.passes.compactChunk(encoder, chunk.lo, chunk.hi, this.sweep.target);
-    this.passes.recordSweepRead(encoder);
-    this.sweep = chunk.next;
-
-    if (sweepComplete(this.sweep)) this.beginFinish();
-  }
-
-  /**
-   * Kick off the confirmation that lands a completed sweep.
-   *
-   * ## Why the sweep is cleared HERE rather than inside `finishSweep`
-   *
-   * `finishSweep` awaits a readback, so it spans frames. Leaving `this.sweep`
-   * set across that await would let the next frame record another chunk against
-   * a sweep that is already finishing -- and let a second `finishSweep` start.
-   * Clearing it first makes the transition atomic with respect to the frame
-   * loop, which is single-threaded and therefore cannot interleave before the
-   * first await.
-   *
-   * `finishing` is what keeps the frame loop from reporting "no sweep" while
-   * the confirmation is still in flight.
-   */
-  private beginFinish(): void {
-    if (this.sweep === null) return;
-    this.finishing = true;
-    void this.finishSweep().finally(() => {
-      this.finishing = false;
-    });
-  }
-
-  /**
-   * Land a completed sweep: lower the mark to the target and rebuild the pool.
-   *
-   * ## Why the mark may now safely fall
-   *
-   * The sweep examined every index from the old mark down to the target and
-   * relocated every live particle it found below it. So nothing live remains at
-   * or above the target -- which is exactly the statement the mark makes.
-   *
-   * ## THE STRAGGLER CASE, AND WHY IT IS NOT HANDLED BY HOPING
-   *
-   * A relocation can give up: the probe limit in `compact.wgsl` is a hang guard
-   * and a particle that exhausts it stays where it is, above the target. Rare
-   * -- the sweep only runs below 60% occupancy -- but "rare" is not "never",
-   * and a mark lowered past a straggler would make it invisible.
-   *
-   * So completion is CONFIRMED rather than assumed. `packMarkTo` scans the
-   * range being abandoned and refuses to lower the mark past anything still
-   * alive up there, returning the mark it actually set. A sweep that left
-   * stragglers lowers the mark less far than it hoped, which is the correct
-   * outcome and is self-correcting: the next sweep starts from the new mark and
-   * tries again.
-   */
-  private async finishSweep(): Promise<void> {
-    if (this.sweep === null) return;
-    const target = this.sweep.target;
-    const generation = this.sweepGeneration;
-    this.sweep = null;
-    this.sweepStartMark = 0;
-    // CONFIRMED against the buffer, not assumed from the arithmetic. See above.
-    const mark = await this.system.packMarkTo(target, () => {
-      // Checked at the moment the result would be applied, not before the
-      // await: a clear or restore during the readback invalidates the whole
-      // premise, and applying a mark computed for the old world would be the
-      // invisible-particle failure by another route.
-      return this.sweepGeneration === generation;
-    });
-    if (this.sweepGeneration !== generation) return;
-    if (mark >= 0) this.markDropHeld = true;
-  }
-
-  /**
-   * The Dev panel's Compact button: order the pool exactly, then start a sweep.
-   *
-   * ## The two tiers do different jobs and both belong here
-   *
-   * The exact sort decides where FUTURE particles land, and on its own that is
-   * all it does -- which is why this button appeared to do nothing when it was
-   * only the sort. The sweep is what relocates the particles already scattered
-   * so the mark can actually fall.
-   *
-   * Ordering FIRST is deliberate: the sweep packs downward into low dead slots,
-   * and a sorted pool means the spawns that follow the sweep continue filling
-   * upward from the packed block rather than scattering into the tail again.
-   *
-   * Resolves once the sweep has STARTED, not once it has finished -- it runs in
-   * budgeted chunks over the following frames and the caller must not block on
-   * it. `compactionStats.sweeping` is how the UI follows it.
-   */
-  async compactNow(): Promise<{ slots: number; started: boolean; reason: string }> {
-    const slots = await this.sortPoolOnly();
-    const outcome = this.startSweep();
-    return { slots, ...outcome };
-  }
-
-  /**
-   * The exact pool sort alone, without starting a sweep.
-   *
-   * Split out because `compactNow` needs the sort to happen before the sweep
-   * starts, and because the sort is the half that is safe to run at any moment.
-   */
-  private async sortPoolOnly(): Promise<number> {
-    const slots = await this.system.sortFreeListNow();
-    // An exact sort does not itself move the mark -- ordering the pool changes
-    // where FUTURE particles land, not where existing ones are. The drop is
-    // attempted anyway because the user pressing Compact on an erased world
-    // expects the mark to come down, and this is the one case where it safely
-    // can.
-    //
-    // SUBJECT TO THE SAME HOLD as the per-frame path: pressing this in the
-    // frame or two after a restore would read a head that predates the restored
-    // pool. The button is explicit, but the user is asking to compact -- not to
-    // have their restored scene made invisible.
-    if (!this.markDropHeld) this.system.dropMarkIfEmpty(this.spawnedSinceRead);
-    return slots;
-  }
 
   /**
    * An empty world, paused, ready to be painted.
@@ -816,6 +641,10 @@ export class SandOrchestrator {
     // tuning World Size leaked one set per change.
     this.passes.destroy();
     this.passes = await SandPasses.create(this.device, replacement);
+    // Scratch buffers are sized to the entity count, so the compactor is
+    // rebuilt alongside rather than resized.
+    this.compactor.destroy();
+    this.compactor = await Compactor.create(this.device, replacement);
     this.initial.destroy();
     this.initial = new InitialConditions(this.device, replacement, replacementField);
 
@@ -886,10 +715,9 @@ export class SandOrchestrator {
     if (this.pendingWorldOp === 'clear') {
       this.system.resetLifetimes();
       this.spawnedSinceRead = 0;
-      // A sweep's cursors describe a world that no longer exists, and its
-      // target is a packed size for particles that have just been deleted.
-      // Abandoning is free by construction -- see `abortSweep`.
-      this.abortSweep();
+      // A queued compaction was requested for a world that no longer exists,
+      // and an empty world has nothing to compact.
+      this.compactRequested = false;
     }
     this.pendingWorldOp = null;
 
@@ -919,12 +747,25 @@ export class SandOrchestrator {
         // readback has not seen, and a restore is not a spawn -- it is the whole
         // pool changing underneath the reading.
         this.markDropHeld = true;
-        // The restore replaced every entity, so a sweep's cursors now point
-        // into a world that no longer exists and its target was computed for a
-        // live count that no longer applies.
-        this.abortSweep();
+        // A queued compaction was requested for the pre-restore arrangement.
+        // The restored scene may not need one at all, and the user can ask
+        // again if it does.
+        this.compactRequested = false;
       }
     }
+
+    // THIS FRAME BELONGS TO THE COMPACTION IF ONE IS QUEUED.
+    //
+    // It rewrites the entity buffer and the free list wholesale, so nothing
+    // else may touch either: no spawn (would take from a pool about to be
+    // replaced), no kill and no `advance()` (would push into it). Each of those
+    // is suppressed at its own site below, naming this flag.
+    //
+    // Decided ONCE, here, rather than tested repeatedly -- a frame in which
+    // some passes thought they were compacting and others did not is precisely
+    // the kind of half-state the old design kept producing.
+    const compacting = this.compactRequested && this.compactor.ready;
+    this.compactedThisFrame = false;
 
     const tool = this.brush.tool;
     const selected = this.palette.at(this.palette.selected);
@@ -953,19 +794,18 @@ export class SandOrchestrator {
       this.palette.all().length,
     );
 
-    // PAINTING ABORTS A SWEEP, and does so BEFORE the spawn below rather than
-    // after it. Mid-sweep the free list may still list slots the sweep has
-    // filled with relocated particles, so a spawn taking one would overwrite a
-    // live particle. Aborting here rebuilds the list, which is what makes the
-    // spawn on the very next line safe.
+    // NO ABORT HERE ANY MORE, and its absence is the point.
     //
-    // The brush never waits: the abort is synchronous host-side bookkeeping,
-    // and the relocations already done are kept. See `abortSweep`.
-    if (this.sweep !== null && command !== null && command.action === BRUSH_SPAWN) {
-      this.abortSweep();
-    }
+    // The old sweep ran across many frames, so painting during one could hand a
+    // brush a slot the sweep had already filled -- which meant every stroke had
+    // to abort it and rebuild the pool. That abort was itself the source of
+    // several bugs.
+    //
+    // A GPU compaction occupies one frame on which the brush passes do not run
+    // at all (`compactingThisFrame` below), so the two can never overlap. There
+    // is nothing to abort because there is never anything in flight.
 
-    if (command !== null && command.action === BRUSH_SPAWN) {
+    if (!compacting && command !== null && command.action === BRUSH_SPAWN) {
       this.passes.spawn(
         encoder,
         world,
@@ -1006,7 +846,7 @@ export class SandOrchestrator {
       this.capturedHighWater = this.system.activeEntityCount;
     }
 
-    if (!this._paused) {
+    if (!this._paused && !compacting) {
       // SHOVE IS NOT A PASS -- it is a value handed to every sub-step, because
       // it must act AS particles move rather than as one jump at an arbitrary
       // point in the frame. That is the shape ARCHITECTURE.md describes for a
@@ -1014,42 +854,49 @@ export class SandOrchestrator {
       // is why the strength is divided by the sub-step count host-side.
       //
       // Null while paused, like the studio: a paused frame is untouchable.
+      //
+      // SUPPRESSED ON A COMPACTION FRAME. `advance()` returns edge-killed
+      // indices to the pool via BC_KILL, and the compaction rewrites that pool
+      // from scratch -- a push landing in between would be discarded. One
+      // dropped physics frame is imperceptible; a lost push is a slot that can
+      // never be reused.
       this.system.runFrame(encoder, this.shoveFor(tool, input));
     }
 
-    if (command !== null && command.action === BRUSH_ERASE) {
+    if (!compacting && command !== null && command.action === BRUSH_ERASE) {
       this.passes.kill(encoder, world, command.stroke);
       // Nothing is adjusted on the host here: how many particles the eraser took
       // is a GPU-side fact, which is exactly why the free count is read back
       // rather than tallied. See `availableEstimate`.
     }
 
-    // TIER 1 COMPACTION: order a bounded window of the pool so the lowest free
-    // index pops next, which is what stops the eraser's scatter ratcheting the
-    // high-water mark upward. Moves no particle.
+    // POOL ORDERING: keep the lowest free index on top of the stack, so the
+    // eraser's scatter cannot ratchet the high-water mark upward. Moves no
+    // particle.
     //
     // AFTER kill, so a freed index can be ordered in on a later frame, and the
     // spawn flag is what keeps it off the creation pass's frames -- the one
     // overlap that is genuinely unsafe. See `sortFreeList`.
     //
-    // SKIPPED DURING A SWEEP: Tier 2 rebuilds the free list wholesale when it
-    // finishes, so ordering the pool mid-sweep is work that is about to be
-    // thrown away.
-    if (!this.compactionPaused && this.sweep === null) {
+    // SKIPPED ON A COMPACTION FRAME: the compaction writes the pool in perfect
+    // order anyway, so ordering it first is work about to be overwritten.
+    if (!this.compactionPaused && !compacting) {
       this.passes.sortFreeList(
         encoder,
         command !== null && command.action === BRUSH_SPAWN,
       );
     }
 
-    // TIER 2 COMPACTION: one budgeted chunk of the sweep, relocating live
-    // particles down into the dead holes below the target.
-    //
-    // AFTER kill for the same reason Tier 1 is: a particle erased this frame
-    // should be seen as dead by the relocation rather than moved and then
-    // erased. Both orders are correct -- the pass is safe alongside the eraser
-    // -- but this one does less pointless work.
-    this.stepSweep(encoder);
+    // THE COMPACTION, which owns this frame entirely -- see `compacting` above.
+    if (compacting) {
+      this.compactedThisFrame = this.compactor.record(encoder);
+      this.compactRequested = false;
+      // The pool is about to be replaced wholesale, so the cached head and any
+      // spawn tally against it describe a world that will not exist. Same
+      // hazard a restore creates, handled the same way.
+      this.markDropHeld = true;
+      this.spawnedSinceRead = 0;
+    }
 
     // LAST, so the head it copies includes this frame's spawns and erases.
     this.system.recordFreeListRead(encoder);
@@ -1063,7 +910,7 @@ export class SandOrchestrator {
     this.system.pollFreeListRead();
     // Same constraint, same placement: a mapAsync on an unsubmitted copy never
     // resolves and would wedge the readback forever.
-    this.passes.pollSweepRead();
+    this.compactor.poll();
 
     // A fresh head supersedes the spawns counted against the previous one --
     // and, equally, supersedes a pool rewrite the old head predated.
@@ -1072,6 +919,17 @@ export class SandOrchestrator {
       this.lastSeenHead = head;
       this.spawnedSinceRead = 0;
       this.markDropHeld = false;
+    }
+
+    // THE MARK THE GPU COMPUTED, applied under the direction rule.
+    //
+    // `noteCompactedMark` refuses anything that would RAISE the bound, and
+    // anything measured before a spawn the host has since counted. Both
+    // refusals are cheap: the mark simply stays where it is until the next
+    // compaction, which is the conservative direction.
+    const compacted = this.compactor.takeMark();
+    if (compacted !== null) {
+      this.system.noteCompactedMark(compacted, this.spawnedSinceRead);
     }
 
     // TIER 1's ONE MARK REDUCTION, and it is deliberately the only one: if the
@@ -1299,6 +1157,10 @@ export class SandOrchestrator {
     // See the note at the other rebuild site: these own GPU buffers.
     this.passes.destroy();
     this.passes = await SandPasses.create(this.device, replacement);
+    // Scratch buffers are sized to the entity count, so the compactor is
+    // rebuilt alongside rather than resized.
+    this.compactor.destroy();
+    this.compactor = await Compactor.create(this.device, replacement);
     this.initial.destroy();
     this.initial = new InitialConditions(this.device, replacement, this.field);
     // No snapshot survives the resize, so the next go must take a fresh one.
