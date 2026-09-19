@@ -133,22 +133,38 @@ fn main(
         // A LIVE ENTITY lands at its global rank, which is unique: no two
         // invocations share both a workgroup offset and a within-group rank.
         dst[group_offset + rank] = src[index];
-    } else {
-        // A DEAD SLOT contributes a free index. Its position in the pool is
-        // derived the same way -- how many dead slots precede it -- so the
-        // write needs no atomic and cannot collide.
+    }
+
+    // --- the free list ----------------------------------------------------
+    //
+    // THE POOL DESCRIBES THE BUFFER AFTER COMPACTION, NOT BEFORE IT.
+    //
+    // This pass first pushed the dead SOURCE indices -- the slots that were
+    // empty before the packing. That is the wrong set, and the audit said so
+    // precisely: the counts were right (live + pool = capacity) but 43,202
+    // indices were in the wrong half. Index 4 was dead beforehand and so got
+    // listed as free, while a relocated particle had just been written into it.
+    //
+    // Once the live entities are packed into [0, live_count), the free set is
+    // simply everything above them. It does not depend on where the holes used
+    // to be, so no dead ranking is needed at all -- each invocation at or above
+    // the live count contributes exactly itself.
+    //
+    // This is the same range the invocation clears as tail above, which is not
+    // a coincidence: a slot is free precisely because nothing was packed into
+    // it, so the entity write and the pool entry describe one fact.
+    if (index >= live_count()) {
+        // DESCENDING, so the LOWEST free index sits on top of the stack and is
+        // handed out first. `freeList.ts` is emphatic about this: the stack
+        // pops slots[head-1], and allocating upward from the bottom is what
+        // keeps the high-water mark from creeping. An ascending fill would
+        // quietly undo that and the mark would climb again on the next stroke.
         //
-        // dead_rank = (how many indices precede it) - (how many of those were
-        // live), which is exactly index - (group_offset + rank).
-        let dead_before = index - (group_offset + rank);
-        // DESCENDING FILL, so the LOWEST free index sits on top of the stack
-        // and is handed out first. `freeList.ts` is emphatic about this: the
-        // stack pops slots[head-1], and allocating upward from the bottom is
-        // what keeps the high-water mark from creeping. An ascending fill here
-        // would quietly undo that and the mark would climb again on the next
-        // stroke.
+        // Position: index `live_count` is the lowest free one and must land at
+        // the TOP of the stack (slots[free_total - 1]), so the offset from the
+        // bottom of the free range is inverted.
         let free_total = entity_count() - live_count();
-        let slot = free_total - 1u - dead_before;
-        freelist.slots[slot] = index;
+        let free_rank = index - live_count();
+        freelist.slots[free_total - 1u - free_rank] = index;
     }
 }

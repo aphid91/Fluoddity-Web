@@ -116,9 +116,11 @@ test('the scatter pass does not return before its barrier', () => {
 // never told the free list, leaking one slot per relocation -- 69,184 in the
 // audit that caught it. The scatter must WRITE the pool, not patch it.
 test('the scatter writes free-list slots directly', () => {
-  assert.ok(
-    SCATTER.includes('freelist.slots[slot] = index'),
-    'dead indices are written into the pool by position, not pushed',
+  assert.match(
+    SCATTER,
+    /freelist\.slots\[[^\]]+\] = index/,
+    'free indices are written into the pool BY POSITION, not pushed -- a push ' +
+      'would need an atomic and would not be deterministic',
   );
   const body = SCATTER.slice(SCATTER.indexOf('fn main'));
   assert.ok(
@@ -159,8 +161,31 @@ test('the scatter marks the tail dead rather than leaving it zeroed', () => {
 
 test('the scatter fills the pool descending, lowest index on top', () => {
   assert.ok(
-    SCATTER.includes('free_total - 1u - dead_before'),
-    'the slot position must invert the dead rank, or allocation runs downward',
+    SCATTER.includes('free_total - 1u - free_rank'),
+    'the slot position must invert the free rank, or allocation runs downward',
+  );
+});
+
+// THE REGRESSION GUARD for a pool describing the wrong buffer.
+//
+// The first version pushed the dead SOURCE indices -- the slots that were empty
+// BEFORE the packing. After compaction those are exactly the slots relocated
+// particles were written into, so the pool offered live particles while the
+// genuinely free tail went unlisted. The audit was precise: counts correct
+// (live + pool = capacity) but 43,202 indices in the wrong half.
+//
+// Once the live entities are packed into [0, live_count), the free set is
+// everything at or above the live count. It does not depend on where the holes
+// used to be.
+test('the pool is the range above the live count, not the old dead slots', () => {
+  assert.ok(
+    SCATTER.includes('let free_rank = index - live_count()'),
+    'a slot is free because nothing was packed into it, not because it was ' +
+      'empty before the compaction',
+  );
+  assert.ok(
+    !SCATTER.includes('dead_before'),
+    'the pre-compaction dead ranking describes the wrong buffer entirely',
   );
 });
 
