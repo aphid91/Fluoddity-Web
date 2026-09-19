@@ -102,6 +102,33 @@ fn main(
 
     if (index >= entity_count()) { return; }
 
+    // EVERY INVOCATION WRITES ITS OWN SLOT IN `dst`, live or dead.
+    //
+    // THE TAIL IS NOT IMPLICITLY DEAD. `dst` is a scratch buffer, and an
+    // unwritten entity is 32 zero bytes -- which is not a dead particle, it is
+    // a LIVE one on config 0. `deadEntityBytes` documents this trap at length:
+    // "a naively zeroed buffer is a buffer full of LIVE particles stacked at
+    // the origin".
+    //
+    // The first version of this pass wrote only the live destinations and left
+    // the rest untouched. The audit was unambiguous: live 6,000,000 of
+    // 6,000,000, with the entire tail above the mark reading as alive and
+    // sitting in the free list at the same time. The scan and the mark were
+    // both correct; only the tail was garbage.
+    //
+    // THE TWO WRITES NEVER TARGET THE SAME SLOT, which is what makes this safe
+    // without any ordering between invocations. A live entity always lands
+    // BELOW `live_count()` (its rank among the live is less than their total),
+    // and the tail clear only touches indices at or above it. The ranges
+    // partition the buffer, so no slot is written twice and none is left out.
+    //
+    // Ordering between invocations would be unavailable anyway: a dispatch has
+    // none internally, so a design where two invocations raced for one slot
+    // could not be fixed by reordering the lines here.
+    if (index >= live_count()) {
+        dst[index] = make_entity_dead();
+    }
+
     if (live == 1u) {
         // A LIVE ENTITY lands at its global rank, which is unique: no two
         // invocations share both a workgroup offset and a within-group rank.

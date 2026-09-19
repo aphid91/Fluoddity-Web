@@ -134,6 +134,29 @@ test('the scatter writes free-list slots directly', () => {
 // bottom. An ascending fill here would still produce a valid pool -- every
 // index present exactly once -- while quietly undoing the property that makes
 // the high-water mark useful at all.
+// THE REGRESSION GUARD for a buffer that reads as entirely alive.
+//
+// `dst` is scratch, and an unwritten entity is 32 zero bytes -- which is NOT a
+// dead particle. Zero is a valid config index, so a zeroed slot is a LIVE
+// particle on config 0; `deadEntityBytes` documents this at length.
+//
+// The first version of the scatter wrote only the live destinations and left
+// the rest untouched. The audit was unambiguous: live 6,000,000 of 6,000,000,
+// the whole tail above the mark simultaneously alive AND in the free list. The
+// scan and the mark were both correct; only the tail was garbage.
+test('the scatter marks the tail dead rather than leaving it zeroed', () => {
+  assert.ok(
+    SCATTER.includes('make_entity_dead()'),
+    'every slot at or above the live count must be written dead, because an ' +
+      'unwritten one reads as alive on config 0',
+  );
+  assert.match(
+    SCATTER,
+    /index >= live_count\(\)/,
+    'and the tail is exactly the range at or above the live count',
+  );
+});
+
 test('the scatter fills the pool descending, lowest index on top', () => {
   assert.ok(
     SCATTER.includes('free_total - 1u - dead_before'),
