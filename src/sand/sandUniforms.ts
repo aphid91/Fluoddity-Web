@@ -84,3 +84,61 @@ export function packKillUniforms(world: WorldConfig, stroke: Stroke): ArrayBuffe
   f32[AFTER_WORLD + 4] = stroke.radius;
   return buffer;
 }
+
+/**
+ * One `vec4u`. NO `WorldData`, unlike the two brushes above.
+ *
+ * The ordering pass touches only the free list, which has no position, no scale
+ * and no boundary -- there is nothing in the world it needs to know. Prefixing
+ * it with a `WorldData` for symmetry would be 32 bytes of uniform the shader
+ * never reads, and a reader would reasonably wonder what it was for.
+ */
+export const SORT_UNIFORM_SIZE = 16;
+
+/**
+ * Pack the free-list ordering pass's uniforms.
+ *
+ * `parity` alternates which disjoint pairs a phase compares. Without alternating
+ * it the same pairs would be compared every frame and an element could never
+ * migrate past its neighbour -- the pool would reach a fixed point that is not
+ * sorted. `window` is the flat per-frame budget; the shader clamps it against
+ * the real head, which it reads itself rather than trusting the host's stale
+ * copy.
+ */
+export function packSortUniforms(parity: number, window: number): ArrayBuffer {
+  const buffer = new ArrayBuffer(SORT_UNIFORM_SIZE);
+  const u32 = new Uint32Array(buffer);
+  u32[0] = parity === 0 ? 0 : 1;
+  u32[1] = Math.max(0, Math.trunc(window));
+  return buffer;
+}
+
+/** One `vec4u`, for the same reason the sort's uniform is: no world needed. */
+export const COMPACT_UNIFORM_SIZE = 16;
+
+/**
+ * Pack the compaction pass's uniforms -- TIER 2.
+ *
+ * `[lo, hi)` is the window of SOURCE indices this chunk examines, walking down
+ * from the mark. `target` is the packing boundary: destinations must land
+ * strictly below it, and sources at or below it are already in place.
+ *
+ * `maxProbes` bounds the destination search per particle. It is a HANG GUARD
+ * rather than a tuning value -- see `COMPACT_MAX_PROBES`.
+ */
+export function packCompactUniforms(
+  lo: number,
+  hi: number,
+  target: number,
+  maxProbes: number,
+): ArrayBuffer {
+  const buffer = new ArrayBuffer(COMPACT_UNIFORM_SIZE);
+  const u32 = new Uint32Array(buffer);
+  u32[0] = Math.max(0, Math.trunc(lo));
+  u32[1] = Math.max(0, Math.trunc(hi));
+  u32[2] = Math.max(0, Math.trunc(target));
+  // At least one probe: a zero limit would make every relocation fail silently
+  // and the sweep would run to completion having moved nothing.
+  u32[3] = Math.max(1, Math.trunc(maxProbes));
+  return buffer;
+}

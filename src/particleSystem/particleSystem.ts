@@ -62,6 +62,7 @@ import {
   freeListSize,
   initialFreeList,
 } from './freeList.ts';
+import { canDropMarkToZero, sortedFreeList } from './compaction.ts';
 import { canvasDimensions, ENTITIES_PER_WORLD_UNIT, ENTITY_COUNT } from './sizing.ts';
 import {
   type FieldStrengths,
@@ -1183,6 +1184,211 @@ export class ParticleSystem {
   noteSpawned(count: number): void {
     if (!this.lifetimes || count <= 0) return;
     this.highWaterMark = Math.min(this.entityCount, this.highWaterMark + count);
+  }
+
+  /**
+   * Drop the mark to zero IF the pool is provably empty -- TIER 1's one mark
+   * reduction. Returns whether it fired.
+   *
+   * `activeEntityCount` explains why the mark is otherwise never lowered: a
+   * freed slot below it is reused before it grows, so shrinking it risks
+   * skipping a live particle. The single exception is a pool in which EVERY slot
+   * is free, because then there is no live particle to skip.
+   *
+   * That case is ordinary use, not a curiosity -- paint a lot, erase all of it --
+   * and without this the world keeps paying the full mark on every pass forever
+   * afterwards.
+   *
+   * `spawnedSinceRead` is required because the head is a readback and lags a
+   * frame or two; the reasoning is in `canDropMarkToZero`, which owns the
+   * decision so it can be tested without a device.
+   */
+  dropMarkIfEmpty(spawnedSinceRead: number): boolean {
+    if (!this.lifetimes) return false;
+    if (this.highWaterMark === 0) return false;
+    if (!canDropMarkToZero(this.freeListHead, this.entityCount, spawnedSinceRead)) {
+      return false;
+    }
+    this.highWaterMark = 0;
+    return true;
+  }
+
+  /**
+   * Rebuild the pool to offer exactly the slots at or above `boundary`.
+   *
+   * TIER 2's cleanup. A sweep leaves the free list stale in one direction: it
+   * may still list slots the sweep has filled with relocated particles, and
+   * handing one to a brush would overwrite a live particle. This replaces the
+   * pool with a statement the host knows to be true.
+   *
+   * CONSERVATIVE BY CONSTRUCTION. Slots below the boundary are simply not
+   * offered, whether or not they are dead. That leaks reusable slots -- the
+   * eraser's holes below the mark become unavailable until the next sweep or
+   * reset -- and that is the correct trade: an unoffered dead slot costs a
+   * little capacity, while an offered live one costs a particle.
+   *
+   * One `writeBuffer`, no pass in flight, from a value the host computed
+   * itself. That is the whole reason the sweep can avoid touching the pool
+   * while it runs. Mirrors `freeListAfterMigration`, which does this after a
+   * Max Particles resize.
+   */
+  rebuildFreeListAbove(boundary: number): void {
+    if (!this.lifetimes) return;
+    const live = Math.max(0, Math.min(this.entityCount, Math.trunc(boundary)));
+    this.device.queue.writeBuffer(
+      this.freeListBuffer,
+      0,
+      freeListAfterMigration(this.entityCount, live),
+    );
+    this.freeListHead = this.entityCount - live;
+  }
+
+  /**
+   * Land a completed sweep: lower the mark to `target`, but only as far as the
+   * buffer actually permits. Resolves to the mark that was set.
+   *
+   * ## WHY THIS CONFIRMS RATHER THAN TRUSTS
+   *
+   * The sweep relocates every live particle it finds above the target, but a
+   * relocation can give up -- the probe limit in `compact.wgsl` is a hang guard,
+   * and a particle that exhausts it stays where it is. Rare, since the sweep
+   * only runs on sparse worlds, but a mark lowered past such a straggler would
+   * make it invisible: alive in memory, skipped by every pass, drawn by nothing.
+   * That is the single worst failure in this whole subsystem and it must not be
+   * reachable by a probability argument.
+   *
+   * So the range being abandoned is READ and scanned. The mark lands just above
+   * the highest live particle found there, which is `target` in the overwhelming
+   * common case and higher when a straggler exists. A sweep that achieved less
+   * than it hoped is self-correcting: the next one starts from the new mark.
+   *
+   * The readback is acceptable for the reason `migrateEntitiesTo` gives: this
+   * happens once per sweep, at the end of a deliberate act, and the pool rebuild
+   * it feeds has to be exact.
+   */
+  /**
+   * @param stillValid Consulted after the readback resolves, immediately before
+   *   the result is applied. A sweep can be abandoned while its confirmation is
+   *   in flight -- by a clear, a restore, or the user picking up the brush --
+   *   and the mapAsync cannot be cancelled. This is how the caller says "the
+   *   world I asked about is gone, throw the answer away"; returning false
+   *   leaves the mark and the pool exactly as they are.
+   */
+  async packMarkTo(
+    target: number,
+    stillValid: () => boolean = () => true,
+  ): Promise<number> {
+    if (!this.lifetimes) return this.highWaterMark;
+    const want = Math.max(0, Math.min(this.entityCount, Math.trunc(target)));
+    const from = this.highWaterMark;
+    // Nothing above the target to abandon, so nothing to confirm.
+    if (want >= from) return from;
+
+    const stride = ENTITY_STRIDE;
+    const bytes = (from - want) * stride;
+    const staging = this.device.createBuffer({
+      label: 'compact-confirm-staging',
+      size: bytes,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+
+    let mark = want;
+    try {
+      const encoder = this.device.createCommandEncoder({ label: 'compact-confirm' });
+      // ONLY THE ABANDONED RANGE is read, not the whole buffer: at a 3M cap
+      // with a sweep that packed to 200k this is 2.8M entities rather than 3M,
+      // but on the far more common small-gain sweep it is a fraction of one.
+      encoder.copyBufferToBuffer(this.entityBuffer, want * stride, staging, 0, bytes);
+      this.device.queue.submit([encoder.finish()]);
+
+      await staging.mapAsync(GPUMapMode.READ);
+      const source = new Uint8Array(staging.getMappedRange());
+      const asInt = new Int32Array(
+        source.buffer,
+        source.byteOffset,
+        source.byteLength / 4,
+      );
+      // Scan DOWNWARD and stop at the first live particle: the mark is an upper
+      // bound on the highest live index, so the highest straggler is the only
+      // one that matters and finding it ends the search.
+      for (let i = from - want - 1; i >= 0; i--) {
+        // `config_index` is misc.y -- float lane 5 of 8. Negative means dead.
+        if (asInt[i * 8 + 5]! >= 0) {
+          mark = want + i + 1;
+          break;
+        }
+      }
+      staging.unmap();
+    } catch {
+      // A failed readback must not lower the mark on an unverified range.
+      // Holding the old mark is the safe direction: slow, never invisible.
+      return from;
+    } finally {
+      staging.destroy();
+    }
+
+    // THE LAST POSSIBLE MOMENT to bail, and the right one: everything above is
+    // a read, and everything below writes. A sweep abandoned during the
+    // readback must not land its result on the world that replaced it.
+    if (!stillValid()) return -1;
+
+    this.highWaterMark = mark;
+    // The pool now offers exactly the slots at or above the confirmed mark.
+    this.rebuildFreeListAbove(mark);
+    return mark;
+  }
+
+  /**
+   * Read the free list back, sort it exactly, and write it returned -- the Dev
+   * panel's manual compaction.
+   *
+   * ## Why this is allowed to stall when nothing else on the frame path is
+   *
+   * It maps a buffer and waits, which is a genuine pipeline stall -- the thing
+   * `recordFreeListRead` exists to avoid doing per frame. It is acceptable here
+   * for the reason `migrateEntitiesTo` gives for the same sin: this runs when a
+   * user presses a button, a deliberate and occasional act, and the hitch is
+   * what they asked for.
+   *
+   * The per-frame pass does the same job incrementally and without stalling.
+   * This exists to make the effect immediate and total for testing, and for the
+   * rare case where a user wants it done now.
+   *
+   * THE HEAD IS READ FROM THE BUFFER, not from `freeListHead`: the cached one is
+   * stale, and sorting a region sized by a stale head would reorder slots that
+   * are live indices. `sortedFreeList` bounds itself by the head it is handed,
+   * so handing it the real one is what makes that bound true.
+   *
+   * Returns the number of slots sorted, for the status line.
+   */
+  async sortFreeListNow(): Promise<number> {
+    if (!this.lifetimes) return 0;
+    const bytes = freeListSize(this.entityCount);
+    const staging = this.device.createBuffer({
+      label: 'freelist-sort-staging',
+      size: bytes,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+
+    try {
+      const encoder = this.device.createCommandEncoder({ label: 'freelist-sort-read' });
+      encoder.copyBufferToBuffer(this.freeListBuffer, 0, staging, 0, bytes);
+      this.device.queue.submit([encoder.finish()]);
+
+      await staging.mapAsync(GPUMapMode.READ);
+      // `slice` before unmapping: the mapped range is detached by `unmap`, and
+      // sorting a detached view would throw rather than fail quietly.
+      const image = new Uint32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+
+      const sorted = sortedFreeList(image);
+      this.device.queue.writeBuffer(this.freeListBuffer, 0, sorted);
+      // The head did not move, so the cached copy stays true and the next
+      // readback will confirm it unchanged.
+      return sorted[0] ?? 0;
+    } finally {
+      staging.destroy();
+    }
   }
 
   /** The entity buffer, for the sand modality's passes and snapshots. */

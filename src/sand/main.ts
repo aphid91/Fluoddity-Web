@@ -331,6 +331,43 @@ async function main(): Promise<void> {
   // `live` is what the frame loop reads. A preference change swaps the whole
   // object rather than mutating one, so a frame always renders one coherent set.
   let live = prefs;
+
+  // -------------------------------------------------------------------------
+  // THE STATUS LINE HAS TWO WRITERS, AND THE FRAME LOOP WAS WINNING EVERY TIME.
+  //
+  // The loop rewrites the status every frame with the standing "paused / N
+  // particles / R restores" line. Every transient message -- saved, resized,
+  // loaded, compacted, and every failure -- was therefore visible for at most
+  // one frame before being overwritten, which is to say never.
+  //
+  // This was found because the Compact Now button "did nothing": it worked,
+  // said so, and was erased ~16ms later. The messages below had been invisible
+  // since they were written; nobody noticed because none of them was the only
+  // evidence that a button had fired.
+  //
+  // `notify` parks a message with an expiry and the frame loop defers to it
+  // until it lapses -- what the user just DID matters more than the standing
+  // state for the few seconds after they did it.
+  // -------------------------------------------------------------------------
+  const NOTICE_MS = 4000;
+  let notice: { text: string; until: number } | null = null;
+  const notify = (text: string): void => {
+    notice = { text, until: performance.now() + NOTICE_MS };
+    ui.setStatus(text);
+  };
+
+  /**
+   * The mark when a sweep started, held so its result can be reported.
+   *
+   * A SWEEP FINISHES ON A LATER FRAME than the button that began it, so the
+   * outcome cannot be announced from the click handler -- that is the shape of
+   * the thing. Non-null means "a sweep is in flight and its result is still to
+   * be reported"; the frame loop watches for it to end.
+   */
+  let markBefore: number | null = null;
+  /** True on the previous frame, to catch the edge where a sweep ends. */
+  let wasSweeping = false;
+
   const prefsWindow = new SandPrefs(
     prefs,
     orch.palette,
@@ -359,14 +396,14 @@ async function main(): Promise<void> {
       live = next;
       void (async () => {
         try {
-          ui.setStatus('Rebuilding world…');
+          notify('Rebuilding world…');
           await orch.applyWorldSize(next, fallbackConfig, defaultWorld);
           // A Canvas Aspect change reshapes the world, so the crop follows it.
           ui.setCanvasAspect(orch.system.canvasSize[0] / orch.system.canvasSize[1]);
-          ui.setStatus('World rebuilt — the scene was cleared');
+          notify('World rebuilt — the scene was cleared');
         } catch (e) {
           console.error(`Could not rebuild the world: ${String(e)}`);
-          ui.setStatus(`World rebuild failed: ${String(e)}`);
+          notify(`World rebuild failed: ${String(e)}`);
         }
       })();
     },
@@ -395,10 +432,10 @@ async function main(): Promise<void> {
           // where the settings now live.
           orch.palette.set(slot, { ...entry, name });
           persist();
-          ui.setStatus(`Saved "${name}" to ${CUSTOM_CATEGORY}`);
+          notify(`Saved "${name}" to ${CUSTOM_CATEGORY}`);
         } catch (e) {
           console.error(`Could not save ${name}: ${String(e)}`);
-          ui.setStatus(`Save failed: ${String(e)}`);
+          notify(`Save failed: ${String(e)}`);
         }
       })();
     },
@@ -408,13 +445,45 @@ async function main(): Promise<void> {
     onMaxParticles: (count) => {
       void (async () => {
         try {
-          ui.setStatus(`Resizing to ${count.toLocaleString()} particles…`);
+          notify(`Resizing to ${count.toLocaleString()} particles…`);
           await orch.resizeEntities(count, fallbackConfig, defaultWorld);
           persist();
-          ui.setStatus(`Max particles: ${count.toLocaleString()}`);
+          notify(`Max particles: ${count.toLocaleString()}`);
         } catch (e) {
           console.error(`Could not resize to ${count}: ${String(e)}`);
-          ui.setStatus(`Resize failed: ${String(e)}`);
+          notify(`Resize failed: ${String(e)}`);
+        }
+      })();
+    },
+    // COMPACTION. Not persisted, unlike the settings above: both of these are
+    // diagnostics for the session in front of you, and a pause that survived a
+    // reload would be a compaction silently off weeks later with no sign why.
+    onCompactionPaused: (paused) => {
+      orch.setCompactionPaused(paused);
+      notify(paused ? 'Compaction paused' : 'Compaction resumed');
+    },
+    onCompactNow: () => {
+      void (async () => {
+        try {
+          // Said BEFORE the await: this stalls the pipeline, so the message has
+          // to land before the hitch rather than after it, or the user sees a
+          // freeze with nothing explaining it.
+          notify('Ordering the pool…');
+          markBefore = orch.compactionStats.mark;
+          const { started, reason } = await orch.compactNow();
+          // The sweep is NOT awaited -- it runs in budgeted chunks over the
+          // next second or two, and blocking on it would be the stutter this
+          // whole design exists to avoid. The frame loop announces the result
+          // when it lands; see `sweepWatch`.
+          if (!started) {
+            markBefore = null;
+            notify(`Pool ordered — no sweep needed (${reason})`);
+          } else {
+            notify('Sweeping — relocating particles…');
+          }
+        } catch (e) {
+          console.error(`Could not compact: ${String(e)}`);
+          notify(`Compaction failed: ${String(e)}`);
         }
       })();
     },
@@ -501,7 +570,7 @@ async function main(): Promise<void> {
       // screen IS the arrangement, and restoring would discard it in favour of
       // an older one. Saying so beats a key that silently does nothing.
       if (!orch.reset()) {
-        ui.setStatus('Already editing the initial conditions — nothing to reset to');
+        notify('Already editing the initial conditions — nothing to reset to');
       }
     }
   });
@@ -524,7 +593,7 @@ async function main(): Promise<void> {
   async function pasteIntoEmptySwatch(): Promise<void> {
     const slot = orch.palette.firstEmpty();
     if (slot === null) {
-      ui.setStatus('No empty swatch — right-click one to load into it');
+      notify('No empty swatch — right-click one to load into it');
       return;
     }
 
@@ -539,19 +608,19 @@ async function main(): Promise<void> {
     try {
       const doc = decodeShareText(text);
       if (doc === null) {
-        ui.setStatus('That does not look like a Fluoddity config');
+        notify('That does not look like a Fluoddity config');
         return;
       }
       saved = fromDocument(doc, 'clipboard');
     } catch (err: unknown) {
-      ui.setStatus('That config could not be read — it may have been truncated');
+      notify('That config could not be read — it may have been truncated');
       console.warn(`Rejected a pasted config: ${String(err)}`);
       return;
     }
 
     const config = saved.configs[0];
     if (config === undefined) {
-      ui.setStatus('That config held no elements');
+      notify('That config held no elements');
       return;
     }
 
@@ -567,7 +636,7 @@ async function main(): Promise<void> {
     orch.palette.select(slot);
     orch.applyPalette(fallbackConfig, defaultWorld);
     persist();
-    ui.setStatus(`Loaded into swatch ${slot + 1}`);
+    notify(`Loaded into swatch ${slot + 1}`);
   }
 
   // --- frame loop ----------------------------------------------------------
@@ -613,17 +682,45 @@ async function main(): Promise<void> {
     // Rebuilds the Config tab only when the selection or a square's contents
     // actually changed -- see `syncConfig`.
     prefsWindow.syncConfig();
+    // The pool readouts. Self-guarding: it only touches Tweakpane when a
+    // displayed value actually moved, so a static world costs the formatting.
+    const poolStats = orch.compactionStats;
+    prefsWindow.setCompactionStats(poolStats);
+
+    // A SWEEP ENDS ON ITS OWN FRAME, so its result is reported here rather than
+    // from the button that started it. The edge -- was sweeping, now is not --
+    // is what marks the end, whether the sweep completed or was aborted by the
+    // user picking up the brush.
+    if (wasSweeping && !poolStats.sweeping && markBefore !== null) {
+      const before = markBefore;
+      markBefore = null;
+      notify(
+        poolStats.mark < before
+          ? `Compacted — mark ${before.toLocaleString()} → ` +
+              `${poolStats.mark.toLocaleString()}`
+          : `Sweep ended with the mark unchanged at ${poolStats.mark.toLocaleString()}` +
+              ' — aborted, or nothing could be moved',
+      );
+    }
+    wasSweeping = poolStats.sweeping;
     ui.refresh({
       tool: orch.brush.tool,
       brushSize: orch.brush.sizeSlot,
       strength: orch.brush.weight,
       editingInitialConditions: orch.editingInitialConditions,
     });
-    ui.setStatus(
-      `${orch.paused ? 'PAUSED — arrange, then SPACE' : 'running'}  ·  ` +
-        `~${orch.liveEstimate.toLocaleString()} particles  ·  ` +
-        `${orch.hasInitialConditions ? 'R restores' : 'no initial conditions yet'}`,
-    );
+    // A live notice outranks the standing line until it lapses -- see `notify`.
+    // Without this the loop overwrote every transient message within a frame.
+    if (notice !== null && performance.now() < notice.until) {
+      ui.setStatus(notice.text);
+    } else {
+      notice = null;
+      ui.setStatus(
+        `${orch.paused ? 'PAUSED — arrange, then SPACE' : 'running'}  ·  ` +
+          `~${orch.liveEstimate.toLocaleString()} particles  ·  ` +
+          `${orch.hasInitialConditions ? 'R restores' : 'no initial conditions yet'}`,
+      );
+    }
 
     requestAnimationFrame(frame);
   };

@@ -77,6 +77,10 @@ export interface SandPrefsCallbacks {
   onSaveConfig(slot: number, name: string): void;
   /** Max Particles was committed. Rebuilds the entity buffer. */
   onMaxParticles(count: number): void;
+  /** The Dev tab's Compact Now button. Stalls the pipeline; see the button. */
+  onCompactNow(): void;
+  /** The Dev tab's compaction kill switch. */
+  onCompactionPaused(paused: boolean): void;
   /** A UI comp was chosen from the Dev tab's dropdown. */
   onTheme(theme: SandTheme): void;
   /** The swatch-count slider moved. Display only -- see `palette.ts`. */
@@ -102,6 +106,23 @@ export class SandPrefs {
   private readonly devValues: Record<string, number | string>;
   /** The last committed Max Particles, for reverting a bad entry. */
   private committedMaxParticles: number;
+
+  /**
+   * The compaction readouts, as STRINGS.
+   *
+   * Tweakpane's monitor bindings show a number as a graph or a slider; these are
+   * bound as text so they read as a diagnostic rather than as something to drag.
+   * Written by `setCompactionStats` once per frame and never by the user.
+   */
+  private readonly poolValues: Record<string, string | boolean> = {
+    live: '—',
+    mark: '—',
+    occupancy: '—',
+    sweep: 'idle',
+    compactionPaused: false,
+  };
+  /** Refreshed per frame, but only when a displayed value actually moved. */
+  private poolFolder: FolderApi | null = null;
 
   constructor(
     prefs: Preferences,
@@ -265,6 +286,151 @@ export class SandPrefs {
       this.committedMaxParticles = requested;
       this.callbacks.onMaxParticles(requested);
     });
+
+    this.buildPool(page);
+  }
+
+  /**
+   * The pool folder: what compaction is doing, and the controls for it.
+   *
+   * ## Why these three numbers and not a particle count alone
+   *
+   * A sand world's cost is not "how many particles exist" -- it is HOW FAR EVERY
+   * PASS HAS TO SWEEP, which is the high-water mark. The two come apart exactly
+   * when compaction matters: erase a full world and Live goes to zero while Mark
+   * stays where it was, and every pass keeps paying the old price for particles
+   * that are gone. Showing Live without Mark would make that state look healthy.
+   *
+   * Occupancy is the ratio, surfaced because it is the number that says whether
+   * anything is wrong: at 100% the buffer is packed and there is nothing to win,
+   * and at 5% the world is paying twenty invocations per particle that exists.
+   *
+   * Folded and placed below Max Particles because it is a diagnostic, not a
+   * setting -- it is read when something is slow, not adjusted in normal use.
+   */
+  private buildPool(page: TabPageApi): void {
+    const folder = page.addFolder({ title: 'Particle pool', expanded: false });
+    this.poolFolder = folder;
+
+    // MONITORS, not bindings: `readonly` is what makes Tweakpane render these as
+    // a display rather than as an editable field. A user cannot type a new
+    // high-water mark, and offering a box that looks like they could would be a
+    // lie about what the number is.
+    const live = folder.addBinding(this.poolValues, 'live', {
+      label: 'Live',
+      readonly: true,
+    });
+    live.element.title =
+      'Particles currently alive, from the free-list head. A frame or two ' +
+      'stale — the head is read back asynchronously, never synchronously.';
+
+    const mark = folder.addBinding(this.poolValues, 'mark', {
+      label: 'Mark',
+      readonly: true,
+    });
+    mark.element.title =
+      'The high-water mark: how far every pass over the entities actually ' +
+      'sweeps. THIS is what a large particle cap costs, not the live count. ' +
+      'It rises as particles are painted and only falls when the pool empties ' +
+      'completely or you compact.';
+
+    const occ = folder.addBinding(this.poolValues, 'occupancy', {
+      label: 'Occupancy',
+      readonly: true,
+    });
+    occ.element.title =
+      'Live ÷ Mark — the fraction of the swept range that is doing any work. ' +
+      '100% is packed. A low value means the passes are sweeping mostly dead ' +
+      'slots, which is what compaction exists to fix.';
+
+    // THE SWEEP. Tier 2 runs over many frames, so it needs a readout of its own
+    // -- a button whose effect arrives two seconds later, with nothing saying it
+    // is working, is indistinguishable from a button that does nothing. That is
+    // the mistake this panel already made once.
+    const sweep = folder.addBinding(this.poolValues, 'sweep', {
+      label: 'Sweep',
+      readonly: true,
+    });
+    sweep.element.title =
+      'Tier 2 compaction: relocating live particles down so the mark can ' +
+      'fall. Runs in budgeted chunks over a second or two. Painting aborts ' +
+      'it — the relocations already made are kept, the mark simply does not ' +
+      'come down that time.';
+
+    // THE KILL SWITCH. Compaction is the only thing on the Dev tab that changes
+    // a bound the physics reads, so being able to take it out of the picture in
+    // one click is what makes a suspicious world diagnosable.
+    const pause = folder.addBinding(this.poolValues, 'compactionPaused', {
+      label: 'Pause compaction',
+    });
+    pause.element.title =
+      'Stop the per-frame pool ordering and the automatic mark drop. For ' +
+      'telling whether odd behaviour is compaction or something else. Compact ' +
+      'Now still works while this is on.';
+    pause.on('change', () => {
+      this.callbacks.onCompactionPaused(Boolean(this.poolValues['compactionPaused']));
+    });
+
+    const button = folder.addButton({ title: 'Compact now' });
+    button.element.title =
+      'Order the pool exactly, then sweep: relocate live particles down so ' +
+      'the mark can fall. The sort is immediate and briefly stalls the ' +
+      'pipeline; the sweep then runs in budgeted chunks over a second or two ' +
+      'and is reported above. Painting aborts the sweep.';
+    button.on('click', () => this.callbacks.onCompactNow());
+  }
+
+  /**
+   * Push a frame's pool numbers into the readouts.
+   *
+   * Called every frame from the frame loop. Cheap: it writes four strings and
+   * refreshes the folder, and Tweakpane does nothing if the folder is collapsed
+   * -- which it is by default, so the common case costs the formatting alone.
+   *
+   * FORMATTED HERE rather than in the orchestrator, because these are display
+   * strings and the orchestrator should not own a locale.
+   */
+  setCompactionStats(stats: {
+    live: number;
+    mark: number;
+    capacity: number;
+    occupancy: number;
+    paused: boolean;
+    sweeping: boolean;
+    sweepProgress: number;
+    relocated: number;
+  }): void {
+    const sweep = stats.sweeping
+      ? `${Math.round(stats.sweepProgress * 100)}% · ${stats.relocated.toLocaleString()} moved`
+      : 'idle';
+    const live = stats.live.toLocaleString();
+    // WITH THE CAPACITY, because the mark is meaningless alone: 400,000 is
+    // excellent against a 3M cap and catastrophic against a 400k one.
+    const mark =
+      `${stats.mark.toLocaleString()} / ${stats.capacity.toLocaleString()}`;
+    const occ = `${Math.round(stats.occupancy * 100)}%`;
+
+    // GUARDED, because `refresh()` rebuilds every blade's DOM text and this runs
+    // at frame rate. The live count moves constantly while painting but is
+    // static the rest of the time, so the guard makes the common case free.
+    if (
+      live === this.poolValues['live'] &&
+      mark === this.poolValues['mark'] &&
+      occ === this.poolValues['occupancy'] &&
+      sweep === this.poolValues['sweep'] &&
+      stats.paused === this.poolValues['compactionPaused']
+    ) {
+      return;
+    }
+
+    this.poolValues['live'] = live;
+    this.poolValues['mark'] = mark;
+    this.poolValues['occupancy'] = occ;
+    this.poolValues['sweep'] = sweep;
+    this.poolValues['compactionPaused'] = stats.paused;
+    // The FOLDER, not the whole pane: refreshing the pane would also rewrite
+    // every Prefs and Config blade, including one the user may be mid-drag on.
+    this.poolFolder?.refresh();
   }
 
   // -------------------------------------------------------------------------

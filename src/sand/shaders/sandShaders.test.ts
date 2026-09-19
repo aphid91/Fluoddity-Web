@@ -28,7 +28,10 @@ import { resolveIncludes } from '../../../tools/wgslInclude.ts';
 // From the LEAF, not from `sandPasses.ts`: that module imports `.wgsl`, which
 // only resolves through the Vite plugin and cannot be imported under node.
 import {
+  COMPACT_MAX_PROBES,
+  COMPACT_WORKGROUP_SIZE,
   KILL_WORKGROUP_SIZE,
+  SORT_WORKGROUP_SIZE,
   SPAWN_WORKGROUP_SIZE,
   workgroupsFor,
 } from '../sandDispatch.ts';
@@ -42,6 +45,8 @@ function expand(name: string): string {
 
 const SPAWN = expand('spawn.wgsl');
 const KILL = expand('kill.wgsl');
+const SORT = expand('freeListSort.wgsl');
+const COMPACT = expand('compact.wgsl');
 
 // ---------------------------------------------------------------------------
 // Workgroup sizes
@@ -149,7 +154,11 @@ test('no free-list function takes a storage pointer', () => {
   // Matched on `fn ... ptr<storage` rather than on the bare type, because
   // freeList.wgsl's header QUOTES the rejected signature while explaining why it
   // is rejected -- and a comment is exactly where that explanation belongs.
-  for (const [name, source] of ORDERED) {
+  //
+  // The ordering pass is included here even though it declares no free-list
+  // function of its own: it includes the struct, so a pointer parameter
+  // introduced there would narrow the device matrix just the same.
+  for (const [name, source] of [...ORDERED, ['freeListSort.wgsl', SORT] as const]) {
     const declarations = source.match(/^\s*fn\s+\w+\s*\([^)]*\)/gm) ?? [];
     for (const decl of declarations) {
       assert.ok(!decl.includes('ptr<storage'), `${name}: ${decl.trim()}`);
@@ -180,4 +189,171 @@ test('the eraser survives a zero-length stroke', () => {
   // distance compares false against every radius, so the eraser would silently
   // do nothing on a stationary click.
   assert.ok(KILL.includes('denom <= 0.0'));
+});
+
+// ---------------------------------------------------------------------------
+// The free-list ordering pass -- Tier 1 compaction
+//
+// This pass is exempt from the monotonic-head invariant above rather than
+// bound by it, and the exemption is the whole safety argument: it never moves
+// the head, so it cannot create or destroy a slot however it interleaves. The
+// tests here are what keep that true, because every way of breaking it is
+// silent -- a pool that hands out one index twice looks like a brush painting
+// slightly wrong, not like a crash.
+// ---------------------------------------------------------------------------
+
+test('freeListSort.wgsl declares the workgroup size the host dispatches with', () => {
+  assert.match(SORT, new RegExp(`@workgroup_size\\(${SORT_WORKGROUP_SIZE}\\)`));
+});
+
+test('the ordering pass never takes or gives a slot', () => {
+  // THE LOAD-BEARING ONE. Calling either would put this pass into the
+  // monotonic-head protocol it is designed to sidestep -- and it runs
+  // concurrently with the eraser, so it would be the exact interleaving
+  // freeList.wgsl says must never happen.
+  const body = SORT.slice(SORT.indexOf('fn main'));
+  assert.ok(!body.includes('free_list_take'), 'ordering must not reserve slots');
+  assert.ok(!body.includes('free_list_give'), 'ordering must not return slots');
+});
+
+test('the ordering pass never writes the head', () => {
+  // It may READ the head (and must, to bound its window), but any write would
+  // change how many slots the pool claims to have while a brush is reading it.
+  const body = SORT.slice(SORT.indexOf('fn main'));
+  assert.ok(!body.includes('atomicAdd'), 'no head increment');
+  assert.ok(!body.includes('atomicSub'), 'no head decrement');
+  assert.ok(!body.includes('atomicStore'), 'no head assignment');
+  assert.ok(body.includes('atomicLoad'), 'the head is read, to bound the window');
+});
+
+// THE REGRESSION GUARD for reordering live indices.
+//
+// Slots at or above the head are not free -- they are indices that have been
+// taken and belong to live particles. Sorting them in would resurrect them as
+// available and hand a live particle's slot to a brush. The window must be
+// clamped against the head the shader reads ITSELF, not the host's stale copy.
+test('the ordering pass clamps its window to the head it read', () => {
+  assert.match(SORT, /min\(\s*window_len\(\)\s*,\s*head\s*\)/);
+});
+
+test('the ordering pass sorts descending, so the lowest index pops first', () => {
+  // The stack pops from slots[head-1]. Ascending would put the HIGHEST free
+  // index on top -- the exact opposite of what stops the mark creeping, and a
+  // change that would leave every test about pool validity still passing.
+  assert.ok(SORT.includes('if (x < y)'), 'swaps when out of descending order');
+});
+
+test('the ordering pass alternates which pairs it compares', () => {
+  // Without the parity offset the same disjoint pairs are compared every frame,
+  // so nothing can migrate past its neighbour and the pool reaches a fixed
+  // point that is not sorted -- a pass that runs forever and achieves nothing.
+  assert.ok(SORT.includes('parity()'), 'the pair offset comes from the uniform');
+});
+
+// ---------------------------------------------------------------------------
+// The compaction pass -- Tier 2
+//
+// This one MOVES PARTICLES, so its failure modes are the worst available: a
+// duplicated particle, a vanished particle, or a hang. None is visible in a
+// screenshot and none is caught by a compiler.
+// ---------------------------------------------------------------------------
+
+test('compact.wgsl declares the workgroup size the host dispatches with', () => {
+  assert.match(COMPACT, new RegExp(`@workgroup_size\\(${COMPACT_WORKGROUP_SIZE}\\)`));
+});
+
+// THE LOAD-BEARING ONE, and the whole reason this pass has its own cursor.
+//
+// Taking destinations from the free list would put this pass into the
+// monotonic-head protocol while the ERASER is also moving the head -- the exact
+// interleaving freeList.wgsl forbids, and the one that hands a single slot to
+// two particles. The pass does not even bind the free list.
+test('the compaction pass never touches the free list', () => {
+  // Matched against the CODE, not the whole file: the header names both
+  // operations while explaining why it uses neither, and an explanation of a
+  // rejected approach is exactly where that belongs. Same reason the
+  // storage-pointer test below matches on declarations rather than prose.
+  const body = COMPACT.slice(COMPACT.indexOf('#include'));
+  assert.ok(!body.includes('free_list_take('), 'destinations come from its own cursor');
+  assert.ok(!body.includes('free_list_give('), 'it never returns slots either');
+  assert.ok(
+    !body.includes('freelist : FreeList'),
+    'it does not bind the pool at all, which is the strongest form of the rule',
+  );
+});
+
+// THE REGRESSION GUARD for a hang.
+//
+// A particle that cannot find a destination would otherwise probe until the
+// cursor passed the target. A whole workgroup doing that at once is a hang, not
+// a slowdown -- the tab stops responding rather than the frame rate dropping.
+test('the destination search is bounded', () => {
+  assert.ok(COMPACT.includes('max_probes()'), 'the probe loop has a limit');
+  assert.match(COMPACT, /probe < max_probes\(\)/, 'and the limit bounds the loop');
+  assert.ok(COMPACT_MAX_PROBES > 0, 'a zero limit would relocate nothing');
+});
+
+// THE REGRESSION GUARD for a vanished particle.
+//
+// Writing the destination before clearing the source means a racing reader sees
+// the particle at one index or at both -- never at neither. Both-at-once is a
+// one-frame cosmetic duplicate; neither-at-once is a particle that ceased to
+// exist, which is unrecoverable.
+test('the relocation writes the destination before clearing the source', () => {
+  const body = COMPACT.slice(COMPACT.indexOf('fn main'));
+  const write = body.indexOf('entities[dest] = e');
+  const clear = body.indexOf('entities[index] = make_entity_dead()');
+  assert.ok(write >= 0 && clear >= 0, 'both halves of the move are present');
+  assert.ok(write < clear, 'destination first, or a particle can vanish');
+});
+
+test('the compaction pass skips dead sources', () => {
+  // The common case on a sparse world -- which is the only kind of world a
+  // sweep runs on -- so it must be the cheap path.
+  assert.ok(COMPACT.includes('e_is_dead(e)'), 'dead sources return early');
+});
+
+// A source already below the target is where it belongs. Moving it is churn,
+// and worse, it could pull a particle out from under a destination another
+// invocation has already claimed.
+test('the compaction pass leaves sources below the target alone', () => {
+  assert.match(COMPACT, /index < pack_to\(\)/);
+});
+
+test('destinations land strictly below the target', () => {
+  // A destination at or above the target defeats the entire sweep: the mark
+  // could not then be lowered to the target, because something live is at it.
+  assert.match(COMPACT, /candidate >= pack_to\(\)/);
+});
+
+// THE REGRESSION GUARD for the reserved-keyword class of failure.
+//
+// `target` is reserved in WGSL, and naming a function with it is a PARSE ERROR
+// -- the module does not compile, the pipeline stays null, and the pass
+// silently does nothing. That shipped once: the only symptom was one console
+// line, because a null pipeline is guarded rather than thrown.
+//
+// These are the reserved words this project is plausibly tempted by. WGSL
+// reserves far more; the point is not to enumerate them but to catch a
+// recurrence of the ones that read as natural names for what these passes do.
+test('no pass declares a function with a WGSL reserved keyword', () => {
+  const RESERVED = ['target', 'filter', 'sample', 'texture', 'binding', 'access'];
+  for (const [name, source] of [
+    ...ORDERED,
+    ['freeListSort.wgsl', SORT] as const,
+    ['compact.wgsl', COMPACT] as const,
+  ]) {
+    for (const word of RESERVED) {
+      assert.ok(
+        !new RegExp(`\\bfn\\s+${word}\\s*\\(`).test(source),
+        `${name} declares fn ${word}(), which WGSL reserves`,
+      );
+    }
+  }
+});
+
+test('the compaction pass verifies a candidate is dead before claiming it', () => {
+  // Without this the sweep would overwrite live particles with other live
+  // particles -- destroying one and duplicating the other.
+  assert.match(COMPACT, /e_is_dead\(entities\[candidate\]\)/);
 });
