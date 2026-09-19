@@ -217,10 +217,87 @@ export function scanGroups(n: number): number {
 export function compactionWorthwhile(
   live: number,
   mark: number,
-  minMark = 65536,
-  maxOccupancy = 0.6,
+  minMark = MIN_COMPACT_MARK,
+  maxOccupancy = MAX_COMPACT_OCCUPANCY,
 ): boolean {
   if (mark < minMark) return false;
   if (mark <= 0) return false;
   return live / mark < maxOccupancy;
+}
+
+/**
+ * Occupancy at or above which a world is packed enough to leave alone.
+ *
+ * At 70% the passes are sweeping three dead slots for every seven live ones,
+ * which is cheap enough not to be worth a frame. Below it the waste grows fast
+ * -- and unlike the old incremental sweep, a compaction here costs one frame
+ * whatever the state, so the threshold can be generous without risk.
+ */
+export const MAX_COMPACT_OCCUPANCY = 0.7;
+
+/**
+ * Below this mark, compacting costs more than it saves.
+ *
+ * Every pass visits `mark` entities, so at 64k the per-frame cost is already
+ * negligible however sparse the buffer is -- while a compaction is four passes
+ * over the whole buffer plus a full-size copy, and that does not get cheaper
+ * just because few particles are live.
+ */
+export const MIN_COMPACT_MARK = 65536;
+
+/**
+ * The shortest gap between automatic compactions.
+ *
+ * ## Why a floor is needed at all
+ *
+ * A compaction lowers the mark to the live count exactly, so the world is
+ * fully packed the instant it finishes -- occupancy 100%, and the trigger
+ * cannot fire again until the mark has risen and particles have died. That is
+ * self-limiting, and in a calm world nothing more would be required.
+ *
+ * It is not self-limiting under a brush. Painting raises the mark on every
+ * frame while edge-death and the eraser lower the live count, so a world being
+ * actively drawn in can cross below the threshold again within a few frames of
+ * being compacted. Without a floor that becomes a compaction every few frames,
+ * each one skipping a physics step -- a stutter caused entirely by the thing
+ * meant to prevent stutter.
+ *
+ * Two seconds is long enough that the cost is unnoticeable at any frame rate
+ * and short enough that a world being rapidly erased is tidied promptly.
+ */
+export const COMPACT_COOLDOWN_MS = 2000;
+
+/**
+ * Whether an automatic compaction should start now.
+ *
+ * Pure, so the policy is testable without a device or a clock: every input that
+ * varies is a parameter, and the caller supplies the time. The orchestrator
+ * only supplies readings and acts on the answer.
+ *
+ * ## The conditions
+ *
+ * `enabled`   the user's switch, first because nothing else matters if off.
+ * `idle`      no compaction already queued. A second request would be
+ *             redundant, and the one queued is about to fix the world anyway.
+ * `worth it`  occupancy below the threshold and the mark above the floor.
+ * `cooled`    far enough from the last one. See `COMPACT_COOLDOWN_MS`.
+ *
+ * NO QUIET PERIOD, unlike the incremental sweep this replaces. That design had
+ * to wait for the user to stop painting, because a brush stroke would abort a
+ * sweep mid-flight and the abort was expensive. A GPU compaction occupies one
+ * frame on which the brush passes simply do not run, so painting through it
+ * costs a single frame of deposited material and nothing else.
+ */
+export function shouldAutoCompact(args: {
+  enabled: boolean;
+  idle: boolean;
+  live: number;
+  mark: number;
+  now: number;
+  lastCompactedAt: number;
+  cooldownMs?: number;
+}): boolean {
+  if (!args.enabled || !args.idle) return false;
+  if (!compactionWorthwhile(args.live, args.mark)) return false;
+  return args.now - args.lastCompactedAt >= (args.cooldownMs ?? COMPACT_COOLDOWN_MS);
 }

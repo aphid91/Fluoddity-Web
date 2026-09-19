@@ -459,6 +459,14 @@ async function main(): Promise<void> {
     // COMPACTION. Not persisted, unlike the settings above: both of these are
     // diagnostics for the session in front of you, and a pause that survived a
     // reload would be a compaction silently off weeks later with no sign why.
+    onAutoCompact: (enabled) => {
+      orch.setAutoCompact(enabled);
+      notify(
+        enabled
+          ? 'Auto compact on — below 70% occupancy, at most once every 2s'
+          : 'Auto compact off',
+      );
+    },
     onCompactionPaused: (paused) => {
       orch.setCompactionPaused(paused);
       notify(paused ? 'Compaction paused' : 'Compaction resumed');
@@ -703,6 +711,10 @@ async function main(): Promise<void> {
     // `justCompacted` is true on exactly that frame. The MARK, though, arrives
     // a frame or two later through the readback, so the report waits for it to
     // actually move rather than announcing on the frame the passes ran.
+    // ONLY FOR COMPACTIONS THE USER ASKED FOR. `markBefore` is set by the
+    // button and stays null for automatic ones, which is what keeps a
+    // background tidy from interrupting the status line every time it fires.
+    // An auto compaction is still visible in the Dev panel's readouts.
     if (markBefore !== null && poolStats.mark < markBefore) {
       const before = markBefore;
       markBefore = null;

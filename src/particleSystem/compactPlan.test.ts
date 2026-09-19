@@ -13,6 +13,7 @@ import {
   scanLevelSizes,
   scanLevels,
   scanScratchSlots,
+  shouldAutoCompact,
   totalSlot,
 } from './compactPlan.ts';
 
@@ -197,4 +198,83 @@ test('compaction is not worthwhile on a world too small to matter', () => {
 
 test('an empty world is never worth compacting', () => {
   assert.ok(!compactionWorthwhile(0, 0));
+});
+
+test('the threshold is seventy percent occupancy', () => {
+  const mark = 1_000_000;
+  assert.ok(compactionWorthwhile(699_999, mark), 'just under is worth it');
+  assert.ok(!compactionWorthwhile(700_000, mark), 'at the threshold is packed enough');
+});
+
+// ---------------------------------------------------------------------------
+// The automatic trigger
+//
+// This runs UNSUPERVISED, so its refusals matter more than its approvals: one
+// that fires when it should not steals a frame from a user who is working,
+// which is the opposite of what the whole subsystem is for.
+// ---------------------------------------------------------------------------
+
+/** A fragmented world, idle and cooled. Overridden per test. */
+const READY = {
+  enabled: true,
+  idle: true,
+  live: 100_000,
+  mark: 1_000_000,
+  now: 100_000,
+  lastCompactedAt: 0,
+};
+
+test('an auto compaction fires on a fragmented, cooled world', () => {
+  assert.ok(shouldAutoCompact(READY));
+});
+
+test('the switch is honoured before anything else', () => {
+  assert.ok(!shouldAutoCompact({ ...READY, enabled: false }));
+});
+
+test('an auto compaction does not queue a second one', () => {
+  // The queued one is about to pack the world anyway.
+  assert.ok(!shouldAutoCompact({ ...READY, idle: false }));
+});
+
+test('an auto compaction does not fire on a packed world', () => {
+  assert.ok(!shouldAutoCompact({ ...READY, live: 900_000 }));
+});
+
+test('an auto compaction does not fire on a world too small to matter', () => {
+  assert.ok(!shouldAutoCompact({ ...READY, live: 10, mark: 20_000 }));
+});
+
+// THE REGRESSION GUARD for compacting every few frames.
+//
+// A compaction packs the world completely, so occupancy hits 100% and the
+// trigger cannot re-fire on its own -- in a CALM world. Under a brush it is
+// different: painting raises the mark every frame while edge-death and the
+// eraser lower the live count, so an actively drawn world can cross back below
+// the threshold within a few frames. Each compaction skips a physics step, so
+// without a floor the result is a stutter caused by the thing meant to prevent
+// stutter.
+test('an auto compaction waits out the cooldown', () => {
+  assert.ok(
+    !shouldAutoCompact({ ...READY, lastCompactedAt: READY.now - 500 }),
+    'half a second after the last one is too soon',
+  );
+  assert.ok(
+    shouldAutoCompact({ ...READY, lastCompactedAt: READY.now - 2000 }),
+    'two seconds later is fair game',
+  );
+});
+
+test('the cooldown boundary is inclusive', () => {
+  // Exactly at the cooldown should fire rather than wait another whole frame
+  // for a strictly-greater comparison.
+  assert.ok(
+    shouldAutoCompact({ ...READY, lastCompactedAt: READY.now - 1000, cooldownMs: 1000 }),
+  );
+});
+
+test('a world that has never been compacted is not held back', () => {
+  // `lastCompactedAt` starts at -Infinity, so the first compaction is not made
+  // to wait out a cooldown that never ran.
+  assert.ok(shouldAutoCompact({ ...READY, now: 0, lastCompactedAt: -Infinity }));
 });

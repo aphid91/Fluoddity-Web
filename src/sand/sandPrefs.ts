@@ -81,6 +81,8 @@ export interface SandPrefsCallbacks {
   onCompactNow(): void;
   /** The Dev tab's compaction kill switch. */
   onCompactionPaused(paused: boolean): void;
+  /** The Dev tab's automatic-compaction switch. */
+  onAutoCompact(enabled: boolean): void;
   /** The Dev tab's Audit pool button. Diagnostic; stalls the pipeline. */
   onAuditPool(): void;
   /** The Dev tab's "audit after every sweep" switch. */
@@ -123,6 +125,7 @@ export class SandPrefs {
     mark: '—',
     occupancy: '—',
     sweep: 'idle',
+    autoCompact: false,
     compactionPaused: false,
     auditAfterSweep: false,
   };
@@ -361,6 +364,25 @@ export class SandPrefs {
       'mark can fall. It runs entirely on the GPU in a single frame, which ' +
       'that frame gives up its physics step for. Nothing can interrupt it.';
 
+    // AUTOMATIC COMPACTION. Fires when occupancy drops below 70% and the mark
+    // is large enough for the saving to be worth a frame, with a cooldown so a
+    // world being actively painted cannot compact every few frames.
+    //
+    // No quiet period, unlike the incremental sweep this replaced: that had to
+    // wait for the brush to stop, because a stroke would abort a sweep and the
+    // abort was expensive. A GPU compaction takes one frame on which the brush
+    // simply does not run.
+    const auto = folder.addBinding(this.poolValues, 'autoCompact', {
+      label: 'Auto compact',
+    });
+    auto.element.title =
+      'Compact automatically when the buffer falls below 70% occupancy. Costs ' +
+      'one frame, which skips its physics step, and waits two seconds between ' +
+      'compactions so painting cannot trigger a run of them.';
+    auto.on('change', () => {
+      this.callbacks.onAutoCompact(Boolean(this.poolValues['autoCompact']));
+    });
+
     // THE KILL SWITCH. Compaction is the only thing on the Dev tab that changes
     // a bound the physics reads, so being able to take it out of the picture in
     // one click is what makes a suspicious world diagnosable.
@@ -434,6 +456,7 @@ export class SandPrefs {
     occupancy: number;
     paused: boolean;
     compactPending: boolean;
+    autoCompact: boolean;
   }): void {
     // ONE FRAME, so there is no progress to show -- only whether a compaction
     // is queued for the next frame or nothing is happening.
@@ -453,6 +476,7 @@ export class SandPrefs {
       mark === this.poolValues['mark'] &&
       occ === this.poolValues['occupancy'] &&
       sweep === this.poolValues['sweep'] &&
+      stats.autoCompact === this.poolValues['autoCompact'] &&
       stats.paused === this.poolValues['compactionPaused']
     ) {
       return;
@@ -462,6 +486,7 @@ export class SandPrefs {
     this.poolValues['mark'] = mark;
     this.poolValues['occupancy'] = occ;
     this.poolValues['sweep'] = sweep;
+    this.poolValues['autoCompact'] = stats.autoCompact;
     this.poolValues['compactionPaused'] = stats.paused;
     // The FOLDER, not the whole pane: refreshing the pane would also rewrite
     // every Prefs and Config blade, including one the user may be mid-drag on.

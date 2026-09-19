@@ -63,6 +63,7 @@ import { type BrushAction, BRUSH_ERASE, BRUSH_SPAWN, BrushInput } from './brushI
 import { forUpload } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
 import { occupancy } from '../particleSystem/compaction.ts';
+import { shouldAutoCompact } from '../particleSystem/compactPlan.ts';
 import type { PoolAudit } from '../particleSystem/poolAudit.ts';
 import { fieldStrengthsFor } from '../prefs/preferences.ts';
 
@@ -272,6 +273,26 @@ export class SandOrchestrator {
    */
   private compactedThisFrame = false;
 
+  /**
+   * Whether compaction may start itself. Off until the user asks for it.
+   *
+   * A pass that rewrites both buffers unsupervised is worth opting into, and
+   * the button covers anyone who only wants it occasionally.
+   */
+  private autoCompact = false;
+
+  /**
+   * When the last compaction was RECORDED, for the cooldown.
+   *
+   * Recorded rather than confirmed: the cooldown exists to space out the frames
+   * that skip physics, and that cost lands when the passes are recorded, not
+   * when the mark readback arrives.
+   *
+   * Starts at -Infinity so the first compaction is not made to wait out a
+   * cooldown that never ran.
+   */
+  private lastCompactedAt = -Infinity;
+
   /** Whether a compaction was recorded on the frame just rendered. */
   get justCompacted(): boolean {
     return this.compactedThisFrame;
@@ -399,6 +420,7 @@ export class SandOrchestrator {
     occupancy: number;
     paused: boolean;
     compactPending: boolean;
+    autoCompact: boolean;
   } {
     const capacity = this.system.entityCount;
     const mark = this.system.activeEntityCount;
@@ -414,6 +436,7 @@ export class SandOrchestrator {
       // NO PROGRESS FIGURE. The compaction is one frame, so there is no
       // in-between to report -- only whether one is queued for the next.
       compactPending: this.compactRequested,
+      autoCompact: this.autoCompact,
     };
   }
 
@@ -425,6 +448,37 @@ export class SandOrchestrator {
    */
   async auditPool(): Promise<PoolAudit> {
     return this.system.auditPoolNow();
+  }
+
+  /** The Dev panel's automatic-compaction switch. See `autoCompact`. */
+  setAutoCompact(enabled: boolean): void {
+    this.autoCompact = enabled;
+  }
+
+  /**
+   * Queue a compaction if the world has fragmented past the threshold.
+   *
+   * THE POLICY LIVES IN `shouldAutoCompact`, so every threshold is testable
+   * without a device or a clock. This supplies the readings and acts on the
+   * answer.
+   *
+   * `compactionPaused` is checked separately rather than folded in, because it
+   * is a kill switch for ALL compaction -- including the button -- and not a
+   * condition on this particular decision.
+   */
+  private considerAutoCompact(): void {
+    if (this.compactionPaused) return;
+    if (!this.compactor.ready) return;
+    const stats = this.compactionStats;
+    const ready = shouldAutoCompact({
+      enabled: this.autoCompact,
+      idle: !this.compactRequested,
+      live: stats.live,
+      mark: stats.mark,
+      now: performance.now(),
+      lastCompactedAt: this.lastCompactedAt,
+    });
+    if (ready) this.compactRequested = true;
   }
 
   /** The Dev panel's kill switch. See `compactionPaused`. */
@@ -754,6 +808,10 @@ export class SandOrchestrator {
       }
     }
 
+    // THE AUTOMATIC TRIGGER, consulted before the decision below so a
+    // compaction it queues runs on THIS frame rather than idling one.
+    this.considerAutoCompact();
+
     // THIS FRAME BELONGS TO THE COMPACTION IF ONE IS QUEUED.
     //
     // It rewrites the entity buffer and the free list wholesale, so nothing
@@ -891,6 +949,9 @@ export class SandOrchestrator {
     if (compacting) {
       this.compactedThisFrame = this.compactor.record(encoder);
       this.compactRequested = false;
+      // Stamped on the frame that SKIPS PHYSICS, which is the cost the cooldown
+      // spaces out -- not on the later frame the mark readback lands.
+      this.lastCompactedAt = performance.now();
       // The pool is about to be replaced wholesale, so the cached head and any
       // spawn tally against it describe a world that will not exist. Same
       // hazard a restore creates, handled the same way.
