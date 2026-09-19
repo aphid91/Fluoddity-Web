@@ -123,8 +123,10 @@ test('a mark exactly at the highest live index plus one is fine', () => {
 
 // --- the host's belief ------------------------------------------------------
 
-test('a cached head that disagrees with the pool is caught', () => {
-  const audit = auditPool({ ...packed(10, 4), cachedHead: 99 });
+test('a cached head wildly out of step is caught', () => {
+  // Far past anything readback lag could explain: the two describe different
+  // worlds, so the brush is budgeting against a number the pool disowns.
+  const audit = auditPool({ ...packed(1_000_000, 4), cachedHead: 1 });
   const v = audit.violations.find((x) => x.kind === 'head-mismatch');
   assert.ok(v, 'the divergence is reported');
 });
@@ -132,6 +134,28 @@ test('a cached head that disagrees with the pool is caught', () => {
 test('a matching cached head is not a violation', () => {
   const audit = auditPool({ ...packed(10, 4), cachedHead: 6 });
   assert.ok(audit.ok, formatAudit(audit));
+  assert.equal(audit.headDrift, 0);
+});
+
+// THE REGRESSION GUARD for drowning the real invariants in noise.
+//
+// The cached head is a readback and lags by design, and BC_KILL returns an
+// index to the pool on EVERY physics sub-step -- so a small drift is the normal
+// state of a running world. Reporting it as a violation marked a compaction
+// BROKEN that had in fact satisfied all four invariants, with the actual
+// numbers (live == mark, live + pool == capacity) sitting right there in the
+// same report saying it was fine.
+test('a small cached-head drift is lag, not a violation', () => {
+  const audit = auditPool({ ...packed(1_000_000, 4), cachedHead: 999_996 - 300 });
+  assert.ok(audit.ok, formatAudit(audit));
+  assert.equal(audit.headDrift, 300, 'still reported, just not as a fault');
+});
+
+test('the drift is shown in the report even when healthy', () => {
+  // A drift that GROWS across successive audits is a signal while each one
+  // still passes, and hiding it would make the tolerance itself invisible.
+  const audit = auditPool({ ...packed(1_000_000, 4), cachedHead: 999_996 - 50 });
+  assert.match(formatAudit(audit), /cached head drift: 50/);
 });
 
 // --- garbage ----------------------------------------------------------------

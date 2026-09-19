@@ -57,6 +57,16 @@ export interface PoolAudit {
   readonly capacity: number;
   /** Highest index holding a live particle, or -1 for an empty world. */
   readonly highestLive: number;
+  /**
+   * How far the host's cached head is from the pool's real one, or null when
+   * no cached head was supplied.
+   *
+   * Reported separately from the violations because a small drift is the
+   * NORMAL state of a running world: the head is a readback, and BC_KILL
+   * returns indices to the pool every physics sub-step. See the tolerance in
+   * `auditPool`.
+   */
+  readonly headDrift: number | null;
 }
 
 /** Cap on `samples`, so a wholly corrupt pool still prints something readable. */
@@ -88,9 +98,11 @@ const MAX_SAMPLES = 8;
  *    skipped by every pass and drawn by nothing -- present in memory, invisible
  *    on screen. This is what makes a canvas go black.
  *
- * `head-mismatch` is reported separately: it is not an invariant of the data so
- * much as of the HOST'S BELIEF about it, and a divergence there explains a UI
- * that reports counts nothing else agrees with.
+ * `head-mismatch` is NOT one of the four. It is a property of the host's BELIEF
+ * about the pool rather than of the pool, and the cached head is a readback that
+ * lags by design -- so a small divergence is the normal state of a running
+ * world, not a defect. It is reported only past a tolerance; the raw figure is
+ * always available as `headDrift`.
  */
 export function auditPool(args: {
   liveFlags: readonly boolean[];
@@ -195,16 +207,36 @@ export function auditPool(args: {
   }
 
   // --- the host's belief, cross-checked -------------------------------------
-  if (args.cachedHead !== undefined && args.cachedHead !== poolSlots.length) {
-    violations.push({
-      kind: 'head-mismatch',
-      detail:
-        `the host believes ${args.cachedHead} slots are free but the pool ` +
-        `holds ${poolSlots.length} -- the UI's live count is wrong by the ` +
-        'difference',
-      samples: [],
-      count: Math.abs(args.cachedHead - poolSlots.length),
-    });
+  //
+  // NOT A POOL VIOLATION, and deliberately held to a different standard.
+  //
+  // The cached head is a READBACK, a frame or two stale by construction, and
+  // BC_KILL returns an index to the pool on every physics sub-step. So a small
+  // disagreement is the normal, healthy state of a running world -- it is the
+  // lag, not a defect, and reporting it as broken drowns the real invariants in
+  // noise. That happened: a compaction that satisfied all four invariants was
+  // reported as BROKEN purely because the cache had not caught up.
+  //
+  // A LARGE disagreement is still worth knowing about, because it means the
+  // host is budgeting the brush against a number the pool does not recognise.
+  // The threshold is what separates "a few frames of edge deaths" from "these
+  // two describe different worlds".
+  const HEAD_LAG_TOLERANCE = 4096;
+  let headDrift: number | null = null;
+  if (args.cachedHead !== undefined) {
+    const drift = Math.abs(args.cachedHead - poolSlots.length);
+    headDrift = drift;
+    if (drift > HEAD_LAG_TOLERANCE) {
+      violations.push({
+        kind: 'head-mismatch',
+        detail:
+          `the host believes ${args.cachedHead} slots are free but the pool ` +
+          `holds ${poolSlots.length} -- too far apart to be readback lag, so ` +
+          "the UI's live count is genuinely wrong",
+        samples: [],
+        count: drift,
+      });
+    }
   }
 
   return {
@@ -215,6 +247,7 @@ export function auditPool(args: {
     mark,
     capacity,
     highestLive,
+    headDrift,
   };
 }
 
@@ -248,6 +281,12 @@ export function formatAudit(audit: PoolAudit): string {
       `(capacity ${audit.capacity.toLocaleString()})` +
       (accounted === audit.capacity ? ' ✓' : ' ✗ MISMATCH'),
   );
+  // Shown even when it is within tolerance, because a drift that grows across
+  // successive audits is a signal even while each one passes -- and hiding it
+  // entirely would make the tolerance itself invisible.
+  if (audit.headDrift !== null) {
+    lines.push(`  cached head drift: ${audit.headDrift.toLocaleString()} (readback lag)`);
+  }
   for (const v of audit.violations) {
     lines.push(`  [${v.kind}] ${v.detail}`);
     if (v.samples.length > 0) {

@@ -1224,6 +1224,17 @@ export class ParticleSystem {
     // undo that accounting.
     if (want >= this.highWaterMark) return false;
     this.highWaterMark = want;
+    // THE CACHED HEAD FOLLOWS THE MARK, because the compaction set both from
+    // the same fact: the buffer is packed into [0, live), so exactly
+    // `entityCount - live` slots are free. The GPU already wrote that head; the
+    // host's copy would otherwise stay stale until the next `pollFreeListRead`
+    // resolves, and in the meantime the brush budget and the UI's live count
+    // would both be wrong by whatever the compaction moved.
+    //
+    // This is not a second source of truth. It is the same number arriving by a
+    // faster route than the readback, and the readback will confirm it
+    // unchanged a frame or two later.
+    this.freeListHead = this.entityCount - want;
     return true;
   }
 
