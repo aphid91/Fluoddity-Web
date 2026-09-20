@@ -20,12 +20,19 @@ import type { Vec2 } from '../particleSystem/coords.ts';
 import type { Stroke } from './sandUniforms.ts';
 import { spawnCountFor } from '../particleSystem/freeList.ts';
 import { uvRadiusToWorld } from '../particleSystem/coords.ts';
-import type { SandTool } from './tool.ts';
+import { type BrushAction, type SandTool, BRUSH_ERASE } from './tool.ts';
 
-/** What a brush does with the button that is down. */
-export const BRUSH_SPAWN = 'spawn';
-export const BRUSH_ERASE = 'erase';
-export type BrushAction = typeof BRUSH_SPAWN | typeof BRUSH_ERASE;
+/**
+ * What a brush does with the button that is down.
+ *
+ * DECLARED IN `tool.ts` and re-exported here, which is where every caller still
+ * imports them from. They moved because `actionFor` -- the rule deciding which
+ * of these a button produces -- belongs beside the other tool predicates, and
+ * this module already imports `SandTool` from there; declaring them here and
+ * importing them back would close a runtime cycle. See the note at their
+ * declaration.
+ */
+export { BRUSH_ERASE, BRUSH_SPAWN, type BrushAction } from './tool.ts';
 
 /**
  * The five brush sizes, as `drawSize` in UV space.

@@ -71,7 +71,7 @@ function hintFor(tool: SandTool, swatchName: string, loaded: boolean): string {
         ? `Paint [${swatchName}]  ·  right-drag erases`
         : 'This swatch is empty — right-click a swatch to load a config into it';
     case 'erase':
-      return 'Rub out particles  ·  right-drag paints the selected swatch';
+      return 'Rub out particles and barriers  ·  right-drag also pulls them in  ·  Shift for line tool';
     case 'stamp':
       return 'Stamp is not built yet';
     case 'shove':

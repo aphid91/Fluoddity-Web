@@ -48,7 +48,7 @@ import { SandPasses } from './sandPasses.ts';
 import { Compactor } from './compactor.ts';
 import { InitialConditions, RESTORE_FRAME } from './initialConditions.ts';
 import { Palette, isLoaded } from './palette.ts';
-import { type SandTool, isFieldTool, usesSwatch } from './tool.ts';
+import { type SandTool, actionFor, isFieldTool, usesSwatch } from './tool.ts';
 import type { ShoveState } from '../particleSystem/uniforms.ts';
 import type { BrushParams } from '../strafeField/strafeUniforms.ts';
 import type { FieldLayer } from '../strafeField/fieldLayer.ts';
@@ -59,7 +59,13 @@ import {
   SHOVE_RATE_EXPONENT,
   SHOVE_REFERENCE_STEPS,
 } from '../orchestrator/shoveCommands.ts';
-import { type BrushAction, BRUSH_ERASE, BRUSH_SPAWN, BrushInput } from './brushInput.ts';
+import {
+  type BrushAction,
+  BRUSH_ERASE,
+  BRUSH_SPAWN,
+  BrushInput,
+  DEFAULT_BRUSH_RATE,
+} from './brushInput.ts';
 import { forUpload } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
 import { occupancy } from '../particleSystem/compaction.ts';
@@ -76,32 +82,6 @@ export interface SandFrameInput {
   readonly dt: number;
   /** Whether Shift is held -- arms the line tool in the painting tools. */
   readonly shift: boolean;
-}
-
-/**
- * What a pressed button means for the armed tool.
- *
- * ## The button is a MODIFIER now, not the verb
- *
- * It used to be the verb outright: left spawned, right erased, over whatever
- * square was selected. With Brush and Erase as separate tools that would leave
- * two ways to reach the same act and one of them contradicting the rail -- right
- * -dragging with Brush armed would erase while the Brush button stayed lit.
- *
- * So the tool picks the verb and the right button INVERTS it, which is the
- * convention the field tools already use (`paintField` erases on right) and the
- * one the studio uses throughout. Erase inverted is spawn, which is a slightly
- * odd but harmless reading -- and it keeps "right undoes what left does" true
- * for every tool rather than for all but one.
- */
-function actionFor(tool: SandTool, pressed: BrushAction | null): BrushAction | null {
-  if (pressed === null) return null;
-  // The field tools do their own painting in `paintField`; the particle brush
-  // must not also fire for them.
-  if (tool !== 'brush' && tool !== 'erase') return pressed;
-  const inverted = pressed === BRUSH_SPAWN;
-  if (tool === 'brush') return inverted ? BRUSH_SPAWN : BRUSH_ERASE;
-  return inverted ? BRUSH_ERASE : BRUSH_SPAWN;
 }
 
 export class SandOrchestrator {
@@ -1024,11 +1004,30 @@ export class SandOrchestrator {
    * takes the studio's `InputState` and its `mouseMode`. The TUNING is imported
    * rather than restated, so the two apps cannot disagree about how hard a shove
    * pushes -- which is the part that would be invisible if it drifted.
+   *
+   * ## THE ERASER RIGHT-DRAGS AS A VACUUM
+   *
+   * Erase is the second tool that returns a shove, and only on the right button,
+   * where it is always a PULL. The gesture is the one Shove already has -- right
+   * draws particles inward -- reused as "gather what is nearby and take it",
+   * which is what a user right-dragging an eraser is reaching for: the kill pass
+   * still runs on the same frame, so the pull feeds particles into the radius
+   * the eraser is already clearing.
+   *
+   * It is the same `SHOVE_GAIN` on purpose rather than a second constant. The
+   * pull has to be the one the user's hand is already calibrated to from Shove,
+   * and a separate tuning number would be one more thing that could drift.
+   *
+   * `brush.weight` is NOT read: `usesStrength` returns false for Erase, so the
+   * Strength field is greyed out and its stored value is whatever a previous
+   * session happened to leave there. Multiplying by it would make the vacuum
+   * secretly obey a control the UI says does not apply.
    */
   private shoveFor(tool: SandTool, input: SandFrameInput): ShoveState | null {
-    if (tool !== 'shove' || input.cursor === null || input.action === null) {
-      return null;
-    }
+    if (input.cursor === null || input.action === null) return null;
+    // Erase pulls on the right button only; left is the plain eraser.
+    if (tool === 'erase' && input.action !== BRUSH_ERASE) return null;
+    if (tool !== 'shove' && tool !== 'erase') return null;
 
     // Per sub-step, so the raw value is divided by a power of the rate -- see the
     // long argument at `shoveCommands.shoveState`. The exponent leaves the brush
@@ -1037,8 +1036,13 @@ export class SandOrchestrator {
     const steps = Math.max(1, Math.trunc(this.system.physicsSteps));
     const falloff =
       steps ** SHOVE_RATE_EXPONENT / SHOVE_REFERENCE_STEPS ** (SHOVE_RATE_EXPONENT - 1);
-    let strength = (SHOVE_GAIN * this.brush.weight) / falloff;
-    // Left pushes away, right pulls in -- the studio's convention.
+
+    // The eraser takes the bare gain -- see above on why its Strength is not
+    // read. Shove scales by its own.
+    const gain = tool === 'erase' ? SHOVE_GAIN : SHOVE_GAIN * this.brush.weight;
+    let strength = gain / falloff;
+    // Left pushes away, right pulls in -- the studio's convention. The eraser
+    // only ever reaches here on the right, so it is always a pull.
     if (input.action === BRUSH_ERASE) strength = -strength;
 
     return {
@@ -1061,7 +1065,29 @@ export class SandOrchestrator {
     tool: SandTool,
     input: SandFrameInput,
   ): void {
-    const layer = isFieldTool(tool) ? layerForMouseMode(tool) : null;
+    // THE ERASER IS A FIELD TOOL TOO, and only ever subtracts.
+    //
+    // It used to fall out here as "not a field tool", so rubbing over a wall
+    // left it standing: the tool erased particles and nothing else, which made
+    // it the only way to remove a wall was the Clear button -- all of them at
+    // once, or none. An eraser that cannot erase the thing under it reads as
+    // broken rather than as scoped.
+    //
+    // WALLS, not trails. Walls are structure the user places deliberately and
+    // wants to take back one stroke at a time; trails are simulation residue
+    // that decays on its own, and rubbing them out mid-run would fight the
+    // decay rather than assist it. The Trails tool still has its own right
+    // button for the rare case.
+    //
+    // `eraseOnly` is what carries "this stroke subtracts whatever the button
+    // is" down to the draw call -- see below. The eraser has no additive half,
+    // so unlike the field tools its right button must not flip it to drawing.
+    const eraseOnly = tool === 'erase';
+    const layer = eraseOnly
+      ? ('walls' as FieldLayer)
+      : isFieldTool(tool)
+        ? layerForMouseMode(tool)
+        : null;
     if (layer === null) {
       this.lineAnchor = null;
       return;
@@ -1085,8 +1111,12 @@ export class SandOrchestrator {
       }
       const anchor = this.lineAnchor ?? uv;
       const brush = this.fieldBrush(layer, true);
-      if (input.action === BRUSH_SPAWN) this.field.draw(encoder, uv, anchor, brush);
-      else this.field.erase(encoder, uv, anchor, brush);
+      // `eraseOnly` overrides the button: the eraser subtracts on both.
+      if (!eraseOnly && input.action === BRUSH_SPAWN) {
+        this.field.draw(encoder, uv, anchor, brush);
+      } else {
+        this.field.erase(encoder, uv, anchor, brush);
+      }
       // The endpoint chains, so a polyline is a sequence of clicks.
       this.lineAnchor = uv;
       return;
@@ -1105,15 +1135,25 @@ export class SandOrchestrator {
     this.lineAnchor = null;
 
     const brush = this.fieldBrush(layer, false);
-    if (input.action === BRUSH_SPAWN) this.field.draw(encoder, uv, prev, brush);
-    else this.field.erase(encoder, uv, prev, brush);
+    // `eraseOnly` overrides the button, as above.
+    if (!eraseOnly && input.action === BRUSH_SPAWN) {
+      this.field.draw(encoder, uv, prev, brush);
+    } else {
+      this.field.erase(encoder, uv, prev, brush);
+    }
   }
 
   private fieldBrush(layer: FieldLayer, isLine: boolean): BrushParams {
     return {
       // The five size buttons, in the uv metric this tool measures in.
       drawSize: this.brush.radius,
-      drawPower: this.brush.weight,
+      // THE ERASER TAKES THE DEFAULT, not its stored Strength. `usesStrength`
+      // returns false for it, so the field is greyed out and whatever number
+      // sits behind it is stale -- letting that scale the wall erase would make
+      // a disabled control secretly load-bearing. The other tools read their
+      // own, which is the whole point of per-tool strengths.
+      drawPower:
+        this.brush.tool === 'erase' ? DEFAULT_BRUSH_RATE : this.brush.weight,
       mode: 'diverge',
       layer,
       drawAngle: 0,
@@ -1301,6 +1341,27 @@ export class SandOrchestrator {
       // Handing over the bare `drawSize` drew a ring at half the true reach, so
       // a wall stroke visibly affected far more than the circle promised.
       reticleRadius: cursor === null ? 0 : this.brush.reticleRadius,
+      // THE LINE PREVIEW, which this never set -- it inherited `null` from
+      // `NO_OVERLAYS` and the capsule the studio draws while Shift is held
+      // simply never appeared here. The anchor was tracked correctly all along
+      // and the committed stroke landed where it should; only the preview of it
+      // was missing, so the gesture worked blind.
+      //
+      // The condition is `lineAnchor !== null` and nothing else, for the reason
+      // the studio gives: every path that abandons a line clears the anchor, so
+      // "is one armed" and "should one be previewed" are the same question and
+      // cannot disagree.
+      //
+      // THE ANCHOR NEEDS NO CONVERSION. It is stored in field uv and the overlay
+      // measures in canvas uv, but both are normalized [0,1] over the SAME world
+      // rect -- the field takes the canvas's shape and only its resolution is
+      // capped (`MAX_FIELD_DIM`). Resolution does not enter a normalized
+      // coordinate, so the two spaces are numerically identical and the anchor
+      // crosses as-is.
+      linePreview:
+        this.lineAnchor === null || cursor === null
+          ? null
+          : { from: this.lineAnchor, to: worldToUv(cursor, this.system.canvasSize) },
     };
 
     this.assembler.present(encoder, this.camera.result(), target, view, prefs, overlays);

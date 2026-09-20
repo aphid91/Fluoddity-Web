@@ -31,6 +31,22 @@
 import type { MouseMode } from '../orchestrator/commands.ts';
 
 /**
+ * What a brush does with the button that is down.
+ *
+ * ## THESE LIVE HERE, and `brushInput.ts` re-exports them
+ *
+ * They were declared there, which read naturally until `actionFor` moved into
+ * this module: `brushInput.ts` already imports `SandTool` from here, so
+ * importing the constants back the other way would close a runtime cycle. This
+ * module imports nothing but a type, so it is the correct end of the pair to
+ * hold them -- and the re-export keeps every existing `from './brushInput.ts'`
+ * import working, since that is still where a reader looks for brush vocabulary.
+ */
+export const BRUSH_SPAWN = 'spawn';
+export const BRUSH_ERASE = 'erase';
+export type BrushAction = typeof BRUSH_SPAWN | typeof BRUSH_ERASE;
+
+/**
  * A square that paints particles from its config.
  *
  * Retained as the swatch's `tool` field so stored sessions keep their shape and
@@ -122,12 +138,68 @@ export function usesStrength(tool: SandTool): boolean {
 /**
  * Whether the Shift line tool applies.
  *
- * Painting tools only, matching the studio: a line of shove would be a single
+ * The field tools, matching the studio: a line of shove would be a single
  * impulse along a segment, which is not what the gesture means, and a line of
  * particles is what dragging the spawn brush already does.
+ *
+ * ERASE JOINS THEM because it now erases walls (see `SandOrchestrator.
+ * paintField`), and a straight run of wall is exactly the thing a user wants to
+ * take back in one stroke rather than by tracing it freehand.
  */
 export function supportsLineTool(tool: SandTool): boolean {
-  return isFieldTool(tool);
+  return isFieldTool(tool) || tool === 'erase';
+}
+
+/**
+ * What a pressed mouse button means for the armed tool, as a particle command.
+ *
+ * ## The button is a MODIFIER, not the verb
+ *
+ * It used to be the verb outright: left spawned, right erased, over whatever
+ * square was selected. With Brush and Erase as separate tools that would leave
+ * two ways to reach the same act and one of them contradicting the rail --
+ * right-dragging with Brush armed would erase while the Brush button stayed lit.
+ *
+ * So the tool picks the verb and, for the Brush, the right button INVERTS it --
+ * the convention the field tools already use (`paintField` erases on right) and
+ * the one the studio uses throughout.
+ *
+ * ## ONLY THE PARTICLE BRUSHES GET AN ANSWER HERE
+ *
+ * It used to return the pressed button unchanged for every other tool, and
+ * `SandOrchestrator` fed that straight into `BrushInput.frame` -- so a
+ * right-drag with Walls or Shove armed produced a `BRUSH_ERASE` command and the
+ * kill pass deleted particles under the stroke. Right-click erased particles
+ * under EVERY tool, not just the ones whose verb is erasing.
+ *
+ * The field tools do their own painting in `paintField` and Shove reads the
+ * button itself in `shoveFor`; neither needs a particle command at all. So the
+ * particle brushes are the only case with a verb, and everything else returns
+ * null -- which makes "no other tool touches particles" true by construction
+ * rather than by each pass remembering to check.
+ *
+ * ERASE INVERTED IS NOT SPAWN. Erase's right button is the suck gesture (see
+ * `shoveFor`), so it stays an erase: the kill pass runs either way and the pull
+ * is layered on top. Inverting to spawn would have the eraser deposit particles
+ * from whatever swatch happened to be selected, which is not something a user
+ * reaching for the eraser ever means.
+ *
+ * ## Why it lives HERE rather than in the orchestrator
+ *
+ * It is a pure question about a tool and a button, which is what this module
+ * is -- and this module imports nothing, so the rule is testable without a GPU.
+ * In `sandOrchestrator.ts` it could only be reached through the whole engine
+ * graph, `.wgsl` imports and all, which is precisely why the bug above went
+ * uncovered.
+ */
+export function actionFor(
+  tool: SandTool,
+  pressed: BrushAction | null,
+): BrushAction | null {
+  if (pressed === null) return null;
+  if (tool === 'brush') return pressed === BRUSH_SPAWN ? BRUSH_SPAWN : BRUSH_ERASE;
+  if (tool === 'erase') return BRUSH_ERASE;
+  return null;
 }
 
 /**
