@@ -1536,15 +1536,22 @@ export class SandOrchestrator {
       // tens of millions of invocations with an empty world. See
       // `activeEntityCount`.
       entityCount: this.system.activeEntityCount,
-      colorSensitivity: this.palette.master.config?.colorSensitivity ?? 0,
       // THE DEV TAB'S DROPDOWN, mapped to the integer the shader switches on.
       // A display choice, so it takes effect on the next rendered frame rather
       // than on the next physics step -- which is what lets it be compared
       // while paused, the same argument `camBrush.wgsl` makes for deciding
       // colour in the renderer at all.
       colorMode: colorModeIndex(this.colorMode),
+      // EVERY SLOT'S OWN APPEARANCE: its swatch colour, and the Color
+      // Sensitivity and Color Offset of the config sitting in it.
+      //
+      // The camera used to take ONE sensitivity per frame and this line read it
+      // from the master slot, which meant the master's slider coloured every
+      // material on screen and the copy on every other square was saved and
+      // silently ignored. Now each material answers to its own.
+      //
       // Written every frame regardless of the mode -- see `CameraFrame`.
-      swatchColors: this.palette.colorsForUpload(),
+      swatchColors: this.palette.appearanceForUpload(),
     };
     this.camera.beginFrame(frame, 1);
     this.camera.clearAccumulator(encoder);

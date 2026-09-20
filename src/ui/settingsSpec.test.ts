@@ -134,6 +134,10 @@ test('the registry has the same 35 entries the desktop does, plus the web-only o
     // desktop has Force and Strafe only, so this is an addition to the port
     // rather than one of the 35 it carried across.
     'gravityTrails',
+    // No desktop equivalent: the desktop has Color Sensitivity alone, so a hue
+    // there always fans out from red. The bias half of `A * signal + B` was
+    // added here.
+    'colorOffset',
   ];
   const ported = SETTINGS.filter((s) => !WEB_ONLY.includes(s.field));
   assert.equal(ported.length, 35);

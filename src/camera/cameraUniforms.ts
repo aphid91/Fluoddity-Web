@@ -60,7 +60,7 @@ export interface CameraView {
 export const CAMERA_VIEW_UNIFORM_SIZE = 48;
 
 /**
- * How many swatch colours ride the cam-brush uniform.
+ * How many slots ride the cam-brush uniform's appearance table.
  *
  * MUST EQUAL `SLOT_COUNT` in `sand/palette.ts` and `SWATCH_COLOR_COUNT` in
  * `camBrush.wgsl`. Not imported from the palette: this module is the camera's,
@@ -76,24 +76,43 @@ export const CAM_BRUSH_SWATCH_COUNT = 40;
  *
  *   canvas_res : vec4f  (16)  offset 0
  *   camera     : vec4f  (16)  offset 16
- *   sprite     : vec4f  (16)  offset 32   x size  y alpha  z color_sensitivity
+ *   sprite     : vec4f  (16)  offset 32   x size  y alpha  z unused
  *   flags      : vec4f  (16)  offset 48   x color_mode(i)
  *                                         y highlighted cohort (f32, <0 = none)
- *   swatches   : array<vec4f, 40>  (640)  offset 64   xy hue, saturation
+ *   swatches   : array<vec4f, 40>  (640)  offset 64
+ *                                         xy hue, saturation
+ *                                         z  color_sensitivity
+ *                                         w  color_offset
  *
- * ## Why the swatch table is 16 bytes per entry for 8 bytes of data
+ * ## The table is PER-SLOT APPEARANCE, not just colour
+ *
+ * All four lanes are now data. The two spares were documented as padding when
+ * the table held only hue and saturation; sensitivity and offset claimed them
+ * when appearance became per-config, which is what the 16-byte stride was
+ * costing us anyway (see below) and is why the struct did not grow a byte.
+ *
+ * SENSITIVITY USED TO BE A SINGLE `sprite.z` FOR THE WHOLE FRAME, read from the
+ * master slot. That made the master's Color Sensitivity govern every material
+ * on screen and every other slot's copy a silent no-op -- an author could drag
+ * the knob on the square they were editing and watch nothing happen. Both
+ * coefficients are per-slot now, looked up by the particle's own `config_index`
+ * exactly as its hue already was, so a slot's appearance settings describe that
+ * slot's particles and nothing else. `sprite.z` is left unwritten rather than
+ * reused, so a stale reader gets 0.0 instead of a plausible wrong number.
+ *
+ * ## Why the table is 16 bytes per entry
  *
  * A uniform array's element stride is rounded up to 16 in WGSL's layout rules,
- * so a `array<vec2f, 40>` would occupy the same 640 bytes while declaring a
+ * so an `array<vec2f, 40>` would occupy the same 640 bytes while declaring a
  * stride the implementation does not use. Declaring `vec4f` makes the shape
- * honest and leaves zw as documented padding rather than a trap.
+ * honest -- and left exactly the room this needed.
  *
  * 704 bytes is comfortably inside the 64KiB minimum guaranteed uniform binding
  * size, so this needs no storage-buffer promotion.
  */
 export const CAM_BRUSH_UNIFORM_SIZE = 64 + CAM_BRUSH_SWATCH_COUNT * 16;
 
-/** Where the swatch table starts, in floats. The one place that knows it. */
+/** Where the appearance table starts, in floats. The one place that knows it. */
 const SWATCH_FLOAT_BASE = 16;
 
 /** `AccumulateUniforms` -- 16 bytes. `params: vec4f`, x = inv_samples. */
@@ -136,19 +155,46 @@ export function packCameraViewUniforms(view: CameraView): ArrayBuffer {
 }
 
 /**
+ * Everything the renderer needs to know about how ONE slot looks.
+ *
+ * Hue and saturation are the swatch's authored colour, read in Swatch mode.
+ * Sensitivity and offset are the coefficient A and bias B in
+ * `hue = A * signal + B`, read in the two signal modes. All four travel
+ * together because they are looked up by the same index at the same moment --
+ * splitting them into parallel arrays would let one fall out of step with the
+ * other over the slot it describes.
+ *
+ * STRUCTURALLY TYPED and declared here rather than imported from
+ * `sand/palette.ts`, for the reason `CAM_BRUSH_SWATCH_COUNT` gives: the camera
+ * does not depend on the sand modality. The caller passes objects that happen
+ * to have these fields.
+ */
+export interface SwatchAppearance {
+  readonly hue: number;
+  readonly saturation: number;
+  readonly colorSensitivity: number;
+  readonly colorOffset: number;
+}
+
+/**
  * Pack the PARTICLES pass's uniforms.
  *
- * `colorSensitivity` and `colorByCohort` arrive as ARGUMENTS, exactly as
- * `camera.py:155-157` takes them and `orchestrator.py:338-339` supplies them
- * from the selected config. They ride this buffer rather than being read from
- * the config buffer, which belongs to ParticleSystem -- so with several configs
- * loaded, the selected one sets the palette for all. See `cam_brush.frag:26-30`.
+ * `colorMode` arrives as an ARGUMENT rather than being read from the config
+ * buffer, which belongs to ParticleSystem: it is a DISPLAY input, and it must
+ * take effect immediately -- including while paused, when nothing is stepping
+ * the physics. See `cam_brush.frag:26-30`.
+ *
+ * `swatches` is the per-slot appearance table and arrives the same way, for the
+ * same reason. IT IS INDEXED BY `config_index`, so entry `i` describes the
+ * particles painted from slot `i` and no others. This is what replaced the
+ * single frame-wide sensitivity the desktop took (`camera.py:155-157`) -- see
+ * the size constant on why that one was wrong.
  *
  * `highlightedCohort` is the cohort the mouse is resting on, or negative for
  * none -- `selection/cohortHighlight.ts` decides it and `NO_COHORT` is its spelling
- * of "none". It is a DISPLAY input like the two above and arrives the same way:
- * the highlight must appear and clear immediately, including while paused, and
- * anything routed through the config buffer would wait for a physics step.
+ * of "none". A DISPLAY input like the others and arriving the same way: the
+ * highlight must appear and clear immediately, and anything routed through the
+ * config buffer would wait for a physics step.
  *
  * A PLAIN FLOAT LANE, not an int and not a bool-plus-value pair. Cohorts are
  * non-negative, so the sentinel fits in the same lane, and a second lane could
@@ -157,10 +203,9 @@ export function packCameraViewUniforms(view: CameraView): ArrayBuffer {
  */
 export function packCamBrushUniforms(
   view: CameraView,
-  colorSensitivity: number,
   colorMode: number,
   highlightedCohort = -1,
-  swatchColors: readonly { hue: number; saturation: number }[] = [],
+  swatches: readonly SwatchAppearance[] = [],
 ): ArrayBuffer {
   const buffer = new ArrayBuffer(CAM_BRUSH_UNIFORM_SIZE);
   const f32 = new Float32Array(buffer);
@@ -168,10 +213,14 @@ export function packCamBrushUniforms(
 
   writeView(f32, view);
 
-  // sprite: x size, y alpha, z color_sensitivity, w reserved
+  // sprite: x size, y alpha, zw unused.
+  //
+  // `z` HELD THE FRAME-WIDE COLOUR SENSITIVITY and is deliberately left at
+  // zero now that sensitivity is per-slot. Left unwritten rather than reused:
+  // if anything is still reading it, zero is a value that visibly does nothing
+  // rather than a plausible number from an unrelated setting.
   f32[8] = SPRITE_SIZE;
   f32[9] = PARTICLE_ALPHA;
-  f32[10] = colorSensitivity;
 
   // flags: x color_mode(i), y highlighted_cohort(f32), zw reserved
   //
@@ -182,19 +231,20 @@ export function packCamBrushUniforms(
   i32[12] = colorMode;
   f32[13] = highlightedCohort;
 
-  // The swatch table. A caller with fewer colours than slots leaves the rest at
-  // zero -- black, which is what an unpainted material would render as anyway
-  // and is never reached: a particle can only carry the index of a slot it was
-  // painted from. Extra colours past the table are DROPPED rather than
-  // overflowing into whatever follows.
-  const count = Math.min(swatchColors.length, CAM_BRUSH_SWATCH_COUNT);
+  // The appearance table. A caller with fewer entries than slots leaves the
+  // rest at zero -- black with no signal response, which is what an unpainted
+  // material would render as anyway and is never reached: a particle can only
+  // carry the index of a slot it was painted from. Extra entries past the table
+  // are DROPPED rather than overflowing into whatever follows.
+  const count = Math.min(swatches.length, CAM_BRUSH_SWATCH_COUNT);
   for (let i = 0; i < count; i++) {
-    const color = swatchColors[i];
-    if (color === undefined) continue;
+    const swatch = swatches[i];
+    if (swatch === undefined) continue;
     const base = SWATCH_FLOAT_BASE + i * 4;
-    f32[base + 0] = color.hue;
-    f32[base + 1] = color.saturation;
-    // zw stay zero: documented padding, not data. See the size constant.
+    f32[base + 0] = swatch.hue;
+    f32[base + 1] = swatch.saturation;
+    f32[base + 2] = swatch.colorSensitivity;
+    f32[base + 3] = swatch.colorOffset;
   }
 
   return buffer;

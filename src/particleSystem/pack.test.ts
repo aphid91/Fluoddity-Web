@@ -326,6 +326,10 @@ function parityConfig(): SimulationConfig {
     // its bytes, and it is also what `SIMULATION_CONFIG_DEFAULTS` gives a config
     // saved before the field existed -- the same number for the same reason.
     gravityTrails: 0,
+    // NOT IN THE FIXTURE EITHER, and zero for exactly the same reasons: the
+    // reference left misc3.z reserved, zero reproduces its bytes, and zero is
+    // what a config saved before this knob existed loads as.
+    colorOffset: 0,
     rule: r.rule,
   };
 }

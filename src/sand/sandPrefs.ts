@@ -427,10 +427,9 @@ export class SandPrefs {
       'Cohort: hue by sub-population, for telling one config’s cohorts apart.\n' +
       'Swatch: the colour set below, for telling MATERIALS apart.\n' +
       '\n' +
-      'In Cohort and Swatch, Color Sensitivity (on the master square’s Config ' +
-      'tab) adds a small per-particle variation around the base hue — 0 is a ' +
-      'flat, pure colour and turning it up lets the population’s own state ' +
-      'show through without changing which colour it reads as.\n' +
+      'Behavior and Cohort read each config’s own Color Sensitivity and Color ' +
+      'Offset (Config tab) as hue = Sensitivity × signal + Offset. Swatch uses ' +
+      'neither — its colour was chosen outright, below.\n' +
       '\n' +
       'A display choice: it applies immediately, including while paused.';
     modeBlade.on('change', () => {
@@ -893,29 +892,25 @@ export class SandPrefs {
     // govern the running scene -- only the master's do. Saying so is better than
     // a knob that silently does nothing.
     //
-    // COLOR SENSITIVITY IS NAMED HERE TOO, and it is not a world setting. The
-    // camera takes one sensitivity for the whole frame and reads it from the
-    // master (`sandOrchestrator.renderInto`), so the copy on any other square
-    // is saved and ignored exactly as the world settings are. That went
-    // unmentioned while it only affected Behavior mode; now that it drives the
-    // per-particle wobble in Swatch and Cohort as well, it is a knob an author
-    // will actually reach for -- and reaching for it on the wrong square is a
-    // silent no-op they would have no way to diagnose.
+    // THE APPEARANCE SETTINGS ARE NOT AMONG THEM, and this note said otherwise
+    // for exactly as long as the camera took one Color Sensitivity per frame
+    // from the master. It reads the whole table per particle now
+    // (`palette.appearanceForUpload`), so every square's Color Sensitivity and
+    // Color Offset govern its own material. Naming them here again would send
+    // an author to the master square to change a colour that is not there.
     if (slot !== MASTER_SLOT) {
       this.configPage
         .addBlade({
           view: 'text',
           label: 'Note',
           parse: (v: string) => v,
-          value: 'Trails/Boundary/Color Sens. apply from the master only',
+          value: 'Trails/Boundary apply from the master square only',
           disabled: true,
         })
         .element.setAttribute(
           'title',
           'This square is not the master element, so its Trails and Boundary ' +
-            'settings — and its Color Sensitivity, which the camera takes once ' +
-            'for the whole frame — are saved with it but do not govern the ' +
-            'scene. Select the master square to change them.',
+            'settings are saved with it but do not govern the scene.',
         );
     }
 

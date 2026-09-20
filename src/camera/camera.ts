@@ -47,6 +47,7 @@ import {
   packCamBrushUniforms,
   packCameraViewUniforms,
   type CameraView,
+  type SwatchAppearance,
 } from './cameraUniforms.ts';
 
 import { HDR_FORMAT, type RenderTargets } from '../app/renderTargets.ts';
@@ -71,13 +72,6 @@ export interface CameraFrame {
   readonly entities: GPUBuffer;
   readonly entityCount: number;
   /**
-   * From the SELECTED config, handed over rather than read from the config
-   * buffer -- which belongs to ParticleSystem (rule 3). With several configs
-   * loaded, the selected one sets the palette for all
-   * (`orchestrator.py:334-339`).
-   */
-  readonly colorSensitivity: number;
-  /**
    * WHICH COLOUR MODE, as the integer `camBrush.wgsl` switches on.
    *
    * An integer rather than the `ColorMode` string because the Camera is the
@@ -90,18 +84,28 @@ export interface CameraFrame {
    */
   readonly colorMode: number;
   /**
-   * Hue and saturation per palette slot, for Color By Swatch.
+   * How each slot looks: its swatch colour and its two hue coefficients.
    *
-   * Only read in that mode, but written to the uniform unconditionally -- the
-   * same argument `beginFrame` makes for writing both modes' uniforms every
-   * frame: a table that goes stale while the mode is off produces wrong colours
-   * on the frame it is switched back on, which corrects itself a frame later
-   * and is miserable to reproduce.
+   * HANDED OVER RATHER THAN READ FROM THE CONFIG BUFFER, which belongs to
+   * ParticleSystem (rule 3). Indexed by `config_index`, so entry `i` describes
+   * the particles painted from slot `i` -- which is what makes Color
+   * Sensitivity and Color Offset per-material rather than per-frame. A single
+   * frame-wide sensitivity used to sit here instead, taken from the selected
+   * config, and it meant every other config's copy was silently ignored
+   * (`orchestrator.py:334-339` is the desktop behaviour this replaced).
    *
-   * Optional so the studio -- which has no swatches -- and the tests need not
-   * thread it through.
+   * Written to the uniform unconditionally, whatever the mode -- the same
+   * argument `beginFrame` makes for writing both modes' uniforms every frame: a
+   * table that goes stale while the mode is off produces wrong colours on the
+   * frame it is switched back on, which corrects itself a frame later and is
+   * miserable to reproduce.
+   *
+   * Optional so the tests need not thread it through. A caller with ONE config
+   * and no palette -- the studio -- fills the table with that config's values,
+   * which makes "the selected config sets the palette for all" a thing it
+   * states rather than a thing the camera assumes.
    */
-  readonly swatchColors?: readonly { hue: number; saturation: number }[];
+  readonly swatchColors?: readonly SwatchAppearance[];
   /**
    * The cohort under the mouse, or negative when none is highlighted.
    *
@@ -459,7 +463,6 @@ export class Camera {
       0,
       packCamBrushUniforms(
         view,
-        frame.colorSensitivity,
         frame.colorMode,
         frame.highlightedCohort ?? -1,
         frame.swatchColors ?? [],

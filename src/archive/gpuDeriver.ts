@@ -157,6 +157,7 @@ export async function createGpuDeriver(
       initialConditions: 0,
       cohortFences: false,
       colorSensitivity: 0,
+      colorOffset: 0,
       colorByCohort: false,
       sensorAngleJitter: 0,
       sensorDistanceJitter: 0,

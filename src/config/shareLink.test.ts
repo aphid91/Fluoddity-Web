@@ -118,6 +118,9 @@ function oneConfig(step: number): Record<string, unknown> {
       // here would round-trip through a codec that had dropped the field
       // entirely, so it would prove nothing about the lane it exists to cover.
       gravity_trails: -0.42,
+      // Non-zero for the same reason, and the LAST scalar in the v3 table --
+      // the position a truncated payload loses first.
+      color_offset: 0.37,
     },
   };
 }

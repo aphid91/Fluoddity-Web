@@ -109,8 +109,17 @@
  *
  * The ENCODER always writes the current version. There is no path that emits
  * v1, so this grows by appending a row here and leaving the old ones alone.
+ *
+ * ## 2 -> 3: `color_offset`
+ *
+ * AN EIGHTEENTH SCALAR, and the same argument applies unchanged -- which is the
+ * point of having made it once. Appending moves every byte after it, so the
+ * version distinguishes the layouts, `SCALARS_BY_CODEC` keeps v1 and v2 beside
+ * v3, and links shared under either still open. A payload written before this
+ * knob existed carries no `color_offset` and `persistence.ts` defaults it to 0,
+ * which is the bias those configs were already rendering with.
  */
-export const CODEC_VERSION = 2;
+export const CODEC_VERSION = 3;
 
 /** Thrown for bytes this decoder will not accept. */
 export class ShareCodecError extends Error {
@@ -167,6 +176,18 @@ const SCALARS_V2: readonly (readonly [string, string])[] = [
 ] as const;
 
 /**
+ * v3 = v2 with `color_offset` APPENDED.
+ *
+ * Appended rather than filed beside `color_sensitivity`, which is where it
+ * belongs by meaning -- it is the bias to that coefficient. Same reason as v2:
+ * order IS the format, and this table is read positionally.
+ */
+const SCALARS_V3: readonly (readonly [string, string])[] = [
+  ...SCALARS_V2,
+  ['misc3', 'color_offset'],
+] as const;
+
+/**
  * Every layout this decoder can read, by the version byte that selects it.
  *
  * A payload names its own table, so old links keep opening -- see the header.
@@ -175,10 +196,11 @@ const SCALARS_V2: readonly (readonly [string, string])[] = [
 const SCALARS_BY_CODEC: Readonly<Record<number, readonly (readonly [string, string])[]>> = {
   1: SCALARS_V1,
   2: SCALARS_V2,
+  3: SCALARS_V3,
 };
 
 /** The table the ENCODER writes. Always the newest. */
-const SCALARS = SCALARS_V2;
+const SCALARS = SCALARS_V3;
 
 /**
  * The booleans, in bit order within the flag byte.
@@ -483,6 +505,8 @@ export function decodeDocument(bytes: Uint8Array): unknown {
         // header says it must not become. The two agree on the value; only one
         // of them is allowed to decide it.
         ...(values.length > 16 ? { gravity_trails: values[16]! } : {}),
+        // Absent from v1 and v2, on exactly the same terms.
+        ...(values.length > 17 ? { color_offset: values[17]! } : {}),
       },
     });
   }

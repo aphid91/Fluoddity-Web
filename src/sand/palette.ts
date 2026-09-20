@@ -36,6 +36,7 @@
  * master would leave the scene with no authored answer about trail persistence.
  */
 
+import type { SwatchAppearance } from '../camera/cameraUniforms.ts';
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
 import { TOOL_CONFIG, type SandTool } from './tool.ts';
 import {
@@ -329,6 +330,41 @@ export class Palette {
    */
   colorsForUpload(): readonly SwatchColor[] {
     return this.colors;
+  }
+
+  /**
+   * Every slot's full appearance -- its colour AND its two hue coefficients.
+   *
+   * ## Why the join happens here
+   *
+   * The colour is the SLOT's, stored beside it and outliving whatever config
+   * sits in it (see `colors`). Color Sensitivity and Color Offset are the
+   * CONFIG's, saved and shared with it like every other setting. The renderer
+   * needs both against one index, and this is the only object that holds both
+   * halves -- doing it in the orchestrator would mean reaching into the
+   * palette's two arrays from outside and getting the pairing right there
+   * instead.
+   *
+   * FULL LENGTH and in slot order, exactly as `colorsForUpload` is, and for the
+   * same reason: the index IS the `config_index`.
+   *
+   * AN EMPTY SLOT CONTRIBUTES ZEROES for both coefficients, which renders its
+   * particles at a flat hue 0. Nothing is ever painted from an empty slot, so
+   * this is unreachable -- and it is the same stance `configsForUpload` takes
+   * about slots nothing points at. The fallback is deliberately NOT the
+   * master's: a real number from an unrelated config would look like a material
+   * that is nearly working rather than one that was never loaded.
+   */
+  appearanceForUpload(): readonly SwatchAppearance[] {
+    return this.colors.map((color, slot) => {
+      const config = this.slots[slot]?.config ?? null;
+      return {
+        hue: color.hue,
+        saturation: color.saturation,
+        colorSensitivity: config?.colorSensitivity ?? 0,
+        colorOffset: config?.colorOffset ?? 0,
+      };
+    });
   }
 
   /**

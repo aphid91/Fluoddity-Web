@@ -565,7 +565,28 @@ export const SETTINGS: readonly Setting[] = [
     help:
       'Determines how sensitive the hue of a particle is to its brain outputs. ' +
       'At high values particle hue becomes chaotic and regions will become a ' +
-      'random mix of hues: appearing pale/white',
+      'random mix of hues: appearing pale/white. Pairs with Color Offset, ' +
+      'which decides where on the wheel that response starts',
+    group: 'Appearance',
+  }),
+  // THE BIAS TO THE COEFFICIENT ABOVE: hue = Sensitivity * signal + Offset.
+  // Declared immediately after it so the two land adjacent in the panel --
+  // within a group, order here is order on screen.
+  //
+  // 0..1 SPANS THE WHEEL ONCE. Hue is periodic, so that is every colour there
+  // is; a signed range would only offer each one twice over.
+  setting({
+    field: 'colorOffset',
+    label: 'Color Offset',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: SLIDER,
+    lo: 0.0,
+    hi: 1.0,
+    help:
+      'Shifts this config’s hue around the colour wheel, before Color ' +
+      'Sensitivity swings it. Lets each config sit in its own colour instead ' +
+      'of every one fanning out from red',
     group: 'Appearance',
   }),
   setting({

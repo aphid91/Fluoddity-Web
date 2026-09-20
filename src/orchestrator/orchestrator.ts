@@ -56,6 +56,10 @@ import {
 } from '../assembler/assemblerUniforms.ts';
 import { Camera } from '../camera/camera.ts';
 import {
+  CAM_BRUSH_SWATCH_COUNT,
+  type SwatchAppearance,
+} from '../camera/cameraUniforms.ts';
+import {
   CameraState,
   PAN_PER_SECOND,
   ZOOM_PER_SECOND,
@@ -105,7 +109,7 @@ import {
   isHit,
   radiusPxToWorld,
 } from '../particleSystem/pick.ts';
-import { BC } from '../particleSystem/config.ts';
+import { BC, type SimulationConfig } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
 import {
   type ConfigEntry,
@@ -419,6 +423,23 @@ export class Orchestrator implements CommandBus {
    * rule and resets the simulation. See `CohortHighlight.canCommit`.
    */
   private readonly highlight: CohortHighlight;
+
+  /**
+   * The appearance table handed to the camera, rebuilt only when it changes.
+   *
+   * The studio has ONE config, so all forty entries are identical and the table
+   * is a function of two numbers -- see where it is used in `frame()`. Rebuilt
+   * on a mismatch rather than allocated per frame: this sits in the render path
+   * and the values change when a slider moves, which is thousands of times less
+   * often than the camera asks for them.
+   *
+   * `null` until the first frame builds it, which is also what makes the two
+   * remembered values below unambiguous -- there is no config whose settings
+   * they could be mistaken for.
+   */
+  private appearanceTable: readonly SwatchAppearance[] | null = null;
+  private appearanceSensitivity = 0;
+  private appearanceOffset = 0;
 
   /**
    * Whether the pick being resolved RIGHT NOW is a commit.
@@ -797,11 +818,16 @@ export class Orchestrator implements CommandBus {
       windowSize,
       entities: this.system.entityBufferForRendering(),
       entityCount: this.system.entityCount,
-      // From the SELECTED config. Per-particle in the shader would mean handing
-      // Camera the config buffer, which belongs to ParticleSystem -- so with
-      // several configs loaded, the selected one sets the palette for all
-      // (`orchestrator.py:334-339`).
-      colorSensitivity: config.colorSensitivity,
+      // THE APPEARANCE TABLE, every entry the same -- see `appearanceTable`.
+      //
+      // The camera reads it per particle by `config_index`, which is what makes
+      // Color Sensitivity and Color Offset per-material in the sand modality.
+      // The STUDIO edits one config at a time and has no palette, so "the
+      // selected config sets the palette for all" (`orchestrator.py:334-339`)
+      // is expressed by filling the table with its values rather than by the
+      // camera having a second, frame-wide code path -- one shader, one
+      // lookup, and no mode where the table is ignored.
+      swatchColors: this.appearanceFor(config),
       // THE STUDIO HAS TWO MODES, NOT THREE. Color By Swatch describes a sand
       // palette slot and the studio has no palette, so its checkbox maps onto
       // the two signal modes and the third is simply unreachable from here --
@@ -1147,6 +1173,35 @@ export class Orchestrator implements CommandBus {
   /** The attached recorder, for the driver loop and the UI's progress readout. */
   get activeRecorder(): VideoRecorder | null {
     return this.recorder;
+  }
+
+  /**
+   * The camera's appearance table for a single-config project.
+   *
+   * FORTY IDENTICAL ENTRIES. The studio has no palette, so every particle --
+   * whatever `config_index` it carries -- must find the same colour settings.
+   * See the call site on why this is a filled table rather than a special case
+   * in the camera.
+   *
+   * Hue and saturation are zero and never read: Color By Swatch is unreachable
+   * from the studio, whose checkbox maps onto the two signal modes only.
+   */
+  private appearanceFor(config: SimulationConfig): readonly SwatchAppearance[] {
+    if (
+      this.appearanceTable === null ||
+      this.appearanceSensitivity !== config.colorSensitivity ||
+      this.appearanceOffset !== config.colorOffset
+    ) {
+      this.appearanceSensitivity = config.colorSensitivity;
+      this.appearanceOffset = config.colorOffset;
+      this.appearanceTable = Array.from({ length: CAM_BRUSH_SWATCH_COUNT }, () => ({
+        hue: 0,
+        saturation: 0,
+        colorSensitivity: config.colorSensitivity,
+        colorOffset: config.colorOffset,
+      }));
+    }
+    return this.appearanceTable;
   }
 
   /**

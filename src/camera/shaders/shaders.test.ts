@@ -353,86 +353,86 @@ test('camBrush.wgsl clamps the swatch lookup rather than trusting the index', ()
   assert.match(
     source,
     /u\.swatches\[clamp\(index,\s*0,\s*SWATCH_COLOR_COUNT\s*-\s*1\)\]/,
-    'swatch_color must clamp its index into the table',
+    'swatch_entry must clamp its index into the table',
+  );
+
+  // THROUGH ONE ACCESSOR, so the colour and the coefficients cannot end up
+  // describing different slots -- which would be a clamp written twice and
+  // drifting, not a missing clamp, and far harder to see.
+  assert.equal(
+    (source.match(/u\.swatches\[/g) ?? []).length,
+    1,
+    'the table must be indexed in exactly one place',
   );
 });
 
 // ---------------------------------------------------------------------------
-// Colour Sensitivity as a per-particle wobble in Swatch and Cohort modes
+// Per-config hue: A * signal + B
 // ---------------------------------------------------------------------------
 
-// THE CONTRACT THAT MAKES THE SLIDER'S ZERO MEANINGFUL: the wobble is ADDED to
-// a base hue, so at sensitivity 0.0 it vanishes and the mode is pure. Were it
-// multiplied into the base instead, zero would collapse every hue to 0 -- which
-// is exactly the bug Cohort mode had before this.
-test('camBrush.wgsl ADDS the wobble to a base hue rather than scaling it', () => {
+// THE SHAPE OF THE EXPRESSION. Sensitivity is a coefficient and offset a bias,
+// which is what makes the slider pair work the way the panel says it does: A
+// scales the signal's swing, B decides where on the wheel that swing sits.
+// Multiplying the bias in instead would make the two knobs fight -- at A = 0
+// every material would collapse to hue 0 no matter where B was set.
+test('camBrush.wgsl computes hue as sensitivity * signal + offset', () => {
   const source = stripComments(expand('camBrush.wgsl'));
   assert.match(
     source,
-    /hue\s*=\s*picked\.x\s*\+\s*wobble\s*;/,
-    'Swatch mode must add the wobble to the chosen hue',
-  );
-  assert.match(
-    source,
-    /hue\s*=\s*in\.col_params\.y\s*\*\s*COHORT_COLOR_CONSTANT\s*\+\s*wobble\s*;/,
-    'Cohort mode must add the wobble to the cohort’s own hue',
+    /hue\s*=\s*ab\.x\s*\*\s*signal\s*\+\s*ab\.y\s*;/,
+    'the signal modes must read as A * signal + B',
   );
 });
 
-// The cohort's place on the wheel must NOT depend on the slider, or the
-// populations stop being reliably distinct as it moves.
-test('camBrush.wgsl does not scale the cohort spacing by sensitivity', () => {
+// BOTH COEFFICIENTS MUST COME FROM THE PARTICLE'S OWN SLOT. This is the whole
+// point of the change: a single frame-wide sensitivity meant the master square
+// coloured every material on screen, and every other square's copy was saved
+// and silently ignored.
+test('camBrush.wgsl reads both hue coefficients per config_index', () => {
+  const source = stripComments(expand('camBrush.wgsl'));
+  assert.match(
+    source,
+    /fn\s+hue_coefficients\(index:\s*i32\)\s*->\s*vec2f\s*\{[^}]*swatch_entry\(index\)\.zw/,
+    'hue_coefficients must read the zw lanes of the indexed table entry',
+  );
+  assert.match(
+    source,
+    /hue_coefficients\(in\.config_index\)/,
+    'the coefficients must be looked up by the particle’s own config index',
+  );
+});
+
+// THE LANE THAT USED TO HOLD THE FRAME-WIDE SENSITIVITY. Nothing may read it
+// again: the packer leaves it at zero, so a reader would silently get a
+// sensitivity of 0 and render every material at a flat hue.
+test('camBrush.wgsl no longer reads a frame-wide colour sensitivity', () => {
   const source = stripComments(expand('camBrush.wgsl'));
   assert.doesNotMatch(
     source,
-    /u\.sprite\.z\s*\*\s*in\.col_params\.y/,
-    'the cohort hue must not be multiplied by Color Sensitivity',
+    /u\.sprite\.z/,
+    'sprite.z held the old per-frame sensitivity and must stay unread',
   );
 });
 
-// The brain output is explicitly arbitrary in scale (common.wgsl says so), so
-// an unbounded multiply would let one extreme particle travel right around the
-// wheel and render in a completely unrelated colour.
-test('camBrush.wgsl bounds the wobble signal before it reaches the hue', () => {
+// Swatch mode's colour was CHOSEN by the author. Applying a gain would rotate
+// every material off that colour, and a bias would do it a second time.
+test('camBrush.wgsl leaves the swatch colour exactly as it was picked', () => {
   const source = stripComments(expand('camBrush.wgsl'));
   assert.match(
     source,
-    /fn\s+hue_variation\(signal:\s*f32\)\s*->\s*f32\s*\{[^}]*tanh\(signal\)/,
-    'hue_variation must squash the unbounded brain output through tanh',
-  );
-  assert.match(
-    source,
-    /u\.sprite\.z\s*\*\s*HUE_VARIATION_SPAN/,
-    'the wobble must be scaled by both sensitivity and the span constant',
+    /hue\s*=\s*picked\.x\s*;/,
+    'Swatch mode must use the chosen hue unmodified',
   );
 });
 
-// The span decides whether this reads as texture within a material or as the
-// material's colour being unreliable. A swatch set to orange must stay orange.
-test('camBrush.wgsl keeps the wobble inside one perceptual colour band', () => {
-  const source = stripComments(expand('camBrush.wgsl'));
-  // Matched as `1.0 / N` rather than evaluated: the constant is a fraction of
-  // the wheel by construction, and parsing the two numbers keeps this test
-  // free of an expression evaluator for one division.
-  const match =
-    /const\s+HUE_VARIATION_SPAN\s*:\s*f32\s*=\s*([\d.]+)\s*\/\s*([\d.]+)\s*;/.exec(source);
-  assert.ok(match !== null, 'the span must be a named constant of the form a / b');
-  const span = Number(match[1]) / Number(match[2]);
-  assert.ok(span > 0, 'a zero span would make the slider do nothing');
-  assert.ok(
-    span <= 1 / 8,
-    `a span of ${span} of the wheel is wide enough to change the material’s colour`,
-  );
-});
-
-// Behavior mode is the one place the signal IS the colour, so it keeps its
-// bare unbounded gain -- the two tunings are deliberately opposite.
-test('camBrush.wgsl leaves Behavior mode’s gain untouched', () => {
+// The cohort's spacing is a fixed constant scaled by the config's own A, so the
+// populations spread apart as sensitivity rises rather than jumbling.
+test('camBrush.wgsl derives the cohort signal from a fixed spacing', () => {
   const source = stripComments(expand('camBrush.wgsl'));
   assert.match(
     source,
-    /hue\s*=\s*u\.sprite\.z\s*\*\s*in\.col_params\.x\s*;/,
-    'Behavior must stay a bare sensitivity gain on the brain output',
+    /in\.col_params\.y\s*\*\s*COHORT_COLOR_CONSTANT/,
+    'the cohort signal must be the cohort index times the fixed spacing',
   );
 });
 

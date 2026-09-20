@@ -16,7 +16,7 @@
 // flip between the two and compare. Here, both toggles are immediate.
 #include "common.wgsl"
 
-// HOW MANY SWATCH COLOURS RIDE THE UNIFORM. Must equal `SLOT_COUNT` in
+// HOW MANY SLOTS RIDE THE APPEARANCE TABLE. Must equal `SLOT_COUNT` in
 // `sand/palette.ts`, which is the length of the ConfigData array and therefore
 // the range a particle's config_index can take; `shaders.test.ts` asserts they
 // agree. A mismatch would colour the materials above the cut from whatever
@@ -35,17 +35,27 @@ const MODE_SWATCH: i32   = 2;
 struct CamBrushUniforms {
     canvas_res : vec4f,   // xy: canvas size   zw: window size
     camera     : vec4f,   // xy: pan   z: zoom   w: reserved
-    // x: sprite_size   y: particle_alpha   z: color_sensitivity   w: reserved
+    // x: sprite_size   y: particle_alpha   zw: unused
+    //
+    // `z` HELD ONE COLOUR SENSITIVITY FOR THE WHOLE FRAME, taken from the
+    // master slot. It is unwritten now that every slot carries its own -- see
+    // the table below. Left empty rather than reused so a stale read is a
+    // visible zero rather than a plausible wrong number.
     sprite     : vec4f,
     // x: color_mode(i)   y: highlighted cohort (< 0 = none)   zw: reserved
     flags      : vec4f,
-    // ONE SWATCH PER LANE PAIR: xy holds hue and saturation, zw are unused.
+    // ONE SLOT'S WHOLE APPEARANCE PER ENTRY, indexed by config_index:
+    //
+    //   xy  hue and saturation, the authored swatch colour (Swatch mode)
+    //   z   color_sensitivity, the coefficient A  (the two signal modes)
+    //   w   color_offset, the bias B              (the two signal modes)
     //
     // A vec4f array rather than a vec2f one because a uniform array's elements
     // are padded to 16 bytes each in the std140-style layout WGSL uses for the
     // `uniform` address space -- declaring it as vec2f would reserve the same
-    // memory while making the stride a lie. Saying vec4f keeps the shape
-    // honest, and the packer writes the two spare lanes as zero.
+    // memory while making the stride a lie. Saying vec4f kept the shape honest,
+    // and left exactly the room the two coefficients needed when appearance
+    // became per-config: all four lanes are data now.
     swatches   : array<vec4f, 40>,
 }
 
@@ -56,15 +66,35 @@ struct CamBrushUniforms {
 
 fn color_mode() -> i32 { return bitcast<i32>(u.flags.x); }
 
-// A swatch's hue and saturation, clamped into the table.
+// One slot's appearance entry, clamped into the table.
 //
 // CLAMPED RATHER THAN TRUSTED: `config_index` is bounds-checked everywhere it
 // is read in the physics (`entityUpdate.wgsl` clamps it too), and an index past
 // the table here would be an out-of-bounds uniform read. The dead-particle test
 // in the vertex stage means this is never reached with a negative index, but
 // the clamp costs nothing and makes the read safe on its own terms.
+//
+// THE ONE PLACE THAT INDEXES THE TABLE, so the clamp is written once and the
+// two readers below cannot disagree about which slot they are describing.
+fn swatch_entry(index: i32) -> vec4f {
+    return u.swatches[clamp(index, 0, SWATCH_COLOR_COUNT - 1)];
+}
+
+// A swatch's authored hue and saturation. Swatch mode's colour.
 fn swatch_color(index: i32) -> vec2f {
-    return u.swatches[clamp(index, 0, SWATCH_COLOR_COUNT - 1)].xy;
+    return swatch_entry(index).xy;
+}
+
+// THIS SLOT'S HUE COEFFICIENTS: x is sensitivity (A), y is offset (B), for
+// `hue = A * signal + B`.
+//
+// PER-SLOT, WHICH IS THE POINT. The camera used to take one sensitivity for the
+// whole frame from the master slot, so every material on screen answered to the
+// master's slider and each other slot's copy was saved and silently ignored.
+// Read by the particle's own config_index, a material's colour settings now
+// describe that material.
+fn hue_coefficients(index: i32) -> vec2f {
+    return swatch_entry(index).zw;
 }
 
 // The cohort the mouse is resting on, or negative when none is. A PLAIN FLOAT
@@ -76,28 +106,7 @@ fn highlighted_cohort() -> f32 { return u.flags.y; }
 // How far apart consecutive cohorts land on the hue wheel. Three quarters of a
 // turn separates neighbours without the arbitrary jumble a hash gives, and hue
 // is periodic so it wraps on its own -- no normalizing by the cohort count.
-//
-// NOT SCALED BY SENSITIVITY any more. It used to be, which made a sensitivity
-// of 0.0 collapse every cohort onto hue 0 -- the slider's own midpoint was the
-// one setting where the mode did not work. The spacing is now fixed and
-// sensitivity drives the per-particle wobble instead, so the populations stay
-// reliably distinct at every slider position.
 const COHORT_COLOR_CONSTANT: f32 = 0.75;
-
-// HOW FAR THE PER-PARTICLE WOBBLE CAN PUSH A HUE, at sensitivity 1.0.
-//
-// A TWELFTH OF THE WHEEL, which is the constant that decides whether this
-// feature reads as "texture within a material" or as "the material's colour is
-// unreliable". A swatch set to orange must still be recognisably orange across
-// its whole population -- the author picked that colour and the mode exists to
-// honour it -- so the wobble has to stay inside the band a viewer would call
-// one colour. A twelfth is 30 degrees: enough for visible internal variation,
-// narrow enough that orange never becomes yellow or red.
-//
-// Deliberately much smaller than Behavior mode's gain, which is unbounded by
-// design because there the signal IS the colour. Here it is a modifier on a
-// colour that has already been chosen, and the two want opposite tunings.
-const HUE_VARIATION_SPAN: f32 = 1.0 / 12.0;
 
 // THE TWO HIGHLIGHT KNOBS. Both describe what a particle OUTSIDE the
 // highlighted cohort KEEPS, so both run 0..1 and 1.0 is "no effect" -- setting
@@ -244,30 +253,6 @@ fn gaussian(pos: vec2f, sigma: f32) -> f32 {
     return norm * exp(-dot(pos, pos) / (2.0 * sigma2));
 }
 
-// The per-particle hue wobble, for the two modes that have a base hue to
-// modify. Zero when Color Sensitivity is zero, which is what makes those modes
-// pure at the slider's midpoint.
-//
-// ## THE SIGNAL MUST BE BOUNDED, and this is the whole reason the function
-// exists rather than being written inline.
-//
-// `col_params.x` is a raw output of the particle's black box -- deliberately
-// arbitrary in scale, tuned by eye, and explicitly documented in common.wgsl
-// as something nothing downstream should read meaning into. Multiplying it
-// straight into the hue would let one particle with an extreme value travel
-// right around the wheel, so a material would show occasional pixels in a
-// completely unrelated colour. That is exactly the failure this mode exists to
-// avoid, and it would look like a bug in the palette rather than in the gain.
-//
-// `tanh` maps the whole real line into -1..1, smoothly and with no threshold:
-// typical outputs pass through nearly linearly, so ordinary variation is
-// preserved, while outliers saturate instead of wrapping. The result is then a
-// bounded fraction of HUE_VARIATION_SPAN and the material stays recognisable
-// no matter what the brain produces.
-fn hue_variation(signal: f32) -> f32 {
-    return u.sprite.z * HUE_VARIATION_SPAN * tanh(signal);
-}
-
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
     let centered = in.uv - 0.5;
@@ -279,45 +264,54 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // why this is an enumerated mode rather than two independent toggles.
     //
     // Hue is periodic, so no clamping or wrapping is needed anywhere here -- a
-    // large signal simply travels further around the wheel.
+    // large signal simply travels further around the wheel, and a bias past the
+    // end of the wheel arrives back at the start.
     //
-    // ## WHAT SENSITIVITY MEANS IN EACH MODE
+    // ## THE TWO SIGNAL MODES ARE `hue = A * signal + B`
     //
-    // BEHAVIOR: a bare gain on the brain's output, which is the only thing
-    // making an arbitrary-scaled signal legible as hue at all. Unchanged.
+    // A is Color Sensitivity, B is Color Offset, and BOTH COME FROM THE SLOT
+    // THE PARTICLE WAS PAINTED FROM -- see `hue_coefficients`. They differ only
+    // in which signal they multiply:
     //
-    // SWATCH and COHORT: a BASE HUE the particle is assigned, plus a small
-    // per-particle wobble taken from the same brain output, scaled by
-    // sensitivity. At 0.0 the wobble vanishes and the mode is pure -- every
-    // particle of a swatch is exactly the colour its author picked, every
-    // cohort exactly its own hue. Turning the slider up lets the population's
-    // internal state show through as variation WITHIN that colour, so a
-    // material reads as a material rather than as a flat fill.
+    //   BEHAVIOR  the brain's own output, whose scale is arbitrary, so A is
+    //             what makes it legible as hue at all.
+    //   COHORT    the cohort index times a fixed spacing, so A sets how far
+    //             apart the populations sit on the wheel.
     //
-    // This is why the wobble is ADDED rather than multiplied in: multiplying
-    // the base would rotate the whole material away from the chosen colour,
-    // and at zero would collapse every hue to red. Cohort mode used to do
-    // exactly that -- `sensitivity * cohort * CONSTANT` meant a sensitivity of
-    // 0.0 painted every cohort hue 0, which made the slider's midpoint a
-    // degenerate state rather than the pure one.
+    // WHAT B BUYS: without it every material starts at hue 0 and fans out from
+    // red, so two configs with similar signals are indistinguishable and a
+    // palette cannot be composed. The bias moves a population to its own corner
+    // of the wheel and lets A read as variation WITHIN that colour. A alone
+    // could never do this -- it scales the signal, so at any gain the hue still
+    // passes through 0 wherever the signal does.
     //
-    // SENSITIVITY RUNS -1..1 (see settingsSpec.ts), so the wobble is signed and
-    // a negative value simply reverses which way a given brain output pushes
-    // the hue. Nothing needs to special-case that.
+    // A RUNS -1..1 and B RUNS 0..1 (see settingsSpec.ts). A is signed because
+    // reversing which way a signal pushes the hue is meaningful; B spans the
+    // wheel exactly once, and since hue is periodic that is every colour there
+    // is -- a signed range would only offer each one twice.
+    //
+    // SWATCH MODE USES NEITHER, and that is not an oversight. The other two
+    // derive a hue from a number whose scale is arbitrary; a swatch colour was
+    // CHOSEN. Applying a gain would rotate every material away from the colour
+    // its author picked, and a bias would do it twice over -- the picker
+    // already puts the hue exactly where the author wants it. It is also the
+    // only mode that carries its own saturation, which is the whole reason it
+    // exists -- the other two pin it at 0.8.
     var hue : f32;
     var saturation = 0.8;
     let mode = color_mode();
-    let wobble = hue_variation(in.col_params.x);
     if (mode == MODE_SWATCH) {
         let picked = swatch_color(in.config_index);
-        hue = picked.x + wobble;
+        hue = picked.x;
         saturation = picked.y;
-    } else if (mode == MODE_COHORT) {
-        // The cohort's own place on the wheel is FIXED, independent of the
-        // slider -- that is what makes the populations reliably distinct.
-        hue = in.col_params.y * COHORT_COLOR_CONSTANT + wobble;
     } else {
-        hue = u.sprite.z * in.col_params.x;
+        // ONE LOOKUP FOR BOTH SIGNAL MODES, which is what keeps them honestly
+        // the same expression over two different signals.
+        let ab = hue_coefficients(in.config_index);
+        let signal = select(in.col_params.x,
+                            in.col_params.y * COHORT_COLOR_CONSTANT,
+                            mode == MODE_COHORT);
+        hue = ab.x * signal + ab.y;
     }
 
     // THE COHORT HIGHLIGHT. `col_params.y` is floor(cohort)

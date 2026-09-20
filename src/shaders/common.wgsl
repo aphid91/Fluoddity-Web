@@ -191,9 +191,10 @@ struct ConfigData {
                    // z: sensor_angle_jitter   w: sensor_distance_jitter
     // misc2 had no spares left, so Radial Gravity is rule 2's "add a whole new
     // vec4" case again rather than a reclaimed lane. Gravity (Trails) then took
-    // .y -- rule 2's "claim a reserved lane" case. Two spares left.
+    // .y -- rule 2's "claim a reserved lane" case, as did Color Offset in .z.
+    // One spare left.
     misc3: vec4f,  // x: radial_gravity(i)     y: gravity_trails
-                   // zw: reserved
+                   // z: color_offset          w: reserved
 }  // 416 bytes
 
 fn cfg_sensor_gain(c: ConfigData) -> f32     { return c.sensor.x; }
@@ -243,6 +244,26 @@ fn cfg_color_sensitivity(c: ConfigData) -> f32 { return c.misc2.x; }
 //
 // Also uncalled by any shader, for the same reason as cfg_color_sensitivity.
 fn cfg_color_by_cohort(c: ConfigData) -> bool { return bitcast<i32>(c.misc2.y) != 0; }
+
+// WHERE THIS POPULATION'S HUE SITS BEFORE THE SIGNAL MOVES IT. Sensitivity is
+// the coefficient A and this is the bias B in `hue = A * signal + B`, so a
+// config can be tuned to a corner of the wheel and its signal read as variation
+// WITHIN that colour rather than across the whole spectrum.
+//
+// 0..1 spans the wheel exactly once. Hue is periodic, so the ends meet and no
+// wrapping is needed anywhere -- see the fragment stage in cam_brush.
+//
+// IN A DIFFERENT LANE FROM cfg_color_sensitivity, which it belongs beside by
+// meaning. misc2 was full; this is rule 2's "claim a reserved lane" case in
+// misc3 rather than a fourth vec4 for one float. The accessors are written
+// together here because that is where a reader looks for them -- the lane a
+// value lives in is an allocation detail, which is exactly what the misc2
+// comment above says.
+//
+// Uncalled by any shader, like the two above: the camera does not read the
+// config buffer (rule 3), so this reaches cam_brush through the swatch table on
+// its own uniform. The accessor is the record of which lane holds it.
+fn cfg_color_offset(c: ConfigData) -> f32 { return c.misc3.z; }
 
 // Random wobble added to each sensor reading, resampled EVERY PHYSICS STEP --
 // a shimmer, not a fixed per-particle trait. Both are 0..1 controls scaled so

@@ -168,6 +168,7 @@ const SCALAR_CONFIG_FIELDS = [
   'initialConditions',
   'cohortFences',
   'colorSensitivity',
+  'colorOffset',
   'colorByCohort',
   'sensorAngleJitter',
   'sensorDistanceJitter',

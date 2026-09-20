@@ -75,7 +75,8 @@ export const LANE = {
   force2: 92, //  x: gravity_force y: gravity_strafe z: initial_conditions(i) w: cohort_fences(i)
   misc2: 96, //   x: color_sensitivity   y: color_by_cohort(i)
   //              z: sensor_angle_jitter w: sensor_distance_jitter
-  misc3: 100, //  x: radial_gravity(i)   y: gravity_trails   zw: reserved
+  misc3: 100, //  x: radial_gravity(i)   y: gravity_trails
+  //              z: color_offset        w: reserved
 } as const;
 
 /** Float32 lane indices within a `WorldData` record. */
@@ -159,8 +160,19 @@ export interface SimulationConfig {
    * view. A RENDERING setting that happens to be per-config: it never touches
    * the simulation, so dragging it re-colours without disturbing anything.
    * Negative values simply run the hue backwards.
+   *
+   * The coefficient A in `hue = A * signal + B`, where B is `colorOffset`.
    */
   readonly colorSensitivity: number;
+  /**
+   * Where this config's hue SITS before the signal moves it -- 0..1 around the
+   * wheel once. The bias B to `colorSensitivity`'s coefficient A.
+   *
+   * Lets a population be tuned to one corner of the wheel and its signal read
+   * as variation within that colour rather than across the whole spectrum. A
+   * rendering setting on the same terms as the one above.
+   */
+  readonly colorOffset: number;
   /**
    * Colour each population flat by cohort instead of by its brain's output.
    * Applied in entity_update (it changes what gets stored), not the renderer.
@@ -232,6 +244,10 @@ export const SIMULATION_CONFIG_DEFAULTS = {
   initialConditions: IC.CENTER,
   cohortFences: false,
   colorSensitivity: 0.5,
+  // ZERO IS "LEAVE THE HUE WHERE IT WAS". Every config that predates this knob
+  // rendered as though the bias were absent, so this is the value that keeps
+  // them looking exactly as they did.
+  colorOffset: 0.0,
   colorByCohort: false,
   sensorAngleJitter: 0.0,
   sensorDistanceJitter: 0.0,
