@@ -38,6 +38,11 @@
 
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
 import { TOOL_CONFIG, type SandTool } from './tool.ts';
+import {
+  type SwatchColor,
+  defaultSwatchColor,
+  defaultSwatchColors,
+} from './swatchColor.ts';
 
 /**
  * How many slots exist, and therefore how long the GPU's `ConfigData` array is.
@@ -144,6 +149,32 @@ export function slotForDigit(key: string): number | null {
   return null;
 }
 
+/**
+ * The swatch `steps` places from `from`, wrapping at both ends.
+ *
+ * ## Wraps, and over the VISIBLE range only
+ *
+ * Scrolling is a continuous gesture with no natural stop, so clamping would
+ * make the ends feel broken -- the wheel keeps turning and nothing happens.
+ * Wrapping means every swatch is reachable from every other one without
+ * reversing, which is what a scroll through a strip should do.
+ *
+ * `visible` rather than `SLOT_COUNT`, because the hidden slots have no buttons:
+ * scrolling into slot 35 while the bar shows thirty would move the selection
+ * somewhere the user cannot see it, which looks exactly like the scroll having
+ * skipped. Capacity is unaffected either way -- see the header.
+ *
+ * Guarded against a non-positive `visible` so a caller that has not yet applied
+ * a count cannot produce a NaN or divide by zero; the palette always shows at
+ * least `MIN_VISIBLE_COUNT` in practice.
+ */
+export function cycleSlot(from: number, steps: number, visible: number): number {
+  const count = Math.max(1, Math.min(SLOT_COUNT, Math.trunc(visible)));
+  // `% count` twice: JS `%` keeps the sign of the dividend, so a negative step
+  // from slot 0 would land negative without the second pass.
+  return (((from + steps) % count) + count) % count;
+}
+
 /** The digit printed on a swatch, or empty past the tenth. */
 export function keyLabel(slot: number): string {
   if (slot < 0 || slot >= KEYED_SLOTS) return '';
@@ -154,6 +185,25 @@ export class Palette {
   private readonly slots: PaletteSlot[] = Array.from({ length: SLOT_COUNT }, () => EMPTY_SLOT);
   /** Replacement counter per swatch. See `set` and `generationOf`. */
   private readonly generations: number[] = Array.from({ length: SLOT_COUNT }, () => 0);
+
+  /**
+   * A render colour per slot, for Color By Swatch.
+   *
+   * ## Why this is parallel to `slots` rather than a field on `PaletteSlot`
+   *
+   * A colour OUTLIVES the material in its slot. Loading a different config into
+   * swatch 7 replaces what it paints, but "swatch 7 is the pink one" is a
+   * property of the slot the author arranged, not of the config that happens to
+   * be sitting in it -- and `set` would otherwise reset the colour on every
+   * right-click load, which is exactly when an author is filling a palette they
+   * have already coloured.
+   *
+   * FULL LENGTH, like `slots`, so a slot index addresses both without a bounds
+   * check. Seeded with the spaced defaults so a palette that has never been
+   * coloured still renders as distinguishable materials rather than as forty
+   * identical reds.
+   */
+  private readonly colors: SwatchColor[] = defaultSwatchColors(SLOT_COUNT);
 
   /** The flat index of the selected swatch. */
   private _selected = 0;
@@ -250,6 +300,35 @@ export class Palette {
   /** How many times this swatch's contents have been REPLACED. See `set`. */
   generationOf(slot: number): number {
     return this.generations[slot] ?? 0;
+  }
+
+  /** This swatch's render colour. Always defined -- see `colors`. */
+  colorOf(slot: number): SwatchColor {
+    return this.colors[slot] ?? defaultSwatchColor(slot);
+  }
+
+  /**
+   * Set a swatch's render colour.
+   *
+   * DOES NOT BUMP THE GENERATION. A colour is a display property and the Config
+   * tab shows none of it, so rebuilding that tab on every drag of the picker
+   * would reset the gesture -- the same reason `edit` does not bump either.
+   */
+  setColor(slot: number, color: SwatchColor): void {
+    if (slot < 0 || slot >= SLOT_COUNT) return;
+    this.colors[slot] = color;
+  }
+
+  /**
+   * Every slot's colour, for the render uniform.
+   *
+   * FULL LENGTH and in slot order, for the same reason `configsForUpload` is:
+   * a slot's index in this array is the `config_index` the shader looks it up
+   * by, so compacting or shortening it would colour every material above the
+   * cut as its neighbour.
+   */
+  colorsForUpload(): readonly SwatchColor[] {
+    return this.colors;
   }
 
   /**

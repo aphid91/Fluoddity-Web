@@ -40,6 +40,8 @@ import {
   clampVisibleCount,
 } from './palette.ts';
 import { type ToolStrengths, defaultStrengths } from './brushInput.ts';
+import { type SwatchColor, readSwatchColor } from './swatchColor.ts';
+import { type ColorMode, DEFAULT_COLOR_MODE, asColorMode } from './colorMode.ts';
 
 export const SESSION_KEY = 'fluoddity.sand.session';
 
@@ -54,6 +56,19 @@ export interface StoredSlot {
   readonly name: string;
   /** A v8 config document -- the swatch's LIVE values, edits included. */
   readonly document: unknown | null;
+  /**
+   * The swatch's render colour, for Color By Swatch.
+   *
+   * STORED EVEN FOR AN EMPTY SWATCH, unlike the world format's. A session is
+   * Custom's working state rather than a published artifact, and an author part
+   * way through colouring a palette they have not filled yet would otherwise
+   * lose that work on every reload. The world format drops empty slots because
+   * its sparse form has no way to express one; this array is dense.
+   *
+   * Optional, so a session written before colours existed restores with the
+   * spaced defaults rather than failing to parse.
+   */
+  readonly color?: SwatchColor;
 }
 
 export interface SandSession {
@@ -89,6 +104,41 @@ export interface SandSession {
    * "which button is lit" stays answerable without consulting the library.
    */
   readonly selectedWorld: number;
+
+  /**
+   * THE COMPACTION SWITCHES, which used to be deliberately session-only.
+   *
+   * ## The argument that was here, and why it lost
+   *
+   * These three were held back on the grounds that a pause surviving a reload
+   * would be "compaction silently off weeks later with no sign why". That is a
+   * real failure mode, but it is the wrong trade for a panel whose whole
+   * audience is the person authoring the app: the Dev tab is a workbench, and a
+   * workbench that resets every visit costs a setup ritual on every reload
+   * forever to protect against a confusion that the panel itself displays the
+   * answer to. Auto compact in particular was being re-ticked every session.
+   *
+   * The mitigation is that all three are VISIBLE in the same folder that
+   * controls them -- `setCompactionStats` writes them back every frame -- so
+   * "why is compaction off" is answered by looking at the switch that says so.
+   *
+   * `auditAfterSweep` persists with the others despite costing a pipeline stall
+   * per sweep. It is the one most likely to be left on and forgotten, and that
+   * is precisely the argument for it being visibly ON in the panel rather than
+   * quietly reset behind the user's back mid-investigation.
+   */
+  readonly autoCompact: boolean;
+  readonly compactionPaused: boolean;
+  readonly auditAfterSweep: boolean;
+
+  /**
+   * How the particle camera assigns hue. The Dev tab's dropdown.
+   *
+   * Persisted like the rest of that tab. A world states its own and overrides
+   * this while it is loaded, the same relationship `visibleCount` has -- see
+   * `worldFormat.ts`.
+   */
+  readonly colorMode: ColorMode;
 }
 
 /**
@@ -114,6 +164,14 @@ export const EMPTY_SESSION: SandSession = {
   // assigned. In the editor nothing is assigned yet, so defaulting to world 1
   // would open on an empty button.
   selectedWorld: CUSTOM_WORLD,
+  // OFF for a fresh install, matching `SandOrchestrator`'s own defaults: a pass
+  // that rewrites both pool buffers unsupervised is worth opting into, and the
+  // audit costs a stall. Persisted once the user has opted in -- see the type.
+  autoCompact: false,
+  compactionPaused: false,
+  auditAfterSweep: false,
+  // The original look, so a fresh install renders as it always did.
+  colorMode: DEFAULT_COLOR_MODE,
 };
 
 /** The subset of `localStorage` this needs, so tests can supply their own. */
@@ -187,9 +245,13 @@ function asSlot(raw: unknown): StoredSlot {
   const tool = o['tool'];
   if (typeof tool === 'string' && tool !== TOOL_CONFIG) return EMPTY_STORED;
 
+  // A malformed colour is dropped and the caller substitutes the spaced
+  // default -- see `readSwatchColor`.
+  const color = readSwatchColor(o['color']);
   return {
     name: typeof o['name'] === 'string' ? o['name'] : '',
     document: o['document'] ?? null,
+    ...(color === null ? {} : { color }),
   };
 }
 
@@ -276,7 +338,22 @@ export function parseSession(raw: string): SandSession {
     // stored index past the five buttons would light nothing and leave the
     // panel looking broken.
     selectedWorld: asSelectedWorld(o['selectedWorld']),
+    // STRICTLY BOOLEAN, defaulting to off. A truthy non-boolean (`"false"`, 1)
+    // is rejected rather than coerced: these three govern a pass that rewrites
+    // both pool buffers, and a hand-edited entry should fall back to the safe
+    // default rather than being interpreted generously.
+    autoCompact: asBool(o['autoCompact'], EMPTY_SESSION.autoCompact),
+    compactionPaused: asBool(o['compactionPaused'], EMPTY_SESSION.compactionPaused),
+    auditAfterSweep: asBool(o['auditAfterSweep'], EMPTY_SESSION.auditAfterSweep),
+    // Anything unrecognised is the original look -- a session from a build with
+    // a mode this one does not have should render rather than fail.
+    colorMode: asColorMode(o['colorMode']),
   };
+}
+
+/** A stored boolean, or the fallback for anything that is not one. */
+function asBool(raw: unknown, fallback: boolean): boolean {
+  return typeof raw === 'boolean' ? raw : fallback;
 }
 
 /** A stored world selection, or Custom for anything out of range. */

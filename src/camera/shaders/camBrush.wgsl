@@ -16,13 +16,37 @@
 // flip between the two and compare. Here, both toggles are immediate.
 #include "common.wgsl"
 
+// HOW MANY SWATCH COLOURS RIDE THE UNIFORM. Must equal `SLOT_COUNT` in
+// `sand/palette.ts`, which is the length of the ConfigData array and therefore
+// the range a particle's config_index can take; `shaders.test.ts` asserts they
+// agree. A mismatch would colour the materials above the cut from whatever
+// followed the array in memory.
+const SWATCH_COLOR_COUNT: i32 = 40;
+
+// THE THREE COLOUR MODES. Mirrored from `sand/colorMode.ts`, whose
+// `colorModeIndex` produces exactly these; shaders.test.ts pins the pair.
+//
+// Zero is BEHAVIOR so that a uniform which failed to be written (all zeroes)
+// renders the original look rather than an unrecognised mode.
+const MODE_BEHAVIOR: i32 = 0;
+const MODE_COHORT: i32   = 1;
+const MODE_SWATCH: i32   = 2;
+
 struct CamBrushUniforms {
     canvas_res : vec4f,   // xy: canvas size   zw: window size
     camera     : vec4f,   // xy: pan   z: zoom   w: reserved
     // x: sprite_size   y: particle_alpha   z: color_sensitivity   w: reserved
     sprite     : vec4f,
-    // x: color_by_cohort(i)   y: highlighted cohort (< 0 = none)   zw: reserved
+    // x: color_mode(i)   y: highlighted cohort (< 0 = none)   zw: reserved
     flags      : vec4f,
+    // ONE SWATCH PER LANE PAIR: xy holds hue and saturation, zw are unused.
+    //
+    // A vec4f array rather than a vec2f one because a uniform array's elements
+    // are padded to 16 bytes each in the std140-style layout WGSL uses for the
+    // `uniform` address space -- declaring it as vec2f would reserve the same
+    // memory while making the stride a lie. Saying vec4f keeps the shape
+    // honest, and the packer writes the two spare lanes as zero.
+    swatches   : array<vec4f, 40>,
 }
 
 @group(0) @binding(0) var<uniform> u : CamBrushUniforms;
@@ -30,7 +54,18 @@ struct CamBrushUniforms {
 // stage cannot write storage at all, so `read` is not a choice here.
 @group(0) @binding(1) var<storage, read> entities : array<Entity>;
 
-fn color_by_cohort() -> bool { return bitcast<i32>(u.flags.x) != 0; }
+fn color_mode() -> i32 { return bitcast<i32>(u.flags.x); }
+
+// A swatch's hue and saturation, clamped into the table.
+//
+// CLAMPED RATHER THAN TRUSTED: `config_index` is bounds-checked everywhere it
+// is read in the physics (`entityUpdate.wgsl` clamps it too), and an index past
+// the table here would be an out-of-bounds uniform read. The dead-particle test
+// in the vertex stage means this is never reached with a negative index, but
+// the clamp costs nothing and makes the read safe on its own terms.
+fn swatch_color(index: i32) -> vec2f {
+    return u.swatches[clamp(index, 0, SWATCH_COLOR_COUNT - 1)].xy;
+}
 
 // The cohort the mouse is resting on, or negative when none is. A PLAIN FLOAT
 // AND NOT A SEPARATE BOOLEAN LANE: cohorts are non-negative (`get_cohort` is a
@@ -62,6 +97,14 @@ struct VsOut {
     // attribute does not error: the hue would simply interpolate across each
     // sprite, which reads as a rendering style rather than as a bug.
     @location(2) @interpolate(flat) col_params : vec2f,
+    // WHICH SWATCH PAINTED THIS PARTICLE, for Color By Swatch.
+    //
+    // `flat` and an i32 for the same reason as above and one more: a config
+    // index is an identity, not a quantity, so interpolating it across the quad
+    // would produce indices that belong to no material at all. It is carried
+    // rather than re-read in the fragment stage because the entity buffer is
+    // bound to the VERTEX stage only -- see the binding's note.
+    @location(3) @interpolate(flat) config_index : i32,
 }
 
 // Rotate a local offset into the entity's velocity frame, so the sprite is
@@ -91,6 +134,11 @@ fn vs_main(@builtin(vertex_index) vertex_id : u32,
         dead.uv = vec2f(0.0);
         dead.pos_vel = vec4f(0.0);
         dead.col_params = vec2f(0.0);
+        // ZERO, not the entity's own index -- a dead particle's is negative
+        // (that IS the death flag), and nothing downstream should see one.
+        // Nothing is rasterized from this vertex anyway; this keeps the struct
+        // fully written rather than leaving one field to whatever was there.
+        dead.config_index = 0;
         return dead;
     }
 
@@ -156,6 +204,7 @@ fn vs_main(@builtin(vertex_index) vertex_id : u32,
     out.uv = uv_coords[vertex_id];
     out.pos_vel = vec4f(entity_pos, entity_vel);
     out.col_params = e_col_params(e);
+    out.config_index = e_config_index(e);
     return out;
 }
 
@@ -181,21 +230,33 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
 
     let kernel = gaussian(centered, 0.163);
 
-    // Hue is periodic, so no clamping or wrapping is needed -- a large signal
-    // simply travels further around the wheel. Saturation and value are fixed:
-    // only hue carries information, which keeps every particle equally legible
-    // against the black background.
+    // THE THREE COLOUR MODES. Exactly one applies -- see `sand/colorMode.ts` on
+    // why this is an enumerated mode rather than two independent toggles.
     //
-    // Sensitivity scales BOTH signals, so it stays meaningful in either mode:
-    // by cohort it sets how far apart the populations sit on the wheel.
+    // Hue is periodic, so no clamping or wrapping is needed in the two signal
+    // modes -- a large signal simply travels further around the wheel.
     //
-    // NOTE `select(false_value, true_value, condition)` -- the argument order is
-    // the REVERSE of a ternary. Safe here where `?:` was not in camera.wgsl:
-    // both arms are cheap scalar reads with no singularity.
-    let signal = select(in.col_params.x,
-                        in.col_params.y * COHORT_COLOR_CONSTANT,
-                        color_by_cohort());
-    let hue = u.sprite.z * signal;
+    // Sensitivity scales BOTH signals, so it stays meaningful in either: by
+    // cohort it sets how far apart the populations sit on the wheel.
+    //
+    // SWATCH MODE IGNORES SENSITIVITY, and that is not an oversight. The other
+    // two derive a hue from a number whose scale is arbitrary, so they need a
+    // gain to be legible at all; a swatch colour was CHOSEN, and multiplying it
+    // by a slider would rotate every material away from the colour its author
+    // picked. It is also the only mode that carries its own saturation, which
+    // is the whole reason it exists -- the other two pin it at 0.8.
+    var hue : f32;
+    var saturation = 0.8;
+    let mode = color_mode();
+    if (mode == MODE_SWATCH) {
+        let picked = swatch_color(in.config_index);
+        hue = picked.x;
+        saturation = picked.y;
+    } else if (mode == MODE_COHORT) {
+        hue = u.sprite.z * in.col_params.y * COHORT_COLOR_CONSTANT;
+    } else {
+        hue = u.sprite.z * in.col_params.x;
+    }
 
     // THE COHORT HIGHLIGHT. `col_params.y` is floor(cohort)
     // (entityUpdate.wgsl:531) and the highlighted cohort arrives already
@@ -203,11 +264,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // comparison are integers-in-a-float and `==` is exact. Comparing a floored
     // value against a raw one would match nothing and dim the entire field.
     //
-    // INDEPENDENT OF color_by_cohort(). The highlight answers "which particles
-    // am I about to select", the toggle answers "how is hue assigned" -- a user
-    // colouring by the black-box signal still needs to see what a click will
-    // take. Applied to the returned COLOUR rather than to alpha, so it dims what
-    // the particle contributes without changing the additive blend's shape.
+    // INDEPENDENT OF THE COLOUR MODE. The highlight answers "which particles am
+    // I about to select", the mode answers "how is hue assigned" -- a user
+    // colouring by the black-box signal, or by swatch, still needs to see what a
+    // click will take. Applied to the returned COLOUR rather than to alpha, so
+    // it dims what the particle contributes without changing the additive
+    // blend's shape.
     // TWO KNOBS, BOTH APPLIED TO THE SAME PARTICLES. Brightness alone reads as
     // "further away"; pulling the colour toward grey as well reads as "not the
     // thing you are looking at", which is what the highlight actually means. The
@@ -222,5 +284,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         wash = COHORT_WASH;
     }
 
-    return vec4f(hsv2rgb(vec3f(hue, 0.8 * wash, 1.0)) * kernel * u.sprite.y * dim, 1.0);
+    // `saturation` rather than a literal 0.8: the two signal modes set it to
+    // exactly that above, so their output is unchanged, while Swatch mode
+    // carries the saturation its author picked. The wash still multiplies it,
+    // so a desaturated swatch washes further toward grey when it is outside the
+    // highlighted cohort -- which is the highlight doing its job in every mode.
+    return vec4f(hsv2rgb(vec3f(hue, saturation * wash, 1.0)) * kernel * u.sprite.y * dim, 1.0);
 }

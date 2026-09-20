@@ -52,6 +52,8 @@ import {
   isPreferenceKey,
 } from '../prefs/preferences.ts';
 import { SLOT_COUNT } from '../sand/palette.ts';
+import { type SwatchColor, readSwatchColor } from '../sand/swatchColor.ts';
+import { type ColorMode, DEFAULT_COLOR_MODE, asColorMode } from '../sand/colorMode.ts';
 
 /** The only version this reads or writes. */
 export const WORLD_FORMAT_VERSION = 1;
@@ -119,6 +121,22 @@ export interface WorldSlot {
   readonly name: string;
   /** A v8 config document, exactly as `toDocument` produces. */
   readonly document: unknown;
+  /**
+   * The swatch's render colour, for Color By Swatch.
+   *
+   * ## PART OF THE WORLD, not of the reader's settings
+   *
+   * The line `WORLD_PREFERENCE_KEYS` draws is "how the simulation RUNS and
+   * LOOKS travels; how the editor is ARRANGED does not". A material's colour is
+   * squarely the first: it is what the world is made of, chosen by whoever
+   * authored it, and a world whose sand is pink is a different world from one
+   * whose sand is grey.
+   *
+   * Optional, so a world written before colours existed reads back without one
+   * and the loader substitutes the spaced default -- the same "a missing thing
+   * stays missing" contract `readWorld` keeps for preferences.
+   */
+  readonly color?: SwatchColor;
 }
 
 /** A world's JSON half. The scene rides alongside as `.fwld` bytes. */
@@ -128,6 +146,15 @@ export interface WorldDocument {
   readonly notes: string;
   readonly slots: readonly WorldSlot[];
   readonly preferences: WorldPreferences;
+  /**
+   * How the world renders particle colour: Behavior, Cohort or Swatch.
+   *
+   * A property of the world for the same reason a slot's colour is -- it is how
+   * the author meant their world to LOOK, and a world built to be read by
+   * material reads as noise under Behavior. See `sand/colorMode.ts` on why this
+   * is one enumerated mode rather than two independent toggles.
+   */
+  readonly colorMode: ColorMode;
   /**
    * How many swatches the tray shows for this world.
    *
@@ -148,15 +175,27 @@ export interface WorldDocument {
  * header.
  */
 export function makeWorldDocument(args: {
-  slots: readonly { name: string; document: unknown | null }[];
+  slots: readonly { name: string; document: unknown | null; color?: SwatchColor }[];
   preferences: Preferences;
   visibleCount: number;
+  colorMode?: ColorMode;
   notes?: string;
 }): WorldDocument {
   const slots: WorldSlot[] = [];
   args.slots.forEach((entry, slot) => {
     if (entry.document === null || entry.document === undefined) return;
-    slots.push({ slot, name: entry.name, document: entry.document });
+    // The colour rides the slot that carries the material. An EMPTY slot's
+    // colour is deliberately not stored: it describes nothing a particle can
+    // point at, and storing it would mean writing a slots entry with no
+    // document -- which `readWorld` drops, and which the sparse form exists to
+    // avoid. An author who colours a swatch and then empties it is describing a
+    // material they removed.
+    slots.push({
+      slot,
+      name: entry.name,
+      document: entry.document,
+      ...(entry.color === undefined ? {} : { color: entry.color }),
+    });
   });
 
   const preferences: Record<string, unknown> = {};
@@ -168,6 +207,7 @@ export function makeWorldDocument(args: {
     slots,
     preferences: preferences as WorldPreferences,
     visibleCount: args.visibleCount,
+    colorMode: args.colorMode ?? DEFAULT_COLOR_MODE,
   };
 }
 
@@ -231,10 +271,17 @@ export function readWorld(data: unknown, where = 'world'): WorldDocument {
         continue;
       }
       if (o['document'] === undefined || o['document'] === null) continue;
+      // A MALFORMED COLOUR IS DROPPED, not defaulted here: absent means "this
+      // world says nothing about the colour", and the loader then leaves the
+      // spaced default in place. Substituting one here would make an old world
+      // claim a colour its author never chose -- the same reason a missing
+      // preference stays missing. See `readSwatchColor` for what it accepts.
+      const color = readSwatchColor(o['color']);
       slots.push({
         slot,
         name: typeof o['name'] === 'string' ? o['name'] : '',
         document: o['document'],
+        ...(color === null ? {} : { color }),
       });
     }
   }
@@ -262,6 +309,10 @@ export function readWorld(data: unknown, where = 'world'): WorldDocument {
     slots,
     preferences: preferences as WorldPreferences,
     visibleCount,
+    // A world written before colour modes existed reads back as Behavior, which
+    // is what it rendered as -- so an old world looks the way it always did
+    // rather than switching to a mode its author never chose.
+    colorMode: asColorMode(raw['colorMode']),
   };
 }
 

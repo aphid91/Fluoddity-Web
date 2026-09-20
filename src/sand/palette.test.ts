@@ -10,6 +10,7 @@ import {
   type PaletteSlot,
   SLOT_COUNT,
   clampVisibleCount,
+  cycleSlot,
   isLoaded,
   keyLabel,
   slotForDigit,
@@ -17,6 +18,7 @@ import {
 import { makeSimulationConfig, makeWorldSettings } from '../particleSystem/config.ts';
 import { TOOL_CONFIG } from './tool.ts';
 import { COMPATIBILITY_TOLERANCE, isCompatible } from './compatibility.ts';
+import { defaultSwatchColor } from './swatchColor.ts';
 
 // Values are arbitrary -- nothing here reads them. What matters is that this is
 // a real `SimulationConfig`, so the palette is exercised against the type it
@@ -51,6 +53,90 @@ test('digits map 1-9 then 0 to the first ten slots', () => {
   // `0` is the TENTH slot, not the first -- the printed digit is one-based.
   assert.equal(slotForDigit('0'), 9);
   assert.equal(slotForDigit('x'), null);
+});
+
+// ---------------------------------------------------------------------------
+// Scroll cycling -- the wheel gesture, which has no end stop
+// ---------------------------------------------------------------------------
+
+test('cycleSlot steps forward and back within the visible range', () => {
+  assert.equal(cycleSlot(0, 1, 10), 1);
+  assert.equal(cycleSlot(5, 1, 10), 6);
+  assert.equal(cycleSlot(5, -1, 10), 4);
+});
+
+// THE WHOLE POINT OF THE HELPER. A clamp at either end would read as the wheel
+// having broken, so both ends roll over.
+test('cycleSlot wraps at both ends', () => {
+  assert.equal(cycleSlot(9, 1, 10), 0, 'past the last visible swatch');
+  assert.equal(cycleSlot(0, -1, 10), 9, 'back past the first');
+});
+
+// Scrolling must not select a swatch that has no button -- it would look
+// exactly like the scroll having done nothing.
+test('cycleSlot never leaves the visible range', () => {
+  for (let step = -50; step <= 50; step++) {
+    const landed = cycleSlot(3, step, 12);
+    assert.ok(landed >= 0 && landed < 12, `step ${step} landed at ${landed}`);
+  }
+});
+
+// A step larger than the range is not special-cased anywhere, so it is pinned.
+test('cycleSlot handles steps larger than the range', () => {
+  assert.equal(cycleSlot(0, 25, 10), 5);
+  assert.equal(cycleSlot(0, -25, 10), 5);
+});
+
+// Degenerate counts must not produce NaN or divide by zero -- the palette
+// always shows at least MIN_VISIBLE_COUNT, but the helper is defensive.
+test('cycleSlot survives a non-positive visible count', () => {
+  assert.equal(cycleSlot(0, 1, 0), 0);
+  assert.equal(cycleSlot(0, -1, -5), 0);
+});
+
+// The visible range is what has buttons, but capacity is still the ceiling.
+test('cycleSlot clamps a visible count above capacity', () => {
+  assert.equal(cycleSlot(SLOT_COUNT - 1, 1, SLOT_COUNT + 10), 0);
+});
+
+// ---------------------------------------------------------------------------
+// Swatch colours -- a property of the SLOT, not of the material in it
+// ---------------------------------------------------------------------------
+
+test('a palette starts with a full set of spaced default colours', () => {
+  const palette = new Palette();
+  assert.equal(palette.colorsForUpload().length, SLOT_COUNT, 'one per slot');
+  // Indexed by `config_index` on the GPU, so it must be dense and full length.
+  assert.deepEqual(palette.colorOf(7), defaultSwatchColor(7));
+});
+
+test('a colour survives the material in its slot being replaced', () => {
+  // The bug this prevents: `set` bumps the generation and rewrites the slot, so
+  // a colour stored ON the slot record would be reset by every right-click
+  // load -- exactly when an author is filling a palette they already coloured.
+  const palette = new Palette();
+  palette.setColor(4, { hue: 0.25, saturation: 0.6 });
+  palette.set(4, entry('Sand'));
+  assert.deepEqual(palette.colorOf(4), { hue: 0.25, saturation: 0.6 });
+
+  palette.set(4, entry('Smoke'));
+  assert.deepEqual(palette.colorOf(4), { hue: 0.25, saturation: 0.6 }, 'and again');
+});
+
+// A colour is a display property the Config tab shows nothing of, so rebuilding
+// that tab on every drag of the picker would reset the gesture.
+test('setting a colour does not bump the generation', () => {
+  const palette = new Palette();
+  const before = palette.generationOf(2);
+  palette.setColor(2, { hue: 0.9, saturation: 1 });
+  assert.equal(palette.generationOf(2), before);
+});
+
+test('a colour set out of bounds is ignored rather than growing the table', () => {
+  const palette = new Palette();
+  palette.setColor(SLOT_COUNT + 5, { hue: 0.5, saturation: 1 });
+  palette.setColor(-1, { hue: 0.5, saturation: 1 });
+  assert.equal(palette.colorsForUpload().length, SLOT_COUNT);
 });
 
 test('only the first ten swatches carry a printed digit', () => {

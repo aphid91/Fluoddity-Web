@@ -91,6 +91,9 @@ test('a session round-trips through storage', () => {
     visibleCount: 24,
     maxParticles: 50_000,
     theme: 'blueprint',
+    autoCompact: true,
+    compactionPaused: true,
+    auditAfterSweep: true,
   };
 
   saveSession(session, storage);
@@ -105,6 +108,88 @@ test('a session round-trips through storage', () => {
   assert.equal(back.maxParticles, 50_000);
   assert.equal(back.theme, 'blueprint');
   assert.ok(readSlotDocument(back.slots[0]?.document));
+  // The Dev tab's compaction switches, which used to be session-only.
+  assert.equal(back.autoCompact, true);
+  assert.equal(back.compactionPaused, true);
+  assert.equal(back.auditAfterSweep, true);
+});
+
+// ---------------------------------------------------------------------------
+// The Dev tab's compaction switches
+// ---------------------------------------------------------------------------
+
+// They govern a pass that rewrites both pool buffers, so a hand-edited or
+// truthy-but-not-boolean entry falls back to off rather than being coerced.
+test('the compaction switches accept booleans only', () => {
+  const parsed = parseSession(
+    JSON.stringify({
+      autoCompact: 'true',
+      compactionPaused: 1,
+      auditAfterSweep: {},
+    }),
+  );
+  assert.equal(parsed.autoCompact, false);
+  assert.equal(parsed.compactionPaused, false);
+  assert.equal(parsed.auditAfterSweep, false);
+});
+
+// A session written before these were persisted must not turn compaction off.
+test('a session predating the compaction switches defaults them off', () => {
+  const parsed = parseSession(JSON.stringify({ selected: 2 }));
+  assert.equal(parsed.autoCompact, EMPTY_SESSION.autoCompact);
+  assert.equal(parsed.compactionPaused, false, 'compaction must not start paused');
+  assert.equal(parsed.auditAfterSweep, false, 'auditing must not start on');
+});
+
+// ---------------------------------------------------------------------------
+// Swatch colours and the colour mode
+// ---------------------------------------------------------------------------
+
+// STORED EVEN FOR AN EMPTY SWATCH, unlike the world format's. A session is
+// Custom's working state, and a palette being coloured before it is filled is
+// work that must survive a reload.
+test('an empty swatch keeps its colour', () => {
+  const storage = memory();
+  saveSession(
+    {
+      ...EMPTY_SESSION,
+      slots: [{ name: '', document: null, color: { hue: 0.5, saturation: 0.25 } }],
+    },
+    storage,
+  );
+  const back = loadSession(storage);
+  assert.equal(back.slots[0]?.document, null, 'still empty');
+  assert.deepEqual(back.slots[0]?.color, { hue: 0.5, saturation: 0.25 });
+});
+
+test('a session predating swatch colours restores without one', () => {
+  const parsed = parseSession(
+    JSON.stringify({ slots: [{ name: 'Sand', document: null }] }),
+  );
+  assert.equal(parsed.slots[0]?.color, undefined, 'the caller substitutes a default');
+});
+
+test('a malformed colour is dropped without costing the swatch', () => {
+  const parsed = parseSession(
+    JSON.stringify({
+      slots: [{ name: 'Sand', document: null, color: { hue: 'pink', saturation: 1 } }],
+    }),
+  );
+  assert.equal(parsed.slots[0]?.name, 'Sand', 'the swatch survives');
+  assert.equal(parsed.slots[0]?.color, undefined);
+});
+
+test('the colour mode round-trips and falls back when unrecognised', () => {
+  const storage = memory();
+  saveSession({ ...EMPTY_SESSION, colorMode: 'swatch' }, storage);
+  assert.equal(loadSession(storage).colorMode, 'swatch');
+
+  assert.equal(
+    parseSession(JSON.stringify({ colorMode: 'ultraviolet' })).colorMode,
+    EMPTY_SESSION.colorMode,
+  );
+  // A session written before the dropdown existed renders as it always did.
+  assert.equal(parseSession(JSON.stringify({})).colorMode, 'behavior');
 });
 
 // ---------------------------------------------------------------------------

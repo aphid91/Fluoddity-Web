@@ -47,6 +47,7 @@ import {
   ASSIGNABLE_WORLDS,
   MASTER_SLOT,
   SLOT_COUNT,
+  cycleSlot,
   slotForDigit,
 } from './palette.ts';
 import { WorldStore } from '../worlds/worldStore.ts';
@@ -56,7 +57,8 @@ import {
   makeWorldDocument,
   readWorld,
 } from '../worlds/worldFormat.ts';
-import { TOOL_CONFIG } from './tool.ts';
+import { TOOL_CONFIG, cycleTool } from './tool.ts';
+import { defaultSwatchColor } from './swatchColor.ts';
 import {
   CUSTOM_WORLD,
   type SandSession,
@@ -208,6 +210,11 @@ async function main(): Promise<void> {
   // ---------------------------------------------------------------------
   let restoredAny = false;
   session.slots.forEach((stored, slot) => {
+    // THE COLOUR FIRST, and outside the document guard: a swatch may have been
+    // coloured while still empty, and that is work the author did. An absent
+    // colour leaves the spaced default in place rather than overwriting it.
+    if (stored.color !== undefined) orch.palette.setColor(slot, stored.color);
+
     const saved = readSlotDocument(stored.document);
     if (saved === null || saved.configs[0] === undefined) return;
     orch.palette.set(slot, {
@@ -239,6 +246,14 @@ async function main(): Promise<void> {
   // So a later World Size change rebuilds at the capped count rather than
   // silently reverting to the derived one.
   orch.setMaxParticlesSetting(session.maxParticles);
+  // THE DEV TAB'S COMPACTION SWITCHES, restored before the first frame so the
+  // pool behaves as the panel will claim it does from frame one rather than
+  // from whenever the user next touches a control. See `SandSession`.
+  orch.setAutoCompact(session.autoCompact);
+  orch.setCompactionPaused(session.compactionPaused);
+  // A display choice, read by the next rendered frame -- so setting it here is
+  // enough and nothing has to be rebuilt.
+  orch.colorMode = session.colorMode;
   orch.applyPalette(fallbackConfig, defaultWorld);
   // From frame one, so a strength the user set in an earlier session applies
   // immediately rather than from whenever they next touch a control.
@@ -309,11 +324,14 @@ async function main(): Promise<void> {
 
   /** The live palette, in the session's stored shape. */
   const paletteSlots = (): StoredSlot[] =>
-    orch.palette.all().map((slot) => ({
+    orch.palette.all().map((slot, index) => ({
       name: slot.name,
       // BY VALUE, so a swatch edited on the Config tab restores as edited
       // rather than reverting to the file it came from.
       document: slotDocument(slot.config, slot.world),
+      // EVEN WHEN THE SWATCH IS EMPTY -- a half-coloured palette is work in
+      // progress and must survive a reload. See `StoredSlot.color`.
+      color: orch.palette.colorOf(index),
     }));
 
   const worldStore = await WorldStore.open();
@@ -335,6 +353,12 @@ async function main(): Promise<void> {
     theme: theme.id,
     worlds: [...worldAssignments],
     selectedWorld,
+    // The Dev tab's compaction switches. Read from the orchestrator rather than
+    // from a mirror here, so the stored value is what is actually in force.
+    autoCompact: orch.compactionStats.autoCompact,
+    compactionPaused: orch.compactionStats.paused,
+    auditAfterSweep,
+    colorMode: orch.colorMode,
   });
 
   /**
@@ -362,10 +386,34 @@ async function main(): Promise<void> {
     saveSession(snapshot());
   });
 
+  /**
+   * Select a swatch AND arm the Brush.
+   *
+   * ## Why picking a material chooses the tool that uses it
+   *
+   * Only Brush reads the swatch (`usesSwatch`), so with any other tool armed the
+   * tray is dimmed and a selection is inert -- the user picks a material and
+   * nothing about the next stroke changes. Reaching for a swatch is therefore
+   * already a statement of intent to paint it, and making that arm the Brush is
+   * what turns the tray back into something that answers.
+   *
+   * THE COST, stated because it is real: a scroll can no longer preview swatches
+   * without leaving the tool you were on. Erase + scroll now lands you in Brush.
+   * That is the trade the requirement asks for, and it is the right way round --
+   * silently selecting into a dimmed tray was the worse of the two.
+   *
+   * Every selection path routes through here -- click, digit key and scroll --
+   * so none of them can drift from the others about this.
+   */
+  const selectSwatch = (slot: number): void => {
+    orch.palette.select(slot);
+    orch.brush.tool = 'brush';
+    persist();
+  };
+
   const ui = new SandUi(orch.palette, store, {
     onSelect: (slot) => {
-      orch.palette.select(slot);
-      persist();
+      selectSwatch(slot);
     },
     onBrushSize: (index) => {
       orch.brush.setSize(index);
@@ -460,8 +508,8 @@ async function main(): Promise<void> {
    * be reported"; the frame loop watches for it to end.
    */
   let markBefore: number | null = null;
-  /** Dev tab switch: audit the pool every time a sweep ends. */
-  let auditAfterSweep = false;
+  /** Dev tab switch: audit the pool every time a sweep ends. Persisted. */
+  let auditAfterSweep = session.auditAfterSweep;
 
   const prefsWindow = new SandPrefs(
     prefs,
@@ -471,6 +519,13 @@ async function main(): Promise<void> {
       theme: theme.id,
       visibleCount: orch.palette.visibleCount,
       worlds: worldAssignments,
+      // The restored compaction switches, so the panel opens agreeing with the
+      // orchestrator rather than showing three unticked boxes over a world that
+      // is already auto-compacting.
+      autoCompact: session.autoCompact,
+      compactionPaused: session.compactionPaused,
+      auditAfterSweep,
+      colorMode: orch.colorMode,
     },
     {
     // --- worlds: the level editor half of the Dev tab --------------------
@@ -492,6 +547,20 @@ async function main(): Promise<void> {
     onTheme: (next) => {
       theme = next;
       ui.applyTheme(next);
+      persist();
+    },
+    // A DISPLAY CHOICE. Nothing is rebuilt and no physics step is needed: the
+    // next rendered frame reads it on its way to the uniform, so it applies
+    // immediately even while paused -- which is when comparing modes is most
+    // useful. See `camBrush.wgsl`.
+    onColorMode: (mode) => {
+      orch.colorMode = mode;
+      persist();
+    },
+    // Likewise immediate. The tray tints itself from the same value on its next
+    // refresh, so the button and the particles cannot disagree.
+    onSwatchColor: (slot, color) => {
+      orch.palette.setColor(slot, color);
       persist();
     },
     // Display only -- capacity is fixed. See `palette.ts`.
@@ -575,11 +644,12 @@ async function main(): Promise<void> {
         }
       })();
     },
-    // COMPACTION. Not persisted, unlike the settings above: both of these are
-    // diagnostics for the session in front of you, and a pause that survived a
-    // reload would be a compaction silently off weeks later with no sign why.
+    // COMPACTION. Persisted like everything else on this tab -- the Dev tab is
+    // a workbench and re-ticking Auto compact every visit was the cost of the
+    // old stance. See `SandSession` for the argument and its mitigation.
     onAutoCompact: (enabled) => {
       orch.setAutoCompact(enabled);
+      persist();
       notify(
         enabled
           ? 'Auto compact on — below 70% occupancy, at most once every 2s'
@@ -588,6 +658,7 @@ async function main(): Promise<void> {
     },
     onCompactionPaused: (paused) => {
       orch.setCompactionPaused(paused);
+      persist();
       notify(paused ? 'Compaction paused' : 'Compaction resumed');
     },
     // THE AUDIT. Full report to the console, headline to the status line -- the
@@ -595,6 +666,7 @@ async function main(): Promise<void> {
     // while the status line only has room for the verdict.
     onAuditAfterSweep: (enabled) => {
       auditAfterSweep = enabled;
+      persist();
       notify(enabled ? 'Auditing after every sweep' : 'Sweep auditing off');
     },
     onAuditPool: () => {
@@ -664,6 +736,47 @@ async function main(): Promise<void> {
   // Right-drag is the eraser, so the context menu must not interrupt it.
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
+  // -------------------------------------------------------------------------
+  // THE WHEEL: swatches, or tools with Shift.
+  //
+  // Both cycles WRAP -- a scroll gesture has no end stop, so clamping at either
+  // limit reads as the wheel having broken rather than as a boundary. The pure
+  // cycling lives in `palette.ts` and `tool.ts` so the wrap arithmetic is
+  // testable without a DOM.
+  //
+  // `deltaY` alone, and only its SIGN. Magnitude varies wildly between a mouse
+  // wheel (~100 per detent), a trackpad (a few pixels per frame) and a browser
+  // in line-scroll mode, so acting on it would make one detent move one swatch
+  // on a mouse and thirty on a trackpad. One step per event is the only
+  // behaviour that is the same on all three.
+  //
+  // NOT PASSIVE, because it calls `preventDefault`: the page must not scroll
+  // under the canvas while the wheel is being used to pick a material. Chrome
+  // treats a wheel listener on an element as passive by default only for the
+  // document-level ones, but stating it is what makes the intent explicit.
+  // -------------------------------------------------------------------------
+  canvas.addEventListener(
+    'wheel',
+    (e) => {
+      // Either browser is modal and owns the wheel -- a long config list is
+      // scrollable, and cycling the palette behind it would be invisible.
+      if (ui.loaderOpen || worldLoader.isOpen) return;
+      if (e.deltaY === 0) return;
+      e.preventDefault();
+
+      const steps = e.deltaY > 0 ? 1 : -1;
+      if (e.shiftKey) {
+        // SHIFT CYCLES THE RAIL, including Stamp -- see `cycleTool`.
+        orch.brush.tool = cycleTool(orch.brush.tool, steps);
+        persist();
+        return;
+      }
+      // Arms the Brush as well, like every other selection path.
+      selectSwatch(cycleSlot(orch.palette.selected, steps, orch.palette.visibleCount));
+    },
+    { passive: false },
+  );
+
   window.addEventListener('keyup', (e) => {
     shiftHeld = e.shiftKey;
   });
@@ -699,8 +812,8 @@ async function main(): Promise<void> {
 
     const digit = slotForDigit(e.key);
     if (digit !== null) {
-      orch.palette.select(digit);
-      persist();
+      // Arms the Brush as well -- see `selectSwatch`.
+      selectSwatch(digit);
       return;
     }
     if (e.key === ' ') {
@@ -732,12 +845,16 @@ async function main(): Promise<void> {
       notify(`Saving "${name}"…`);
       const scene = await orch.exportScene();
       const document = makeWorldDocument({
-        slots: orch.palette.all().map((slot) => ({
+        slots: orch.palette.all().map((slot, index) => ({
           name: slot.name,
           document: slotDocument(slot.config, slot.world),
+          color: orch.palette.colorOf(index),
         })),
         preferences: live,
         visibleCount: orch.palette.visibleCount,
+        // The world's own look, saved with it -- a world built to be read by
+        // material is not the same world under Behavior. See `WorldDocument`.
+        colorMode: orch.colorMode,
       });
       await worldStore.save(name, document, scene);
       prefsWindow.refreshWorlds(worldStore.names(), worldAssignments);
@@ -801,6 +918,12 @@ async function main(): Promise<void> {
     // previous one's leftovers in the slots it does not mention.
     for (let slot = 0; slot < SLOT_COUNT; slot++) {
       if (slot !== MASTER_SLOT) orch.palette.clear(slot);
+      // THE COLOURS ARE RESET TOO, for the same reason the slots are: a world
+      // that says nothing about slot 7's colour should show the default there,
+      // not whatever the previously loaded world happened to paint it. Without
+      // this, colours would accumulate across loads and a world would render
+      // differently depending on what was open before it.
+      orch.palette.setColor(slot, defaultSwatchColor(slot));
     }
     for (const stored of world.slots) {
       const saved = readSlotDocument(stored.document);
@@ -811,10 +934,16 @@ async function main(): Promise<void> {
         world: saved.world,
         name: stored.name,
       });
+      // An older world states no colour and keeps the default set just above.
+      if (stored.color !== undefined) orch.palette.setColor(stored.slot, stored.color);
     }
     // THE WORLD'S COUNT OVERRIDES THE DEV SLIDER, per the requirement: that
     // slider governs Custom alone from here on.
     if (world.visibleCount > 0) orch.palette.setVisibleCount(world.visibleCount);
+    // ...and so does its colour mode, for the same reason: how the world looks
+    // is the author's statement, not the reader's setting.
+    orch.colorMode = world.colorMode;
+    prefsWindow.adoptColorMode(world.colorMode);
     orch.applyPalette(fallbackConfig, defaultWorld);
 
     // --- the scene --------------------------------------------------------

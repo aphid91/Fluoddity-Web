@@ -60,15 +60,41 @@ export interface CameraView {
 export const CAMERA_VIEW_UNIFORM_SIZE = 48;
 
 /**
- * `CamBrushUniforms` -- 64 bytes.
+ * How many swatch colours ride the cam-brush uniform.
+ *
+ * MUST EQUAL `SLOT_COUNT` in `sand/palette.ts` and `SWATCH_COLOR_COUNT` in
+ * `camBrush.wgsl`. Not imported from the palette: this module is the camera's,
+ * and the camera has no business depending on the sand modality's palette --
+ * the number is a property of the uniform's LAYOUT, which is this file's
+ * subject. `shaders.test.ts` asserts all three agree, which is what keeps them
+ * from drifting without creating the dependency.
+ */
+export const CAM_BRUSH_SWATCH_COUNT = 40;
+
+/**
+ * `CamBrushUniforms` -- 704 bytes.
  *
  *   canvas_res : vec4f  (16)  offset 0
  *   camera     : vec4f  (16)  offset 16
  *   sprite     : vec4f  (16)  offset 32   x size  y alpha  z color_sensitivity
- *   flags      : vec4f  (16)  offset 48   x color_by_cohort(i)
+ *   flags      : vec4f  (16)  offset 48   x color_mode(i)
  *                                         y highlighted cohort (f32, <0 = none)
+ *   swatches   : array<vec4f, 40>  (640)  offset 64   xy hue, saturation
+ *
+ * ## Why the swatch table is 16 bytes per entry for 8 bytes of data
+ *
+ * A uniform array's element stride is rounded up to 16 in WGSL's layout rules,
+ * so a `array<vec2f, 40>` would occupy the same 640 bytes while declaring a
+ * stride the implementation does not use. Declaring `vec4f` makes the shape
+ * honest and leaves zw as documented padding rather than a trap.
+ *
+ * 704 bytes is comfortably inside the 64KiB minimum guaranteed uniform binding
+ * size, so this needs no storage-buffer promotion.
  */
-export const CAM_BRUSH_UNIFORM_SIZE = 64;
+export const CAM_BRUSH_UNIFORM_SIZE = 64 + CAM_BRUSH_SWATCH_COUNT * 16;
+
+/** Where the swatch table starts, in floats. The one place that knows it. */
+const SWATCH_FLOAT_BASE = 16;
 
 /** `AccumulateUniforms` -- 16 bytes. `params: vec4f`, x = inv_samples. */
 export const ACCUMULATE_UNIFORM_SIZE = 16;
@@ -132,8 +158,9 @@ export function packCameraViewUniforms(view: CameraView): ArrayBuffer {
 export function packCamBrushUniforms(
   view: CameraView,
   colorSensitivity: number,
-  colorByCohort: boolean,
+  colorMode: number,
   highlightedCohort = -1,
+  swatchColors: readonly { hue: number; saturation: number }[] = [],
 ): ArrayBuffer {
   const buffer = new ArrayBuffer(CAM_BRUSH_UNIFORM_SIZE);
   const f32 = new Float32Array(buffer);
@@ -146,9 +173,29 @@ export function packCamBrushUniforms(
   f32[9] = PARTICLE_ALPHA;
   f32[10] = colorSensitivity;
 
-  // flags: x color_by_cohort(i), y highlighted_cohort(f32), zw reserved
-  i32[12] = colorByCohort ? 1 : 0;
+  // flags: x color_mode(i), y highlighted_cohort(f32), zw reserved
+  //
+  // AN INT LANE, as `color_by_cohort` was before it. The shader bitcasts it
+  // back, so writing the mode as a float would be read as a huge integer and
+  // match no mode -- landing on the `else` branch and rendering every particle
+  // in Behavior regardless of the dropdown.
+  i32[12] = colorMode;
   f32[13] = highlightedCohort;
+
+  // The swatch table. A caller with fewer colours than slots leaves the rest at
+  // zero -- black, which is what an unpainted material would render as anyway
+  // and is never reached: a particle can only carry the index of a slot it was
+  // painted from. Extra colours past the table are DROPPED rather than
+  // overflowing into whatever follows.
+  const count = Math.min(swatchColors.length, CAM_BRUSH_SWATCH_COUNT);
+  for (let i = 0; i < count; i++) {
+    const color = swatchColors[i];
+    if (color === undefined) continue;
+    const base = SWATCH_FLOAT_BASE + i * 4;
+    f32[base + 0] = color.hue;
+    f32[base + 1] = color.saturation;
+    // zw stay zero: documented padding, not data. See the size constant.
+  }
 
   return buffer;
 }

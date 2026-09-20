@@ -77,7 +77,31 @@ export interface CameraFrame {
    * (`orchestrator.py:334-339`).
    */
   readonly colorSensitivity: number;
-  readonly colorByCohort: boolean;
+  /**
+   * WHICH COLOUR MODE, as the integer `camBrush.wgsl` switches on.
+   *
+   * An integer rather than the `ColorMode` string because the Camera is the
+   * studio's and must not depend on the sand modality's vocabulary -- the sand
+   * orchestrator maps its own enum through `colorModeIndex` and hands the
+   * result over. Zero is the original look; see `sand/colorMode.ts`.
+   *
+   * This replaced a `colorByCohort` boolean. Two independent flags would have
+   * had a meaningless fourth state once Color By Swatch arrived.
+   */
+  readonly colorMode: number;
+  /**
+   * Hue and saturation per palette slot, for Color By Swatch.
+   *
+   * Only read in that mode, but written to the uniform unconditionally -- the
+   * same argument `beginFrame` makes for writing both modes' uniforms every
+   * frame: a table that goes stale while the mode is off produces wrong colours
+   * on the frame it is switched back on, which corrects itself a frame later
+   * and is miserable to reproduce.
+   *
+   * Optional so the studio -- which has no swatches -- and the tests need not
+   * thread it through.
+   */
+  readonly swatchColors?: readonly { hue: number; saturation: number }[];
   /**
    * The cohort under the mouse, or negative when none is highlighted.
    *
@@ -436,8 +460,9 @@ export class Camera {
       packCamBrushUniforms(
         view,
         frame.colorSensitivity,
-        frame.colorByCohort,
+        frame.colorMode,
         frame.highlightedCohort ?? -1,
+        frame.swatchColors ?? [],
       ),
     );
     queue.writeBuffer(this.accumUniforms, 0, packAccumulateUniforms(samples));

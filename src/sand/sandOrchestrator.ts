@@ -43,6 +43,11 @@ import type { Vec2 } from '../particleSystem/coords.ts';
 import type { CameraView } from '../camera/cameraUniforms.ts';
 import { type OverlayState, NO_OVERLAYS } from '../assembler/assemblerUniforms.ts';
 import { worldToUv } from '../particleSystem/coords.ts';
+import {
+  type ColorMode,
+  DEFAULT_COLOR_MODE,
+  colorModeIndex,
+} from './colorMode.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
 import { SandPasses } from './sandPasses.ts';
 import { Compactor } from './compactor.ts';
@@ -1492,6 +1497,16 @@ export class SandOrchestrator {
   /** Set by `main.ts` from the loaded defaults, so the field is never unset. */
   fallbackWorld!: WorldSettings;
 
+  /**
+   * How the particle camera assigns hue. The Dev tab's dropdown writes it.
+   *
+   * A PLAIN FIELD rather than a setter: nothing has to happen when it changes.
+   * The next frame reads it on its way to the uniform, which is what makes the
+   * dropdown take effect immediately -- including while paused, since a paused
+   * frame still renders.
+   */
+  colorMode: ColorMode = DEFAULT_COLOR_MODE;
+
   private renderInto(
     encoder: GPUCommandEncoder,
     prefs: Preferences,
@@ -1522,7 +1537,14 @@ export class SandOrchestrator {
       // `activeEntityCount`.
       entityCount: this.system.activeEntityCount,
       colorSensitivity: this.palette.master.config?.colorSensitivity ?? 0,
-      colorByCohort: false,
+      // THE DEV TAB'S DROPDOWN, mapped to the integer the shader switches on.
+      // A display choice, so it takes effect on the next rendered frame rather
+      // than on the next physics step -- which is what lets it be compared
+      // while paused, the same argument `camBrush.wgsl` makes for deciding
+      // colour in the renderer at all.
+      colorMode: colorModeIndex(this.colorMode),
+      // Written every frame regardless of the mode -- see `CameraFrame`.
+      swatchColors: this.palette.colorsForUpload(),
     };
     this.camera.beginFrame(frame, 1);
     this.camera.clearAccumulator(encoder);

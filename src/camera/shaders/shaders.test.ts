@@ -28,6 +28,14 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveIncludes } from '../../../tools/wgslInclude.ts';
+import {
+  COLOR_BY_BEHAVIOR,
+  COLOR_BY_COHORT,
+  COLOR_BY_SWATCH,
+  colorModeIndex,
+} from '../../sand/colorMode.ts';
+import { SLOT_COUNT } from '../../sand/palette.ts';
+import { CAM_BRUSH_SWATCH_COUNT } from '../cameraUniforms.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SHARED_DIR = path.join(here, '..', '..', 'shaders');
@@ -276,7 +284,7 @@ test('camBrush.wgsl dims by cohort against a FLOORED value', () => {
 });
 
 test('camBrush.wgsl reads the highlighted cohort from a float lane', () => {
-  // Not `bitcast<i32>` like color_by_cohort: cohorts are non-negative floats and
+  // Not `bitcast<i32>` like the colour mode: cohorts are non-negative floats and
   // the sentinel is a negative one, so the lane carries both facts without a
   // second lane that could disagree with it. cameraUniforms.ts writes f32[13].
   const source = stripComments(expand('camBrush.wgsl'));
@@ -284,6 +292,92 @@ test('camBrush.wgsl reads the highlighted cohort from a float lane', () => {
     source,
     /fn\s+highlighted_cohort\(\)\s*->\s*f32\s*\{\s*return\s+u\.flags\.y;/,
     'highlighted_cohort must read flags.y as a plain f32',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The three colour modes -- the protocol between colorMode.ts and the shader
+// ---------------------------------------------------------------------------
+
+test('camBrush.wgsl agrees with colorMode.ts about the mode integers', () => {
+  // A DRIFT HERE IS SILENT AND TOTAL: the host would ask for Swatch and the
+  // shader would render Cohort, which looks like a colour bug rather than like
+  // a protocol mismatch. The values are declared in two languages and this is
+  // the only thing holding them together.
+  const source = stripComments(expand('camBrush.wgsl'));
+
+  const declared = (name: string): number => {
+    const match = new RegExp(`const\\s+${name}\\s*:\\s*i32\\s*=\\s*(-?\\d+)`).exec(source);
+    assert.ok(match !== null, `${name} must be declared as an i32 constant`);
+    return Number(match[1]);
+  };
+
+  assert.equal(declared('MODE_BEHAVIOR'), colorModeIndex(COLOR_BY_BEHAVIOR));
+  assert.equal(declared('MODE_COHORT'), colorModeIndex(COLOR_BY_COHORT));
+  assert.equal(declared('MODE_SWATCH'), colorModeIndex(COLOR_BY_SWATCH));
+});
+
+// Zero is the mode an unwritten uniform buffer reads as, so it must be the one
+// that is harmless -- the original look rather than an unrecognised state.
+test('the zero mode is Behavior, so an unwritten uniform is harmless', () => {
+  assert.equal(colorModeIndex(COLOR_BY_BEHAVIOR), 0);
+});
+
+test('camBrush.wgsl sizes its swatch table to the palette', () => {
+  // The table is indexed by `config_index`, whose range is SLOT_COUNT. A
+  // shorter one reads past the array for every material above the cut.
+  const source = stripComments(expand('camBrush.wgsl'));
+  const match = /const\s+SWATCH_COLOR_COUNT\s*:\s*i32\s*=\s*(\d+)/.exec(source);
+  assert.ok(match !== null, 'SWATCH_COLOR_COUNT must be a named i32 constant');
+  assert.equal(Number(match[1]), SLOT_COUNT, 'the shader and the palette disagree');
+  assert.equal(
+    Number(match[1]),
+    CAM_BRUSH_SWATCH_COUNT,
+    'the shader and the uniform packer disagree',
+  );
+
+  // The declared array must be that long too -- the constant alone is only used
+  // for the clamp, so a shorter array would clamp into bounds it does not have.
+  assert.match(
+    source,
+    new RegExp(`swatches\\s*:\\s*array<vec4f,\\s*${SLOT_COUNT}>`),
+    `the swatch array must be declared array<vec4f, ${SLOT_COUNT}>`,
+  );
+});
+
+test('camBrush.wgsl clamps the swatch lookup rather than trusting the index', () => {
+  // An unclamped index would be an out-of-bounds uniform read. The dead-particle
+  // cull means it is never reached with a negative index, but the clamp is what
+  // makes the read safe on its own terms rather than by the caller's good manners.
+  const source = stripComments(expand('camBrush.wgsl'));
+  assert.match(
+    source,
+    /u\.swatches\[clamp\(index,\s*0,\s*SWATCH_COLOR_COUNT\s*-\s*1\)\]/,
+    'swatch_color must clamp its index into the table',
+  );
+});
+
+test('camBrush.wgsl carries config_index flat, not interpolated', () => {
+  // A config index is an identity, not a quantity. Interpolated across the quad
+  // it would produce indices belonging to no material at all, so the sprite
+  // would be painted in a smear of the wrong swatches' colours.
+  const source = stripComments(expand('camBrush.wgsl'));
+  assert.match(
+    source,
+    /@interpolate\(flat\)\s*config_index\s*:\s*i32/,
+    'config_index must be a flat i32 varying',
+  );
+});
+
+// Swatch mode is the only one that carries a saturation; the other two pin it.
+// If the fragment stage went back to a literal, a swatch colour's saturation
+// would be silently discarded and the picker's second axis would do nothing.
+test('camBrush.wgsl feeds a variable saturation to hsv2rgb', () => {
+  const source = stripComments(expand('camBrush.wgsl'));
+  assert.match(
+    source,
+    /hsv2rgb\(vec3f\(hue,\s*saturation\s*\*\s*wash,\s*1\.0\)\)/,
+    'the fragment must use the mode-supplied saturation, not a literal',
   );
 });
 
@@ -301,14 +395,26 @@ test('camBrush.wgsl washes saturation on the SAME particles it dims', () => {
     /dim\s*=\s*COHORT_DIM\s*;\s*wash\s*=\s*COHORT_WASH\s*;/,
     'the dim and the wash must be set together, under one condition',
   );
-  // MULTIPLIED INTO THE SATURATION, not replacing it: the base saturation is
-  // the 0.8 below, so a COHORT_WASH of 1.0 has to leave the colour untouched --
-  // the same "1.0 means off" contract COHORT_DIM has. Assigning saturation
-  // outright would make 1.0 a full-saturation BOOST on the unhighlighted
-  // particles, which is the opposite of what the constant says it does.
+  // MULTIPLIED INTO THE SATURATION, not replacing it: a COHORT_WASH of 1.0 has
+  // to leave the colour untouched -- the same "1.0 means off" contract
+  // COHORT_DIM has. Assigning saturation outright would make 1.0 a
+  // full-saturation BOOST on the unhighlighted particles, which is the opposite
+  // of what the constant says it does.
+  //
+  // THE BASE IS NOW A VARIABLE, not the literal 0.8 this used to pin. The two
+  // signal modes still set it to exactly 0.8, but Swatch mode carries the
+  // saturation its author picked -- so pinning the literal here would forbid
+  // the one mode whose second colour axis is the point. What must not change is
+  // that the wash SCALES whatever the mode supplied.
   assert.match(
     source,
-    /hsv2rgb\(vec3f\(hue,\s*0\.8\s*\*\s*wash,/,
-    'the wash must scale the base saturation rather than replace it',
+    /hsv2rgb\(vec3f\(hue,\s*saturation\s*\*\s*wash,/,
+    'the wash must scale the mode-supplied saturation rather than replace it',
+  );
+  // The two signal modes' base, which keeps their output identical to before.
+  assert.match(
+    source,
+    /var\s+saturation\s*=\s*0\.8\s*;/,
+    'Behavior and Cohort must keep the 0.8 base they have always had',
   );
 });

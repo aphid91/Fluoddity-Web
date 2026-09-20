@@ -41,6 +41,7 @@ import {
   usesSwatch,
 } from './tool.ts';
 import { LAYOUT_DOCK, type SandTheme, themeById } from './theme.ts';
+import { swatchColorToCss } from './swatchColor.ts';
 // The studio's own tool descriptions, so the two apps cannot describe the same
 // tool differently.
 import { TOOL_HELP } from '../ui/menuHelp.ts';
@@ -629,6 +630,20 @@ export class SandUi {
         entry.name === ''
           ? 'Empty — right-click to load a config'
           : `${entry.name}${slot === MASTER_SLOT ? ' (master — grounds the world settings)' : ''}`;
+
+      // THE SWATCH'S OWN COLOUR, as a custom property the stylesheet reads.
+      //
+      // Set on every swatch regardless of the colour mode, not just under
+      // Color By Swatch. The tint is what tells the author WHICH colour they
+      // assigned -- they need to see it while arranging a palette, including
+      // while looking at the world in Behavior to judge its motion. It is a
+      // property of the button, not a preview of the render.
+      //
+      // A CUSTOM PROPERTY rather than `style.background`, so the stylesheet
+      // decides how much of the button the colour claims (a border, a bar, a
+      // fill) and the comps can each answer that differently -- writing
+      // `background` here would override whichever comp is active.
+      el.style.setProperty('--swatch-color', swatchColorToCss(this.palette.colorOf(slot)));
     }
 
     // --- editing the initial conditions ------------------------------------

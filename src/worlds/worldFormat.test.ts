@@ -249,6 +249,103 @@ test('the visible count survives, because a world may show empty swatches', () =
   assert.equal(readWorld(JSON.parse(JSON.stringify(doc))).visibleCount, 24);
 });
 
+// ---------------------------------------------------------------------------
+// SWATCH COLOURS AND THE COLOUR MODE.
+//
+// How a world LOOKS is the author's statement, not the reader's setting -- the
+// same line `WORLD_PREFERENCE_KEYS` draws for brightness and bloom.
+// ---------------------------------------------------------------------------
+
+test('a swatch colour rides the slot that carries the material', () => {
+  const slots = samplePalette().map((s, i) => ({
+    ...s,
+    color: { hue: i / 40, saturation: 0.5 },
+  }));
+  const doc = makeWorldDocument({
+    slots,
+    preferences: DEFAULT_PREFERENCES,
+    visibleCount: 20,
+  });
+  const back = readWorld(JSON.parse(JSON.stringify(doc)));
+
+  assert.deepEqual(back.slots.map((s) => s.slot), [0, 3, 17]);
+  // The colour must follow the SLOT, not the position in the sparse array.
+  //
+  // A TOLERANCE, not an exact compare: `readSwatchColor` wraps hue through
+  // `((h % 1) + 1) % 1`, which is exact for most values but not all of them
+  // (3/40 comes back a single ulp low). The wrap is what makes a hand-edited
+  // 1.25 mean 0.25, and one ulp is not a colour anyone can see.
+  const near = (got: number | undefined, want: number, what: string): void => {
+    assert.ok(got !== undefined && Math.abs(got - want) < 1e-9, `${what}: ${String(got)}`);
+  };
+  near(back.slots[1]?.color?.hue, 3 / 40, 'slot 3 hue');
+  near(back.slots[2]?.color?.hue, 17 / 40, 'slot 17 hue');
+  assert.equal(back.slots[1]?.color?.saturation, 0.5);
+  assert.equal(back.slots[2]?.color?.saturation, 0.5);
+});
+
+// A world written before colours existed says nothing about them, and the
+// loader then leaves the spaced default in place -- the same "a missing thing
+// stays missing" contract the preferences keep.
+test('a slot with no colour reads back without one', () => {
+  const doc = makeWorldDocument({
+    slots: samplePalette(),
+    preferences: DEFAULT_PREFERENCES,
+    visibleCount: 20,
+  });
+  const back = readWorld(JSON.parse(JSON.stringify(doc)));
+  assert.equal(back.slots[0]?.color, undefined);
+});
+
+test('a malformed colour is dropped without costing the slot', () => {
+  const back = readWorld({
+    version: WORLD_FORMAT_VERSION,
+    slots: [
+      { slot: 2, name: 'Sand', document: { version: 8 }, color: { hue: 'pink' } },
+      { slot: 3, name: 'Smoke', document: { version: 8 }, color: { hue: Number.NaN, saturation: 1 } },
+    ],
+    preferences: {},
+    visibleCount: 10,
+  });
+  assert.equal(back.slots.length, 2, 'both materials survive');
+  assert.equal(back.slots[0]?.color, undefined, 'the bad colour is simply absent');
+  assert.equal(back.slots[1]?.color, undefined);
+});
+
+test('the colour mode is saved with the world', () => {
+  const doc = makeWorldDocument({
+    slots: samplePalette(),
+    preferences: DEFAULT_PREFERENCES,
+    visibleCount: 20,
+    colorMode: 'swatch',
+  });
+  assert.equal(doc.colorMode, 'swatch');
+  assert.equal(readWorld(JSON.parse(JSON.stringify(doc))).colorMode, 'swatch');
+});
+
+// An old world rendered in Behavior, so it must keep rendering that way rather
+// than adopting a mode its author never chose.
+test('a world predating colour modes reads back as Behavior', () => {
+  const back = readWorld({
+    version: WORLD_FORMAT_VERSION,
+    slots: [],
+    preferences: {},
+    visibleCount: 10,
+  });
+  assert.equal(back.colorMode, 'behavior');
+});
+
+test('an unrecognised colour mode falls back rather than failing the world', () => {
+  const back = readWorld({
+    version: WORLD_FORMAT_VERSION,
+    slots: [],
+    preferences: {},
+    visibleCount: 10,
+    colorMode: 'ultraviolet',
+  });
+  assert.equal(back.colorMode, 'behavior');
+});
+
 test('a document with no slots at all is legal', () => {
   // A world that is only preferences is what an author has before painting.
   const back = readWorld({

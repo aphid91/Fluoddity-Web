@@ -49,8 +49,21 @@ import {
   MIN_VISIBLE_COUNT,
   type Palette,
   SLOT_COUNT,
+  keyLabel,
 } from './palette.ts';
 import { type SandTheme, THEMES, themeById } from './theme.ts';
+import {
+  COLOR_MODES,
+  COLOR_MODE_LABELS,
+  type ColorMode,
+  DEFAULT_COLOR_MODE,
+  asColorMode,
+} from './colorMode.ts';
+import {
+  type SwatchColor,
+  swatchColorFromCss,
+  swatchColorToCss,
+} from './swatchColor.ts';
 
 /** Fields a sand world has no use for, and why. */
 const HIDDEN_PREFS: ReadonlySet<string> = new Set([
@@ -92,6 +105,10 @@ export interface SandPrefsCallbacks {
   onTheme(theme: SandTheme): void;
   /** The swatch-count slider moved. Display only -- see `palette.ts`. */
   onVisibleCount(count: number): void;
+  /** The colour-mode dropdown. A display choice; takes effect next frame. */
+  onColorMode(mode: ColorMode): void;
+  /** The selected swatch's colour picker moved. */
+  onSwatchColor(slot: number, color: SwatchColor): void;
 
   // --- worlds. Dev-only: this is the level editor half of the app ----------
 
@@ -131,11 +148,40 @@ export class SandPrefs {
   private committedMaxParticles: number;
 
   /**
+   * The Colour folder's mirror: the mode, and the SELECTED swatch's colour.
+   *
+   * `swatch` is a hex string because Tweakpane's colour view speaks hex; the
+   * model stores hue and saturation and `swatchColor.ts` converts. Seeded in
+   * the constructor and kept pointed at the selection by `syncSwatchColor`.
+   */
+  private readonly colorValues: Record<string, string> = {
+    mode: DEFAULT_COLOR_MODE,
+    swatch: '#ffffff',
+  };
+  private colorFolder: FolderApi | null = null;
+  /**
+   * The picker blade, kept so its label can follow the selection.
+   *
+   * Typed from `addBinding`'s own return rather than named outright: Tweakpane
+   * exports several binding interfaces and the one this method produces is not
+   * assignable to the obvious `InputBindingApi`. Deriving it means the field
+   * cannot disagree with the call that fills it.
+   */
+  private colorBlade: ReturnType<FolderApi['addBinding']> | null = null;
+  /** Which swatch the picker is pointed at, so `syncSwatchColor` can notice. */
+  private shownColorSlot = -1;
+
+  /**
    * The compaction readouts, as STRINGS.
    *
    * Tweakpane's monitor bindings show a number as a graph or a slider; these are
    * bound as text so they read as a diagnostic rather than as something to drag.
    * Written by `setCompactionStats` once per frame and never by the user.
+   *
+   * THE THREE SWITCHES ARE SEEDED FROM THE SESSION in the constructor, not
+   * here. They are persisted now (see `SandSession`), and a panel built showing
+   * `false` while the orchestrator ran with the restored value would be a
+   * checkbox that lies until the user touches something else.
    */
   private readonly poolValues: Record<string, string | boolean> = {
     live: '—',
@@ -170,6 +216,12 @@ export class SandPrefs {
       visibleCount: number;
       /** The five assignments, restored from the session. */
       worlds: readonly string[];
+      /** The compaction switches, restored from the session. */
+      autoCompact: boolean;
+      compactionPaused: boolean;
+      auditAfterSweep: boolean;
+      /** The colour mode, restored from the session. */
+      colorMode: ColorMode;
     },
     callbacks: SandPrefsCallbacks,
   ) {
@@ -180,6 +232,14 @@ export class SandPrefs {
       theme: initial.theme,
       visibleCount: initial.visibleCount,
     };
+    // BEFORE `buildPool`, which binds the checkboxes to these keys -- Tweakpane
+    // reads the bound value at bind time, so seeding afterwards would build the
+    // panel showing `false` and only correct itself on the next refresh.
+    this.poolValues['autoCompact'] = initial.autoCompact;
+    this.poolValues['compactionPaused'] = initial.compactionPaused;
+    this.poolValues['auditAfterSweep'] = initial.auditAfterSweep;
+    // Likewise before `buildColor` binds the dropdown to it.
+    this.colorValues['mode'] = initial.colorMode;
     this.palette = palette;
     this.callbacks = callbacks;
     this.prefValues = { ...prefs } as Record<string, unknown>;
@@ -332,8 +392,108 @@ export class SandPrefs {
       this.callbacks.onMaxParticles(requested);
     });
 
+    this.buildColor(page);
     this.buildWorlds(page);
     this.buildPool(page);
+  }
+
+  /**
+   * The Colour folder: which mode, and the selected swatch's colour.
+   *
+   * ## Why the picker follows the SELECTION rather than listing forty
+   *
+   * Forty colour inputs would be forty blades in a 280px panel, and thirty-nine
+   * of them describe a swatch the user is not looking at. The tray is already
+   * the place a swatch is chosen -- and it is one click away -- so the picker
+   * edits whichever one is selected and the tray tints itself to show the
+   * result. That makes colouring a palette the same gesture as filling it:
+   * click the swatch, set the thing.
+   *
+   * The label names the slot so the picker cannot be mistaken for a global.
+   */
+  private buildColor(page: TabPageApi): void {
+    const folder = page.addFolder({ title: 'Colour', expanded: true });
+    this.colorFolder = folder;
+
+    const modeBlade = folder.addBinding(this.colorValues, 'mode', {
+      label: 'Colour by',
+      options: Object.fromEntries(
+        COLOR_MODES.map((m) => [COLOR_MODE_LABELS[m], m]),
+      ),
+    });
+    modeBlade.element.title =
+      'How each particle is coloured.\n' +
+      'Behavior: hue from the rule’s own output — the original look.\n' +
+      'Cohort: hue by sub-population, for telling one config’s cohorts apart.\n' +
+      'Swatch: the colour set below, for telling MATERIALS apart.\n' +
+      'A display choice: it applies immediately, including while paused.';
+    modeBlade.on('change', () => {
+      this.callbacks.onColorMode(asColorMode(this.colorValues['mode']));
+    });
+
+    // THE PICKER. `<input type="color">` under the hood, which is why the model
+    // speaks hex here and hue/saturation everywhere else -- see `swatchColor.ts`.
+    const colorBlade = folder.addBinding(this.colorValues, 'swatch', {
+      label: 'Swatch colour',
+      view: 'color',
+    });
+    this.colorBlade = colorBlade;
+    colorBlade.element.title =
+      'The colour particles painted from the SELECTED swatch render in, under ' +
+      'Colour by: Swatch. Saved with the world. Value is ignored — brightness ' +
+      'belongs to the frame, not to one material — so a dark pick returns its ' +
+      'hue and saturation at full value.';
+    colorBlade.on('change', () => {
+      const parsed = swatchColorFromCss(String(this.colorValues['swatch']));
+      if (parsed === null) return;
+      // A GREY PICK KEEPS THE STORED HUE. Every hue is equally correct at zero
+      // saturation, so resetting it to red would make the hue jump the moment
+      // the user dragged saturation to zero and then back up.
+      const current = this.palette.colorOf(this.palette.selected);
+      const color =
+        parsed.saturation === 0 ? { hue: current.hue, saturation: 0 } : parsed;
+      this.callbacks.onSwatchColor(this.palette.selected, color);
+    });
+  }
+
+  /**
+   * Point the picker at the selected swatch, and relabel it.
+   *
+   * Called from `syncConfig`, which already runs per frame and already knows
+   * when the selection moved -- so this costs a comparison in the common case.
+   *
+   * NOT WHILE THE PICKER IS OPEN: Tweakpane's colour input is a popup, and
+   * rewriting its bound value mid-drag would fight the user's pointer. The
+   * selection cannot change while it is open anyway (the tray is behind it),
+   * but the guard makes that a fact rather than a coincidence.
+   */
+  private syncSwatchColor(): void {
+    const slot = this.palette.selected;
+    const css = swatchColorToCss(this.palette.colorOf(slot));
+    if (css === this.colorValues['swatch'] && slot === this.shownColorSlot) return;
+    this.shownColorSlot = slot;
+    this.colorValues['swatch'] = css;
+    // NAMED FOR THE SLOT, so the picker cannot be mistaken for a global
+    // setting. Through the blade's own `label`, not by rewriting the DOM:
+    // Tweakpane's internal class names are not ours to depend on.
+    const key = keyLabel(slot);
+    const blade = this.colorBlade;
+    if (blade !== null) {
+      blade.label = `Swatch ${key === '' ? `#${slot + 1}` : key}`;
+    }
+    this.colorFolder?.refresh();
+  }
+
+  /**
+   * Adopt a colour mode set from outside the panel -- a world load.
+   *
+   * The same second-writer problem `adoptPreferences` solves: the dropdown
+   * binds to a mirror, so a world that set the mode would leave the panel
+   * showing the old one until the next touch.
+   */
+  adoptColorMode(mode: ColorMode): void {
+    this.colorValues['mode'] = mode;
+    this.colorFolder?.refresh();
   }
 
   /**
@@ -675,6 +835,12 @@ export class SandPrefs {
    * forces the rebuild that re-reads from the square.
    */
   syncConfig(): void {
+    // THE PICKER FOLLOWS THE SELECTION, and is checked before the early return
+    // below -- a swatch's colour can change without its generation moving (the
+    // picker itself does exactly that, and `setColor` deliberately does not
+    // bump), so gating this on the same guard would leave the input stale.
+    this.syncSwatchColor();
+
     const slot = this.palette.selected;
     const generation = this.palette.generationOf(slot);
     if (slot === this.shownSlot && generation === this.shownGeneration) return;

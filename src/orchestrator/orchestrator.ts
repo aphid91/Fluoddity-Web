@@ -802,7 +802,16 @@ export class Orchestrator implements CommandBus {
       // several configs loaded, the selected one sets the palette for all
       // (`orchestrator.py:334-339`).
       colorSensitivity: config.colorSensitivity,
-      colorByCohort: config.colorByCohort,
+      // THE STUDIO HAS TWO MODES, NOT THREE. Color By Swatch describes a sand
+      // palette slot and the studio has no palette, so its checkbox maps onto
+      // the two signal modes and the third is simply unreachable from here --
+      // 1 is Cohort and 0 is Behavior, matching `sand/colorMode.ts`.
+      //
+      // Left as the config's own boolean rather than promoted to a shared enum:
+      // `colorByCohort` is a per-config SETTING the studio saves, shares and
+      // diffs, and widening it to a three-valued mode would change the config
+      // format for a value the third state cannot apply to.
+      colorMode: config.colorByCohort ? 1 : 0,
       // PARTICLES mode only -- TRAIL renders the canvas texture, which holds
       // velocity rather than cohort and cannot express a per-cohort dim at all.
       // See `CameraFrame.highlightedCohort`.

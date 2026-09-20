@@ -693,6 +693,40 @@
         font-style: italic;
       }
 
+      /* THE SWATCH'S RENDER COLOUR, as a chip at the left of the button.
+
+         A CHIP RATHER THAN THE BACKGROUND, deliberately. The background is
+         already spoken for by [data-selected] and the border by
+         [data-master], and both must stay legible -- a full-bleed fill would
+         either hide the selection or be hidden by it. A chip is orthogonal to
+         both, so a selected master swatch still shows its colour.
+
+         Painted from the `--swatch-color` property `sandUi.refresh` sets, with
+         a fallback so a button built before the first refresh is not a black
+         hole. Shown in EVERY colour mode: it reports what the author assigned,
+         which they need while arranging a palette regardless of how the world
+         is currently rendered. */
+      .swatch::before {
+        content: '';
+        flex: none;
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        background: var(--swatch-color, var(--ink-dim));
+        /* A hairline, so a swatch coloured near the tray's own background is
+           still visibly a chip rather than a hole in the button. */
+        box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.35);
+      }
+
+      /* AN EMPTY SWATCH SHOWS NO COLOUR. Nothing can be painted from it, so a
+         chip would advertise a material that does not exist. The slot keeps
+         its colour in storage -- see `StoredSlot.color` -- and the chip
+         returns the moment a config is loaded into it. */
+      .swatch[data-empty='true']::before {
+        background: none;
+        box-shadow: inset 0 0 0 1px var(--edge);
+      }
+
       .swatch-key {
         flex: none;
         font-size: 9px;
