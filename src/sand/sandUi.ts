@@ -29,7 +29,8 @@ import type { ConfigEntry, ConfigStore } from '../config/configStore.ts';
 import type { WorldSettings } from '../particleSystem/config.ts';
 import { BRUSH_SIZES } from './brushInput.ts';
 import { isCompatible } from './compatibility.ts';
-import { MASTER_SLOT, type Palette, keyLabel } from './palette.ts';
+import { ASSIGNABLE_WORLDS, MASTER_SLOT, type Palette, keyLabel } from './palette.ts';
+import { CUSTOM_WORLD } from './session.ts';
 import {
   type SandTool,
   TOOLS,
@@ -118,6 +119,23 @@ export interface SandUiCallbacks {
   onStrength(tool: SandTool, value: number): void;
   /** The tray's Clear button, for whatever the armed tool clears. */
   onClear(what: 'walls' | 'trails' | 'particles'): void;
+  /**
+   * A world button was pressed.
+   *
+   * `index` is `CUSTOM_WORLD` for the editable world, or 0..4 for an assigned
+   * one. PRESSING THE ACTIVE WORLD IS NOT A NO-OP -- it is how the scene is
+   * reset to that world's default, which is the requirement -- so this fires
+   * even when the button is already selected.
+   */
+  onSelectWorld(index: number): void;
+}
+
+/** What the panel needs to draw one world button. */
+export interface WorldButtonState {
+  /** The save this button loads, or empty when unassigned. */
+  readonly name: string;
+  /** Whether that save still exists. False marks it as deleted. */
+  readonly present: boolean;
 }
 
 export class SandUi {
@@ -129,6 +147,7 @@ export class SandUi {
   private readonly canvas: HTMLCanvasElement;
   private readonly stageEl: HTMLElement;
   private readonly toolsEl: HTMLElement;
+  private readonly worldsEl: HTMLElement;
   private readonly sizesEl: HTMLElement;
   private readonly swatchesEl: HTMLElement;
   private readonly statusEl: HTMLElement;
@@ -178,6 +197,7 @@ export class SandUi {
     this.canvas = byId<HTMLCanvasElement>('app');
     this.stageEl = byId('stage');
     this.toolsEl = byId('tools');
+    this.worldsEl = byId('worlds');
     this.sizesEl = byId('sizes');
     this.swatchesEl = byId('swatches');
     this.statusEl = byId('sand-status');
@@ -196,6 +216,7 @@ export class SandUi {
     this.dockToolsEl = byId('dock-tools');
 
     this.buildTools();
+    this.buildWorlds();
     this.buildSizes();
     this.buildStrength();
 
@@ -310,6 +331,100 @@ export class SandUi {
       button.append(icon, name);
       button.addEventListener('click', () => this.callbacks.onTool(tool));
       this.toolsEl.append(button);
+    }
+  }
+
+  /**
+   * The six world buttons: five presets and Custom.
+   *
+   * ## Built once, relabelled per frame
+   *
+   * The buttons themselves never change -- there are always six, in the same
+   * places. What changes is which save each points at, whether that save still
+   * exists, and which is lit, all of which `refresh` writes. Rebuilding the
+   * elements instead would drop a click mid-press whenever an assignment
+   * changed, which is the bug `buildSwatches` guards against by rebuilding only
+   * on a count change.
+   *
+   * ## Custom is LAST, and that placement is the requirement's
+   *
+   * It is the sixth button. Reading order puts the presets first, which is the
+   * right emphasis for the shipping app -- a visitor picks a world, and Custom
+   * is the escape hatch into the editor rather than the front door.
+   */
+  private buildWorlds(): void {
+    this.worldsEl.replaceChildren();
+
+    for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
+      this.worldsEl.append(this.buildWorldButton(i));
+    }
+    this.worldsEl.append(this.buildWorldButton(CUSTOM_WORLD));
+  }
+
+  private buildWorldButton(index: number): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'world';
+    button.dataset['world'] = String(index);
+    if (index === CUSTOM_WORLD) button.dataset['custom'] = 'true';
+    // FIRES EVEN WHEN ALREADY SELECTED. Pressing the active world is how its
+    // initial conditions are reset to the world's default -- see the callback.
+    button.addEventListener('click', () => {
+      if (button.disabled) return;
+      this.callbacks.onSelectWorld(index);
+    });
+    return button;
+  }
+
+  /**
+   * Relabel the world buttons. Called from `refresh`.
+   *
+   * An UNASSIGNED button is disabled rather than hidden, so the panel keeps its
+   * three-by-two shape and an author can see which slots are free. A button
+   * whose save has been DELETED is marked instead of cleared, because saying
+   * what happened beats silently reading as though it was never assigned.
+   */
+  private refreshWorlds(state: {
+    worlds: readonly WorldButtonState[];
+    selected: number;
+  }): void {
+    for (const el of this.worldsEl.children) {
+      if (!(el instanceof HTMLButtonElement)) continue;
+      const index = Number(el.dataset['world']);
+      el.dataset['selected'] = String(index === state.selected);
+
+      if (index === CUSTOM_WORLD) {
+        el.textContent = 'Custom';
+        el.disabled = false;
+        el.title =
+          'The editable world: no initial conditions, and a palette you build ' +
+          'yourself. The Dev tab’s swatch count governs this one.';
+        continue;
+      }
+
+      const entry = state.worlds[index];
+      const name = entry?.name ?? '';
+      const present = entry?.present ?? false;
+
+      if (name === '') {
+        el.textContent = `World ${index + 1}`;
+        el.disabled = true;
+        delete el.dataset['missing'];
+        el.title = `World ${index + 1} is unassigned — point it at a save on the Dev tab.`;
+        continue;
+      }
+
+      el.disabled = false;
+      el.textContent = name;
+      if (present) {
+        delete el.dataset['missing'];
+        el.title =
+          `Load ${name}. Pressing it again resets the scene to this ` +
+          'world’s initial conditions.';
+      } else {
+        el.dataset['missing'] = 'true';
+        el.title = `"${name}" was deleted. Reassign this button on the Dev tab.`;
+      }
     }
   }
 
@@ -448,8 +563,13 @@ export class SandUi {
     brushSize: number;
     strength: number;
     editingInitialConditions: boolean;
+    /** The five assignments, for the world panel. */
+    worlds: readonly WorldButtonState[];
+    /** Which world is active, or `CUSTOM_WORLD`. */
+    selectedWorld: number;
   }): void {
     this.tool = state.tool;
+    this.refreshWorlds({ worlds: state.worlds, selected: state.selectedWorld });
 
     if (this.palette.visibleCount !== this.builtCount) {
       this.buildSwatches(this.palette.visibleCount);

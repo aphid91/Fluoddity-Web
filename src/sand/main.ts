@@ -58,7 +58,9 @@ import {
 } from '../worlds/worldFormat.ts';
 import { TOOL_CONFIG } from './tool.ts';
 import {
+  CUSTOM_WORLD,
   type SandSession,
+  type StoredSlot,
   loadSession,
   readSlotDocument,
   saveSession,
@@ -262,21 +264,73 @@ async function main(): Promise<void> {
   );
   let selectedWorld = session.selectedWorld;
 
-  const worldStore = await WorldStore.open();
+  /**
+   * CUSTOM'S OWN SWATCH COUNT, held apart from the live one.
+   *
+   * ## The leak this closes
+   *
+   * A world overrides the visible count -- that is the requirement, and the dev
+   * slider governs Custom alone from here on. But the session stores whatever
+   * the palette happens to be showing, so loading a world would write the
+   * WORLD'S count into Custom's saved state, and switching back would leave
+   * Custom permanently displaying a number its author never chose.
+   *
+   * Tracking Custom's count separately is what makes the override temporary
+   * rather than contagious. The dev slider writes here as well as to the
+   * palette, so adjusting it while on Custom is what it always was, and the
+   * session stores THIS rather than the live value.
+   */
+  let customVisibleCount = session.visibleCount;
 
-  /** The current palette and brush state, as stored. */
-  const snapshot = (): SandSession => ({
-    slots: orch.palette.all().map((slot) => ({
+  /**
+   * CUSTOM'S PALETTE, held while a preset world is loaded.
+   *
+   * ## Without this, visiting a world destroys Custom
+   *
+   * `snapshot()` stores whatever the palette currently holds, so loading a
+   * world and then reloading the page would bring the WORLD'S materials back as
+   * Custom's -- silently replacing whatever the user had built there, with no
+   * way to get it back.
+   *
+   * Custom is the one world whose edits are meant to persist between sessions;
+   * a preset's are not, which is the whole point of being able to reset one by
+   * pressing it again. So Custom's palette is set aside when leaving it and put
+   * back on return, and `snapshot` stores THIS while a preset is loaded.
+   *
+   * Null only while Custom itself is active, when the live palette is the
+   * authority and there is nothing to hold.
+   */
+  // SEEDED FROM THE SESSION when it was left on a preset. The stored slots ARE
+  // Custom's -- `snapshot` wrote them there rather than the preset's -- so a
+  // session that closed on World 2 still has Custom's materials waiting, and
+  // the first press of Custom restores them rather than finding nothing.
+  let customSlots: readonly StoredSlot[] | null =
+    session.selectedWorld === CUSTOM_WORLD ? null : session.slots;
+
+  /** The live palette, in the session's stored shape. */
+  const paletteSlots = (): StoredSlot[] =>
+    orch.palette.all().map((slot) => ({
       name: slot.name,
       // BY VALUE, so a swatch edited on the Config tab restores as edited
       // rather than reverting to the file it came from.
       document: slotDocument(slot.config, slot.world),
-    })),
+    }));
+
+  const worldStore = await WorldStore.open();
+
+  /** The current palette and brush state, as stored. */
+  const snapshot = (): SandSession => ({
+    // CUSTOM'S PALETTE, which is the live one only while Custom is active. A
+    // preset's materials are the world's and must not be written back as the
+    // user's own -- see `customSlots`.
+    slots: customSlots ?? paletteSlots(),
     selected: orch.palette.selected,
     brushSize: orch.brush.sizeSlot,
     tool: orch.brush.tool,
     strengths: orch.brush.allStrengths(),
-    visibleCount: orch.palette.visibleCount,
+    // CUSTOM'S COUNT, not the live one -- see `customVisibleCount`. Storing
+    // the live value would let a loaded world's override leak into Custom.
+    visibleCount: customVisibleCount,
     maxParticles: orch.maxParticlesSetting,
     theme: theme.id,
     worlds: [...worldAssignments],
@@ -335,6 +389,9 @@ async function main(): Promise<void> {
     onClear: (what) => {
       if (what === 'particles') orch.clearParticles();
       else orch.clearField(what);
+    },
+    onSelectWorld: (index) => {
+      void selectWorld(index);
     },
     onLoad: (slot, entry) => {
       void (async () => {
@@ -440,6 +497,11 @@ async function main(): Promise<void> {
     // Display only -- capacity is fixed. See `palette.ts`.
     onVisibleCount: (count) => {
       orch.palette.setVisibleCount(count);
+      // THE SLIDER IS CUSTOM'S, per the requirement -- a world states its own
+      // count and overrides this one while it is loaded. Recording it here is
+      // what makes the override temporary: switching back to Custom restores
+      // the number the author actually chose.
+      customVisibleCount = count;
       persist();
     },
     onChange: (next) => {
@@ -769,6 +831,91 @@ async function main(): Promise<void> {
     persist();
   }
 
+  /**
+   * A world button was pressed.
+   *
+   * ## PRESSING THE ACTIVE WORLD RELOADS IT, and that is the feature
+   *
+   * The requirement: "the user can edit the initial conditions, but clicking
+   * the world again resets them to the world default". So this does not check
+   * whether the world is already selected -- reloading is exactly what the
+   * second press is for, and short-circuiting it would remove the only way back
+   * to a world's default once it has been edited.
+   *
+   * ## Custom is RESTORED, not merely switched to
+   *
+   * There is no saved document behind Custom -- it is the user's own state --
+   * but that state has to be put BACK, because a preset world overwrote the
+   * live palette on the way in. `customSlots` holds it for exactly that, and
+   * this is where it is returned.
+   *
+   * Pressing Custom while already on Custom does nothing, unlike a preset:
+   * there is no default to reset to, because Custom IS the default.
+   */
+  async function selectWorld(index: number): Promise<void> {
+    if (index === CUSTOM_WORLD) {
+      if (selectedWorld === CUSTOM_WORLD) return;
+      selectedWorld = CUSTOM_WORLD;
+      restoreCustomPalette();
+      persist();
+      notify('Custom — your own palette and scene');
+      return;
+    }
+
+    const name = worldAssignments[index] ?? '';
+    if (name === '') return;
+    if (!worldStore.names().includes(name)) {
+      notify(`"${name}" was deleted — reassign World ${index + 1} on the Dev tab`);
+      return;
+    }
+
+    // SET ASIDE BEFORE THE LOAD OVERWRITES IT, and only when leaving Custom --
+    // going from one preset to another must not capture the first preset's
+    // materials as though they were the user's.
+    if (selectedWorld === CUSTOM_WORLD) customSlots = paletteSlots();
+
+    // SET BEFORE THE LOAD, so the button lights immediately rather than after
+    // a rebuild that may take a visible moment. A failed load reports itself in
+    // the status line; leaving the old world lit through a slow rebuild would
+    // look like the click had been ignored.
+    selectedWorld = index;
+    await loadWorld(name);
+  }
+
+  /**
+   * Put Custom's palette and swatch count back.
+   *
+   * The inverse of what a world load does. The scene is NOT restored: a preset
+   * left its own initial conditions in place, and Custom has none by
+   * definition -- so the world is emptied rather than handed someone else's
+   * arrangement to keep editing.
+   */
+  function restoreCustomPalette(): void {
+    const stored = customSlots;
+    customSlots = null;
+    if (stored === null) return;
+
+    for (let slot = 0; slot < SLOT_COUNT; slot++) {
+      if (slot !== MASTER_SLOT) orch.palette.clear(slot);
+    }
+    stored.forEach((entry, slot) => {
+      const saved = readSlotDocument(entry.document);
+      if (saved === null || saved.configs[0] === undefined) return;
+      orch.palette.set(slot, {
+        tool: TOOL_CONFIG,
+        config: saved.configs[0],
+        world: saved.world,
+        name: entry.name,
+      });
+    });
+    // The world's override ends here -- see `customVisibleCount`.
+    orch.palette.setVisibleCount(customVisibleCount);
+    orch.applyPalette(fallbackConfig, defaultWorld);
+    // Custom has no initial conditions, so it opens empty rather than
+    // inheriting the preset's particles.
+    orch.clearParticles();
+  }
+
   const worldLoader = new WorldLoaderUi(worldStore, {
     onLoad: (name) => {
       void loadWorld(name);
@@ -938,6 +1085,15 @@ async function main(): Promise<void> {
       brushSize: orch.brush.sizeSlot,
       strength: orch.brush.weight,
       editingInitialConditions: orch.editingInitialConditions,
+      // Rebuilt each frame from the store's cached name list, which is
+      // refreshed by every save and delete -- so a world deleted while the
+      // panel is on screen is marked within a frame rather than at the next
+      // reload. The list is five short strings; the cost is a lookup each.
+      worlds: worldAssignments.map((name) => ({
+        name,
+        present: name !== '' && worldStore.names().includes(name),
+      })),
+      selectedWorld,
     });
     // A live notice outranks the standing line until it lapses -- see `notify`.
     // Without this the loop overwrote every transient message within a frame.

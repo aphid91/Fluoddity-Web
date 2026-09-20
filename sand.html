@@ -370,6 +370,74 @@
         gap: 4px;
       }
 
+      /* ------------------------------------------------------------------
+         THE WORLD SELECTOR. Three rows of two, matching the tool grid --
+         which is what makes it read as a sibling of Tools rather than as a
+         new kind of control.
+
+         The buttons are WIDER AND SHORTER than a tool: a tool is an icon
+         with a word under it, a world is a name that has to be legible at
+         a glance. They share the grid and nothing else.
+         ------------------------------------------------------------------ */
+      #worlds {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+      }
+
+      .world {
+        min-width: 0;
+        height: calc(var(--tool-size) * 0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 4px;
+        background: var(--chrome-2);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--radius);
+        color: var(--ink);
+        font: inherit;
+        font-size: 11px;
+        cursor: pointer;
+        /* A long world name truncates rather than widening the rail, which
+           would push the canvas over every time one was assigned. */
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .world:hover:not([data-selected='true']):not([disabled]) {
+        border-color: var(--accent);
+      }
+
+      .world[data-selected='true'] {
+        background: var(--sel-bg);
+        border-color: var(--sel-edge);
+        color: var(--sel-ink);
+      }
+
+      /* Unassigned. Still drawn, so the panel keeps its shape and an author
+         can see which buttons are free -- but plainly not a thing to press. */
+      .world[disabled] {
+        color: var(--ink-dim);
+        opacity: 0.45;
+        cursor: default;
+        font-style: italic;
+      }
+
+      /* Assigned to a world that has since been deleted. Says what happened
+         rather than silently reading as unassigned -- see `refreshWorlds`. */
+      .world[data-missing='true'] {
+        color: #d06060;
+        border-style: dashed;
+      }
+
+      /* CUSTOM is the editable world, and the one the dev palette slider
+         governs. Set apart so it does not read as a sixth preset. */
+      .world[data-custom='true'] {
+        font-style: italic;
+      }
+
       .tool {
         width: var(--tool-size);
         height: var(--tool-size);
@@ -906,6 +974,12 @@
       <!-- THE TOOL RAIL. Hidden by the dock comp, which re-parents these
            two blocks into the tray -- see `sandUi.applyLayout`. -->
       <div id="rail">
+        <!-- ABOVE TOOLS, because picking a world precedes picking a brush:
+             it decides what the palette and the scene even are. -->
+        <div class="panel rail-block" id="rail-worlds">
+          <div class="group-label">Select World</div>
+          <div id="worlds"></div>
+        </div>
         <div class="panel rail-block" id="rail-tools">
           <div class="group-label">Tools</div>
           <div id="tools"></div>
