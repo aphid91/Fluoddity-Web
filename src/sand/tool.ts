@@ -106,6 +106,34 @@ export function isImplemented(tool: SandTool): boolean {
   return tool !== 'stamp';
 }
 
+/**
+ * The tool `steps` places along the rail from `from`, wrapping at both ends.
+ *
+ * ## Wraps, and INCLUDES Stamp
+ *
+ * Wrapping for the reason `cycleSlot` wraps: a scroll gesture has no natural
+ * stop, so a clamp at either end reads as the wheel having broken.
+ *
+ * Stamp is in the cycle although `isImplemented` says it does nothing. Skipping
+ * it would make the rail and the scroll disagree about how many tools there are
+ * -- the button is visible and clickable, so a scroll that jumps over it is the
+ * odd one out. It is being built shortly, and a cycle that changes shape when it
+ * lands would be the surprise, not this.
+ *
+ * A tool the rail does not list returns the first step from the start of the
+ * rail rather than throwing: `TOOLS` is the authority on what the cycle
+ * contains, and an unlisted tool (a stored session from an older build) should
+ * rejoin it rather than freeze the scroll.
+ */
+export function cycleTool(from: SandTool, steps: number): SandTool {
+  const count = TOOLS.length;
+  const at = TOOLS.indexOf(from as (typeof TOOLS)[number]);
+  // `% count` twice -- JS `%` keeps the dividend's sign, so scrolling back past
+  // the first tool would land negative without the second pass.
+  const next = (((at + steps) % count) + count) % count;
+  return TOOLS[next] ?? from;
+}
+
 /** True for the tools that paint the user-drawn field. */
 export function isFieldTool(tool: SandTool): tool is 'walls' | 'trails' {
   return tool === 'walls' || tool === 'trails';
