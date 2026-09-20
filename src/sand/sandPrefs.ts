@@ -426,6 +426,12 @@ export class SandPrefs {
       'Behavior: hue from the rule’s own output — the original look.\n' +
       'Cohort: hue by sub-population, for telling one config’s cohorts apart.\n' +
       'Swatch: the colour set below, for telling MATERIALS apart.\n' +
+      '\n' +
+      'In Cohort and Swatch, Color Sensitivity (on the master square’s Config ' +
+      'tab) adds a small per-particle variation around the base hue — 0 is a ' +
+      'flat, pure colour and turning it up lets the population’s own state ' +
+      'show through without changing which colour it reads as.\n' +
+      '\n' +
       'A display choice: it applies immediately, including while paused.';
     modeBlade.on('change', () => {
       this.callbacks.onColorMode(asColorMode(this.colorValues['mode']));
@@ -886,19 +892,30 @@ export class SandPrefs {
     // WORLD settings on a non-master square are stored and saved, but do not
     // govern the running scene -- only the master's do. Saying so is better than
     // a knob that silently does nothing.
+    //
+    // COLOR SENSITIVITY IS NAMED HERE TOO, and it is not a world setting. The
+    // camera takes one sensitivity for the whole frame and reads it from the
+    // master (`sandOrchestrator.renderInto`), so the copy on any other square
+    // is saved and ignored exactly as the world settings are. That went
+    // unmentioned while it only affected Behavior mode; now that it drives the
+    // per-particle wobble in Swatch and Cohort as well, it is a knob an author
+    // will actually reach for -- and reaching for it on the wrong square is a
+    // silent no-op they would have no way to diagnose.
     if (slot !== MASTER_SLOT) {
       this.configPage
         .addBlade({
           view: 'text',
           label: 'Note',
           parse: (v: string) => v,
-          value: 'Trails/Boundary apply from the master square only',
+          value: 'Trails/Boundary/Color Sens. apply from the master only',
           disabled: true,
         })
         .element.setAttribute(
           'title',
           'This square is not the master element, so its Trails and Boundary ' +
-            'settings are saved with it but do not govern the scene.',
+            'settings — and its Color Sensitivity, which the camera takes once ' +
+            'for the whole frame — are saved with it but do not govern the ' +
+            'scene. Select the master square to change them.',
         );
     }
 

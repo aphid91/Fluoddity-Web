@@ -709,7 +709,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Dividing here rather than moving the addition after `sensor_scaling` keeps
     // Sensor Gain applying to the bias, which is deliberate -- see `get_can`.
     let trail_bias =
-        -gravity_expand(cfg_gravity_trails(config)) * gravity_dir / sqrt_world_size;
+        -gravity_expand(cfg_gravity_trails(config)) * gravity_dir;// / sqrt_world_size;
 
     // Read the trails from canvas.
     let bc = world_boundary_conditions(u.world);

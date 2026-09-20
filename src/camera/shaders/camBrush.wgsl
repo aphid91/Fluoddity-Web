@@ -76,7 +76,28 @@ fn highlighted_cohort() -> f32 { return u.flags.y; }
 // How far apart consecutive cohorts land on the hue wheel. Three quarters of a
 // turn separates neighbours without the arbitrary jumble a hash gives, and hue
 // is periodic so it wraps on its own -- no normalizing by the cohort count.
+//
+// NOT SCALED BY SENSITIVITY any more. It used to be, which made a sensitivity
+// of 0.0 collapse every cohort onto hue 0 -- the slider's own midpoint was the
+// one setting where the mode did not work. The spacing is now fixed and
+// sensitivity drives the per-particle wobble instead, so the populations stay
+// reliably distinct at every slider position.
 const COHORT_COLOR_CONSTANT: f32 = 0.75;
+
+// HOW FAR THE PER-PARTICLE WOBBLE CAN PUSH A HUE, at sensitivity 1.0.
+//
+// A TWELFTH OF THE WHEEL, which is the constant that decides whether this
+// feature reads as "texture within a material" or as "the material's colour is
+// unreliable". A swatch set to orange must still be recognisably orange across
+// its whole population -- the author picked that colour and the mode exists to
+// honour it -- so the wobble has to stay inside the band a viewer would call
+// one colour. A twelfth is 30 degrees: enough for visible internal variation,
+// narrow enough that orange never becomes yellow or red.
+//
+// Deliberately much smaller than Behavior mode's gain, which is unbounded by
+// design because there the signal IS the colour. Here it is a modifier on a
+// colour that has already been chosen, and the two want opposite tunings.
+const HUE_VARIATION_SPAN: f32 = 1.0 / 12.0;
 
 // THE TWO HIGHLIGHT KNOBS. Both describe what a particle OUTSIDE the
 // highlighted cohort KEEPS, so both run 0..1 and 1.0 is "no effect" -- setting
@@ -223,6 +244,30 @@ fn gaussian(pos: vec2f, sigma: f32) -> f32 {
     return norm * exp(-dot(pos, pos) / (2.0 * sigma2));
 }
 
+// The per-particle hue wobble, for the two modes that have a base hue to
+// modify. Zero when Color Sensitivity is zero, which is what makes those modes
+// pure at the slider's midpoint.
+//
+// ## THE SIGNAL MUST BE BOUNDED, and this is the whole reason the function
+// exists rather than being written inline.
+//
+// `col_params.x` is a raw output of the particle's black box -- deliberately
+// arbitrary in scale, tuned by eye, and explicitly documented in common.wgsl
+// as something nothing downstream should read meaning into. Multiplying it
+// straight into the hue would let one particle with an extreme value travel
+// right around the wheel, so a material would show occasional pixels in a
+// completely unrelated colour. That is exactly the failure this mode exists to
+// avoid, and it would look like a bug in the palette rather than in the gain.
+//
+// `tanh` maps the whole real line into -1..1, smoothly and with no threshold:
+// typical outputs pass through nearly linearly, so ordinary variation is
+// preserved, while outliers saturate instead of wrapping. The result is then a
+// bounded fraction of HUE_VARIATION_SPAN and the material stays recognisable
+// no matter what the brain produces.
+fn hue_variation(signal: f32) -> f32 {
+    return u.sprite.z * HUE_VARIATION_SPAN * tanh(signal);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
     let centered = in.uv - 0.5;
@@ -233,27 +278,44 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // THE THREE COLOUR MODES. Exactly one applies -- see `sand/colorMode.ts` on
     // why this is an enumerated mode rather than two independent toggles.
     //
-    // Hue is periodic, so no clamping or wrapping is needed in the two signal
-    // modes -- a large signal simply travels further around the wheel.
+    // Hue is periodic, so no clamping or wrapping is needed anywhere here -- a
+    // large signal simply travels further around the wheel.
     //
-    // Sensitivity scales BOTH signals, so it stays meaningful in either: by
-    // cohort it sets how far apart the populations sit on the wheel.
+    // ## WHAT SENSITIVITY MEANS IN EACH MODE
     //
-    // SWATCH MODE IGNORES SENSITIVITY, and that is not an oversight. The other
-    // two derive a hue from a number whose scale is arbitrary, so they need a
-    // gain to be legible at all; a swatch colour was CHOSEN, and multiplying it
-    // by a slider would rotate every material away from the colour its author
-    // picked. It is also the only mode that carries its own saturation, which
-    // is the whole reason it exists -- the other two pin it at 0.8.
+    // BEHAVIOR: a bare gain on the brain's output, which is the only thing
+    // making an arbitrary-scaled signal legible as hue at all. Unchanged.
+    //
+    // SWATCH and COHORT: a BASE HUE the particle is assigned, plus a small
+    // per-particle wobble taken from the same brain output, scaled by
+    // sensitivity. At 0.0 the wobble vanishes and the mode is pure -- every
+    // particle of a swatch is exactly the colour its author picked, every
+    // cohort exactly its own hue. Turning the slider up lets the population's
+    // internal state show through as variation WITHIN that colour, so a
+    // material reads as a material rather than as a flat fill.
+    //
+    // This is why the wobble is ADDED rather than multiplied in: multiplying
+    // the base would rotate the whole material away from the chosen colour,
+    // and at zero would collapse every hue to red. Cohort mode used to do
+    // exactly that -- `sensitivity * cohort * CONSTANT` meant a sensitivity of
+    // 0.0 painted every cohort hue 0, which made the slider's midpoint a
+    // degenerate state rather than the pure one.
+    //
+    // SENSITIVITY RUNS -1..1 (see settingsSpec.ts), so the wobble is signed and
+    // a negative value simply reverses which way a given brain output pushes
+    // the hue. Nothing needs to special-case that.
     var hue : f32;
     var saturation = 0.8;
     let mode = color_mode();
+    let wobble = hue_variation(in.col_params.x);
     if (mode == MODE_SWATCH) {
         let picked = swatch_color(in.config_index);
-        hue = picked.x;
+        hue = picked.x + wobble;
         saturation = picked.y;
     } else if (mode == MODE_COHORT) {
-        hue = u.sprite.z * in.col_params.y * COHORT_COLOR_CONSTANT;
+        // The cohort's own place on the wheel is FIXED, independent of the
+        // slider -- that is what makes the populations reliably distinct.
+        hue = in.col_params.y * COHORT_COLOR_CONSTANT + wobble;
     } else {
         hue = u.sprite.z * in.col_params.x;
     }

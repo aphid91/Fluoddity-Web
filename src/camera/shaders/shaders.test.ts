@@ -357,6 +357,85 @@ test('camBrush.wgsl clamps the swatch lookup rather than trusting the index', ()
   );
 });
 
+// ---------------------------------------------------------------------------
+// Colour Sensitivity as a per-particle wobble in Swatch and Cohort modes
+// ---------------------------------------------------------------------------
+
+// THE CONTRACT THAT MAKES THE SLIDER'S ZERO MEANINGFUL: the wobble is ADDED to
+// a base hue, so at sensitivity 0.0 it vanishes and the mode is pure. Were it
+// multiplied into the base instead, zero would collapse every hue to 0 -- which
+// is exactly the bug Cohort mode had before this.
+test('camBrush.wgsl ADDS the wobble to a base hue rather than scaling it', () => {
+  const source = stripComments(expand('camBrush.wgsl'));
+  assert.match(
+    source,
+    /hue\s*=\s*picked\.x\s*\+\s*wobble\s*;/,
+    'Swatch mode must add the wobble to the chosen hue',
+  );
+  assert.match(
+    source,
+    /hue\s*=\s*in\.col_params\.y\s*\*\s*COHORT_COLOR_CONSTANT\s*\+\s*wobble\s*;/,
+    'Cohort mode must add the wobble to the cohort’s own hue',
+  );
+});
+
+// The cohort's place on the wheel must NOT depend on the slider, or the
+// populations stop being reliably distinct as it moves.
+test('camBrush.wgsl does not scale the cohort spacing by sensitivity', () => {
+  const source = stripComments(expand('camBrush.wgsl'));
+  assert.doesNotMatch(
+    source,
+    /u\.sprite\.z\s*\*\s*in\.col_params\.y/,
+    'the cohort hue must not be multiplied by Color Sensitivity',
+  );
+});
+
+// The brain output is explicitly arbitrary in scale (common.wgsl says so), so
+// an unbounded multiply would let one extreme particle travel right around the
+// wheel and render in a completely unrelated colour.
+test('camBrush.wgsl bounds the wobble signal before it reaches the hue', () => {
+  const source = stripComments(expand('camBrush.wgsl'));
+  assert.match(
+    source,
+    /fn\s+hue_variation\(signal:\s*f32\)\s*->\s*f32\s*\{[^}]*tanh\(signal\)/,
+    'hue_variation must squash the unbounded brain output through tanh',
+  );
+  assert.match(
+    source,
+    /u\.sprite\.z\s*\*\s*HUE_VARIATION_SPAN/,
+    'the wobble must be scaled by both sensitivity and the span constant',
+  );
+});
+
+// The span decides whether this reads as texture within a material or as the
+// material's colour being unreliable. A swatch set to orange must stay orange.
+test('camBrush.wgsl keeps the wobble inside one perceptual colour band', () => {
+  const source = stripComments(expand('camBrush.wgsl'));
+  // Matched as `1.0 / N` rather than evaluated: the constant is a fraction of
+  // the wheel by construction, and parsing the two numbers keeps this test
+  // free of an expression evaluator for one division.
+  const match =
+    /const\s+HUE_VARIATION_SPAN\s*:\s*f32\s*=\s*([\d.]+)\s*\/\s*([\d.]+)\s*;/.exec(source);
+  assert.ok(match !== null, 'the span must be a named constant of the form a / b');
+  const span = Number(match[1]) / Number(match[2]);
+  assert.ok(span > 0, 'a zero span would make the slider do nothing');
+  assert.ok(
+    span <= 1 / 8,
+    `a span of ${span} of the wheel is wide enough to change the material’s colour`,
+  );
+});
+
+// Behavior mode is the one place the signal IS the colour, so it keeps its
+// bare unbounded gain -- the two tunings are deliberately opposite.
+test('camBrush.wgsl leaves Behavior mode’s gain untouched', () => {
+  const source = stripComments(expand('camBrush.wgsl'));
+  assert.match(
+    source,
+    /hue\s*=\s*u\.sprite\.z\s*\*\s*in\.col_params\.x\s*;/,
+    'Behavior must stay a bare sensitivity gain on the brain output',
+  );
+});
+
 test('camBrush.wgsl carries config_index flat, not interpolated', () => {
   // A config index is an identity, not a quantity. Interpolated across the quad
   // it would produce indices belonging to no material at all, so the sprite
