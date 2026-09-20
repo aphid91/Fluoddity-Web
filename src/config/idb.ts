@@ -1,9 +1,17 @@
 /**
  * User saves, in IndexedDB. The browser's answer to `configs/custom/`.
  *
- * A thin typed wrapper over ONE object store, with no library. IndexedDB's API
+ * A thin typed wrapper over one object store, with no library. IndexedDB's API
  * is event-based and verbose, but the surface this app needs is four operations,
  * and a dependency to wrap four operations would be worse than the wrapping.
+ *
+ * ## THE DATABASE IS SHARED, THE STORE IS NOT
+ *
+ * `worlds` lives in the same database (see `worldStore.ts`), which means both
+ * modules open `fluoddity` at the same version and must agree about the schema.
+ * The version and the upgrade function are therefore imported from there rather
+ * than restated here -- a second copy could drift, and the symptom would be one
+ * module's `onupgradeneeded` dropping the other's store.
  *
  * ## WHY THE DOCUMENT IS STORED UNPARSED
  *
@@ -26,9 +34,16 @@
  * handled by construction rather than left to be discovered.
  */
 
+import { CONFIG_STORE, DB_VERSION, upgradeSchema } from '../worlds/worldStore.ts';
+
 const DB_NAME = 'fluoddity';
-const DB_VERSION = 1;
-const STORE = 'configs';
+/**
+ * The store this module owns. Named in `worldStore.ts` because the SCHEMA is
+ * shared: two modules open the same database at the same version, so they must
+ * agree about which stores exist, and importing the name is what makes that
+ * agreement structural rather than two string literals kept in step by hand.
+ */
+const STORE = CONFIG_STORE;
 
 /**
  * One saved config.
@@ -82,12 +97,12 @@ export async function openConfigDb(): Promise<IDBDatabase | null> {
   try {
     return await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
-      request.onupgradeneeded = () => {
-        const db = request.result;
-        if (!db.objectStoreNames.contains(STORE)) {
-          db.createObjectStore(STORE, { keyPath: 'id' });
-        }
-      };
+      // THE SHARED UPGRADE, which creates only what is missing. Whichever of
+      // this module and `worldStore.ts` opens the database first performs it, so
+      // running the same function is what stops them disagreeing about the
+      // schema -- and the creating-only shape is what stops a version bump from
+      // dropping every config a user has saved. See `upgradeSchema`.
+      request.onupgradeneeded = () => upgradeSchema(request.result);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error('open failed'));
       // Fires when another tab holds an older version open. Rejecting rather
