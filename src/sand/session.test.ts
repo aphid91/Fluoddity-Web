@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  CUSTOM_WORLD,
   EMPTY_SESSION,
   SESSION_KEY,
   type SandSession,
@@ -13,7 +14,7 @@ import {
   slotDocument,
 } from './session.ts';
 import { TOOL_CONFIG } from './tool.ts';
-import { MIN_VISIBLE_COUNT, SLOT_COUNT } from './palette.ts';
+import { ASSIGNABLE_WORLDS, MIN_VISIBLE_COUNT, SLOT_COUNT } from './palette.ts';
 import { makeSimulationConfig, makeWorldSettings } from '../particleSystem/config.ts';
 
 const CONFIG = makeSimulationConfig({
@@ -236,4 +237,61 @@ test('no storage at all is handled', () => {
 test('a negative or zero particle cap is treated as unset', () => {
   assert.equal(parseSession(JSON.stringify({ maxParticles: 0 })).maxParticles, null);
   assert.equal(parseSession(JSON.stringify({ maxParticles: -5 })).maxParticles, null);
+});
+
+// ---------------------------------------------------------------------------
+// WORLDS: the five assignments, and which button is lit.
+// ---------------------------------------------------------------------------
+
+test('a session with no worlds block restores as unassigned custom', () => {
+  // Every session written before worlds existed takes this path.
+  const session = parseSession(JSON.stringify({ slots: [] }));
+  assert.deepEqual(session.worlds, []);
+  assert.equal(session.selectedWorld, CUSTOM_WORLD);
+});
+
+test('world assignments round-trip', () => {
+  const session = parseSession(
+    JSON.stringify({ worlds: ['Dunes', '', 'Reef'], selectedWorld: 2 }),
+  );
+  assert.deepEqual(session.worlds, ['Dunes', '', 'Reef']);
+  assert.equal(session.selectedWorld, 2);
+});
+
+test('a non-string assignment becomes unassigned rather than reaching a dropdown', () => {
+  // Tweakpane renders a value with no matching option as a blank selection,
+  // which reads as a broken control rather than as a bad stored value.
+  const session = parseSession(JSON.stringify({ worlds: ['Dunes', 42, null] }));
+  assert.deepEqual(session.worlds, ['Dunes', '', '']);
+});
+
+test('a selection past the five buttons falls back to custom', () => {
+  // THE REGRESSION GUARD for a panel with nothing lit. A stored index out of
+  // range would match no button and leave the selector looking broken.
+  for (const bad of [ASSIGNABLE_WORLDS, 99, -2, NaN, 'two', null]) {
+    assert.equal(
+      parseSession(JSON.stringify({ selectedWorld: bad })).selectedWorld,
+      CUSTOM_WORLD,
+      `selectedWorld ${String(bad)} must degrade to Custom`,
+    );
+  }
+});
+
+test('a fractional selection truncates rather than degrading', () => {
+  // Truncation, not rejection: every other numeric field in this parser
+  // truncates, and 1.5 unambiguously means button 1. Degrading it to Custom
+  // would throw away a usable answer.
+  assert.equal(parseSession(JSON.stringify({ selectedWorld: 1.5 })).selectedWorld, 1);
+});
+
+test('every assignable index is accepted', () => {
+  for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
+    assert.equal(parseSession(JSON.stringify({ selectedWorld: i })).selectedWorld, i);
+  }
+});
+
+test('the custom sentinel is not a legal button index', () => {
+  // -1 must never be mistaken for a real slot by arithmetic that forgets to
+  // check, which is why it is negative rather than one past the end.
+  assert.ok(CUSTOM_WORLD < 0);
 });

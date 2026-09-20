@@ -33,12 +33,29 @@ import {
 import { toDocument } from '../config/persistence.ts';
 import { BC, makeWorldSettings } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
-import { DEFAULT_PREFERENCES, loadPreferences } from '../prefs/preferences.ts';
+import {
+  DEFAULT_PREFERENCES,
+  loadPreferences,
+  requiresRestart,
+  savePreferences,
+} from '../prefs/preferences.ts';
 import { screenNdcToWorld, screenToNdc } from '../particleSystem/coords.ts';
 import { SandOrchestrator } from './sandOrchestrator.ts';
 import { SandUi } from './sandUi.ts';
 import { BRUSH_ERASE, BRUSH_SPAWN, type BrushAction } from './brushInput.ts';
-import { slotForDigit } from './palette.ts';
+import {
+  ASSIGNABLE_WORLDS,
+  MASTER_SLOT,
+  SLOT_COUNT,
+  slotForDigit,
+} from './palette.ts';
+import { WorldStore } from '../worlds/worldStore.ts';
+import { WorldLoaderUi } from '../worlds/worldLoaderUi.ts';
+import {
+  applyWorldPreferences,
+  makeWorldDocument,
+  readWorld,
+} from '../worlds/worldFormat.ts';
 import { TOOL_CONFIG } from './tool.ts';
 import {
   type SandSession,
@@ -229,6 +246,24 @@ async function main(): Promise<void> {
   // reads it so the choice survives a reload.
   let theme = themeById(session.theme);
 
+  // ---------------------------------------------------------------------
+  // WORLDS. The five assignments and which button is lit.
+  //
+  // Mutable for the same reason `theme` is: the Dev tab writes them and
+  // `snapshot` reads them back, so an author's layout survives a reload.
+  //
+  // `worldAssignments` is padded to the full five here rather than wherever it
+  // is read, so every consumer can index it without a bounds check -- a session
+  // written before this existed carries an empty array.
+  // ---------------------------------------------------------------------
+  const worldAssignments: string[] = Array.from(
+    { length: ASSIGNABLE_WORLDS },
+    (_, i) => session.worlds[i] ?? '',
+  );
+  let selectedWorld = session.selectedWorld;
+
+  const worldStore = await WorldStore.open();
+
   /** The current palette and brush state, as stored. */
   const snapshot = (): SandSession => ({
     slots: orch.palette.all().map((slot) => ({
@@ -244,6 +279,8 @@ async function main(): Promise<void> {
     visibleCount: orch.palette.visibleCount,
     maxParticles: orch.maxParticlesSetting,
     theme: theme.id,
+    worlds: [...worldAssignments],
+    selectedWorld,
   });
 
   /**
@@ -373,8 +410,28 @@ async function main(): Promise<void> {
     prefs,
     orch.palette,
     entityCount,
-    { theme: theme.id, visibleCount: orch.palette.visibleCount },
     {
+      theme: theme.id,
+      visibleCount: orch.palette.visibleCount,
+      worlds: worldAssignments,
+    },
+    {
+    // --- worlds: the level editor half of the Dev tab --------------------
+    onSaveWorld: (name) => {
+      void saveWorld(name);
+    },
+    onOpenWorldLibrary: () => {
+      worldLoader.show();
+    },
+    onAssignWorld: (index, name) => {
+      worldAssignments[index] = name;
+      persist();
+      notify(
+        name === ''
+          ? `World ${index + 1} unassigned`
+          : `World ${index + 1} → "${name}"`,
+      );
+    },
     onTheme: (next) => {
       theme = next;
       ui.applyTheme(next);
@@ -561,11 +618,13 @@ async function main(): Promise<void> {
 
     if (e.key === 'Escape') {
       ui.closeLoader();
+      worldLoader.close();
       return;
     }
-    // The browser is modal: it would be confusing for the world to keep
-    // responding to keys aimed at a list of configs.
-    if (ui.loaderOpen) return;
+    // Either browser is modal: it would be confusing for the world to keep
+    // responding to keys aimed at a list of configs -- or of worlds, where a
+    // stray digit would also switch the palette selection behind the dialog.
+    if (ui.loaderOpen || worldLoader.isOpen) return;
 
     // Shift+V: adopt a config from the clipboard. Before the digit check, since
     // `V` is not a digit but the modifier makes the ordering worth being
@@ -593,6 +652,143 @@ async function main(): Promise<void> {
         notify('Already editing the initial conditions — nothing to reset to');
       }
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // WORLDS
+  // -------------------------------------------------------------------------
+
+  /**
+   * Save the palette, the preferences and the initial conditions as a world.
+   *
+   * The scene is the CAPTURED initial conditions rather than the live scene --
+   * see `SandOrchestrator.exportScene` on why a world should not open
+   * mid-simulation.
+   */
+  async function saveWorld(name: string): Promise<void> {
+    try {
+      notify(`Saving "${name}"…`);
+      const scene = await orch.exportScene();
+      const document = makeWorldDocument({
+        slots: orch.palette.all().map((slot) => ({
+          name: slot.name,
+          document: slotDocument(slot.config, slot.world),
+        })),
+        preferences: live,
+        visibleCount: orch.palette.visibleCount,
+      });
+      await worldStore.save(name, document, scene);
+      prefsWindow.refreshWorlds(worldStore.names(), worldAssignments);
+      notify(
+        scene === null
+          ? `Saved "${name}" — no initial conditions yet`
+          : `Saved "${name}"`,
+      );
+    } catch (e) {
+      console.error(`Could not save the world "${name}": ${String(e)}`);
+      notify(`Save failed: ${String(e)}`);
+    }
+  }
+
+  /**
+   * Load a world: its palette, its preferences, and its scene.
+   *
+   * ## The order is load-bearing
+   *
+   * Preferences FIRST, because `worldSize` and `canvasAspect` reallocate the
+   * entity buffer and both textures -- and a scene pasted before that rebuild
+   * would be pasted into buffers about to be destroyed. `applyWorldSize` also
+   * invalidates the initial conditions, which is exactly why the scene has to
+   * come after it rather than before.
+   *
+   * Then the palette, so the materials exist before any particle points at
+   * them. Then the scene.
+   */
+  async function loadWorld(name: string): Promise<void> {
+    const record = await worldStore.read(name);
+    if (record === null) {
+      notify(`"${name}" is missing — it may have been deleted`);
+      return;
+    }
+
+    let world;
+    try {
+      world = readWorld(record.document, name);
+    } catch (e) {
+      console.error(`Could not read the world "${name}": ${String(e)}`);
+      notify(`"${name}" could not be read`);
+      return;
+    }
+
+    // --- preferences, which may rebuild the world ------------------------
+    const next = applyWorldPreferences(live, world.preferences);
+    const rebuilding = requiresRestart(next, live);
+    live = next;
+    prefs = next;
+    savePreferences(next);
+    prefsWindow.adoptPreferences(next);
+    orch.applyPreferences(next);
+    if (rebuilding) {
+      notify(`Loading "${name}" — rebuilding the world…`);
+      await orch.applyWorldSize(next, fallbackConfig, defaultWorld);
+      ui.setCanvasAspect(orch.system.canvasSize[0] / orch.system.canvasSize[1]);
+    }
+
+    // --- the palette, at its stored slots ---------------------------------
+    // CLEARED FIRST, so a world with fewer materials does not inherit the
+    // previous one's leftovers in the slots it does not mention.
+    for (let slot = 0; slot < SLOT_COUNT; slot++) {
+      if (slot !== MASTER_SLOT) orch.palette.clear(slot);
+    }
+    for (const stored of world.slots) {
+      const saved = readSlotDocument(stored.document);
+      if (saved === null || saved.configs[0] === undefined) continue;
+      orch.palette.set(stored.slot, {
+        tool: TOOL_CONFIG,
+        config: saved.configs[0],
+        world: saved.world,
+        name: stored.name,
+      });
+    }
+    // THE WORLD'S COUNT OVERRIDES THE DEV SLIDER, per the requirement: that
+    // slider governs Custom alone from here on.
+    if (world.visibleCount > 0) orch.palette.setVisibleCount(world.visibleCount);
+    orch.applyPalette(fallbackConfig, defaultWorld);
+
+    // --- the scene --------------------------------------------------------
+    if (record.scene !== null) {
+      const ok = await orch.importScene(record.scene);
+      if (!ok) notify(`"${name}" loaded, but its scene could not be read`);
+      else notify(`Loaded "${name}"`);
+    } else {
+      // No scene: empty the world rather than leaving the previous one's
+      // particles standing in a world that did not ask for them.
+      orch.clearParticles();
+      notify(`Loaded "${name}" — no initial conditions`);
+    }
+    persist();
+  }
+
+  const worldLoader = new WorldLoaderUi(worldStore, {
+    onLoad: (name) => {
+      void loadWorld(name);
+    },
+    onDelete: (name) => {
+      void (async () => {
+        try {
+          await worldStore.remove(name);
+          // A deleted world may still be assigned to a button. The assignment
+          // is LEFT IN PLACE rather than cleared: the panel marks it missing,
+          // which says what happened, where a silent reset to None would look
+          // like the assignment had never been made.
+          prefsWindow.refreshWorlds(worldStore.names(), worldAssignments);
+          notify(`Deleted "${name}"`);
+        } catch (e) {
+          console.error(`Could not delete "${name}": ${String(e)}`);
+          notify(`Delete failed: ${String(e)}`);
+        }
+      })();
+    },
   });
 
   /**

@@ -33,7 +33,12 @@
 
 import { type SavedConfig, fromDocument, toDocument } from '../config/persistence.ts';
 import { type SandTool, DEFAULT_TOOL, TOOL_CONFIG, TOOL_LABELS } from './tool.ts';
-import { DEFAULT_VISIBLE_COUNT, SLOT_COUNT, clampVisibleCount } from './palette.ts';
+import {
+  ASSIGNABLE_WORLDS,
+  DEFAULT_VISIBLE_COUNT,
+  SLOT_COUNT,
+  clampVisibleCount,
+} from './palette.ts';
 import { type ToolStrengths, defaultStrengths } from './brushInput.ts';
 
 export const SESSION_KEY = 'fluoddity.sand.session';
@@ -65,7 +70,34 @@ export interface SandSession {
   readonly maxParticles: number | null;
   /** Which of the UI comps is active. A dev control -- see `theme.ts`. */
   readonly theme: string;
+
+  /**
+   * Which saved world each of the five buttons loads. Empty means unassigned.
+   *
+   * A DEV SETTING that ships as part of the app's configuration: in the shipping
+   * build these point at the worlds a visitor is offered, and in the editor they
+   * are what the Dev tab's five dropdowns write. Persisted so an author's layout
+   * survives a reload.
+   */
+  readonly worlds: readonly string[];
+
+  /**
+   * Which world button is active, or `CUSTOM_WORLD` for the editable one.
+   *
+   * Remembered between sessions per the requirement. Stored as an INDEX rather
+   * than a name so that renaming a save does not orphan the selection, and so
+   * "which button is lit" stays answerable without consulting the library.
+   */
+  readonly selectedWorld: number;
 }
+
+/**
+ * The index meaning "the Custom world" -- the freely editable one.
+ *
+ * -1 rather than 5, so the five assignable buttons are 0..4 and the sentinel
+ * cannot be confused with a real index by arithmetic that forgets to check.
+ */
+export const CUSTOM_WORLD = -1;
 
 export const EMPTY_SESSION: SandSession = {
   slots: [],
@@ -76,6 +108,12 @@ export const EMPTY_SESSION: SandSession = {
   visibleCount: DEFAULT_VISIBLE_COUNT,
   maxParticles: null,
   theme: '',
+  worlds: [],
+  // CUSTOM for a fresh session. The requirement asks for world 1 by default,
+  // and that is a decision for the SHIPPING build -- which will have worlds
+  // assigned. In the editor nothing is assigned yet, so defaulting to world 1
+  // would open on an empty button.
+  selectedWorld: CUSTOM_WORLD,
 };
 
 /** The subset of `localStorage` this needs, so tests can supply their own. */
@@ -228,7 +266,25 @@ export function parseSession(raw: string): SandSession {
         ? Math.trunc(max)
         : null,
     theme: typeof o['theme'] === 'string' ? o['theme'] : '',
+    // Strings only, and unassigned for anything else -- a stored entry of the
+    // wrong type would otherwise reach a dropdown as a value with no matching
+    // option, which Tweakpane renders as a blank selection.
+    worlds: Array.isArray(o['worlds'])
+      ? o['worlds'].map((w) => (typeof w === 'string' ? w : ''))
+      : [],
+    // Clamped to the legal range, treating anything unrecognised as Custom. A
+    // stored index past the five buttons would light nothing and leave the
+    // panel looking broken.
+    selectedWorld: asSelectedWorld(o['selectedWorld']),
   };
+}
+
+/** A stored world selection, or Custom for anything out of range. */
+function asSelectedWorld(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return CUSTOM_WORLD;
+  const index = Math.trunc(raw);
+  if (index < 0) return CUSTOM_WORLD;
+  return index < ASSIGNABLE_WORLDS ? index : CUSTOM_WORLD;
 }
 
 export function loadSession(

@@ -44,6 +44,7 @@ import {
 } from '../ui/settingsSpec.ts';
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
 import {
+  ASSIGNABLE_WORLDS,
   MASTER_SLOT,
   MIN_VISIBLE_COUNT,
   type Palette,
@@ -91,7 +92,23 @@ export interface SandPrefsCallbacks {
   onTheme(theme: SandTheme): void;
   /** The swatch-count slider moved. Display only -- see `palette.ts`. */
   onVisibleCount(count: number): void;
+
+  // --- worlds. Dev-only: this is the level editor half of the app ----------
+
+  /** "Save world as…" -- the name has been collected and confirmed. */
+  onSaveWorld(name: string): void;
+  /** "Load world" -- open the library modal. */
+  onOpenWorldLibrary(): void;
+  /**
+   * One of the five world buttons was pointed at a different save.
+   *
+   * `name` is empty for None, which is how a button is unassigned.
+   */
+  onAssignWorld(index: number, name: string): void;
 }
+
+/** The dropdown value meaning "this button is unassigned". */
+export const NO_WORLD = '';
 
 export class SandPrefs {
   private readonly pane: Pane;
@@ -132,11 +149,28 @@ export class SandPrefs {
   /** Refreshed per frame, but only when a displayed value actually moved. */
   private poolFolder: FolderApi | null = null;
 
+  /**
+   * The five world buttons' assignments, mirrored for Tweakpane to bind.
+   *
+   * Rebuilt into the dropdowns by `refreshWorlds`, because Tweakpane takes its
+   * `options` at bind time and a saved world added later would otherwise not
+   * appear until a reload.
+   */
+  private readonly worldValues: Record<string, string> = {};
+  /** The world dropdown blades, kept so they can be rebuilt on a save. */
+  private worldFolder: FolderApi | null = null;
+  private worldNames: readonly string[] = [];
+
   constructor(
     prefs: Preferences,
     palette: Palette,
     maxParticles: number,
-    initial: { theme: string; visibleCount: number },
+    initial: {
+      theme: string;
+      visibleCount: number;
+      /** The five assignments, restored from the session. */
+      worlds: readonly string[];
+    },
     callbacks: SandPrefsCallbacks,
   ) {
     this.committed = prefs;
@@ -149,6 +183,9 @@ export class SandPrefs {
     this.palette = palette;
     this.callbacks = callbacks;
     this.prefValues = { ...prefs } as Record<string, unknown>;
+    for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
+      this.worldValues[worldKey(i)] = initial.worlds[i] ?? NO_WORLD;
+    }
 
     this.pane = new Pane({ title: 'Fluoddity Sand', expanded: true });
     const host = this.pane.element.parentElement;
@@ -295,7 +332,134 @@ export class SandPrefs {
       this.callbacks.onMaxParticles(requested);
     });
 
+    this.buildWorlds(page);
     this.buildPool(page);
+  }
+
+  /**
+   * The Worlds folder: save one, load one, and point the five buttons at them.
+   *
+   * ## This is the level editor, and it is dev-only on purpose
+   *
+   * The shipping app offers six world buttons and nothing else. Everything here
+   * is the other half: the tools for AUTHORING what those buttons load. Saving a
+   * world, browsing the library, deleting from it, and deciding which save each
+   * button points at are all acts a player never performs.
+   *
+   * Placed above the particle pool because it is the reason to open this tab,
+   * where the pool readouts are consulted when something is slow.
+   */
+  private buildWorlds(page: TabPageApi): void {
+    const folder = page.addFolder({ title: 'Worlds', expanded: true });
+    this.worldFolder = folder;
+
+    const save = folder.addButton({ title: 'Save world as…' });
+    save.element.title =
+      'Save the palette, the preferences and the current initial conditions ' +
+      'as a named world. Saving over an existing name asks first.';
+    save.on('click', () => this.promptSaveWorld());
+
+    const load = folder.addButton({ title: 'Load world' });
+    load.element.title =
+      'Open the world library. Loading one replaces the palette, the ' +
+      'preferences and the initial conditions — it is how a world is edited. ' +
+      'Worlds are deleted from here too.';
+    load.on('click', () => this.callbacks.onOpenWorldLibrary());
+
+    this.buildWorldSlots(folder);
+  }
+
+  /**
+   * The five "which save does button N load" dropdowns.
+   *
+   * ## Rebuilt rather than refreshed, and why that is not a smell
+   *
+   * Tweakpane fixes a binding's `options` when the blade is created, so a world
+   * saved after this folder was built would not appear in the list. The blades
+   * are therefore disposed and recreated whenever the library changes, which is
+   * the same call `rebuildConfig` makes for the same framework reason.
+   *
+   * The alternative -- a text field where the user types a name -- would not
+   * need rebuilding and would let them point a button at a world that does not
+   * exist, which is exactly the dangling reference the dropdown prevents.
+   */
+  private buildWorldSlots(folder: FolderApi): void {
+    // The options map Tweakpane wants: label -> value. NONE FIRST, so
+    // unassigning is the top entry rather than buried under the saves.
+    const options: Record<string, string> = { 'None': NO_WORLD };
+    for (const name of this.worldNames) options[name] = name;
+
+    for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
+      const key = worldKey(i);
+      // A STORED NAME THAT NO LONGER EXISTS is kept as an option rather than
+      // silently reset, so a button assigned to a world that was deleted shows
+      // what it is pointing at instead of quietly reading "None". The panel
+      // marks it as missing; see `SandUi`.
+      const current = this.worldValues[key] ?? NO_WORLD;
+      if (current !== NO_WORLD && !(current in options)) {
+        options[`${current} (missing)`] = current;
+      }
+
+      const blade = folder.addBinding(this.worldValues, key, {
+        label: `World ${i + 1}`,
+        options,
+      });
+      blade.element.title =
+        `Which saved world the panel's World ${i + 1} button loads. ` +
+        'None leaves the button empty.';
+      blade.on('change', () => {
+        this.callbacks.onAssignWorld(i, String(this.worldValues[key] ?? NO_WORLD));
+      });
+    }
+  }
+
+  /**
+   * Re-read the library and rebuild the dropdowns.
+   *
+   * Called after a save or a delete, because both change which names the five
+   * buttons may point at -- and a dropdown built before a save would not offer
+   * the world the user just created, which is the first thing they would try to
+   * assign it to.
+   */
+  refreshWorlds(names: readonly string[], assignments: readonly string[]): void {
+    this.worldNames = names;
+    for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
+      this.worldValues[worldKey(i)] = assignments[i] ?? NO_WORLD;
+    }
+    const folder = this.worldFolder;
+    if (folder === null) return;
+    // The two buttons are children 0 and 1; everything after them is a
+    // dropdown from the previous build. Disposing from the end keeps the
+    // indices stable as they go.
+    for (let i = folder.children.length - 1; i >= 2; i--) {
+      folder.children[i]?.dispose();
+    }
+    this.buildWorldSlots(folder);
+  }
+
+  /**
+   * Collect a name for a new world, and confirm an overwrite.
+   *
+   * THE OVERWRITE PROMPT IS HERE rather than in the store, matching
+   * `ConfigStore.write`'s stance: the store does what it is told, and "are you
+   * sure" belongs where the user can see what they are about to replace.
+   *
+   * `nameTaken` is supplied by the host rather than read from a store this class
+   * holds, which keeps `SandPrefs` free of storage entirely -- it builds panels
+   * and issues callbacks, and that is all it has ever done.
+   */
+  private promptSaveWorld(): void {
+    const name = window.prompt('Save world as:', '');
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (trimmed === '') return;
+    if (
+      this.worldNames.includes(trimmed) &&
+      !window.confirm(`"${trimmed}" already exists. Replace it?`)
+    ) {
+      return;
+    }
+    this.callbacks.onSaveWorld(trimmed);
   }
 
   /**
@@ -618,9 +782,48 @@ export class SandPrefs {
     return this.committed;
   }
 
+  /**
+   * Adopt preferences changed from outside the panel, and redraw the sliders.
+   *
+   * ## Why loading a world needs this
+   *
+   * Every blade here binds to `prefValues`, a plain mirror the panel writes and
+   * reads. Nothing watches the real `Preferences` -- there was never a second
+   * writer, so there was nothing to watch for.
+   *
+   * A world load is that second writer. Without this the simulation would adopt
+   * the world's physics rate while the Prefs tab kept showing the old one, and
+   * the next touch of any OTHER slider would commit the whole stale mirror back
+   * over the world's values -- silently undoing most of what was just loaded.
+   *
+   * `committed` moves too, not just the mirror: it is what each blade diffs
+   * against when it builds the next `Preferences`, so leaving it behind would
+   * reintroduce the same staleness one layer down.
+   */
+  adoptPreferences(prefs: Preferences): void {
+    this.committed = prefs;
+    for (const [key, value] of Object.entries(prefs)) {
+      this.prefValues[key] = value;
+    }
+    // The whole pane, because a world may have moved several preferences at
+    // once and they are spread across every folder.
+    this.pane.refresh();
+  }
+
   dispose(): void {
     this.pane.dispose();
   }
+}
+
+/**
+ * The mirror key for world button `i`.
+ *
+ * Tweakpane binds to a property NAME on an object, so the five dropdowns need
+ * five distinct keys. Derived rather than written out, so the count lives only
+ * in `ASSIGNABLE_WORLDS`.
+ */
+function worldKey(index: number): string {
+  return `world${index + 1}`;
 }
 
 /** Tweakpane binding params derived from a registry entry. */

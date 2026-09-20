@@ -1325,6 +1325,56 @@ export class SandOrchestrator {
     };
   }
 
+  // =========================================================================
+  // Worlds -- exporting the scene to bytes, and putting one back
+  // =========================================================================
+
+  /**
+   * The current scene as `.fwld` bytes, or null if there is nothing to save.
+   *
+   * ## THIS IS THE ONE PLACE THAT PAYS FOR A READBACK
+   *
+   * The initial-conditions capture keeps its stamp in VRAM precisely so that `R`
+   * stays instant (see `initialConditions.ts`). Saving a world is the opposite
+   * case: the bytes have to reach the host to be written to IndexedDB, and the
+   * user has just clicked a menu item and can wait a frame.
+   *
+   * SAVES THE CAPTURED INITIAL CONDITIONS, not the live scene. A world's initial
+   * conditions are what the author arranged and pressed go on -- the thing `R`
+   * returns to -- and the live scene is however far that has since evolved.
+   * Saving the latter would make every world open mid-simulation, at whatever
+   * moment the author happened to hit save.
+   *
+   * Null when nothing has been captured yet, which is the honest answer for a
+   * world that is only a palette and a set of preferences.
+   */
+  async exportScene(): Promise<ArrayBuffer | null> {
+    return this.initial.exportScene(this.palette);
+  }
+
+  /**
+   * Adopt a scene from `.fwld` bytes as the initial conditions, and show it.
+   *
+   * ## The world is left ARRANGING, not running
+   *
+   * Loading a world puts the user where its author was when they pressed go:
+   * paused, looking at the arrangement, free to edit it before starting. That is
+   * the same state `R` leaves them in, and it is what makes "click the world
+   * again to reset it" mean something.
+   */
+  async importScene(bytes: ArrayBuffer): Promise<boolean> {
+    const applied = await this.initial.importScene(bytes);
+    if (!applied) return false;
+    // The restore path proper: the scene is now the snapshot, so put it on
+    // screen through the same route `R` uses rather than duplicating it.
+    this.restorePending = true;
+    this._paused = true;
+    // ARMED, so editing the loaded arrangement and pressing go captures the
+    // edit -- the world's own scene is a starting point, not a cage.
+    this.captureArmed = true;
+    return true;
+  }
+
   /** Wipe one layer of the painted field. The hint bar's Clear button. */
   clearField(layer: FieldLayer): void {
     const encoder = this.device.createCommandEncoder({ label: 'sand-clear-field' });

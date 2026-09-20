@@ -815,6 +815,84 @@
         font-size: 11px;
       }
 
+      /* ------------------------------------------------------------------
+         THE WORLD LOADER. The same modal shell as #loader, reusing every
+         token -- it is the same gesture aimed at a different library, and
+         two dialogs that look different for no reason would read as two
+         unrelated features.
+
+         What differs is one thing: a row here is a NAME PLUS AN X, because
+         a saved world can be deleted and a shipped config cannot. That is
+         why the row is a flex container rather than a bare button.
+         ------------------------------------------------------------------ */
+      #world-loader {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 20;
+      }
+
+      #world-loader[data-open='true'] {
+        display: flex;
+      }
+
+      /* THE ROW IS THE HIT AREA, not the name span. Padding gutters that
+         show `cursor: pointer` and then do nothing when clicked are the
+         bug `menuBar.browserRow` documents; the row listens, and the X
+         stops propagation so it cannot load what it is deleting. */
+      .world-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        border: 1px solid transparent;
+        border-radius: var(--radius);
+        padding: 3px 6px;
+        cursor: pointer;
+      }
+
+      .world-row:hover {
+        background: var(--chrome-2);
+        border-color: var(--edge);
+      }
+
+      .world-row-name {
+        flex: 1;
+        text-align: left;
+        color: var(--ink);
+        font: inherit;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* The same muted red the studio's File > Load uses. A delete is the
+         one irreversible thing in this list and should not read as neutral
+         furniture. */
+      .world-row-delete {
+        background: transparent;
+        border: 0;
+        color: #d06060;
+        cursor: pointer;
+        font: 12px var(--font-label), system-ui, sans-serif;
+        padding: 0 4px;
+        line-height: 1;
+      }
+
+      .world-row-delete:hover {
+        color: #ff8080;
+      }
+
+      .world-empty {
+        color: var(--ink-dim);
+        font-style: italic;
+        font-size: 11px;
+        padding: 6px 0;
+      }
+
       @media (prefers-reduced-motion: reduce) {
         * {
           transition: none !important;
@@ -879,6 +957,19 @@
         <div class="loader-hint">
           Green entries are compatible with the master element's trail
           persistence. Esc to cancel.
+        </div>
+      </div>
+    </div>
+
+    <!-- The world library. Dev-only for now: opened by "Load world" on the
+         Dev tab, and the place worlds are deleted from. -->
+    <div id="world-loader">
+      <div class="loader-panel">
+        <h2 id="world-loader-title">Load world</h2>
+        <div id="world-loader-list"></div>
+        <div class="loader-hint">
+          Loading a world replaces the palette, the preferences and the
+          initial conditions. Esc to cancel.
         </div>
       </div>
     </div>
