@@ -273,6 +273,29 @@ export class SandOrchestrator {
    */
   private lastCompactedAt = -Infinity;
 
+  /**
+   * Particles spawned since the last compaction was RECORDED.
+   *
+   * ## Why `spawnedSinceRead` cannot do this job
+   *
+   * That counter tracks spawns since the last FREE-LIST HEAD readback, and is
+   * reset whenever a fresh head arrives. The compacted mark takes its own
+   * readback, two or three frames, and a head can easily land inside that
+   * window -- zeroing `spawnedSinceRead` while spawns made after the compaction
+   * are still outstanding.
+   *
+   * The guard then read zero, believed a mark measured before those spawns, and
+   * lowered the bound below particles the brush had just created. They stayed
+   * in memory, invisible, until the mark rose past them again -- which is
+   * exactly the "particles appear at a previous brush location in a previously
+   * selected material" report: old spawns reappearing when the bound climbed
+   * back over them.
+   *
+   * Two readbacks, two windows. This counter measures the one the compacted
+   * mark actually needs: spawns the compaction did not see.
+   */
+  private spawnedSinceCompact = 0;
+
   /** Whether a compaction was recorded on the frame just rendered. */
   get justCompacted(): boolean {
     return this.compactedThisFrame;
@@ -752,6 +775,10 @@ export class SandOrchestrator {
       // A queued compaction was requested for a world that no longer exists,
       // and an empty world has nothing to compact.
       this.compactRequested = false;
+      // POISONED, not zeroed. A clear empties the world and takes the mark to
+      // zero; an in-flight compacted mark measured the world before that and
+      // must be refused, not permitted. Zero here would permit it.
+      this.spawnedSinceCompact = Number.MAX_SAFE_INTEGER;
     }
     this.pendingWorldOp = null;
 
@@ -785,6 +812,12 @@ export class SandOrchestrator {
         // The restored scene may not need one at all, and the user can ask
         // again if it does.
         this.compactRequested = false;
+        // AND AN IN-FLIGHT COMPACTED MARK MUST BE REFUSED. Its readback
+        // measured the world the restore has just replaced, so lowering the
+        // bound to it would hide the restored particles. Poisoning the counter
+        // makes `noteCompactedMark` decline it; the value itself is discarded
+        // when the next compaction supersedes it.
+        this.spawnedSinceCompact = Number.MAX_SAFE_INTEGER;
       }
     }
 
@@ -853,6 +886,9 @@ export class SandOrchestrator {
         this.spawnSeed,
       );
       this.spawnedSinceRead += command.count;
+      // Tracked separately from `spawnedSinceRead`, against a different
+      // readback window. See `spawnedSinceCompact`.
+      this.spawnedSinceCompact += command.count;
       // Raise the bound every pass stops at. Conservative: assumes every
       // reservation succeeded, so the bound errs upward.
       this.system.noteSpawned(command.count);
@@ -937,6 +973,10 @@ export class SandOrchestrator {
       // hazard a restore creates, handled the same way.
       this.markDropHeld = true;
       this.spawnedSinceRead = 0;
+      // The compaction sees the world as it stands on THIS frame, so spawns
+      // before it are accounted for in the mark it will report. Only spawns
+      // from here on are ones it did not see.
+      this.spawnedSinceCompact = 0;
     }
 
     // LAST, so the head it copies includes this frame's spawns and erases.
@@ -970,7 +1010,10 @@ export class SandOrchestrator {
     // compaction, which is the conservative direction.
     const compacted = this.compactor.takeMark();
     if (compacted !== null) {
-      this.system.noteCompactedMark(compacted, this.spawnedSinceRead);
+      // `spawnedSinceCompact`, NOT `spawnedSinceRead`. The two count against
+      // different readbacks, and using the wrong one lowered the mark below
+      // particles the brush had just created -- see `spawnedSinceCompact`.
+      this.system.noteCompactedMark(compacted, this.spawnedSinceCompact);
     }
 
     // TIER 1's ONE MARK REDUCTION, and it is deliberately the only one: if the

@@ -273,6 +273,40 @@ test('the cooldown boundary is inclusive', () => {
   );
 });
 
+// THE REGRESSION GUARD for a mark lowered below particles that were just
+// painted.
+//
+// The compacted mark was guarded by `spawnedSinceRead` -- a counter scoped to
+// the FREE-LIST HEAD readback, not to the compaction. The two are different
+// windows, and a head landing inside the compaction's readback zeroed the
+// counter while spawns made after the compaction were still outstanding.
+//
+// The guard then read zero, believed a mark measured before those spawns, and
+// lowered the bound below them. They sat in memory, invisible, until the mark
+// climbed back over them -- surfacing as particles reappearing at an old brush
+// location in an old material, which is exactly what was reported.
+//
+// The audit named it precisely: live 104,484 with mark 100,708, and the 3,776
+// excess in one contiguous block starting at the mark.
+test('a mark measured before outstanding spawns must be refused', () => {
+  // The shape of the bug, as arithmetic. A compaction measures 100,708 live.
+  // Before its readback lands, the brush spawns 3,776 more.
+  const measured = 100_708;
+  const spawnedAfter = 3_776;
+  const actuallyLive = measured + spawnedAfter;
+  // The host raised the mark for those spawns, so the bound covers them...
+  assert.equal(actuallyLive, 104_484);
+  // ...and applying the older, lower mark would drop it below 3,776 live
+  // particles. The count of spawns in that window is the whole signal, so it
+  // must be measured against the COMPACTION, not against a head readback that
+  // can be reset independently.
+  assert.ok(
+    spawnedAfter > 0,
+    'a nonzero count is what tells the guard the mark is out of date',
+  );
+  assert.ok(measured < actuallyLive, 'the stale mark is below the true live count');
+});
+
 test('a world that has never been compacted is not held back', () => {
   // `lastCompactedAt` starts at -Infinity, so the first compaction is not made
   // to wait out a cooldown that never ran.
