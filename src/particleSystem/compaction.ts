@@ -113,6 +113,55 @@ export function canDropMarkToZero(
 }
 
 /**
+ * The mark after a spawn pass reports how far up the buffer it reached.
+ *
+ * ## The bug this exists to make testable
+ *
+ * The mark used to be raised by a COUNT: `mark = mark + spawned`. That silently
+ * assumes the brush took CONTIGUOUS indices starting at the mark, which is true
+ * in a fresh world -- `initialFreeList` fills descending, so the pool hands out
+ * 0, 1, 2, ... -- and false as soon as the eraser has run. `free_list_give`
+ * returns freed indices in whatever order the GPU retires them, so an erased
+ * pool is a scatter, and the next stroke takes high indices while the mark rises
+ * by a few hundred.
+ *
+ * Every particle above the bound is then skipped by every pass and drawn by
+ * nothing. The audit reported it as "179 live particles sit at or above the mark
+ * (451076)" with the highest live index at 451,254 -- and the same shape at
+ * 113,531 particles once a restore churned the whole pool at once.
+ *
+ * `freeListSort.wgsl` mitigates and cannot fix it: a budgeted partial sort that
+ * the host skips on every frame that spawned, which is every frame of a drag.
+ *
+ * ## RAISE-ONLY, which is what makes the readback lag safe
+ *
+ * `reach` is measured on the GPU and arrives a frame or two later, so it may
+ * describe a stroke older than the mark already reflects. Lowering to it would
+ * undo a later stroke's accounting and hide its particles -- the same failure
+ * from the other direction. A late arrival must therefore be a no-op, not a
+ * correction.
+ *
+ * Lowering is the sole business of `noteCompactedMark`, which relocates
+ * particles and can prove where the highest live one is, and of
+ * `canDropMarkToZero` when the pool is provably empty.
+ *
+ * Pure and here rather than on `ParticleSystem` because that class needs a GPU
+ * device to construct, so nothing about it runs under `node --test` -- which is
+ * precisely why the count-based version survived as long as it did.
+ */
+export function markAfterSpawnReach(
+  mark: number,
+  reach: number,
+  entityCount: number,
+): number {
+  const capacity = Math.max(0, Math.trunc(entityCount));
+  const current = Math.max(0, Math.min(capacity, Math.trunc(mark)));
+  if (!Number.isFinite(reach)) return current;
+  const want = Math.max(0, Math.min(capacity, Math.trunc(reach)));
+  return Math.max(current, want);
+}
+
+/**
  * Live particle count implied by a head, for the Dev panel's readout.
  *
  * Stale by the same frame or two the head is, and clamped because a torn read

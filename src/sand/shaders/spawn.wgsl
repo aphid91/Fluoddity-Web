@@ -40,6 +40,35 @@
 
 #include "freeListOps.wgsl"
 
+// ---------------------------------------------------------------------------
+// THE HIGHEST SLOT THIS PASS TOOK, plus one. The host reads it back and raises
+// the mark to it.
+//
+// ## Why the host cannot compute this from the spawn count
+//
+// It used to try: `noteSpawned(count)` did `mark = mark + count`, which is
+// correct only if the brush takes CONTIGUOUS indices starting at the mark.
+// That holds in a fresh world -- `initialFreeList` fills descending, so the
+// pool hands out 0, 1, 2, ... -- and it stops holding the moment the eraser
+// runs. `free_list_give` pushes freed indices in whatever order the GPU retires
+// them, so an erased pool is an arbitrary scatter and the next stroke takes
+// high indices while the mark rises by a mere count.
+//
+// The symptom is live particles sitting ABOVE the mark: skipped by every pass,
+// drawn by nothing, still occupying their slots. The audit names it exactly --
+// "179 live particles sit at or above the mark (451076)" with the highest live
+// index at 451,254.
+//
+// `freeListSort.wgsl` exists to slow this down and explicitly cannot prevent
+// it: it is a budgeted PARTIAL sort that converges over many frames, and the
+// host skips it entirely on any frame that spawned -- which is every frame of
+// a drag, precisely when the scatter is being consumed.
+//
+// So the bound has to be measured rather than inferred. Only the GPU learns
+// which slot the reservation handed out, so only the GPU can report it.
+// ---------------------------------------------------------------------------
+@group(0) @binding(3) var<storage, read_write> high_water : atomic<u32>;
+
 struct SpawnUniforms {
     world : WorldData,
     // xy: stroke start (world)   zw: stroke end (world)
@@ -106,4 +135,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // no basis for, and the physics gives them motion on the very next step --
     // the sensors read the canvas regardless of how fast the particle is moving.
     entities[index] = make_entity_reset(pos, vec2f(0.0), size, spawn_config());
+
+    // RECORD HOW FAR UP THE BUFFER THIS WENT -- see the binding's note.
+    //
+    // `index + 1` because the mark is an EXCLUSIVE bound: every pass covers
+    // [0, mark), so a particle at `index` needs a mark of at least `index + 1`.
+    // Recording the bare index would leave the topmost particle just outside the
+    // bound, which is worse than being wildly wrong: one invisible particle
+    // looks like nothing is wrong at all.
+    //
+    // AFTER the entity write, so any observer of this value is guaranteed the
+    // particle it describes already exists.
+    atomicMax(&high_water, index + 1u);
 }

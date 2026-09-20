@@ -57,6 +57,55 @@ test('kill.wgsl declares the workgroup size the host dispatches with', () => {
   assert.match(KILL, new RegExp(`@workgroup_size\\(${KILL_WORKGROUP_SIZE}\\)`));
 });
 
+// ---------------------------------------------------------------------------
+// THE SPAWN PASS'S MEASURED REACH.
+//
+// THE REGRESSION GUARD for live particles sitting above the high-water mark.
+//
+// The host used to raise the mark by a COUNT (`noteSpawned`), which assumes the
+// brush took contiguous indices from the mark upward. That holds in a fresh
+// world -- `initialFreeList` fills descending -- and stops holding the moment
+// the eraser runs, because `free_list_give` returns indices in GPU retire order
+// and the pool becomes a scatter.
+//
+// A stroke into a scattered pool then takes high indices while the mark rises
+// by a few hundred, and everything above the bound is skipped by every pass and
+// drawn by nothing. The audit reported it as "179 live particles sit at or
+// above the mark (451076)" with the highest live index at 451,254.
+//
+// `freeListSort.wgsl` cannot prevent this and does not claim to: it is a
+// budgeted partial sort, and the host skips it on every frame that spawned --
+// which is every frame of a drag.
+// ---------------------------------------------------------------------------
+
+test('spawn.wgsl reports the highest slot it took', () => {
+  assert.ok(
+    /atomicMax\(&high_water,\s*index \+ 1u\)/.test(SPAWN),
+    'the spawn pass must record its reach; the host cannot infer it',
+  );
+});
+
+test('the reported bound is exclusive, matching the mark', () => {
+  // Every pass covers [0, mark), so a particle at `index` needs a mark of
+  // `index + 1`. Recording the bare index would leave the topmost particle just
+  // outside the bound -- one invisible particle, which looks like nothing is
+  // wrong at all.
+  assert.ok(
+    SPAWN.includes('index + 1u'),
+    'the recorded bound must be one past the slot written',
+  );
+});
+
+test('only the creation pass reports a reach', () => {
+  // The eraser frees slots and takes none, so it has no reach to report and no
+  // business binding the buffer. A fourth binding on it would be a resource the
+  // pass must ignore.
+  assert.ok(
+    !KILL.includes('high_water'),
+    'the kill pass raises no bound and must not bind one',
+  );
+});
+
 test('workgroupsFor rounds up, so the tail is covered', () => {
   assert.equal(workgroupsFor(1, 64), 1);
   assert.equal(workgroupsFor(64, 64), 1);

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   canDropMarkToZero,
   liveCountFrom,
+  markAfterSpawnReach,
   occupancy,
   sortBudgetFor,
   sortedFreeList,
@@ -186,3 +187,63 @@ test('occupancy calls an empty world packed rather than dividing by zero', () =>
 //
 // The headroom is what makes "the sweep finished" and "everything live is below
 // the target" the same statement.
+// ---------------------------------------------------------------------------
+// THE SPAWN REACH.
+//
+// The mark used to be raised by a COUNT, which assumes the brush took
+// contiguous indices from the mark upward. That is true only in a fresh world;
+// once the eraser has scattered the pool a stroke takes high indices while the
+// mark barely moves, and everything above the bound becomes invisible.
+//
+// These cover the raise-only rule that replaces it. The GPU measures the reach
+// and the readback lags, so the lag has to be safe by construction rather than
+// by a guard counter.
+// ---------------------------------------------------------------------------
+
+test('a measured reach above the mark raises it', () => {
+  // The whole point: a stroke that landed at index 599,998 needs a bound of
+  // 599,999, whatever the count said.
+  assert.equal(markAfterSpawnReach(150_238, 599_999, 600_000), 599_999);
+});
+
+test('a measured reach below the mark leaves it alone', () => {
+  // THE REGRESSION GUARD for the fix reintroducing the bug from the other side.
+  // The readback lags a frame or two, so a measurement can describe a stroke
+  // older than the mark already reflects. Lowering to it would hide the later
+  // stroke's particles -- the same failure, arrived at backwards.
+  assert.equal(markAfterSpawnReach(500_000, 1_000, 600_000), 500_000);
+});
+
+test('an equal reach is a no-op', () => {
+  assert.equal(markAfterSpawnReach(1234, 1234, 600_000), 1234);
+});
+
+test('the reach is clamped to capacity, never past it', () => {
+  // A torn read or a corrupt buffer must not produce a bound past the end of
+  // the entity buffer, which every pass would then sweep off the edge of.
+  assert.equal(markAfterSpawnReach(0, 999_999, 600_000), 600_000);
+});
+
+test('a non-finite reach is discarded rather than believed', () => {
+  // NaN compares false against everything, so an unguarded Math.max would
+  // propagate it into the bound and every pass would sweep nothing at all.
+  //
+  // INFINITY IS REFUSED TOO, rather than clamped to capacity. Both mean the same
+  // thing here -- the buffer did not report a usable number -- and a corrupt
+  // read is not evidence that the world is full. Clamping would invent a
+  // whole-buffer bound from garbage; keeping the current mark leaves the world
+  // exactly as correct as it was a moment ago.
+  assert.equal(markAfterSpawnReach(1000, NaN, 600_000), 1000);
+  assert.equal(markAfterSpawnReach(1000, Infinity, 600_000), 1000);
+});
+
+test('a negative reach cannot lower the mark below zero', () => {
+  assert.equal(markAfterSpawnReach(1000, -5, 600_000), 1000);
+  assert.equal(markAfterSpawnReach(0, -5, 600_000), 0);
+});
+
+test('the mark itself is clamped, so a stale one cannot exceed capacity', () => {
+  // A Max Particles shrink can leave the mark above the new capacity for a
+  // frame; the bound handed back must still describe the buffer that exists.
+  assert.equal(markAfterSpawnReach(900_000, 10, 600_000), 600_000);
+});

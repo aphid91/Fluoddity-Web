@@ -63,7 +63,7 @@ import {
   initialFreeList,
 } from './freeList.ts';
 import { type PoolAudit, auditPool } from './poolAudit.ts';
-import { canDropMarkToZero, sortedFreeList } from './compaction.ts';
+import { canDropMarkToZero, markAfterSpawnReach, sortedFreeList } from './compaction.ts';
 import { canvasDimensions, ENTITIES_PER_WORLD_UNIT, ENTITY_COUNT } from './sizing.ts';
 import {
   type FieldStrengths,
@@ -1185,6 +1185,44 @@ export class ParticleSystem {
   noteSpawned(count: number): void {
     if (!this.lifetimes || count <= 0) return;
     this.highWaterMark = Math.min(this.entityCount, this.highWaterMark + count);
+  }
+
+  /**
+   * Raise the mark to a bound the GPU MEASURED, never lower it.
+   *
+   * ## Why `noteSpawned` is not enough on its own
+   *
+   * That one ACCUMULATES a count, which silently assumes the brush took
+   * contiguous indices starting at the mark. True in a fresh world, because
+   * `initialFreeList` fills descending and the pool hands out 0, 1, 2, ... --
+   * and false after any erasing, because `free_list_give` returns indices in GPU
+   * retire order and the pool becomes a scatter. A stroke can then take index
+   * 599,999 while the mark rises by 200, and every particle above the bound is
+   * skipped by every pass and drawn by nothing.
+   *
+   * `spawn.wgsl` reports the highest slot it actually took. This applies it.
+   *
+   * ## RAISE-ONLY, which is what makes a stale measurement safe
+   *
+   * The readback lags a frame or two, so the value may describe a stroke older
+   * than the mark currently reflects. Lowering to it would undo a later stroke's
+   * accounting and hide its particles -- the precise failure this exists to fix,
+   * reintroduced from the other direction. Only growth is ever applied, so a
+   * late arrival is at worst a no-op.
+   *
+   * Lowering the mark is the sole business of compaction (`noteCompactedMark`),
+   * which relocates particles and can therefore prove where the highest live one
+   * is, and of `dropMarkIfEmpty` when the pool is provably empty.
+   */
+  noteSpawnReach(bound: number): boolean {
+    if (!this.lifetimes) return false;
+    // THE POLICY LIVES IN `markAfterSpawnReach`, so the raise-only rule is
+    // testable without a device -- this class needs one to construct, which is
+    // why the count-based version it replaces was never covered.
+    const next = markAfterSpawnReach(this.highWaterMark, bound, this.entityCount);
+    if (next === this.highWaterMark) return false;
+    this.highWaterMark = next;
+    return true;
   }
 
   /**

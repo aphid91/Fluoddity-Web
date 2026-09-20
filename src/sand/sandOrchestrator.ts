@@ -296,6 +296,18 @@ export class SandOrchestrator {
    */
   private spawnedSinceCompact = 0;
 
+  /**
+   * Particles spawned whose measured reach has not come back yet.
+   *
+   * Diagnostic only -- the mark correction is RAISE-ONLY (`noteSpawnReach`), so
+   * unlike the compaction's counter this guards nothing: a stale measurement can
+   * only fail to raise the bound, never wrongly lower it.
+   *
+   * Kept because "how far behind is the measurement" is the first thing worth
+   * knowing if the mark ever looks wrong again, and the number is free.
+   */
+  private spawnsAwaitingHighWater = 0;
+
   /** Whether a compaction was recorded on the frame just rendered. */
   get justCompacted(): boolean {
     return this.compactedThisFrame;
@@ -889,8 +901,15 @@ export class SandOrchestrator {
       // Tracked separately from `spawnedSinceRead`, against a different
       // readback window. See `spawnedSinceCompact`.
       this.spawnedSinceCompact += command.count;
-      // Raise the bound every pass stops at. Conservative: assumes every
-      // reservation succeeded, so the bound errs upward.
+      // And a third window, for the spawn pass's own high-water readback --
+      // see `spawnsAwaitingHighWater`.
+      this.spawnsAwaitingHighWater += command.count;
+      // THE OPTIMISTIC BOUND, corrected a frame or two later by the measured
+      // one. `noteSpawned` assumes the reservation took contiguous indices from
+      // the mark upward, which is true in a fresh world and false after any
+      // erasing -- so on its own it can leave particles above the bound. It is
+      // kept because the mark must be safe on THIS frame and the measurement has
+      // not arrived yet; `takeHighWater` below is what makes it right.
       this.system.noteSpawned(command.count);
     }
 
@@ -992,6 +1011,9 @@ export class SandOrchestrator {
     // Same constraint, same placement: a mapAsync on an unsubmitted copy never
     // resolves and would wedge the readback forever.
     this.compactor.poll();
+    // And the spawn pass's reach, which is what corrects the optimistic mark
+    // after a stroke into a scattered pool. Same constraint again.
+    this.passes.pollHighWater();
 
     // A fresh head supersedes the spawns counted against the previous one --
     // and, equally, supersedes a pool rewrite the old head predated.
@@ -1014,6 +1036,25 @@ export class SandOrchestrator {
       // different readbacks, and using the wrong one lowered the mark below
       // particles the brush had just created -- see `spawnedSinceCompact`.
       this.system.noteCompactedMark(compacted, this.spawnedSinceCompact);
+    }
+
+    // THE SPAWN PASS'S MEASURED REACH, which corrects the optimistic bound.
+    //
+    // `noteSpawned` raised the mark by a COUNT on the frame of the stroke, which
+    // assumes contiguous indices and is wrong the moment the pool has been
+    // scattered by erasing. This is the number the GPU actually observed.
+    //
+    // RAISE-ONLY (`noteSpawnReach`), so a measurement that arrives after a later
+    // stroke cannot lower the bound beneath it. That is what makes the lag safe
+    // without a guard counter -- unlike the compacted mark, which lowers and
+    // therefore needs one.
+    //
+    // BEFORE `dropMarkIfEmpty`, so a raise is not applied on top of a decision
+    // made from a head that predates it.
+    const reach = this.passes.takeHighWater();
+    if (reach !== null) {
+      this.system.noteSpawnReach(reach);
+      this.spawnsAwaitingHighWater = 0;
     }
 
     // TIER 1's ONE MARK REDUCTION, and it is deliberately the only one: if the

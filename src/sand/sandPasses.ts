@@ -68,6 +68,26 @@ export class SandPasses {
   private readonly killUniforms: GPUBuffer;
   private readonly sortUniforms: GPUBuffer;
 
+  /**
+   * The highest slot the spawn pass took, plus one. Written by the shader.
+   *
+   * ## Why the mark cannot be a host-side tally
+   *
+   * The host knows how many particles it asked for and nothing about WHERE the
+   * free list put them. After any erasing the pool is a scatter (see
+   * `spawn.wgsl`), so a stroke can take index 599,999 while the host raises the
+   * mark by 200 -- and every particle above the bound becomes invisible.
+   *
+   * This is the measured answer. It is read back asynchronously, so the host
+   * still raises the mark optimistically on the frame of the spawn; this is what
+   * CORRECTS that guess a frame or two later. See `takeHighWater`.
+   */
+  private readonly highWater: GPUBuffer;
+  private readonly highWaterStaging: GPUBuffer;
+  /** Guards the readback: mapAsync on an unsubmitted copy never resolves. */
+  private highWaterPhase: 'idle' | 'recorded' | 'mapping' = 'idle';
+  private pendingHighWater: number | null = null;
+
 
   /**
    * Which disjoint pairs the next ordering phase compares. Flipped every time
@@ -99,6 +119,17 @@ export class SandPasses {
       size: SORT_UNIFORM_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this.highWater = device.createBuffer({
+      label: 'spawn-high-water',
+      size: 4,
+      usage:
+        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+    this.highWaterStaging = device.createBuffer({
+      label: 'spawn-high-water-staging',
+      size: 4,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
   }
 
   static async create(device: GPUDevice, system: ParticleSystem): Promise<SandPasses> {
@@ -127,6 +158,24 @@ export class SandPasses {
       ],
     });
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
+
+    // ITS OWN LAYOUT, because only the CREATION pass reports a high-water mark.
+    // The eraser has nothing to report -- it only ever frees slots, which lowers
+    // no bound and raises none -- so binding a fourth buffer to it would be a
+    // resource a pass must ignore. The two shared the brush layout while they
+    // bound the same three things; they no longer do.
+    const spawnLayout = device.createBindGroupLayout({
+      label: 'sand-spawn',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      ],
+    });
+    const spawnPipelineLayout = device.createPipelineLayout({
+      bindGroupLayouts: [spawnLayout],
+    });
 
     // ITS OWN LAYOUT, because the ordering pass binds two resources rather than
     // three: it touches the free list and its own uniform, and has no reason to
@@ -157,16 +206,17 @@ export class SandPasses {
     if (spawnModule !== null) {
       this.spawnPipeline = device.createComputePipeline({
         label: 'spawn',
-        layout: pipelineLayout,
+        layout: spawnPipelineLayout,
         compute: { module: spawnModule, entryPoint: 'main' },
       });
       this.spawnGroup = device.createBindGroup({
         label: 'spawn',
-        layout,
+        layout: spawnLayout,
         entries: [
           { binding: 0, resource: { buffer: entities } },
           { binding: 1, resource: { buffer: freeList } },
           { binding: 2, resource: { buffer: this.spawnUniforms } },
+          { binding: 3, resource: { buffer: this.highWater } },
         ],
       });
     }
@@ -233,12 +283,66 @@ export class SandPasses {
       0,
       packSpawnUniforms(world, stroke, count, configIndex, frame),
     );
+    // ZEROED FIRST, so the atomic max measures THIS stroke's reach rather than
+    // the highest slot any previous one reached. A stale maximum would pin the
+    // mark at the high-water of a scatter that has since been compacted away.
+    this.device.queue.writeBuffer(this.highWater, 0, new Uint32Array([0]));
 
     const pass = encoder.beginComputePass({ label: 'spawn' });
     pass.setPipeline(this.spawnPipeline);
     pass.setBindGroup(0, this.spawnGroup);
     pass.dispatchWorkgroups(workgroupsFor(count, SPAWN_WORKGROUP_SIZE));
     pass.end();
+
+    // The readback rides the SAME encoder, so it cannot observe a state earlier
+    // than the dispatch that produced it. Only one is in flight at a time; a
+    // frame that spawns while one is pending simply does not record a second,
+    // and the mark it would have reported is superseded by the next.
+    if (this.highWaterPhase === 'idle') {
+      encoder.copyBufferToBuffer(this.highWater, 0, this.highWaterStaging, 0, 4);
+      this.highWaterPhase = 'recorded';
+    }
+  }
+
+  /**
+   * Start the high-water readback. Call after submitting the encoder.
+   *
+   * SEPARATE FROM `spawn` for the reason `Compactor.poll` is: a `mapAsync` on a
+   * copy that has not been submitted never resolves, which would wedge the
+   * readback in `mapping` forever -- and with it, every future correction to the
+   * mark.
+   */
+  pollHighWater(): void {
+    if (this.highWaterPhase !== 'recorded') return;
+    this.highWaterPhase = 'mapping';
+    this.highWaterStaging.mapAsync(GPUMapMode.READ).then(
+      () => {
+        const data = new Uint32Array(this.highWaterStaging.getMappedRange().slice(0));
+        this.highWaterStaging.unmap();
+        this.pendingHighWater = data[0] ?? null;
+        this.highWaterPhase = 'idle';
+      },
+      () => {
+        // Device lost or buffer destroyed. Drop the answer rather than the
+        // frame: the mark stays where the optimistic estimate put it, which is
+        // conservative.
+        this.highWaterPhase = 'idle';
+      },
+    );
+  }
+
+  /**
+   * The measured reach of the last spawn, if one has arrived. Reading clears it.
+   *
+   * THE CALLER DECIDES WHETHER TO APPLY IT, because the safety rule depends on
+   * state this module does not own -- the same split `Compactor.takeMark` makes.
+   * In particular a measurement taken before a later stroke must not lower the
+   * bound below what that stroke reached.
+   */
+  takeHighWater(): number | null {
+    const pending = this.pendingHighWater;
+    this.pendingHighWater = null;
+    return pending;
   }
 
   /**
@@ -337,5 +441,10 @@ export class SandPasses {
     this.spawnUniforms.destroy();
     this.killUniforms.destroy();
     this.sortUniforms.destroy();
+    this.highWater.destroy();
+    // Set first, so an in-flight mapAsync callback finds a phase it will not act
+    // on rather than touching a destroyed buffer.
+    this.highWaterPhase = 'mapping';
+    this.highWaterStaging.destroy();
   }
 }
