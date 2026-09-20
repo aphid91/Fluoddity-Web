@@ -46,6 +46,13 @@
 fn entity_count() -> u32 { return u.params.x; }
 fn dst_capacity() -> u32 { return u.params.z; }
 
+// THE GRAND TOTAL OF MATCHED PARTICLES, read from the scan rather than passed
+// in. The host does not know it: only the GPU has counted, and every past
+// attempt in this codebase to have the host infer a live count produced a
+// number that disagreed with the buffer. See `compactScatter.wgsl`, which takes
+// the identical approach for the identical reason.
+fn matched_count() -> u32 { return min(offsets[u.params.y], dst_capacity()); }
+
 var<workgroup> flags : array<u32, 256>;
 
 @compute @workgroup_size(256)
@@ -83,6 +90,34 @@ fn main(
     let group_offset = offsets[wid.x];
 
     if (index >= entity_count()) { return; }
+
+    // ---------------------------------------------------------------------
+    // THE TAIL IS NOT IMPLICITLY DEAD, AND THAT IS NOT A THEORETICAL CONCERN
+    // ---------------------------------------------------------------------
+    // The block is REUSED across captures and sized to the whole entity buffer,
+    // so whatever the previous capture left above this one's match count is
+    // still sitting there. Capture a thousand particles, erase most of them,
+    // capture ten: slots 10..999 still hold the first capture's particles.
+    //
+    // Nothing downstream can tell the difference. The paste dispatches over the
+    // whole block and skips dead entries -- so those stale particles are not
+    // stale to it, they are live ones to place, and a restore would resurrect a
+    // scene the user erased.
+    //
+    // `compactScatter.wgsl` hit exactly this and documents it: a naively unwritten
+    // tail is not empty, it is "a buffer full of LIVE particles". There the
+    // symptom was an audit reporting live 6,000,000 of 6,000,000; here it would
+    // be a reset key that brings back deleted particles.
+    //
+    // THE TWO WRITES NEVER TARGET THE SAME SLOT, which is what makes this safe
+    // with no ordering between invocations: a matched particle always lands
+    // BELOW `matched_count()` (its rank among the matched is less than their
+    // total), and the tail clear only touches indices at or above it. The ranges
+    // partition the block.
+    if (index >= matched_count() && index < dst_capacity()) {
+        dst[index] = make_entity_dead();
+    }
+
     if (hit == 0u) { return; }
 
     let destination = group_offset + rank;

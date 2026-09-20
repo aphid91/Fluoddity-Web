@@ -33,6 +33,11 @@
 import { compileModule } from '../gpu/shaderModule.ts';
 import type { ParticleSystem } from '../particleSystem/particleSystem.ts';
 import type { StrafeField } from '../strafeField/strafeField.ts';
+// The formats the shadow textures must match. A copy between textures of
+// different formats is a validation error, so these come from the same
+// constants the sources are created with rather than being restated.
+import { CANVAS_FORMAT } from '../particleSystem/particleSystem.ts';
+import { FIELD_FORMAT } from '../strafeField/fieldSize.ts';
 import { ENTITY_STRIDE } from '../particleSystem/layout.ts';
 import {
   compactGroups,
@@ -93,6 +98,18 @@ interface StagedLayer {
   readonly bytesPerRow: number;
 }
 
+/**
+ * A captured texture layer that never leaves the device.
+ *
+ * What `stageTexturesInVram` produces and what the initial-conditions restore
+ * pastes from. Holds a TEXTURE rather than a buffer, so putting it back is a
+ * `copyTextureToTexture` -- no row padding, no format conversion, exact bits.
+ */
+interface VramLayer {
+  readonly rect: PixelRect;
+  readonly texture: GPUTexture;
+}
+
 export class StampCopier {
   private readonly device: GPUDevice;
   private readonly system: ParticleSystem;
@@ -125,6 +142,16 @@ export class StampCopier {
    * would move megabytes to learn one number.
    */
   private readonly countStaging: GPUBuffer;
+
+  /**
+   * The captured texture layers, kept on the device.
+   *
+   * Reused across captures and reallocated only when the rect's SIZE changes --
+   * a capture happens on every press of go, so allocating two textures each
+   * time would churn VRAM on the exact frame the user is watching.
+   */
+  private vramCanvas: VramLayer | null = null;
+  private vramField: VramLayer | null = null;
 
   private constructor(device: GPUDevice, system: ParticleSystem, field: StrafeField) {
     this.device = device;
@@ -423,6 +450,104 @@ export class StampCopier {
     };
   }
 
+  /**
+   * Copy the two texture layers into VRAM-resident textures of their own.
+   *
+   * ## The counterpart of `stageTextures`, and why both exist
+   *
+   * That one stages to host-readable buffers, which is what SAVING a world
+   * needs. This one keeps everything on the device, which is what the
+   * initial-conditions capture needs: `R` should feel instant, and a readback
+   * would add a frame or two of latency to buy nothing -- the bytes are already
+   * on the right device and nothing between capture and restore reads them.
+   *
+   * ## `copyTextureToTexture`, not a buffer round trip
+   *
+   * A texture-to-texture copy has no 256-byte row rule to respect, does no
+   * format conversion, and moves the exact bits. That is three ways this path
+   * cannot go subtly wrong that the readback path has to actively handle -- and
+   * it is why a restore into an unchanged world is bit-identical rather than
+   * merely close.
+   *
+   * The shadow textures are allocated on first use and reused, sized to the
+   * rect. A world-size change replaces them, because the rect changes with it.
+   */
+  stageTexturesInVram(encoder: GPUCommandEncoder, box: StampBox): void {
+    this.vramCanvas = this.copyLayerToVram(
+      encoder,
+      box,
+      this.system.currentCanvasTextureObject(),
+      this.system.canvasSize,
+      CANVAS_FORMAT,
+      this.vramCanvas,
+      'canvas',
+    );
+    this.vramField = this.copyLayerToVram(
+      encoder,
+      box,
+      this.field.textureObject(),
+      this.field.size,
+      FIELD_FORMAT,
+      this.vramField,
+      'field',
+    );
+  }
+
+  /** The VRAM-resident canvas layer from the last capture, if any. */
+  get capturedCanvas(): VramLayer | null {
+    return this.vramCanvas;
+  }
+
+  /** The VRAM-resident field layer from the last capture, if any. */
+  get capturedField(): VramLayer | null {
+    return this.vramField;
+  }
+
+  /** The packed particle block from the last capture. */
+  get capturedBlock(): GPUBuffer {
+    return this.block;
+  }
+
+  private copyLayerToVram(
+    encoder: GPUCommandEncoder,
+    box: StampBox,
+    source: GPUTexture,
+    size: readonly [number, number],
+    format: GPUTextureFormat,
+    existing: VramLayer | null,
+    label: string,
+  ): VramLayer | null {
+    const rect = pixelRectFor(box, size);
+    if (rect.width <= 0 || rect.height <= 0) return existing;
+
+    let target = existing;
+    if (
+      target === null ||
+      target.rect.width !== rect.width ||
+      target.rect.height !== rect.height
+    ) {
+      target?.texture.destroy();
+      target = {
+        rect,
+        texture: this.device.createTexture({
+          label: `stamp-${label}-vram`,
+          size: { width: rect.width, height: rect.height },
+          format,
+          usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+        }),
+      };
+    }
+
+    encoder.copyTextureToTexture(
+      { texture: source, origin: { x: rect.x, y: rect.y } },
+      { texture: target.texture },
+      { width: rect.width, height: rect.height },
+    );
+    // The rect is re-recorded because the ORIGIN may have moved even when the
+    // size did not -- a box dragged elsewhere in a world of the same shape.
+    return { rect, texture: target.texture };
+  }
+
   private stageOne(
     encoder: GPUCommandEncoder,
     box: StampBox,
@@ -589,8 +714,10 @@ export class StampCopier {
     this.block.destroy();
     this.uniforms.destroy();
     this.countStaging.destroy();
+    this.vramCanvas?.texture.destroy();
+    this.vramField?.texture.destroy();
     for (const buffer of this.scanUniforms) buffer.destroy();
   }
 }
 
-export type { StagedLayer };
+export type { StagedLayer, VramLayer };

@@ -183,8 +183,16 @@ export class SandOrchestrator {
    */
   private spawnSeed = 0;
 
-  /** The high-water mark at capture time. Restored with the buffers. */
-  private capturedHighWater = 0;
+  // THE CAPTURED HIGH-WATER MARK IS GONE, and its absence is deliberate.
+  //
+  // It existed because the old snapshot copied the entity buffer and the free
+  // list VERBATIM, so the restored scene occupied exactly the indices it had
+  // before and the mark that went with it was a property of the capture.
+  //
+  // A stamp paste allocates fresh slots instead, so the restored arrangement is
+  // rebuilt rather than reproduced -- and the mark that describes it is the one
+  // the paste's own `noteSpawned` produces. Keeping a captured value here would
+  // mean asserting a bound for an arrangement that no longer exists.
 
   /**
    * Whether the Dev panel has switched TIER 1 COMPACTION off.
@@ -299,14 +307,42 @@ export class SandOrchestrator {
   /**
    * Particles spawned whose measured reach has not come back yet.
    *
-   * Diagnostic only -- the mark correction is RAISE-ONLY (`noteSpawnReach`), so
-   * unlike the compaction's counter this guards nothing: a stale measurement can
-   * only fail to raise the bound, never wrongly lower it.
+   * Diagnostic only -- the spawn correction is RAISE-ONLY (`noteSpawnReach`), so
+   * unlike the two counters around it this guards nothing: a stale measurement
+   * can only fail to raise the bound, never wrongly lower it.
    *
    * Kept because "how far behind is the measurement" is the first thing worth
    * knowing if the mark ever looks wrong again, and the number is free.
    */
   private spawnsAwaitingHighWater = 0;
+
+  /**
+   * Particles spawned since the last restore's high-water readback was taken.
+   *
+   * ## WHY THIS IS A SEPARATE COUNTER FROM `spawnsAwaitingHighWater`
+   *
+   * The two track measurements that move the mark in OPPOSITE DIRECTIONS, and
+   * that is the whole distinction:
+   *
+   *   the SPAWN pass reports how far up a stroke reached, which can only RAISE
+   *   the bound. A stale answer is harmless -- it merely fails to raise -- so it
+   *   needs no guard.
+   *
+   *   the RESTORE sets the bound to the whole buffer and its readback LOWERS it
+   *   to what the paste actually used. A stale answer there is exactly the
+   *   dangerous case: it would lower the bound beneath particles created since,
+   *   hiding them. So it needs the same guard `noteCompactedMark` already
+   *   enforces, and the counter has to measure this readback's own window.
+   *
+   * Neither of the other two windows fits: `spawnedSinceRead` is zeroed whenever
+   * a free-list head arrives, and a head can easily land between the paste and
+   * its readback -- which is precisely the trap `spawnedSinceCompact` was
+   * introduced to fix, arrived at by the same route.
+   *
+   * Poisoned rather than zeroed when the world changes underneath an in-flight
+   * measurement, so the answer is refused rather than permitted.
+   */
+  private spawnedSinceRestore = Number.MAX_SAFE_INTEGER;
 
   /** Whether a compaction was recorded on the frame just rendered. */
   get justCompacted(): boolean {
@@ -354,6 +390,10 @@ export class SandOrchestrator {
     targets: RenderTargets;
     passes: SandPasses;
     compactor: Compactor;
+    // CONSTRUCTED BY THE CALLER, because it compiles shaders and this cannot
+    // await. It became async when the initial conditions became a whole-scene
+    // stamp -- see `initialConditions.ts`.
+    initial: InitialConditions;
   }) {
     this.device = opts.device;
     this.system = opts.system;
@@ -363,7 +403,7 @@ export class SandOrchestrator {
     this.targets = opts.targets;
     this.passes = opts.passes;
     this.compactor = opts.compactor;
-    this.initial = new InitialConditions(opts.device, opts.system, opts.field);
+    this.initial = opts.initial;
   }
 
   static async create(opts: {
@@ -376,7 +416,8 @@ export class SandOrchestrator {
   }): Promise<SandOrchestrator> {
     const passes = await SandPasses.create(opts.device, opts.system);
     const compactor = await Compactor.create(opts.device, opts.system);
-    const orch = new SandOrchestrator({ ...opts, passes, compactor });
+    const initial = await InitialConditions.create(opts.device, opts.system, opts.field);
+    const orch = new SandOrchestrator({ ...opts, passes, compactor, initial });
     orch.startEmpty();
     return orch;
   }
@@ -715,7 +756,11 @@ export class SandOrchestrator {
     this.compactor.destroy();
     this.compactor = await Compactor.create(this.device, replacement);
     this.initial.destroy();
-    this.initial = new InitialConditions(this.device, replacement, replacementField);
+    this.initial = await InitialConditions.create(
+      this.device,
+      replacement,
+      replacementField,
+    );
 
     this._paused = true;
     this.captureArmed = true;
@@ -791,6 +836,9 @@ export class SandOrchestrator {
       // zero; an in-flight compacted mark measured the world before that and
       // must be refused, not permitted. Zero here would permit it.
       this.spawnedSinceCompact = Number.MAX_SAFE_INTEGER;
+      // Same argument for an in-flight restore measurement: it describes a
+      // scene this clear has just emptied.
+      this.spawnedSinceRestore = Number.MAX_SAFE_INTEGER;
     }
     this.pendingWorldOp = null;
 
@@ -798,28 +846,38 @@ export class SandOrchestrator {
       this.restorePending = false;
       if (this.initial.restore(encoder)) {
         this.system.setFrameCount(RESTORE_FRAME);
-        // The restored free list is the captured one. The head readback will
-        // catch up on its own; all that is needed here is to stop subtracting
-        // spawns that the restore has just undone.
+        // The pool has been rewritten by the clear-then-paste: every live slot
+        // returned, then a fresh one taken per restored particle. The head
+        // readback will catch up on its own; all that is needed here is to stop
+        // subtracting spawns against a head that predates the whole exchange.
         this.spawnedSinceRead = 0;
-        // THE MARK MUST COME BACK TOO. It bounds every pass, and a clear takes
-        // it to zero -- so restoring the buffers without it would leave the
-        // restored particles above the bound: present in memory, but skipped by
-        // the physics and drawn by nothing. They would look deleted while
-        // occupying their slots.
-        this.system.restoreHighWaterMark(this.capturedHighWater);
+        // THE MARK IS RAISED BY THE PASTE ITSELF, not restored to a captured
+        // value. A stamp paste allocates fresh slots rather than reproducing the
+        // captured indices, so the mark that goes with the restored scene is
+        // whatever the paste's own `noteSpawned` produced -- assigning the old
+        // captured mark here would state a bound for an arrangement that no
+        // longer describes where the particles are.
+        //
+        // The paste errs upward, which is the safe direction: an over-high mark
+        // costs wasted invocations, while an under-low one leaves live particles
+        // above the bound, skipped by the physics and drawn by nothing.
+        //
         // AND THE MARK DROP MUST BE HELD OFF until the head readback catches
-        // up. The restore rewrote the free list through the encoder, but
-        // `availableSlots` still reports the head from BEFORE it -- and after a
-        // clear that stale head reads "entirely free". `dropMarkIfEmpty` would
-        // believe it, zero the mark we have just restored, and leave every
-        // restored particle above the bound: exactly the invisible-world failure
-        // the note above describes, arrived at from the other direction.
+        // up. The clear and the paste both moved the head through the encoder,
+        // but `availableSlots` still reports the head from BEFORE them -- and
+        // after the clear half that stale head reads "entirely free".
+        // `dropMarkIfEmpty` would believe it, zero the mark the paste has just
+        // raised, and leave every restored particle above the bound.
         //
         // `spawnedSinceRead` cannot cover this. It guards against spawns the
         // readback has not seen, and a restore is not a spawn -- it is the whole
         // pool changing underneath the reading.
         this.markDropHeld = true;
+        // THE RESTORE'S OWN READBACK WINDOW OPENS HERE. The paste has just set
+        // the mark to the whole buffer and recorded a measurement of where its
+        // particles actually landed; anything spawned from now on is something
+        // that measurement did not see.
+        this.spawnedSinceRestore = 0;
         // A queued compaction was requested for the pre-restore arrangement.
         // The restored scene may not need one at all, and the user can ask
         // again if it does.
@@ -901,9 +959,11 @@ export class SandOrchestrator {
       // Tracked separately from `spawnedSinceRead`, against a different
       // readback window. See `spawnedSinceCompact`.
       this.spawnedSinceCompact += command.count;
-      // And a third window, for the spawn pass's own high-water readback --
-      // see `spawnsAwaitingHighWater`.
+      // And two more windows, for the two high-water readbacks -- the spawn
+      // pass's own and the restore's. See each counter on why neither the head
+      // nor the compaction window covers it.
       this.spawnsAwaitingHighWater += command.count;
+      this.spawnedSinceRestore += command.count;
       // THE OPTIMISTIC BOUND, corrected a frame or two later by the measured
       // one. `noteSpawned` assumes the reservation took contiguous indices from
       // the mark upward, which is true in a fresh world and false after any
@@ -933,10 +993,6 @@ export class SandOrchestrator {
     if (!this._paused && this.captureArmed) {
       this.captureArmed = false;
       this.initial.capture(encoder);
-      // Captured alongside the buffers: the mark is part of the scene's state,
-      // and a restore that did not bring it back would leave the restored
-      // particles above the bound every pass stops at.
-      this.capturedHighWater = this.system.activeEntityCount;
     }
 
     if (!this._paused && !compacting) {
@@ -1014,6 +1070,9 @@ export class SandOrchestrator {
     // And the spawn pass's reach, which is what corrects the optimistic mark
     // after a stroke into a scattered pool. Same constraint again.
     this.passes.pollHighWater();
+    // And the restore's, which is what brings the mark back down from the whole
+    // buffer after an R. Same constraint again.
+    this.initial.poll();
 
     // A fresh head supersedes the spawns counted against the previous one --
     // and, equally, supersedes a pool rewrite the old head predated.
@@ -1038,7 +1097,27 @@ export class SandOrchestrator {
       this.system.noteCompactedMark(compacted, this.spawnedSinceCompact);
     }
 
-    // THE SPAWN PASS'S MEASURED REACH, which corrects the optimistic bound.
+    // THE RESTORE'S MEASURED MARK, which LOWERS the bound.
+    //
+    // A restore sets it to the whole buffer because the free list decides where
+    // the pasted particles land and the host cannot predict it. This is that
+    // guess being replaced by the measurement -- the highest slot the paste
+    // actually wrote, computed by an atomic max on the GPU.
+    //
+    // `noteCompactedMark` is reused rather than reimplemented: it already
+    // refuses anything that would RAISE the bound and anything measured before a
+    // spawn the host has counted, which are exactly the two refusals a lowering
+    // correction needs. `spawnedSinceRestore` measures this readback's own
+    // window -- see its declaration on why the other windows do not fit.
+    //
+    // FIRST, so a spawn reach arriving on the same frame is applied on top of
+    // the lowered bound rather than being undone by it.
+    const restored = this.initial.takeHighWater();
+    if (restored !== null) {
+      this.system.noteCompactedMark(restored, this.spawnedSinceRestore);
+    }
+
+    // THE SPAWN PASS'S MEASURED REACH, which RAISES it.
     //
     // `noteSpawned` raised the mark by a COUNT on the frame of the stroke, which
     // assumes contiguous indices and is wrong the moment the pool has been
@@ -1046,8 +1125,8 @@ export class SandOrchestrator {
     //
     // RAISE-ONLY (`noteSpawnReach`), so a measurement that arrives after a later
     // stroke cannot lower the bound beneath it. That is what makes the lag safe
-    // without a guard counter -- unlike the compacted mark, which lowers and
-    // therefore needs one.
+    // with no guard counter -- unlike the two corrections that lower, which both
+    // need one.
     //
     // BEFORE `dropMarkIfEmpty`, so a raise is not applied on top of a decision
     // made from a head that predates it.
@@ -1347,7 +1426,7 @@ export class SandOrchestrator {
     this.compactor.destroy();
     this.compactor = await Compactor.create(this.device, replacement);
     this.initial.destroy();
-    this.initial = new InitialConditions(this.device, replacement, this.field);
+    this.initial = await InitialConditions.create(this.device, replacement, this.field);
     // No snapshot survives the resize, so the next go must take a fresh one.
     this.captureArmed = true;
     this.spawnedSinceRead = 0;

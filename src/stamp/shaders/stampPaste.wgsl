@@ -49,6 +49,27 @@
 // in the SOURCE box's frame.
 @group(0) @binding(2) var<storage, read>       stamp    : array<Entity>;
 @group(0) @binding(3) var<uniform>             u        : StampUniforms;
+// ---------------------------------------------------------------------------
+// THE HIGHEST SLOT THIS PASTE ACTUALLY WROTE, plus one. The host reads it back
+// and raises the mark to it.
+//
+// WHY THE HOST CANNOT COMPUTE THIS ITSELF, which is the bug this binding fixes:
+// the host knows how many particles it pasted, and that number says nothing
+// about WHERE they went. `free_list_give` pushes freed indices in whatever
+// order the GPU happens to schedule its invocations, so after a region clear
+// the pool's top is an arbitrary permutation -- and a paste that pops it
+// scatters particles across the whole buffer. A 150k-particle restore was
+// landing at indices up to 599,999 while the host set the mark to 150,598.
+//
+// Every particle above that mark was then skipped by every pass and drawn by
+// nothing: invisible, but still occupying its slot, so the brush appeared to
+// paint nothing or to paint somewhere else. The audit named it exactly --
+// "150598 live particles sit at or above the mark (150598)".
+//
+// An atomic max is the only honest answer, because only the GPU learns which
+// slots the reservation handed out.
+// ---------------------------------------------------------------------------
+@group(0) @binding(4) var<storage, read_write> high_water : atomic<u32>;
 
 #include "freeListOps.wgsl"
 
@@ -81,4 +102,16 @@ fn main(@builtin(global_invocation_id) gid : vec3u) {
     placed.pos_vel = vec4f(pos, e_vel(source));
 
     entities[slot] = placed;
+
+    // RECORD HOW FAR UP THE BUFFER THIS WENT. The mark is an exclusive bound --
+    // every pass covers [0, mark) -- so a particle at `slot` requires a mark of
+    // at least `slot + 1`.
+    //
+    // AFTER the entity write, so a host that observes this value is guaranteed
+    // the particle it describes is already in memory. The two are in the same
+    // dispatch and the host only reads the result after the submission
+    // completes, so the ordering is not strictly required -- but stating the
+    // bound only once the thing it bounds exists is the invariant worth keeping
+    // even when the schedule makes it free.
+    atomicMax(&high_water, slot + 1u);
 }

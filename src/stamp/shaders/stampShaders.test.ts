@@ -203,6 +203,36 @@ test('clear pushes to the pool before zeroing the entity', () => {
   assert.ok(push < zero, 'the push must precede the zeroing');
 });
 
+test('paste reports the highest slot it wrote', () => {
+  // THE REGRESSION GUARD for live particles sitting above the mark.
+  //
+  // The host knows how many particles it pasted and NOTHING about where they
+  // went: `free_list_give` pushes freed indices in GPU scheduling order, so
+  // after a region clear the pool is an arbitrary permutation and a paste
+  // scatters across the whole buffer. Setting the mark from a count produced
+  // exactly the audit line "150598 live particles sit at or above the mark
+  // (150598)", with the highest live index at 599,999 -- every one of them
+  // skipped by every pass and drawn by nothing, which surfaced as a brush that
+  // painted nothing or painted somewhere else.
+  //
+  // Only an atomic max over the slots actually used is an honest bound.
+  assert.ok(
+    /atomicMax\(&high_water,\s*slot \+ 1u\)/.test(PASTE_SRC),
+    'the paste must record the highest slot it wrote, plus one',
+  );
+});
+
+test('the high-water bound is exclusive, matching the mark', () => {
+  // Every pass covers [0, mark), so a particle AT `slot` needs a mark of
+  // `slot + 1`. Recording the bare slot would leave the topmost particle
+  // outside the bound -- one invisible particle rather than thousands, which is
+  // worse: it looks like nothing is wrong.
+  assert.ok(
+    PASTE_SRC.includes('slot + 1u'),
+    'the recorded bound must be one past the slot written',
+  );
+});
+
 test('paste tests the reservation against NO_SLOT', () => {
   // An unguarded reservation writes past the entity buffer when the pool is
   // empty -- which in WGSL is a dropped access, not a crash, presenting as one
@@ -248,6 +278,37 @@ test('the scatter stores positions verbatim, leaving the remap to paste', () => 
 // ---------------------------------------------------------------------------
 // Bounds.
 // ---------------------------------------------------------------------------
+
+test('the scatter clears the tail of the block it did not fill', () => {
+  // THE REGRESSION GUARD for a reset key that resurrects erased particles.
+  //
+  // The block is reused across captures and sized to the whole entity buffer,
+  // so whatever a previous capture left above this one's match count is still
+  // there. The paste dispatches over the whole block and skips dead entries --
+  // it cannot tell a stale particle from a current one, so an uncleared tail is
+  // not empty space, it is a scene the user already erased waiting to come back.
+  //
+  // `compactScatter.wgsl` hit the same thing; there the audit reported live
+  // 6,000,000 of 6,000,000.
+  assert.ok(
+    SCATTER_SRC.includes('make_entity_dead()'),
+    'the scatter must write dead entities over the tail it did not fill',
+  );
+  assert.ok(
+    /index >= matched_count\(\)/.test(SCATTER_SRC),
+    'the tail is everything at or above the matched count',
+  );
+});
+
+test('the scatter reads the matched total from the scan, not from the host', () => {
+  // Every past attempt in this codebase to have the host infer a live count
+  // produced a number that disagreed with the buffer.
+  assert.ok(SCATTER_SRC.includes('fn matched_count'), 'the total comes from the scan');
+  assert.ok(
+    SCATTER_SRC.includes('offsets[u.params.y]'),
+    'it is read from the reserved grand-total slot',
+  );
+});
 
 test('the scatter bounds its write against the destination capacity', () => {
   // The block is sized from a count the host read back, which is a frame or more

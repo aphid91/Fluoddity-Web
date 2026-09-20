@@ -45,6 +45,7 @@ import type { ParticleSystem } from '../particleSystem/particleSystem.ts';
 import type { StrafeField } from '../strafeField/strafeField.ts';
 import { ENTITY_STRIDE } from '../particleSystem/layout.ts';
 import { type StampBox, boxIsEmpty, pixelRectFor } from './stampBox.ts';
+import type { VramLayer } from './stampCopier.ts';
 import {
   type StampData,
   type StampLayer,
@@ -88,6 +89,23 @@ export class StampPaster {
   private upload: GPUBuffer | null = null;
   private uploadCapacity = 0;
 
+  /**
+   * The highest slot a paste wrote, plus one. Written by the shader.
+   *
+   * ## Why this cannot be a host-side count
+   *
+   * The host knows how many particles it pasted and nothing about where they
+   * went. `free_list_give` pushes freed indices in GPU scheduling order, so
+   * after a region clear the pool is an arbitrary permutation and a paste
+   * scatters across the whole buffer. Setting the mark from a count left live
+   * particles above it -- invisible to every pass, with the brush appearing to
+   * paint nothing. See the long note in `stampPaste.wgsl`.
+   */
+  private readonly highWater: GPUBuffer;
+  private readonly highWaterStaging: GPUBuffer;
+  /** Guards the readback: mapAsync on an unsubmitted copy never resolves. */
+  private highWaterPhase: 'idle' | 'recorded' | 'mapping' = 'idle';
+
   private constructor(device: GPUDevice, system: ParticleSystem, field: StrafeField) {
     this.device = device;
     this.system = system;
@@ -100,6 +118,17 @@ export class StampPaster {
       });
     this.clearUniforms = make('stamp-clear-uniforms');
     this.pasteUniforms = make('stamp-paste-uniforms');
+    this.highWater = device.createBuffer({
+      label: 'stamp-high-water',
+      size: 4,
+      usage:
+        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+    this.highWaterStaging = device.createBuffer({
+      label: 'stamp-high-water-staging',
+      size: 4,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
   }
 
   static async create(
@@ -140,7 +169,7 @@ export class StampPaster {
     });
     const pasteLayout = device.createBindGroupLayout({
       label: 'stamp-paste',
-      entries: [storage(0), storage(1), readOnly(2), uniform(3)],
+      entries: [storage(0), storage(1), readOnly(2), uniform(3), storage(4)],
     });
     this.pasteLayout = pasteLayout;
 
@@ -242,6 +271,8 @@ export class StampPaster {
       packStampUniforms(stamp.box, dstBox, count, 0, 0),
     );
 
+    this.device.queue.writeBuffer(this.highWater, 0, new Uint32Array([0]));
+
     // REBUILT PER PASTE, because the upload buffer is replaced when it grows.
     // A cached group holding a destroyed buffer is a validation error that
     // rejects the whole submit.
@@ -253,6 +284,7 @@ export class StampPaster {
         { binding: 1, resource: { buffer: this.system.freeListBufferForSand() } },
         { binding: 2, resource: { buffer: this.upload } },
         { binding: 3, resource: { buffer: this.pasteUniforms } },
+        { binding: 4, resource: { buffer: this.highWater } },
       ],
     });
 
@@ -262,11 +294,17 @@ export class StampPaster {
     pass.dispatchWorkgroups(stampGroups(count, STAMP_PASTE_WORKGROUP_SIZE));
     pass.end();
 
-    // THE MARK MUST RISE TO COVER WHAT WAS PASTED. Every pass over the entities
-    // stops at the high-water mark, so particles placed above it would exist in
-    // memory and be skipped by the physics and drawn by nothing -- present and
-    // invisible. `noteSpawned` errs upward, which is the safe direction.
-    this.system.noteSpawned(count);
+    // THE WHOLE BUFFER, until the readback says otherwise -- the same two-stage
+    // bound `pasteParticlesFrom` takes, and for the same reason: the free list
+    // decides where these land and the host cannot predict it. `noteSpawned(count)`
+    // was the bug here, adding a COUNT to the mark as though the particles had
+    // been placed contiguously above it.
+    this.system.restoreHighWaterMark(this.system.entityCount);
+
+    if (this.highWaterPhase === 'idle') {
+      encoder.copyBufferToBuffer(this.highWater, 0, this.highWaterStaging, 0, 4);
+      this.highWaterPhase = 'recorded';
+    }
     return true;
   }
 
@@ -463,6 +501,200 @@ export class StampPaster {
     return true;
   }
 
+  /**
+   * Replace a box from a stamp that never left the device.
+   *
+   * ## The GPU-only restore, and what it buys
+   *
+   * The same clear-then-paste composition as `restore`, with two differences,
+   * both of which exist to keep `R` instant:
+   *
+   *   - the particles are pasted from the copier's own block, so no readback and
+   *     no re-upload happen at all;
+   *   - the textures are put back with `copyTextureToTexture`, which has no row
+   *     padding, no format conversion, and moves the exact bits.
+   *
+   * The result is bit-identical to what was captured, which the host round trip
+   * can only approach: that path narrows to f16 and widens again, and while
+   * those conversions are individually lossless, having none of them in the path
+   * is a stronger guarantee than having two that cancel.
+   *
+   * ## THE TEXTURE CLEAR IS SKIPPED, DELIBERATELY
+   *
+   * `restore` zeroes the region before writing it. This does not, because a
+   * texture-to-texture copy REPLACES every texel it covers -- the destination
+   * rect and the source rect are the same size by construction here, so there is
+   * no uncovered remainder for a stale texel to survive in. Zeroing first would
+   * be a full-region write whose every byte is then overwritten.
+   *
+   * The PARTICLE clear is still required: pasting is additive, so without it the
+   * restored scene would be laid on top of the one already there.
+   */
+  restoreFromVram(
+    encoder: GPUCommandEncoder,
+    copier: {
+      capturedBlock: GPUBuffer;
+      capturedCanvas: VramLayer | null;
+      capturedField: VramLayer | null;
+    },
+    box: StampBox,
+  ): boolean {
+    if (!this.ready) return false;
+
+    this.clearParticles(encoder, box);
+
+    // The textures first, so they are in place before the frame that resumes
+    // reads them. Ordering against the compute passes does not matter -- no
+    // pass in this encoder samples the canvas or the field -- but doing them
+    // together keeps the scene's two halves visibly adjacent here.
+    this.copyLayerBack(encoder, copier.capturedCanvas, this.system.currentCanvasTextureObject());
+    this.copyLayerBack(encoder, copier.capturedField, this.field.textureObject());
+
+    // AFTER the clear and as its own pass: the clear only gives slots and this
+    // only takes them, and within one pass the head may move only one way.
+    this.pasteParticlesFrom(encoder, copier.capturedBlock, box);
+    return true;
+  }
+
+  private copyLayerBack(
+    encoder: GPUCommandEncoder,
+    layer: VramLayer | null,
+    destination: GPUTexture,
+  ): void {
+    if (layer === null) return;
+    encoder.copyTextureToTexture(
+      { texture: layer.texture },
+      { texture: destination, origin: { x: layer.rect.x, y: layer.rect.y } },
+      { width: layer.rect.width, height: layer.rect.height },
+    );
+  }
+
+  /**
+   * Paste particles from a GPU buffer that is already packed.
+   *
+   * ## Why the count comes from the host and not the buffer
+   *
+   * The paste dispatch is sized to the number of particles, and only the GPU
+   * knows how many the capture matched -- the host would have to read it back,
+   * which is the round trip this whole path exists to avoid.
+   *
+   * So the dispatch covers the WHOLE BLOCK and the shader skips dead entries.
+   *
+   * That is only correct because `stampScatter` CLEARS ITS TAIL. The block is
+   * reused across captures, so without that clear the slots above this capture's
+   * match count would still hold the previous capture's particles -- and this
+   * dispatch, which cannot tell them apart from the current ones, would place
+   * them. A reset key that resurrects erased particles is the symptom; see the
+   * long note in `stampScatter.wgsl`.
+   */
+  private pasteParticlesFrom(
+    encoder: GPUCommandEncoder,
+    block: GPUBuffer,
+    box: StampBox,
+  ): boolean {
+    if (this.pastePipeline === null || this.pasteLayout === null) return false;
+    // One invocation per slot in the block. The shader returns immediately on a
+    // dead entry, so the tail costs one read each -- the same shape `kill.wgsl`
+    // uses when it sweeps the whole entity buffer.
+    const capacity = Math.floor(block.size / ENTITY_STRIDE);
+    if (capacity <= 0) return false;
+
+    this.device.queue.writeBuffer(
+      this.pasteUniforms,
+      0,
+      packStampUniforms(box, box, capacity, 0, 0),
+    );
+
+    // ZEROED FIRST, so the atomic max measures THIS paste rather than the
+    // highest slot any previous one reached.
+    this.device.queue.writeBuffer(this.highWater, 0, new Uint32Array([0]));
+
+    const group = this.device.createBindGroup({
+      label: 'stamp-paste-vram',
+      layout: this.pasteLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.system.entityBufferForSand() } },
+        { binding: 1, resource: { buffer: this.system.freeListBufferForSand() } },
+        { binding: 2, resource: { buffer: block } },
+        { binding: 3, resource: { buffer: this.pasteUniforms } },
+        { binding: 4, resource: { buffer: this.highWater } },
+      ],
+    });
+
+    const pass = encoder.beginComputePass({ label: 'stamp-paste-vram' });
+    pass.setPipeline(this.pastePipeline);
+    pass.setBindGroup(0, group);
+    pass.dispatchWorkgroups(stampGroups(capacity, STAMP_PASTE_WORKGROUP_SIZE));
+    pass.end();
+
+    // ---------------------------------------------------------------------
+    // THE MARK, IN TWO STAGES: safe immediately, exact a few frames later.
+    //
+    // The true bound is the highest slot the paste wrote, which only the GPU
+    // learns -- the free list hands out indices in an order no host-side count
+    // can predict. But the mark has to be correct on THIS frame, and the
+    // readback needs a submission plus a map.
+    //
+    // So the host takes the only bound it can prove synchronously: the whole
+    // buffer. Every pasted particle is somewhere in [0, entityCount), so a mark
+    // of `entityCount` cannot hide one. It is wasteful -- every pass sweeps the
+    // full buffer until the readback lands -- and wasteful is the correct
+    // direction. Too high costs invocations; too low loses particles.
+    //
+    // `takeHighWater` then lowers it to the measured value, and a compaction
+    // lowers it further whenever one runs.
+    // ---------------------------------------------------------------------
+    this.system.restoreHighWaterMark(this.system.entityCount);
+
+    if (this.highWaterPhase === 'idle') {
+      encoder.copyBufferToBuffer(this.highWater, 0, this.highWaterStaging, 0, 4);
+      this.highWaterPhase = 'recorded';
+    }
+    return true;
+  }
+
+  /**
+   * Start the high-water readback. Call after submitting the encoder.
+   *
+   * SEPARATE FROM THE PASTE for the reason `Compactor.poll` is: a `mapAsync` on
+   * a copy that has not been submitted never resolves, which would wedge the
+   * readback in `mapping` forever and leave the mark pinned at the whole buffer
+   * for the rest of the session.
+   */
+  poll(): void {
+    if (this.highWaterPhase !== 'recorded') return;
+    this.highWaterPhase = 'mapping';
+    this.highWaterStaging.mapAsync(GPUMapMode.READ).then(
+      () => {
+        const data = new Uint32Array(this.highWaterStaging.getMappedRange().slice(0));
+        this.highWaterStaging.unmap();
+        this.pendingHighWater = data[0] ?? null;
+        this.highWaterPhase = 'idle';
+      },
+      () => {
+        // Device lost or buffer destroyed. Drop the answer rather than the
+        // frame: the mark simply stays at the conservative bound, which is
+        // slow but never wrong.
+        this.highWaterPhase = 'idle';
+      },
+    );
+  }
+
+  /**
+   * The measured high-water mark, if one has arrived. Reading it clears it.
+   *
+   * The CALLER applies it, because whether a mark may be lowered depends on
+   * what has been spawned since -- state this class does not own. See
+   * `noteCompactedMark`, which enforces the same direction rule.
+   */
+  takeHighWater(): number | null {
+    const pending = this.pendingHighWater;
+    this.pendingHighWater = null;
+    return pending;
+  }
+
+  private pendingHighWater: number | null = null;
+
   private ensureUpload(count: number): void {
     if (this.upload !== null && count <= this.uploadCapacity) return;
     this.upload?.destroy();
@@ -478,6 +710,11 @@ export class StampPaster {
     this.clearUniforms.destroy();
     this.pasteUniforms.destroy();
     this.upload?.destroy();
+    this.highWater.destroy();
+    // Set first, so an in-flight mapAsync callback finds a phase it will not
+    // act on rather than touching a destroyed buffer.
+    this.highWaterPhase = 'mapping';
+    this.highWaterStaging.destroy();
   }
 }
 
