@@ -758,8 +758,10 @@ entirely, which was defensible only while nothing produced zero rules;
 Randomize Behavior does, and the mismatch showed up as selection adopting
 near-zero coefficients and the simulation appearing to die. On the web there is
 no host mirror to keep in step -- `derive_entity_rule()` in
-`web/src/particleSystem/shaders/rule.wgsl` *is* both branches, and
-`entity_update` calls that same function.
+`web/src/particleSystem/shaders/rule.wgsl` *is* both branches. The web port
+runs it once per config slot per upload (`cohortRules.wgsl`), baking each
+cohort's rule into the config buffer, and the physics and the picker read the
+baked rule rather than deriving one -- see `configSlots.ts` for the layout.
 
 **The desktop recomputes the rule host-side; the web port reads it back.** These
 genuinely differ, and both are deliberate.

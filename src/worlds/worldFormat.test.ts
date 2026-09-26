@@ -115,7 +115,7 @@ test('a world states simulation preferences and not editor ones', () => {
     'physicsSliderOpen',
     'advancedProject',
     'mobileMode',
-    'calibrated',
+    'calibrationVersion',
     'strongLogging',
   ]) {
     assert.ok(

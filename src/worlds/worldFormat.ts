@@ -81,7 +81,7 @@ export class WorldFormatError extends Error {
  *
  *   showFpsCounter, showPhysicsSlider, physicsSliderOpen, advanced*, mobileMode
  *                   how the editor is laid out
- *   calibrated      a fact about the reader's GPU
+ *   calibrationVersion  a fact about the reader's GPU
  *   strongLogging   a research switch
  *   resetOnBehaviorChange, oneClickSelection
  *                   studio interactions the sand modality does not have

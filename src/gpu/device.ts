@@ -9,6 +9,7 @@
  * This module is a stateless helper in the `shared/` sense (invariant 1): it
  * holds no domain state.
  */
+import { PASS_TIMER_FEATURE } from './passTimer.ts';
 
 /**
  * Thrown when WebGPU cannot be used at all. `reason` distinguishes the two
@@ -108,7 +109,15 @@ export async function acquireDevice(onLost?: (info: GPUDeviceLostInfo) => void):
 
   let device: GPUDevice;
   try {
-    device = await adapter.requestDevice({ requiredLimits: worldSizeLimits(adapter) });
+    // Timestamp queries only feed the `?debug` pass timer (passTimer.ts), so
+    // they are requested when offered and never required.
+    const requiredFeatures: GPUFeatureName[] = adapter.features.has(PASS_TIMER_FEATURE)
+      ? [PASS_TIMER_FEATURE]
+      : [];
+    device = await adapter.requestDevice({
+      requiredLimits: worldSizeLimits(adapter),
+      requiredFeatures,
+    });
   } catch (err) {
     throw new WebGPUUnavailable('no-device', `Requesting a GPU device failed: ${String(err)}`);
   }

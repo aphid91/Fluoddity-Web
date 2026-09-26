@@ -20,6 +20,7 @@
  */
 
 import { acquireDevice, showUnavailableOverlay, WebGPUUnavailable } from './gpu/device.ts';
+import { enablePassTimer, passTimings } from './gpu/passTimer.ts';
 import { createSurface, type Surface } from './app/surface.ts';
 import { CAMERA_MODES, type CameraMode } from './camera/cameraState.ts';
 import { type SavedConfig, fromDocument } from './config/persistence.ts';
@@ -51,7 +52,7 @@ import { MAX_PROBES as AUTO_PROBES } from './perf/rateSearch.ts';
 import { ALWAYS_CALIBRATE } from './orchestrator/featureFlags.ts';
 import { bindInput } from './ui/inputBinding.ts';
 import { LEFT_BUTTON } from './ui/inputTracker.ts';
-import { loadPreferences } from './prefs/preferences.ts';
+import { isCalibrated, loadPreferences } from './prefs/preferences.ts';
 import { detectMobile, mobileModeFromValue, resolveMobile } from './ui/mobile.ts';
 import { bindTouch } from './ui/touchBinding.ts';
 import { Panel } from './ui/panel.ts';
@@ -82,6 +83,16 @@ function createDebugOverlay(): { update(lines: readonly string[]): void } | null
   };
 }
 
+/** Overlay lines for the per-pass GPU timings, or nothing when timing is off. */
+function gpuTimingLines(): string[] {
+  const t = passTimings();
+  if (t === null) return [];
+  return [
+    `gpu total    ${t.total.toFixed(2)} ms`,
+    ...t.passes.map(([label, ms]) => `  ${label.padEnd(17)}${ms.toFixed(2)} ms`),
+  ];
+}
+
 async function start(): Promise<void> {
   const canvas = document.getElementById('app');
   if (!(canvas instanceof HTMLCanvasElement)) {
@@ -89,7 +100,7 @@ async function start(): Promise<void> {
   }
 
   let deviceLost = false;
-  const { device } = await acquireDevice((info) => {
+  const { adapter, device } = await acquireDevice((info) => {
     deviceLost = true;
     showUnavailableOverlay('GPU device lost', info.message || String(info.reason));
   });
@@ -288,7 +299,7 @@ async function start(): Promise<void> {
   // **THE SPLASH IS A FIRST-RUN EXPERIENCE, NOT A TOLL BOOTH.** It used to come
   // up on every single load, which is right exactly once and an obstacle every
   // time after -- a full-frame overlay between someone and the app they came
-  // back to use, pausing the simulation until they clear it. `calibrated` is
+  // back to use, pausing the simulation until they clear it. `isCalibrated` is
   // the same signal that gates calibration, so the two arrive together: a first
   // visit gets the welcome copy WITH the progress line under it, and every
   // visit after starts straight in the app. Help > Welcome is how you get it
@@ -297,7 +308,7 @@ async function start(): Promise<void> {
   // `ALWAYS_CALIBRATE` is a development flag that forces every load to behave
   // like a first one, for tuning the ladder without clearing `localStorage`
   // between runs. Off in anything shipped -- see `orchestrator/featureFlags.ts`.
-  const firstVisit = ALWAYS_CALIBRATE || !orchestrator.preferences.calibrated;
+  const firstVisit = ALWAYS_CALIBRATE || !isCalibrated(orchestrator.preferences);
 
   // --- the URL settings prompt ----------------------------------------------
   //
@@ -761,6 +772,9 @@ async function start(): Promise<void> {
   if (firstVisit) void panel?.calibrate();
 
   const overlay = createDebugOverlay();
+  // Per-pass GPU timings ride along with `?debug`; see passTimer.ts.
+  const passTimerOn = overlay !== null && enablePassTimer(device);
+  if (overlay !== null && !passTimerOn) console.warn('No timestamp-query feature: GPU pass timings unavailable.');
   // The recording's frame interval, for the fixed `dt` below. A plain import
   // rather than a lazy one: `recordingSettings.ts` is a pure leaf holding
   // constants and arithmetic, with no mediabunny and no GPU behind it, so it
@@ -1091,6 +1105,8 @@ async function start(): Promise<void> {
         `bloom        ${d.bloomEnabled ? 'on' : 'off'}`,
         `frame        ${frameMs.toFixed(2)} ms  (${(1000 / frameMs).toFixed(0)} fps)`,
         `orchestrator ${orchestratorMs.toFixed(2)} ms`,
+        `adapter      ${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`,
+        ...gpuTimingLines(),
         `pipelines    ${Object.entries(status)
           .map(([n, ok]) => `${n}:${ok ? 'ok' : 'FAILED'}`)
           .join('  ')}`,

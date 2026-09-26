@@ -33,6 +33,7 @@
  */
 
 import { compileModule } from '../gpu/shaderModule.ts';
+import { timestampWrites } from '../gpu/passTimer.ts';
 import { HDR_FORMAT } from '../app/renderTargets.ts';
 import { alignTo } from '../particleSystem/uniforms.ts';
 import { MIP_LEVELS, mipSizes } from './bloomChain.ts';
@@ -245,6 +246,7 @@ export class Bloom {
     for (let i = 0; i < MIP_LEVELS; i++) {
       const pass = encoder.beginRenderPass({
         label: `bloom-down-${i}`,
+        timestampWrites: timestampWrites('bloom'),
         colorAttachments: [
           {
             view: this.mips[i]!.view,
@@ -265,6 +267,7 @@ export class Bloom {
     for (let i = MIP_LEVELS - 1; i > 0; i--) {
       const pass = encoder.beginRenderPass({
         label: `bloom-up-${i}`,
+        timestampWrites: timestampWrites('bloom'),
         colorAttachments: [
           {
             view: this.mips[i - 1]!.view,

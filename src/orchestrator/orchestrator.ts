@@ -83,6 +83,7 @@ import { clearArchive, openArchiveDb } from '../archive/archiveDb.ts';
 import { type ArchiveDocument, buildArchiveDocument } from '../archive/export.ts';
 import type { ArchiveTag } from '../archive/delta.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
+import { afterTimedSubmit, beginTimedFrame, resolveTimedFrame } from '../gpu/passTimer.ts';
 // TYPE-ONLY. `recorder.ts` reaches mediabunny through a dynamic `import()`, and
 // a value import here would pull the whole encoder into the main bundle for
 // every user -- including the majority who never record. See its file header.
@@ -120,6 +121,7 @@ import {
 import { type SavedConfig, sanitizeName, toDocument } from '../config/persistence.ts';
 import {
   type Preferences,
+  CALIBRATION_VERSION,
   DEFAULT_PREFERENCES,
   PREFERENCE_KEYS,
   loadPreferences,
@@ -901,6 +903,7 @@ export class Orchestrator implements CommandBus {
       this.camera.beginFrame(frameState, schedule.samples);
     }
 
+    beginTimedFrame();
     const encoder = this.device.createCommandEncoder({ label: 'frame' });
     if (!holdingSettled) this.camera.clearAccumulator(encoder);
 
@@ -1125,7 +1128,9 @@ export class Orchestrator implements CommandBus {
       );
     }
 
+    resolveTimedFrame(encoder);
     this.device.queue.submit([encoder.finish()]);
+    afterTimedSubmit();
 
     // AFTER submit, and it has to be: `mapAsync` may not be called while the
     // encoder that writes the buffer is still open. It resolves on a later
@@ -3710,7 +3715,7 @@ export class Orchestrator implements CommandBus {
    * the simulation on it.
    *
    * Goes through `adoptPreferences` so the result persists and any world-size
-   * change rebuilds exactly as a hand-typed one would. `calibrated` rides along
+   * change rebuilds exactly as a hand-typed one would. `calibrationVersion` rides along
    * in the same write, so a machine is never left with tuned settings it will
    * re-derive on the next load, nor with the flag set and the settings not.
    *
@@ -3736,7 +3741,12 @@ export class Orchestrator implements CommandBus {
    */
   async commitCalibration(worldSize: number, physicsSteps: number): Promise<void> {
     const rebuild = this.adoptPreferences(
-      Object.freeze({ ...this.prefs, worldSize, physicsSteps, calibrated: true }),
+      Object.freeze({
+        ...this.prefs,
+        worldSize,
+        physicsSteps,
+        calibrationVersion: CALIBRATION_VERSION,
+      }),
     );
     await rebuild;
     this.system.reset();

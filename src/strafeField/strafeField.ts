@@ -27,6 +27,7 @@
  */
 
 import { compileModule } from '../gpu/shaderModule.ts';
+import { timestampWrites } from '../gpu/passTimer.ts';
 import { FIELD_FORMAT, fieldDimensions } from './fieldSize.ts';
 import { FIELD_LAYERS, LAYER_WRITE_MASK, type FieldLayer } from './fieldLayer.ts';
 import {
@@ -331,6 +332,7 @@ export class StrafeField {
 
     const pass = encoder.beginRenderPass({
       label: erase ? `strafe-erase-${brush.layer}` : `strafe-draw-${brush.layer}`,
+      timestampWrites: timestampWrites('strafe-draw'),
       colorAttachments: [
         {
           view: this.textureView,

@@ -478,9 +478,12 @@ So the GPU derives it and the host reads it back — 336 bytes instead of 4.
 
 **`rule.wgsl` is what makes this safe.** The generate-or-mutate branch, the hash
 family, `generate_random_centers`, `mutate_rule` and `get_cohort` live in one
-file included by *both* `entityUpdate.wgsl` and `entityPick.wgsl`, so the rule a
-click adopts is derived by the same `derive_entity_rule()` that decides what the
-particle obeys. Not a copy — the same function. (The plan assumed they would
+file, and the simulation runs `derive_entity_rule()` in exactly one place:
+`cohortRules.wgsl`, once per config slot whenever the configs are uploaded,
+baking each cohort's rule into the config buffer. `entityUpdate.wgsl`
+and `entityPick.wgsl` both read that baked rule, so the rule a click adopts is
+the rule the particle obeyed by construction. (The archive's `deriveRule.wgsl`
+calls the same function offline.) (The plan assumed they would
 share this through `common.wgsl`; they cannot, because that file is included by
 two vertex stages and its own rules forbid it. A sibling include resolves for
 both.) `ARCHITECTURE.md:715-718` records what happened the one time the two

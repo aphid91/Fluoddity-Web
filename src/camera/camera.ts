@@ -38,6 +38,7 @@
  */
 
 import { compileModule } from '../gpu/shaderModule.ts';
+import { timestampWrites } from '../gpu/passTimer.ts';
 import type { CameraState } from './cameraState.ts';
 import {
   ACCUMULATE_UNIFORM_SIZE,
@@ -511,6 +512,7 @@ export class Camera {
     encoder
       .beginRenderPass({
         label: 'accumulate-clear',
+        timestampWrites: timestampWrites('accumulate-clear'),
         colorAttachments: [
           {
             view: accum,
@@ -569,6 +571,7 @@ export class Camera {
 
     const pass = encoder.beginRenderPass({
       label: 'accumulate',
+      timestampWrites: timestampWrites('accumulate'),
       colorAttachments: [
         {
           view: accum,
@@ -606,6 +609,7 @@ export class Camera {
 
     const pass = encoder.beginRenderPass({
       label: 'camera-particles',
+      timestampWrites: timestampWrites('camera-particles'),
       colorAttachments: [
         {
           view: target,
@@ -649,6 +653,7 @@ export class Camera {
 
     const pass = encoder.beginRenderPass({
       label: 'camera-trail',
+      timestampWrites: timestampWrites('camera-trail'),
       colorAttachments: [
         {
           view: target,

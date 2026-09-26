@@ -21,12 +21,14 @@ import assert from 'node:assert/strict';
 
 import {
   type PreferenceStorage,
+  CALIBRATION_VERSION,
   DEFAULT_PREFERENCES,
   PREFERENCE_KEYS,
   PREFERENCE_KINDS,
   STORAGE_KEY,
   coerce,
   fieldStrengthsFor,
+  isCalibrated,
   isPreferenceKey,
   loadPreferences,
   requiresRestart,
@@ -278,4 +280,27 @@ test('brushMode coerces like the index it is, not like a string', () => {
   // (`brushModeFor`) is what handles an index past the end.
   assert.equal(coerce('brushMode', 2.7), 2);
   assert.equal(withValue(DEFAULT_PREFERENCES, 'brushMode', 3).brushMode, 3);
+});
+
+// ---------------------------------------------------------------------------
+// Calibration version
+// ---------------------------------------------------------------------------
+
+test('a record from before the calibration version counts as uncalibrated', () => {
+  // The old boolean key is no longer read, so a returning user who calibrated
+  // under the slow shader is asked again -- which is the point of the bump.
+  const prefs = loadPreferences(fakeStorage(JSON.stringify({ calibrated: true })));
+  assert.equal(isCalibrated(prefs), false);
+});
+
+test('calibrating under the current version sticks, and an older one does not', () => {
+  const current = loadPreferences(
+    fakeStorage(JSON.stringify({ calibrationVersion: CALIBRATION_VERSION })),
+  );
+  assert.equal(isCalibrated(current), true);
+  const stale = loadPreferences(
+    fakeStorage(JSON.stringify({ calibrationVersion: CALIBRATION_VERSION - 1 })),
+  );
+  assert.equal(isCalibrated(stale), false);
+  assert.equal(isCalibrated(DEFAULT_PREFERENCES), false);
 });

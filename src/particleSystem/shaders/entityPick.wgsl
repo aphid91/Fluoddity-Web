@@ -46,17 +46,18 @@
 // reduction it depends on. Two beginComputePass calls. See particleSystem.ts.
 //
 // ---------------------------------------------------------------------------
-// WHY THE RULE IS DERIVED HERE AT ALL
+// WHERE THE RULE COMES FROM
 // ---------------------------------------------------------------------------
-// The rule is not stored anywhere: Entity is 32 bytes (pos_vel + misc) and
-// entityUpdate re-derives the rule every step and discards it. The desktop
-// therefore recomputes it HOST-SIDE in float32 (particle_system/mutation.py) to
-// avoid a readback. That file is deliberately not ported -- JS has no float32
-// arithmetic, and mutation.py:149's pow(h, 2.0) trap has no reliable JS
-// equivalent. A wrong adopted rule looks like a legitimate result.
+// The config buffer. Each slot holds the rule its particles obey, already
+// mutated for its cohort by cohortRules.wgsl (see configSlots.ts), and
+// entityUpdate.wgsl reads the same slot. So the rule adopted here is the rule
+// the particle was running BY CONSTRUCTION, not because two derivations agree.
 //
-// So the GPU derives it, through the SAME derive_entity_rule() that
-// entityUpdate.wgsl calls (rule.wgsl). Not a copy -- the same function.
+// The desktop instead recomputes it HOST-SIDE in float32
+// (particle_system/mutation.py) to avoid a readback. That file is deliberately
+// not ported -- JS has no float32 arithmetic, and mutation.py:149's pow(h, 2.0)
+// trap has no reliable JS equivalent. A wrong adopted rule looks like a
+// legitimate result.
 // ============================================================================
 
 #include "common.wgsl"
@@ -74,6 +75,31 @@
 
 @group(0) @binding(0) var<storage, read> entities : array<Entity>;
 @group(0) @binding(1) var<storage, read> configs  : array<ConfigData>;
+
+// The config buffer's layout -- see entityUpdate.wgsl, which is built with the
+// same value from the same field.
+override CONFIG_PER_COHORT: bool = false;
+
+// The config slot an entity is using, selected EXACTLY as entityUpdate.wgsl's
+// `main` selects it, INCLUDING the clamp bound -- a different bound could pick a
+// different slot than the physics used, and adopt a rule the entity is not
+// obeying.
+//
+// The studio recomputes the slot from the index rather than trusting the stored
+// one, as the physics does: after a Cohorts change while PAUSED, the stored
+// slot is from the old split until the next step, and the pick must describe
+// the population as it now stands.
+//
+// The physics' frame-0 case (assign by index, because nothing has been written
+// yet) is not reproduced for sand: a pick on frame 0 has nothing meaningful to
+// select, and the stored index is valid on every frame a user could click.
+fn entity_slot(e: Entity, index: u32) -> i32 {
+    var config_index = e_config_index(e);
+    if (CONFIG_PER_COHORT) {
+        config_index = i32(floor(get_cohort(index, configs[0], arrayLength(&entities))));
+    }
+    return clamp(config_index, 0, world_config_count(u.world) - 1);
+}
 
 // The result. 336 bytes; the layout is mirrored in pick.ts, which asserts it.
 //
@@ -254,8 +280,7 @@ fn reduce(@builtin(global_invocation_id) gid: vec3u) {
         // instead would make Enter find nothing in exactly the configurations
         // that have no other keyboard route.
         if (highlighted_cohort() >= 0.0) {
-            let config_index = e_config_index(e);
-            let config = configs[clamp(config_index, 0, world_config_count(u.world) - 1)];
+            let config = configs[entity_slot(e, index)];
             let cohort = floor(get_cohort(index, config, arrayLength(&entities)));
             if (cohort != highlighted_cohort()) { return; }
         }
@@ -282,8 +307,7 @@ fn reduce(@builtin(global_invocation_id) gid: vec3u) {
     // that the click plausibly meant it, is treated as a direct hit so no merely
     // nearer interloper can steal the confirmation. See CONFIRM_SNAP_FRACTION.
     if (highlighted_cohort() >= 0.0 && dist_norm <= CONFIRM_SNAP_FRACTION) {
-        let config_index = e_config_index(e);
-        let config = configs[clamp(config_index, 0, world_config_count(u.world) - 1)];
+        let config = configs[entity_slot(e, index)];
         let cohort = floor(get_cohort(index, config, arrayLength(&entities)));
         if (cohort == highlighted_cohort()) { dist_norm = 0.0; }
     }
@@ -330,20 +354,12 @@ fn derive() {
     result.pos_x = winner_pos.x;
     result.pos_y = winner_pos.y;
 
-    // Select the config exactly as entityUpdate.wgsl:496-497 does, INCLUDING
-    // the clamp bound -- a different bound could select a different ConfigData
-    // than the physics used, and derive a rule the entity is not obeying.
-    //
-    // The frame-0 special case there (ask assign_config_index directly, because
-    // nothing has been written yet) is not reproduced: a pick on frame 0 has
-    // nothing meaningful to select anyway, and the entity's stored index is
-    // valid on every frame a user could click.
-    let config_index = e_config_index(e);
-    let config = configs[clamp(config_index, 0, world_config_count(u.world) - 1)];
-
-    // THE SAME FUNCTION entityUpdate.wgsl calls, from rule.wgsl. Not a copy.
+    // The slot the physics is reading. Its rule is already this cohort's
+    // mutation, so it is copied, not derived -- deriving again would mutate it
+    // twice.
+    let config = configs[entity_slot(e, index)];
     let cohort = get_cohort(index, config, arrayLength(&entities));
-    result.rule = derive_entity_rule(config.rule, cohort, config);
+    result.rule = config.rule;
 
     // FLOORED, because that is what cohort IDENTITY is. get_cohort returns a
     // CONTINUOUS ramp (rule.wgsl:120-122) -- two entities in the same cohort

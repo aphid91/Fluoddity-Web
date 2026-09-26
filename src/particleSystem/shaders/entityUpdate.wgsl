@@ -62,10 +62,10 @@
 // ============================================================================
 
 #include "common.wgsl"
-// The rule derivation -- hash family, generate_random_centers, get_cohort,
-// mutate_rule and the generate-or-mutate branch. Shared with entityPick.wgsl so
-// the rule a picked particle ADOPTS is derived by the same code that decides
-// what it obeys here. See that file's header for why it is not in common.wgsl.
+// The hash family and get_cohort, shared with entityPick.wgsl so both agree on
+// which cohort a particle is in. The rule derivation in the same file is NOT
+// called from here any more: cohortRules.wgsl bakes each slot's rule into the
+// config buffer, and this shader reads it (see `fourier_noise`).
 #include "rule.wgsl"
 // The dead-index pool, for BC_KILL. Shared with the sand modality's spawn and
 // kill passes so all three agree about how a slot is taken and returned.
@@ -85,6 +85,12 @@
 
 @group(0) @binding(0) var<storage, read_write> entities : array<Entity>;
 @group(0) @binding(1) var<storage, read>       configs  : array<ConfigData>;
+// How the config buffer is laid out -- see configSlots.ts. On in the studio,
+// where slot i is cohort i and a particle's slot follows its index; off in sand,
+// where a particle keeps the slot its spawn gave it. A pipeline constant, so the
+// branch it guards costs nothing, and set from the same field as
+// cohortRules.wgsl's so the two cannot disagree about the layout.
+override CONFIG_PER_COHORT: bool = false;
 // The dead-index pool. Written ONLY by the BC_KILL branch, which pushes the
 // index of a particle that has left the world.
 //
@@ -145,16 +151,29 @@ fn trails_strength() -> f32 { return u.flags.w; }
 
 // Fourier basis evaluation.
 // This is how the entities evaluate their Rule.
-fn fourier_noise(centers: array<FourierCenter, 10>, signals: vec4f) -> vec4f {
+//
+// TAKES A SLOT INDEX, NOT A Rule, AND THAT IS THE WHOLE PERFORMANCE STORY OF
+// THIS SHADER. Passing the 320-byte Rule by value (as the GLSL does) makes every
+// thread hold it as a local array indexed by the loop counter, which the
+// browser's shader compilers spill to per-thread scratch memory -- measured at
+// roughly 5x the cost of the entire entity update. Reading each center straight
+// from the storage buffer keeps it out of registers entirely. Do not "tidy" this
+// back into a Rule parameter.
+//
+// The rule in the slot is already this cohort's mutation -- cohortRules.wgsl
+// baked it in when the configs were uploaded.
+fn fourier_noise(slot: i32, signals: vec4f) -> vec4f {
     var result = vec4f(0.0);
 
     for (var i = 0; i < 10; i++) {
+        let center = configs[slot].rule.centers[i];
+
         // Compute phase from dot product of input with frequency vector
-        let phase = dot(signals, centers[i].frequency);
+        let phase = dot(signals, center.frequency);
 
         // Add per-center phase offset to break degeneracy at origin
         // Use a deterministic offset based on center index and amplitude values
-        let phase_offset = 2.0 * f32(i) * 0.6283 + centers[i].amplitude.w * 3.14159;
+        let phase_offset = 2.0 * f32(i) * 0.6283 + center.amplitude.w * 3.14159;
 
         // Create basis functions from phase with offset
         // Using sin/cos pairs at fundamental and first harmonic for richer representation
@@ -166,7 +185,7 @@ fn fourier_noise(centers: array<FourierCenter, 10>, signals: vec4f) -> vec4f {
         );
 
         // Weight and accumulate
-        result += centers[i].amplitude * basis;
+        result += center.amplitude * basis;
     }
 
     return result;
@@ -351,12 +370,19 @@ fn safenorm(p: vec2f) -> vec2f {
 // a shared function cannot name a binding that the two including shaders
 // qualify differently -- so every call below passes arrayLength(&entities).
 
-// Decide which ConfigData slot an entity uses. Phase 1 puts everyone on slot 0,
-// which is behavior-identical to the old single-uniform setup. To split the
-// population across configs, this is the one place to change: assign by index
-// (cohort-style), by position, or however the feature calls for.
+// Decide which ConfigData slot an entity uses. See configSlots.ts for the layout.
+//
+// STUDIO (CONFIG_PER_COHORT): the slot IS the particle's cohort. `main` calls
+// this EVERY STEP rather than only at reset, because the cohort is a function of
+// the index and the live Cohorts count -- a stored slot would go stale the
+// moment the slider moved, and particles would keep a rule from the old split.
+// Every slot is a copy of one parent, so slot 0's cohort count is everyone's.
+//
+// SAND: the slot is whatever the spawn pass wrote, and this is only reached on
+// a reset frame, which sand never runs (see the dead-particle note in `main`).
 fn assign_config_index(index: u32) -> i32 {
-    return 0;
+    if (!CONFIG_PER_COHORT) { return 0; }
+    return i32(floor(get_cohort(index, configs[0], arrayLength(&entities))));
 }
 
 // Where an entity starts, per the config's initial-conditions mode.
@@ -494,8 +520,8 @@ fn y_reflect(p: vec2f) -> vec2f {
 
 // Somewhat arbitrary generator of functions with 4 float inputs and 4 float outputs,
 // varying rule should smoothly change the behavior of black box. Here, we use fourier noise.
-fn black_box(L: vec2f, R: vec2f, rule: Rule) -> vec4f {
-    return fourier_noise(rule.centers, vec4f(L, R));
+fn black_box(L: vec2f, R: vec2f, slot: i32) -> vec4f {
+    return fourier_noise(slot, vec4f(L, R));
 }
 
 // What calculate_entity_behavior returns. GLSL used three `out` parameters;
@@ -515,8 +541,8 @@ struct Behavior {
 // PARAMETERS:
 // --L and R: velocity field measurements from left sensor and right sensor.
 // --axis: forward vector that defines our orientation.
-// --rule: coefficients for the noise function that dictates entity behavior.
-fn calculate_entity_behavior(L_in: vec2f, R_in: vec2f, axis: vec2f, rule: Rule,
+// --slot: the config slot whose (already mutated) rule dictates entity behavior.
+fn calculate_entity_behavior(L_in: vec2f, R_in: vec2f, axis: vec2f, slot: i32,
                              config: ConfigData) -> Behavior {
     // Build a local coordinate frame where "axis" is forward.
     let forward = safenorm(axis);
@@ -533,8 +559,8 @@ fn calculate_entity_behavior(L_in: vec2f, R_in: vec2f, axis: vec2f, rule: Rule,
 
     // Calculate black box noise values.
     // Note the L/R SWAP in the mirror term, not merely a reflection.
-    let baseterm = black_box(L, R, rule);
-    let mirrorterm = black_box(y_reflect(R), y_reflect(L), rule);
+    let baseterm = black_box(L, R, slot);
+    let mirrorterm = black_box(y_reflect(R), y_reflect(L), slot);
 
     // Combine base and mirror terms to cancel bias
     var force = baseterm.xy + y_reflect(mirrorterm.xy);
@@ -588,14 +614,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Select this entity's config. On a reset frame the entity's stored
     // config_index is not yet meaningful (nothing has been written), so ask
     // assign_config_index() directly rather than reading it back.
-    let config_index = select(e_config_index(e), assign_config_index(index), fc == 0);
-    let config = configs[clamp(config_index, 0, world_config_count(u.world) - 1)];
+    //
+    // The studio re-assigns on EVERY step, not just this one -- see
+    // assign_config_index for why its slot cannot be stored.
+    let config_index = select(e_config_index(e), assign_config_index(index),
+                              fc == 0 || CONFIG_PER_COHORT);
+    let slot = clamp(config_index, 0, world_config_count(u.world) - 1);
+    let config = configs[slot];
 
     let sqrt_world_size = world_sqrt_world_size(u.world);
     let canvas_resolution = canvas_res();
 
     let cohort = get_cohort(index, config, arrayLength(&entities));
-    var rule = config.rule;
     // Hazard Rate == probability each frame to reset this particle
     let hazard_reset = cfg_hazard_rate(config)
         > hash(vec2f(f32(index) / f32(arrayLength(&entities)), f32(fc)));
@@ -716,12 +746,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var ltap = get_can(pos + left_sensor_offset, bc, trail_bias);
     var rtap = get_can(pos + right_sensor_offset, bc, trail_bias);
 
-    // The generate-or-mutate branch, and the rule_seed it turns on, live in
-    // rule.wgsl -- ONE copy, shared with entityPick.wgsl, so the rule a clicked
-    // particle adopts is derived by exactly the code that decides what it obeys
-    // here. Inlining it back would recreate the drift that ARCHITECTURE.md
-    // :715-718 records; shaders.test.ts asserts there is only one copy.
-    rule = derive_entity_rule(rule, cohort, config);
+    // NO RULE DERIVATION HERE. The generate-or-mutate branch runs once per
+    // config slot in cohortRules.wgsl, and the black box below reads the result
+    // out of the slot. Calling derive_entity_rule here again would mutate an
+    // already-mutated rule; shaders.test.ts asserts it stays out.
 
     // Rescale sensor values.
     let sensor_scaling = sqrt_world_size * 38.855 * cfg_sensor_gain(config);
@@ -729,7 +757,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     rtap *= sensor_scaling;
 
     // Compute entity action.
-    let behavior = calculate_entity_behavior(ltap.xy, rtap.xy, orientation, rule, config);
+    let behavior = calculate_entity_behavior(ltap.xy, rtap.xy, orientation, slot, config);
     var force = behavior.force;
     var strafe = behavior.strafe;
     var col_params = behavior.color;

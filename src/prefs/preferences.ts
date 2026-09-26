@@ -93,7 +93,7 @@ export interface Preferences {
    *
    * **BOOKKEEPING, NOT A CONTROL, so it is deliberately absent from
    * `settingsSpec.ts`** -- the same call the three `advanced*` flags and
-   * `calibrated` make. There is nothing here a user would go to Preferences to
+   * `calibrationVersion` make. There is nothing here a user would go to Preferences to
    * drag: the round button IS the toggle, and a checkbox naming it would be a
    * second way to say what one press already says.
    *
@@ -330,14 +330,20 @@ export interface Preferences {
 
   // --- calibration ----------------------------------------------------------
   /**
-   * Whether first-run GPU calibration has already run.
+   * Which `CALIBRATION_VERSION` first-run GPU calibration last ran under, or 0
+   * if it never has. Read it through `isCalibrated`.
    *
    * **THIS IS THE ONLY FIRST-VISIT SIGNAL THE APP HAS.** `load()` seeds from
    * `DEFAULT_PREFERENCES` and overlays whatever `localStorage` held, so "no
    * stored record" and "a stored record" collapse into the same `Preferences`
    * value and are otherwise indistinguishable downstream. A visitor with no
-   * record gets the default `false` here; anyone who has calibrated once carries
-   * `true` forward and is never probed again.
+   * record gets the default 0 here; anyone who has calibrated carries the
+   * version forward and is not probed again until `CALIBRATION_VERSION` moves.
+   *
+   * A VERSION RATHER THAN A FLAG so a change that shifts what the machine can
+   * afford -- a much faster shader -- can ask everyone to recalibrate. The old
+   * boolean `calibrated` key is simply no longer read, which makes every record
+   * written before the version existed count as version 0.
    *
    * SET EVEN WHEN CALIBRATION FAILS OR IS CUT SHORT. A probe that threw, or a
    * splash the user clicked through after two rungs, still counts as done --
@@ -345,7 +351,7 @@ export interface Preferences {
    * shown it cannot finish, and the cost would recur forever.
    *
    * `resetPreferences` adopts `DEFAULT_PREFERENCES` wholesale, so this returns
-   * to `false` and the next load re-calibrates. That is deliberate: a reset is
+   * to 0 and the next load re-calibrates. That is deliberate: a reset is
    * exactly when the settings should be re-derived rather than left where a
    * since-changed machine last put them.
    *
@@ -353,7 +359,21 @@ export interface Preferences {
    * `advanced*` flags above are not: it is bookkeeping, not a control. There is
    * nothing here a user would meaningfully drag.
    */
-  readonly calibrated: boolean;
+  readonly calibrationVersion: number;
+}
+
+/**
+ * Bump to make every returning user recalibrate on their next visit.
+ *
+ * 1: entity update stopped deriving each particle's rule every step (the
+ *    per-cohort config slots), which made it several times faster -- so every
+ *    Physics Rate calibrated before that under-uses the machine.
+ */
+export const CALIBRATION_VERSION = 1;
+
+/** Whether first-run calibration has run under the current version. */
+export function isCalibrated(prefs: Preferences): boolean {
+  return prefs.calibrationVersion >= CALIBRATION_VERSION;
 }
 
 /** `preferences.py:35-92`'s dataclass defaults, verbatim. */
@@ -409,8 +429,8 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   // AUTO. Detection is right for almost everyone, and the two overrides are
   // there for when it is not -- see the interface.
   mobileMode: 0,
-  // False is what MAKES someone a first-run user -- see the interface.
-  calibrated: false,
+  // Zero is what MAKES someone a first-run user -- see the interface.
+  calibrationVersion: 0,
 });
 
 /**
@@ -467,7 +487,7 @@ export const PREFERENCE_KINDS = {
   // not a string. `coerce` truncates, and an out-of-range index degrades to
   // AUTO at the one place that reads it (`mobileModeFromValue`).
   mobileMode: 'int',
-  calibrated: 'bool',
+  calibrationVersion: 'int',
 } as const satisfies Record<keyof Preferences, 'float' | 'int' | 'bool'>;
 
 export type PreferenceKey = keyof Preferences;

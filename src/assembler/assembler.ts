@@ -35,6 +35,7 @@
  */
 
 import { compileModule } from '../gpu/shaderModule.ts';
+import { timestampWrites } from '../gpu/passTimer.ts';
 import { HDR_FORMAT, type RenderTargets } from '../app/renderTargets.ts';
 import { FIELD_FORMAT } from '../strafeField/fieldSize.ts';
 import type { CameraView } from '../camera/cameraUniforms.ts';
@@ -247,6 +248,7 @@ export class Assembler {
 
     const pass = encoder.beginRenderPass({
       label: 'frame-assembly',
+      timestampWrites: timestampWrites('frame-assembly'),
       colorAttachments: [
         {
           view: target,

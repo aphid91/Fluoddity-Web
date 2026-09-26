@@ -87,11 +87,14 @@ import {
   decodePickResult,
 } from './pick.ts';
 import { compileModule } from '../gpu/shaderModule.ts';
+import { timestampWrites } from '../gpu/passTimer.ts';
 
 import entityUpdateSource from './shaders/entityUpdate.wgsl';
 import canvasSource from './shaders/canvas.wgsl';
 import brushSource from './shaders/brush.wgsl';
 import entityPickSource from './shaders/entityPick.wgsl';
+import cohortRulesSource from './shaders/cohortRules.wgsl';
+import { configSlots } from './configSlots.ts';
 
 // Re-exported so callers have one import for the simulation. The definitions
 // live in `dispatch.ts` because this module imports `.wgsl`, which only
@@ -184,6 +187,21 @@ export class ParticleSystem {
 
   private configs: readonly SimulationConfig[];
   private world: WorldSettings;
+  /**
+   * How the config buffer is laid out -- see configSlots.ts. The studio (no
+   * lifetimes) gives each cohort its own slot; sand gives each palette config
+   * one. Every shader that indexes the buffer is built with this as its
+   * CONFIG_PER_COHORT constant, so they cannot disagree about the layout.
+   */
+  private readonly perCohort: boolean;
+  /** Slots in the config buffer, which is what the shaders see as the config count. */
+  private slotCount = 0;
+  /**
+   * Set by `uploadConfigs`, cleared by `recordRuleBake`. The bake mutates the
+   * slots IN PLACE, so it may run once per upload and never again until the
+   * next -- this flag is what enforces that.
+   */
+  private rulesDirty = false;
 
   private readonly entityBuffer: GPUBuffer;
   private configBuffer: GPUBuffer;
@@ -271,13 +289,16 @@ export class ParticleSystem {
   private brushPipeline: GPURenderPipeline | null = null;
   /** Pass A: reduce every entity to one packed key by atomicMin. */
   private pickReducePipeline: GPUComputePipeline | null = null;
-  /** Pass B: one invocation; derives the winner's rule and position. */
+  /** Pass B: one invocation; copies the winner's rule and position. */
   private pickDerivePipeline: GPUComputePipeline | null = null;
+  /** Bakes each config slot's cohort mutation into its rule. See cohortRules.wgsl. */
+  private cohortRulesPipeline: GPUComputePipeline | null = null;
 
   private computeStateGroup: GPUBindGroup | null = null;
   private canvasUniformGroup: GPUBindGroup | null = null;
   private brushStateGroup: GPUBindGroup | null = null;
   private pickGroup: GPUBindGroup | null = null;
+  private cohortRulesGroup: GPUBindGroup | null = null;
 
   // Held so `buildStateGroups` can rebuild the three groups above without
   // recompiling shaders -- which is what a physics-rate growth needs.
@@ -285,6 +306,7 @@ export class ParticleSystem {
   private canvasUniformLayout: GPUBindGroupLayout | null = null;
   private brushStateLayout: GPUBindGroupLayout | null = null;
   private pickLayout: GPUBindGroupLayout | null = null;
+  private cohortRulesLayout: GPUBindGroupLayout | null = null;
   // Held for the same reason, one level down: `setStrafeField` rebuilds the
   // texture groups, and the field's view is baked into them.
   private computeTextureLayout: GPUBindGroupLayout | null = null;
@@ -335,6 +357,7 @@ export class ParticleSystem {
     this.physicsSteps = opts.physicsSteps ?? 30;
     this.configs = [opts.config];
     this.world = opts.world;
+    this.perCohort = !(opts.lifetimes ?? false);
 
     const device = this.device;
 
@@ -352,6 +375,8 @@ export class ParticleSystem {
         GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     });
 
+    // A placeholder the size of one config: `uploadConfigs`, at the end of
+    // construction, reallocates it to the slot count.
     this.configBuffer = device.createBuffer({
       label: 'ConfigBuffer',
       size: packConfigs(this.configs).byteLength,
@@ -522,12 +547,18 @@ export class ParticleSystem {
   async reload(): Promise<void> {
     const device = this.device;
 
-    const [entityModule, canvasModule, brushModule, pickModule] = await Promise.all([
-      compileModule(device, 'entityUpdate.wgsl', entityUpdateSource),
-      compileModule(device, 'canvas.wgsl', canvasSource),
-      compileModule(device, 'brush.wgsl', brushSource),
-      compileModule(device, 'entityPick.wgsl', entityPickSource),
-    ]);
+    const [entityModule, canvasModule, brushModule, pickModule, rulesModule] =
+      await Promise.all([
+        compileModule(device, 'entityUpdate.wgsl', entityUpdateSource),
+        compileModule(device, 'canvas.wgsl', canvasSource),
+        compileModule(device, 'brush.wgsl', brushSource),
+        compileModule(device, 'entityPick.wgsl', entityPickSource),
+        compileModule(device, 'cohortRules.wgsl', cohortRulesSource),
+      ]);
+
+    // The config buffer's layout, for every shader that indexes it. One value
+    // from one field, so the pipelines below cannot disagree.
+    const slotConstants = { CONFIG_PER_COHORT: this.perCohort ? 1 : 0 };
 
     // --- entity update (compute) -----------------------------------------
     const computeStateLayout = device.createBindGroupLayout({
@@ -574,7 +605,7 @@ export class ParticleSystem {
         layout: device.createPipelineLayout({
           bindGroupLayouts: [computeStateLayout, computeTextureLayout],
         }),
-        compute: { module: entityModule, entryPoint: 'main' },
+        compute: { module: entityModule, entryPoint: 'main', constants: slotConstants },
       });
       this.computeStateLayout = computeStateLayout;
     }
@@ -702,14 +733,32 @@ export class ParticleSystem {
       this.pickReducePipeline = device.createComputePipeline({
         label: 'entity-pick-reduce',
         layout,
-        compute: { module: pickModule, entryPoint: 'reduce' },
+        compute: { module: pickModule, entryPoint: 'reduce', constants: slotConstants },
       });
       this.pickDerivePipeline = device.createComputePipeline({
         label: 'entity-pick-derive',
         layout,
-        compute: { module: pickModule, entryPoint: 'derive' },
+        compute: { module: pickModule, entryPoint: 'derive', constants: slotConstants },
       });
       this.pickLayout = pickLayout;
+    }
+
+    // --- cohort rule bake --------------------------------------------------
+    // The config buffer read_write: the pass rewrites each slot's rule in place.
+    const cohortRulesLayout = device.createBindGroupLayout({
+      label: 'cohort-rules',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      ],
+    });
+
+    if (rulesModule !== null) {
+      this.cohortRulesPipeline = device.createComputePipeline({
+        label: 'cohort-rules',
+        layout: device.createPipelineLayout({ bindGroupLayouts: [cohortRulesLayout] }),
+        compute: { module: rulesModule, entryPoint: 'main', constants: slotConstants },
+      });
+      this.cohortRulesLayout = cohortRulesLayout;
     }
 
     this.computeTextureLayout = computeTextureLayout;
@@ -830,6 +879,16 @@ export class ParticleSystem {
         ],
       });
     }
+
+    // Holds the config buffer, which `uploadConfigs` reallocates when the slot
+    // count changes -- the other reason this method exists.
+    if (this.cohortRulesLayout !== null) {
+      this.cohortRulesGroup = device.createBindGroup({
+        label: 'cohort-rules',
+        layout: this.cohortRulesLayout,
+        entries: [{ binding: 0, resource: { buffer: this.configBuffer } }],
+      });
+    }
   }
 
   /**
@@ -889,8 +948,22 @@ export class ParticleSystem {
     return [wrap, this.frontIsA ? 0 : 1];
   }
 
+  /**
+   * Write the configs to the GPU as slots, and schedule the rule bake.
+   *
+   * THE ONLY WRITER OF THE CONFIG BUFFER, and the only thing that sets
+   * `rulesDirty`. That pairing is what keeps the in-place bake safe: every bake
+   * starts from freshly written PARENT rules, because nothing else can put
+   * parents back or ask for a bake.
+   *
+   * A reallocation rebuilds the bind groups right here, synchronously, rather
+   * than leaving them pointing at a destroyed buffer until something else
+   * rebuilds them. In the studio this happens on every Cohorts change.
+   */
   private uploadConfigs(): void {
-    const bytes = packConfigs(this.configs);
+    const slots = configSlots(this.configs, this.perCohort);
+    const bytes = packConfigs(slots);
+    this.slotCount = slots.length;
     if (bytes.byteLength !== this.configBuffer.size) {
       this.configBuffer.destroy();
       this.configBuffer = this.device.createBuffer({
@@ -898,13 +971,47 @@ export class ParticleSystem {
         size: bytes.byteLength,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
+      this.buildStateGroups();
     }
     this.device.queue.writeBuffer(this.configBuffer, 0, bytes);
+    this.rulesDirty = true;
   }
 
-  /** The GPU-facing world record: saved settings plus runtime sizing. */
+  /**
+   * Bake each slot's cohort mutation into its rule, if an upload is waiting.
+   *
+   * Called at the top of every path that reads the config buffer -- the physics
+   * (`runFrame`) and the picker (`recordPick`, which runs while paused) -- so no
+   * reader ever sees a parent rule. Costs nothing on a frame with no upload,
+   * which is almost every frame: the bake follows EDITS, not time.
+   *
+   * Waits, rather than dropping the request, while the pipeline is still
+   * compiling: the first upload happens in the constructor, before `reload`.
+   */
+  private recordRuleBake(encoder: GPUCommandEncoder): void {
+    if (!this.rulesDirty) return;
+    if (this.cohortRulesPipeline === null || this.cohortRulesGroup === null) return;
+    const pass = encoder.beginComputePass({
+      label: 'cohort-rules',
+      timestampWrites: timestampWrites('cohort-rules'),
+    });
+    pass.setPipeline(this.cohortRulesPipeline);
+    pass.setBindGroup(0, this.cohortRulesGroup);
+    // 64 matches @workgroup_size in cohortRules.wgsl.
+    pass.dispatchWorkgroups(Math.ceil(this.slotCount / 64));
+    pass.end();
+    this.rulesDirty = false;
+  }
+
+  /**
+   * The GPU-facing world record: saved settings plus runtime sizing.
+   *
+   * `configCount` is the SLOT count, not the project's config count: it is the
+   * clamp bound every shader applies to a slot index, so it must describe the
+   * buffer they index.
+   */
   private worldConfig() {
-    return forUpload(this.world, this.sqrtWorldSize, this.configs.length);
+    return forUpload(this.world, this.sqrtWorldSize, this.slotCount);
   }
 
   /**
@@ -915,14 +1022,10 @@ export class ParticleSystem {
    * re-apply, which is the whole benefit of building all four up front.
    */
   applyProject(configs: readonly SimulationConfig[], world: WorldSettings): void {
-    const sizeChanged = configs.length !== this.configs.length;
     this.configs = configs;
     this.world = world;
+    // Rebuilds the bind groups itself if the buffer had to grow or shrink.
     this.uploadConfigs();
-    if (sizeChanged) {
-      // The bind group holds the buffer; a reallocated buffer needs new groups.
-      void this.reload();
-    }
   }
 
   /**
@@ -1745,6 +1848,9 @@ export class ParticleSystem {
    */
   recordPick(encoder: GPUCommandEncoder): void {
     if (this.pickPhase !== 'dispatched') return;
+    // A pick while PAUSED skips `runFrame`, so an edit made during the pause
+    // would otherwise leave the picker reading parent rules.
+    this.recordRuleBake(encoder);
     if (this.pickReducePipeline === null || this.pickDerivePipeline === null) return;
     if (this.pickGroup === null) return;
 
@@ -1914,6 +2020,8 @@ export class ParticleSystem {
     queue.writeBuffer(this.canvasUniforms, 0, canvasBytes);
     queue.writeBuffer(this.brushUniforms, 0, brushBytes);
 
+    this.recordRuleBake(encoder);
+
     for (let i = 0; i < steps; i++) {
       this.advance(encoder, i);
       onSubStep?.(encoder, i);
@@ -1989,7 +2097,10 @@ export class ParticleSystem {
     const textures = this.computeTextureGroups[wrap]?.[parity];
     if (textures === undefined) return;
 
-    const pass = encoder.beginComputePass({ label: 'entity-update' });
+    const pass = encoder.beginComputePass({
+      label: 'entity-update',
+      timestampWrites: timestampWrites('entity-update'),
+    });
     pass.setPipeline(this.computePipeline);
     pass.setBindGroup(0, this.computeStateGroup, [slot * this.entityUpdateStride]);
     pass.setBindGroup(1, textures);
@@ -2008,6 +2119,7 @@ export class ParticleSystem {
 
     const pass = encoder.beginRenderPass({
       label: 'canvas-update',
+      timestampWrites: timestampWrites('canvas-update'),
       colorAttachments: [
         {
           view: this.back.view,
@@ -2040,6 +2152,7 @@ export class ParticleSystem {
 
     const pass = encoder.beginRenderPass({
       label: 'brush-splat',
+      timestampWrites: timestampWrites('brush-splat'),
       colorAttachments: [
         {
           view: this.front.view,

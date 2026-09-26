@@ -50,7 +50,7 @@ export const RESET_ON_CONFIG_UNDO_REDO = false;
  * Re-run the welcome splash and GPU calibration on EVERY visit.
  *
  * Normally both happen exactly once, on a genuine first visit, gated on the
- * `calibrated` preference. With this on, every load behaves like a first one:
+ * `calibrationVersion` preference. With this on, every load behaves like a first one:
  * the splash comes up, the ladder walks, and the result is committed over
  * whatever was already stored.
  *

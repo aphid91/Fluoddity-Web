@@ -1,20 +1,24 @@
 // ============================================================================
 // rule.wgsl -- how an entity's Rule is derived, and THE ONLY COPY of that.
 //
-// WHY THIS FILE EXISTS. Two shaders need to answer the same question -- "what
-// rule is entity N obeying?" -- and they must never answer it differently:
+// WHY THIS FILE EXISTS. Every shader that answers "what rule does cohort N of
+// this config obey?" must answer it identically:
 //
-//   entityUpdate.wgsl  derives it every step, for every entity, to simulate.
-//   entityPick.wgsl    derives it once, for the clicked entity, to ADOPT.
+//   cohortRules.wgsl   derives it once per config slot, per upload, and bakes
+//                      it into the config buffer. entityUpdate.wgsl and
+//                      entityPick.wgsl read that baked rule; neither derives.
+//   deriveRule.wgsl    derives it offline, to rebuild an adopted rule for the
+//                      archive.
 //
 // On the desktop that question has THREE implementations: entity_update.glsl,
 // entity_pick's caller, and particle_system/mutation.py -- a float32 host mirror
 // that recomputes the rule so selection needs no GPU readback. The web port
 // deletes the mirror (docs/WEB_PORT_PLAN.md Step 6) and derives on the GPU
 // instead, precisely because a wrong adopted rule LOOKS LIKE A LEGITIMATE
-// RESULT. That leaves two callers, and they share this file, so they cannot
-// drift. ARCHITECTURE.md:715-718 records what happened the one time they did:
-// selection adopted near-zero coefficients and the simulation appeared to die.
+// RESULT. Both callers share this file, so they cannot drift.
+// ARCHITECTURE.md:715-718 records what happened the one time the desktop's
+// copies did: selection adopted near-zero coefficients and the simulation
+// appeared to die.
 //
 // WHY NOT common.wgsl. That file is included by brush.wgsl and camBrush.wgsl in
 // VERTEX stages, and its own rules 3 and 4 (common.wgsl:38-52) require it to

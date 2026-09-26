@@ -41,10 +41,22 @@ const SHADERS = [
   'brush.wgsl',
   'rule.wgsl',
   'entityPick.wgsl',
+  'cohortRules.wgsl',
 ] as const;
 
-/** The two shaders that derive a rule, and so must agree about how. */
-const RULE_CONSUMERS = ['entityUpdate.wgsl', 'entityPick.wgsl'] as const;
+/** Every shader that includes rule.wgsl, and so must not redefine any of it. */
+const RULE_CONSUMERS = [
+  'entityUpdate.wgsl',
+  'entityPick.wgsl',
+  'cohortRules.wgsl',
+  'deriveRule.wgsl',
+] as const;
+
+/**
+ * The shaders that READ a baked rule out of a config slot. Calling
+ * derive_entity_rule from either would mutate an already-mutated rule.
+ */
+const BAKED_RULE_READERS = ['entityUpdate.wgsl', 'entityPick.wgsl'] as const;
 
 /** Strip `//` comments so a rule is not "satisfied" by prose about it. */
 function stripComments(source: string): string {
@@ -245,6 +257,48 @@ test('rule.wgsl is the single source of the generate-or-mutate branch', () => {
   }
 });
 
+test('only cohortRules and the archive derive a rule; the physics and picker read it', () => {
+  // cohortRules.wgsl bakes each slot's mutation into the config buffer IN PLACE.
+  // A reader that derived again would mutate the mutated rule -- a different,
+  // plausible-looking behaviour, and a picked rule the particle never ran.
+  for (const name of BAKED_RULE_READERS) {
+    const src = stripComments(expand(name));
+    // One occurrence is the definition from the rule.wgsl include.
+    assert.equal(count(src, /derive_entity_rule\s*\(/g), 1,
+      `${name} calls derive_entity_rule; it must read the slot's baked rule`);
+  }
+  for (const name of ['cohortRules.wgsl', 'deriveRule.wgsl']) {
+    const src = stripComments(expand(name));
+    assert.ok(count(src, /derive_entity_rule\s*\(/g) >= 2,
+      `${name} must derive through derive_entity_rule`);
+  }
+});
+
+test('the black box reads its rule from the slot, never from a by-value copy', () => {
+  // THE PERFORMANCE INVARIANT. A Rule (or its centers array) passed by value is
+  // a 320-byte local indexed by the loop counter, which the browser's shader
+  // compilers spill to scratch memory -- ~5x the whole entity update. It reads
+  // as a harmless tidy-up, which is why it is asserted.
+  const src = stripComments(expand('entityUpdate.wgsl'));
+  assert.ok(!/fn\s+\w+\s*\([^)]*:\s*Rule/.test(src),
+    'entityUpdate.wgsl takes a Rule by value');
+  assert.ok(!/fn\s+\w+\s*\([^)]*array<FourierCenter/.test(src),
+    'entityUpdate.wgsl takes a FourierCenter array by value');
+  assert.match(src, /configs\[slot\]\.rule\.centers\[i\]/,
+    'fourier_noise must read each center from the config buffer');
+});
+
+test('every shader that knows the slot layout reads it from CONFIG_PER_COHORT', () => {
+  // The studio and sand lay the buffer out differently (configSlots.ts), and a
+  // shader built for the wrong one reads every particle's rule from the wrong
+  // slot. particleSystem.ts sets this one constant on all three pipelines.
+  for (const name of ['entityUpdate.wgsl', 'entityPick.wgsl', 'cohortRules.wgsl']) {
+    const src = stripComments(expand(name));
+    assert.match(src, /override\s+CONFIG_PER_COHORT\s*:\s*bool/,
+      `${name} must declare the CONFIG_PER_COHORT override`);
+  }
+});
+
 test('pow(h, 2.0) survives in generate_random_centers', () => {
   // NOT a style check. freq_scale and frequency.x draw from the SAME hash lane,
   // and pow(h,2) differs from h*h by 1 ULP, which the chaotic hash amplifies
@@ -284,8 +338,9 @@ test('every get_cohort call passes arrayLength, not a host-supplied count', () =
   // host's count agree TODAY. Passing the host's number anyway would make the
   // physics and the picker able to divide by different values if that ever
   // changed -- and a cohort mismatch means the picker derives a rule the entity
-  // is not obeying, silently.
-  for (const name of RULE_CONSUMERS) {
+  // is not obeying, silently. (The two rule derivers bind no entities: their
+  // cohort is a slot number or an archived integer.)
+  for (const name of BAKED_RULE_READERS) {
     const src = stripComments(expand(name));
     // `(?<!fn\s)` skips the DECLARATION, which the include puts in this same
     // expanded text -- without it the assertion reads the signature's
@@ -380,7 +435,10 @@ test('the reduce pass never writes a rule, and derive never writes the key', () 
     'reduce derives a rule; only the single-invocation derive pass may',
   );
   assert.ok(!derive.includes('atomicMin('), 'derive must not touch the key it reads');
-  assert.ok(derive.includes('derive_entity_rule('), 'derive must derive the rule');
+  assert.ok(
+    /result\.rule\s*=\s*config\.rule\s*;/.test(derive),
+    "derive must copy the slot's baked rule",
+  );
 });
 
 test('the pick result stores its position as two f32s, not a vec2f', () => {
@@ -412,9 +470,14 @@ test('entityPick.wgsl selects its config the same way entityUpdate does', () => 
   // at all -- the desktop's pick shader needs no world.
   const pick = stripComments(expand('entityPick.wgsl'));
   const update = stripComments(expand('entityUpdate.wgsl'));
-  const clamp = /configs\[clamp\(config_index,\s*0,\s*world_config_count\(u\.world\)\s*-\s*1\)\]/;
+  const clamp = /clamp\(config_index,\s*0,\s*world_config_count\(u\.world\)\s*-\s*1\)/;
   assert.match(update, clamp, 'entityUpdate.wgsl changed how it selects a config');
   assert.match(pick, clamp, 'entityPick.wgsl must select the config identically');
+  // And the studio's per-cohort slot, recomputed from the index, identically.
+  const perCohort =
+    /i32\(floor\(get_cohort\(index,\s*configs\[0\],\s*arrayLength\(&entities\)\)\)\)/;
+  assert.match(update, perCohort, 'entityUpdate.wgsl changed how it finds a studio slot');
+  assert.match(pick, perCohort, 'entityPick.wgsl must find the studio slot identically');
 });
 
 test('canvas.wgsl takes no sampler as a function parameter', () => {
@@ -516,7 +579,7 @@ test('the reduce pass derives the cohort exactly as derive and entityUpdate do',
   );
   assert.match(
     reduce,
-    /configs\[clamp\(config_index,\s*0,\s*world_config_count\(u\.world\)\s*-\s*1\)\]/,
-    'reduce must select the config with the same clamp bound the others use',
+    /configs\[entity_slot\(e,\s*index\)\]/,
+    'reduce must select the config through entity_slot, as derive does',
   );
 });
