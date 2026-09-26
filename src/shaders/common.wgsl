@@ -500,11 +500,12 @@ fn uv_to_world(uv: vec2f, canvas_res: vec2f) -> vec2f {
 // corner by construction -- they are the same value.
 //
 // ARITHMETIC, NOT A LOOKUP TABLE, and that is the reason this exists. The
-// per-particle vertex shaders used `var offsets = array<vec2f, 4>(...)` indexed
-// by vertex_id. A local array indexed by a non-constant is spilled to
-// per-thread scratch memory by the browser's shader compilers (the same trap
-// that made entityUpdate's by-value Rule so slow), and these shaders run four
-// times per particle per step. Do not turn this back into a table.
+// per-particle sprite shaders (camBrush.wgsl; brush.wgsl before it became a
+// point splat) used `var offsets = array<vec2f, 4>(...)` indexed by vertex_id.
+// A local array indexed by a non-constant is spilled to per-thread scratch
+// memory by the browser's shader compilers (the same trap that made
+// entityUpdate's by-value Rule so slow), and a sprite shader runs four times
+// per particle. Do not turn this back into a table.
 //
 // Strip, not fan: WebGPU has no triangle-fan, and a strip over the desktop's
 // fan order (brush.vert:25-36) draws a bowtie.

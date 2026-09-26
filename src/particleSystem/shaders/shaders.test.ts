@@ -192,20 +192,65 @@ test('strip_corner yields the triangle-strip order', () => {
   assert.deepEqual(corners, ['0,0', '1,0', '0,1', '1,1']);
 });
 
-test('the per-particle vertex shaders index no local array', () => {
-  // A local array indexed by vertex_id is spilled to per-thread scratch memory
-  // by the browser's shader compilers, and these run four times per particle
-  // per step. strip_corner computes the corner instead -- see common.wgsl.
-  for (const name of ['brush.wgsl']) {
-    const source = stripComments(expand(name));
-    assert.ok(!/array<vec2f,\s*4>\(/.test(source), `${name} builds a local vec2f table`);
-    assert.match(source, /strip_corner\(vertex_id\)/, `${name} must use strip_corner`);
-    // uv and offset must be the same corner, or uv no longer names the corner
-    // it sits on.
-    assert.match(
-      source,
-      /let\s+particle_uv\s*=\s*strip_corner\(vertex_id\);[\s\S]*\(particle_uv\s*\*\s*2\.0\s*-\s*1\.0\)\s*\*\s*size/,
-      `${name} must derive the offset from the same corner as the uv`,
+test('brush.wgsl splats one point per entity, with no quad left behind', () => {
+  // The quad's per-primitive cost is what the point exists to remove, and a
+  // stray corner table would also be a local array indexed by vertex_id --
+  // spilled to scratch memory by the browser's compilers (see strip_corner).
+  const source = stripComments(expand('brush.wgsl'));
+  assert.ok(!/array<vec2f,\s*4>\(/.test(source), 'brush.wgsl builds a local vec2f table');
+  assert.ok(!/vertex_index/.test(source), 'brush.wgsl reads vertex_index; a point has one vertex');
+  // The deposit is the quad's closed-form expected total, drawn with the
+  // spread of k^2 -- see the test below for why these two expressions.
+  assert.match(
+    source,
+    /\(1\.0\s*-\s*exp\(-RADIUS\s*\*\s*RADIUS\s*\/\s*\(SIGMA\s*\*\s*SIGMA\)\)\)\s*\/\s*\(4\.0\s*\*\s*PI\s*\*\s*SIGMA\s*\*\s*SIGMA\)\s*\*\s*dot_px\s*\*\s*dot_px/,
+    'brush.wgsl changed the expected-deposit formula',
+  );
+  assert.match(source, /\(SIGMA\s*\/\s*sqrt\(2\.0\)\)\s*\*\s*dot_px/,
+    'the random pixel must be drawn with k^2\'s spread, SIGMA/sqrt(2)');
+  assert.match(source, /const SIGMA: f32 = 0\.163;/);
+  assert.match(source, /const RADIUS: f32 = 0\.5;/);
+});
+
+test('the point splat deposits what the old quad did, on average', () => {
+  // THE CORRECTNESS ARGUMENT FOR THE POINT SPLAT, checked numerically. The
+  // quad wrote vel * k^2 at every pixel centre it covered, k being
+  // gaussian(uv - 0.5, SIGMA) normalised in the quad's own 0..1 uv and cut off
+  // at RADIUS. Averaged over where the quad sits relative to the pixel grid,
+  // that total must equal brush.wgsl's closed form -- which is what the point
+  // deposits every time.
+  const SIGMA = 0.163;
+  const RADIUS = 0.5;
+  const k = (du: number, dv: number): number =>
+    Math.exp(-(du * du + dv * dv) / (2 * SIGMA * SIGMA)) / (2 * Math.PI * SIGMA * SIGMA);
+
+  for (const dotPx of [1.5, 3, 8]) {
+    const closedForm =
+      ((1 - Math.exp(-(RADIUS * RADIUS) / (SIGMA * SIGMA))) / (4 * Math.PI * SIGMA * SIGMA)) *
+      dotPx * dotPx;
+
+    // Every subpixel placement on a regular grid, so the average is exact
+    // rather than sampled.
+    const STEPS = 40;
+    let total = 0;
+    for (let sx = 0; sx < STEPS; sx++) {
+      for (let sy = 0; sy < STEPS; sy++) {
+        const x0 = sx / STEPS; // the quad's left edge, in pixels
+        const y0 = sy / STEPS;
+        for (let px = Math.floor(x0); px < x0 + dotPx + 1; px++) {
+          for (let py = Math.floor(y0); py < y0 + dotPx + 1; py++) {
+            const du = (px + 0.5 - x0) / dotPx - 0.5;
+            const dv = (py + 0.5 - y0) / dotPx - 0.5;
+            if (Math.hypot(du, dv) > RADIUS) continue;
+            total += k(du, dv) ** 2;
+          }
+        }
+      }
+    }
+    const average = total / (STEPS * STEPS);
+    assert.ok(
+      Math.abs(average / closedForm - 1) < 0.01,
+      `dot ${dotPx}px: quad averaged ${average.toFixed(3)}, point deposits ${closedForm.toFixed(3)}`,
     );
   }
 });

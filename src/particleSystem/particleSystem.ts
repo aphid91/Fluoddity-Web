@@ -691,13 +691,9 @@ export class ParticleSystem {
             },
           ],
         },
-        primitive: {
-          topology: 'triangle-strip',
-          // The strip reorder in brush.wgsl flips the winding of one triangle.
-          // With culling off that is irrelevant -- stated explicitly so nobody
-          // "tightens" this to back-face culling and loses half of every splat.
-          cullMode: 'none',
-        },
+        // One single-pixel point per entity -- see the header of brush.wgsl
+        // for why the splat is not a quad.
+        primitive: { topology: 'point-list' },
       });
       this.brushStateLayout = brushStateLayout;
     }
@@ -2166,9 +2162,9 @@ export class ParticleSystem {
     });
     pass.setPipeline(this.brushPipeline);
     pass.setBindGroup(0, this.brushStateGroup, [slot * this.brushStride]);
-    // 4 vertices per entity, instanced. No vertex buffer -- the quad comes from
-    // the vertex index and the entity from the instance index.
-    pass.draw(4, this.activeEntityCount);
+    // One point per entity, instanced. No vertex buffer -- the entity comes
+    // from the instance index.
+    pass.draw(1, this.activeEntityCount);
     pass.end();
   }
 

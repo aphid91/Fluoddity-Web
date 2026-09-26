@@ -1,40 +1,36 @@
 // ============================================================================
 // brush.wgsl -- the trail splat.
 //
-// The WGSL translation of `particle_system/shaders/brush.vert` (45 lines) and
-// `brush.frag` (38), joined into one module because a WebGPU pipeline takes
-// both stages from one place.
-//
-// One instanced quad per entity, additively blended into the canvas. There is
-// NO VERTEX BUFFER: the quad comes from @builtin(vertex_index) and the entity
-// from @builtin(instance_index) reading the storage buffer directly.
+// Descended from `particle_system/shaders/brush.vert` + `brush.frag`, which draw
+// one instanced gaussian QUAD per entity. This draws one POINT per entity
+// instead: a single pixel, additively blended into the canvas. There is NO
+// VERTEX BUFFER: the entity comes from @builtin(instance_index) reading the
+// storage buffer directly.
 //
 // ---------------------------------------------------------------------------
-// THE CORNER ORDER IS NOT THE GLSL'S, AND THE DIFFERENCE IS INVISIBLE
+// WHY A POINT, AND WHY IT DEPOSITS THE SAME TRAILS
 // ---------------------------------------------------------------------------
-// The desktop draws TRIANGLE_FAN over 4 vertices in the order
+// The quad was ~1.5 px wide, so the rasterizer's per-primitive work (four
+// vertices, two triangles, a discarded circle) dwarfed the pixels it wrote,
+// and what it deposited swung ~700x with the particle's subpixel position:
+// the kernel is only sampled at the pixel centres the quad happens to cover.
 //
-//     (-,-)  (+,-)  (+,+)  (-,+)
+// This is the desktop's atomic deposit (entity_update.glsl `deposit`, commit
+// ca7b4a5) done with the rasterizer's blending instead of atomics. Each entity
+// deposits the quad's EXPECTED TOTAL into ONE pixel, chosen at random with the
+// same odds the quad spread its weight over pixels -- so every pixel receives
+// the same amount on average, without the aliasing and at a fraction of the
+// cost. The trails match the quad's in expectation, not texel for texel.
 //
-// which a fan turns into triangles (0,1,2) and (0,2,3) -- the quad. WebGPU HAS
-// NO triangle-fan topology. A triangle-strip over those same four vertices
-// produces (0,1,2) and (2,1,3), which is a BOWTIE, not a quad.
-//
-// So the arrays below are in STRIP order -- (-,-) (+,-) (-,+) (+,+) -- and the
-// uv array is permuted THE SAME WAY, so every corner keeps the uv it has on the
-// desktop.
-//
-// Why this needs saying: brush.frag's kernel is `gaussian(uv - 0.5)` gated by
-// `length(uv - 0.5) > 0.5`. That is RADIALLY SYMMETRIC about the quad's centre,
-// so permuting the uvs wrongly -- swapping two corners, say -- renders a
-// splat that is pixel-for-pixel identical. It cannot be caught by looking at
-// it. Permute both arrays together, or not at all.
-//
-// (The plan doc suggests "0,1,3,2 reordering", which is the equivalent fix
-// expressed as an index buffer. Reordering the arrays needs no index buffer.)
+// The quad blended `vel * k^2` per pixel, with k = gaussian(uv - 0.5, SIGMA)
+// normalised in the quad's 0..1 uv and cut off at radius RADIUS. Over a quad
+// `dot_px` pixels wide, the sum of k^2 is dot_px^2 times its integral over the
+// disc -- closed form below -- and k^2 is itself a gaussian of sigma SIGMA/sqrt(2),
+// which is the spread the random pixel is drawn with.
 // ============================================================================
 
 #include "common.wgsl"
+#include "hash.wgsl"
 
 struct BrushUniforms {
     world      : WorldData,
@@ -52,48 +48,68 @@ struct BrushUniforms {
 
 fn frame_count() -> i32 { return bitcast<i32>(u.flags.x); }
 
+// The old quad's kernel: brush.frag's `gaussian(uv - 0.5, 0.163)`, cut off at
+// `length(uv - 0.5) > 0.5`.
+const SIGMA: f32 = 0.163;
+const RADIUS: f32 = 0.5;
+
 struct VsOut {
     @builtin(position) clip : vec4f,
-    @location(0) uv : vec2f,
-    @location(1) pos_vel : vec4f,
+    // The whole deposit, already scaled for the canvas. Flat: a point has one
+    // fragment, so there is nothing to interpolate.
+    @location(0) @interpolate(flat) deposit : vec2f,
 }
 
 @vertex
-fn vs_main(@builtin(vertex_index) vertex_id : u32,
-           @builtin(instance_index) instance_id : u32) -> VsOut {
+fn vs_main(@builtin(instance_index) instance_id : u32) -> VsOut {
     let e = entities[instance_id];
 
-    // DEAD PARTICLES DEPOSIT NOTHING.
-    //
-    // Killed in the VERTEX stage, not by a fragment discard. The fragment
-    // already discards outside the splat's circle, so adding a dead test there
-    // would be one line -- but it would pay full setup and rasterization for
-    // every dead particle first, which at a mostly-empty sand world is nearly
-    // the entire cost of the pass. Returning w = 0 makes the clip volume empty,
-    // so the triangle is culled before any fragment exists.
-    if (e_is_dead(e)) {
-        var dead : VsOut;
-        dead.clip = vec4f(0.0, 0.0, 0.0, 0.0);
-        dead.uv = vec2f(0.0);
-        dead.pos_vel = vec4f(0.0);
-        return dead;
+    var out : VsOut;
+    out.deposit = vec2f(0.0);
+
+    // DEAD PARTICLES DEPOSIT NOTHING, and neither does anyone on a reset frame
+    // (the frame-0 sentinel: the canvas pass is clearing, and must not be
+    // immediately re-dirtied -- the third leg of reset(), particle_system.py
+    // :259-275). Both are culled HERE rather than discarded in the fragment
+    // stage: w = 0 makes the clip volume empty, so no fragment ever exists. At
+    // a mostly-empty sand world, dead particles are nearly the whole draw.
+    if (e_is_dead(e) || frame_count() == 0) {
+        out.clip = vec4f(0.0, 0.0, 0.0, 0.0);
+        return out;
     }
 
-    let entity_pos = e_pos(e);
-    let entity_vel = e_vel(e);
-    let size = e_size(e);
+    let res = u.canvas_res.xy;
+    // Canvas pixels per world unit. The same on both axes -- world space is
+    // area-preserving (common.wgsl) -- so x stands for both.
+    let px_per_world = res.x / (2.0 * world_half_extent_from_res(res).x);
+    // The old quad spanned +-size in world units.
+    let dot_px = 2.0 * e_size(e) * px_per_world;
 
-    // STRIP ORDER, computed rather than looked up -- see strip_corner in
-    // common.wgsl for why there is no array here. The uv and the offset are
-    // one value, so they cannot be permuted apart.
-    let particle_uv = strip_corner(vertex_id);
-    let vertex_pos = entity_pos + (particle_uv * 2.0 - 1.0) * size;
+    // The quad's expected total: dot_px^2 times the integral of k^2 over the
+    // cut-off disc, (1 - exp(-R^2/sigma^2)) / (4 pi sigma^2).
+    let amount = (1.0 - exp(-RADIUS * RADIUS / (SIGMA * SIGMA)))
+                 / (4.0 * PI * SIGMA * SIGMA) * dot_px * dot_px;
 
-    var out : VsOut;
-    // THE Y FLIP. `world_to_ndc` and `world_to_uv` are the same mapping up to
-    // scale, and both are Y-UP -- which is what makes "splat at world p" and
-    // "sense at world p" land on the same texel under OpenGL, whose framebuffer
-    // origin is bottom-left.
+    // Box-Muller: a gaussian offset with k^2's spread, in pixels. Seeded on
+    // (index, frame) like the desktop's, so each particle lands somewhere new
+    // every step. u1 is kept off zero, where log() is -inf.
+    let fc = f32(frame_count());
+    let u1 = max(hash(vec2f(f32(instance_id), fc + 0.25)), 1e-7);
+    let u2 = hash(vec2f(fc + 0.75, f32(instance_id)));
+    let offset_px = sqrt(-2.0 * log(u1)) * vec2f(cos(2.0 * PI * u2), sin(2.0 * PI * u2))
+                    * (SIGMA / sqrt(2.0)) * dot_px;
+
+    // Into canvas uv. In BC_WRAP a deposit that lands past an edge wraps onto
+    // the far side, as the particle itself would; in every other mode it falls
+    // outside the viewport and is clipped, as the quad's overhang was.
+    var uv = world_to_uv(e_pos(e), res) + offset_px / res;
+    if (world_boundary_conditions(u.world) == BC_WRAP) {
+        uv = fract(uv);
+    }
+
+    // THE Y FLIP. `world_to_uv` is Y-UP -- which is what makes "splat at world
+    // p" and "sense at world p" land on the same texel under OpenGL, whose
+    // framebuffer origin is bottom-left.
     //
     // WebGPU's framebuffer origin is TOP-left, so rasterizing y-up NDC deposits
     // the splat in the mirrored row from the one `get_can` reads back. The
@@ -103,40 +119,24 @@ fn vs_main(@builtin(vertex_index) vertex_id : u32,
     //
     // Note this is the SAME correction canvas.wgsl's vertex stage makes, for
     // the same reason; see the longer note there.
-    let ndc = world_to_ndc(vertex_pos, u.canvas_res.xy);
+    let ndc = uv * 2.0 - 1.0;
     out.clip = vec4f(ndc.x, -ndc.y, 0.0, 1.0);
-    out.uv = particle_uv;
-    out.pos_vel = vec4f(entity_pos, entity_vel);
-    return out;
-}
 
-fn gaussian(pos: vec2f, sigma: f32) -> f32 {
-    let sigma2 = sigma * sigma;
-    let norm = 1.0 / (2.0 * 3.14159265359 * sigma2);
-    let exponent = -(dot(pos, pos)) / (2.0 * sigma2);
-    return norm * exp(exponent);
+    // Splat directly into the canvas, premultiplied by (1-P)/P so that after
+    // the canvas pass's P decay the steady contribution matches the old
+    // (1-P)*brush mix. CANVAS_VALUE_SCALE keeps the deposit out of fp16's
+    // subnormal range at high P -- every canvas reader divides it back out
+    // (see common.wgsl).
+    let P = clamp(world_trail_persistence(u.world),
+                  TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
+    let premult = (1.0 - P) / P;
+    out.deposit = e_vel(e) * amount * premult * CANVAS_VALUE_SCALE;
+    return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
-    let kernel_func = gaussian(in.uv - 0.5, 0.163);
-    // The circular cutout, and the frame-0 sentinel: on a reset frame nothing
-    // is deposited, so the canvas pass's clear is not immediately re-dirtied.
-    // This is the third leg of reset() -- see particle_system.py:259-275.
-    if (length(in.uv - 0.5) > 0.5 || frame_count() == 0) {
-        discard;
-    }
-    // Splat directly into the canvas, premultiplied by (1-P)/P so that after the
-    // canvas pass's P decay the steady contribution matches the old (1-P)*brush mix.
-    // kernel_func*kernel_func reproduces the old SRC_ALPHA blend's quadratic weighting.
-    // CANVAS_VALUE_SCALE keeps the deposit out of fp16's subnormal range at high
-    // P -- every canvas reader divides it back out (see common.wgsl).
-    let P = clamp(world_trail_persistence(u.world),
-                  TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
-    let premult = (1.0 - P) / P;
-    let vel = in.pos_vel.zw;
     // The target is rg16float, so zw are discarded by the format -- the canvas
     // is a velocity flow field, not a colour.
-    return vec4f(vel * kernel_func * kernel_func * premult * CANVAS_VALUE_SCALE,
-                 0.0, 0.0);
+    return vec4f(in.deposit, 0.0, 0.0);
 }
