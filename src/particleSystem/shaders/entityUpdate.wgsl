@@ -152,43 +152,93 @@ fn trails_strength() -> f32 { return u.flags.w; }
 // Fourier basis evaluation.
 // This is how the entities evaluate their Rule.
 //
-// TAKES A SLOT INDEX, NOT A Rule, AND THAT IS THE WHOLE PERFORMANCE STORY OF
-// THIS SHADER. Passing the 320-byte Rule by value (as the GLSL does) makes every
-// thread hold it as a local array indexed by the loop counter, which the
-// browser's shader compilers spill to per-thread scratch memory -- measured at
-// roughly 5x the cost of the entire entity update. Reading each center straight
-// from the storage buffer keeps it out of registers entirely. Do not "tidy" this
-// back into a Rule parameter.
+// One center's contribution. `i` is the center's index, for its phase offset.
+fn fourier_term(center: FourierCenter, i: i32, signals: vec4f) -> vec4f {
+    // Compute phase from dot product of input with frequency vector
+    let phase = dot(signals, center.frequency);
+
+    // Add per-center phase offset to break degeneracy at origin
+    // Use a deterministic offset based on center index and amplitude values
+    let phase_offset = 2.0 * f32(i) * 0.6283 + center.amplitude.w * 3.14159;
+
+    // Create basis functions from phase with offset
+    // Using sin/cos pairs at fundamental and first harmonic for richer representation
+    let basis = vec4f(
+        sin(phase + phase_offset),
+        cos(phase + phase_offset * 0.7),  // Different offsets for variety
+        sin(phase * 2.0 + phase_offset * 1.3),
+        cos(phase * 2.0 + phase_offset * 0.5)
+    );
+
+    // Weight
+    return center.amplitude * basis;
+}
+
+// Both black box evaluations -- the base term and the mirror term -- at once.
+struct FourierPair {
+    base: vec4f,
+    mirror: vec4f,
+}
+
+// fourier_noise for two signal vectors over the same rule. The GLSL evaluates
+// the rule twice, once per signal; this is the same arithmetic in the same
+// order, so each result is summed exactly as before.
+//
+// THREE THINGS HERE ARE PERFORMANCE, AND EACH WAS MEASURED:
+//
+//  1. IT TAKES A SLOT INDEX, NOT A Rule. Passing the 320-byte Rule by value (as
+//     the GLSL does) makes every thread hold it as a local array indexed by the
+//     loop counter, which the browser's shader compilers spill to per-thread
+//     scratch memory -- ~5x the cost of the entire entity update. Do not
+//     "tidy" this back into a Rule parameter.
+//
+//  2. EACH CENTER IS READ ONCE, FOR BOTH TERMS. Two separate evaluations read
+//     all ten centers twice.
+//
+//  3. THE LOOP IS UNROLLED BY HAND. WGSL has no unroll hint and the translated
+//     loop stays a loop, so each iteration waited on its own buffer read before
+//     its trig could start. With constant indices the compiler can issue the
+//     reads early and overlap them with the arithmetic. The black box was ~4 ms
+//     of a ~7 ms entity update before this.
 //
 // The rule in the slot is already this cohort's mutation -- cohortRules.wgsl
 // baked it in when the configs were uploaded.
-fn fourier_noise(slot: i32, signals: vec4f) -> vec4f {
-    var result = vec4f(0.0);
+fn fourier_noise_pair(slot: i32, signals_base: vec4f, signals_mirror: vec4f) -> FourierPair {
+    var base = vec4f(0.0);
+    var mirror = vec4f(0.0);
 
-    for (var i = 0; i < 10; i++) {
-        let center = configs[slot].rule.centers[i];
+    let c0 = configs[slot].rule.centers[0];
+    base += fourier_term(c0, 0, signals_base);
+    mirror += fourier_term(c0, 0, signals_mirror);
+    let c1 = configs[slot].rule.centers[1];
+    base += fourier_term(c1, 1, signals_base);
+    mirror += fourier_term(c1, 1, signals_mirror);
+    let c2 = configs[slot].rule.centers[2];
+    base += fourier_term(c2, 2, signals_base);
+    mirror += fourier_term(c2, 2, signals_mirror);
+    let c3 = configs[slot].rule.centers[3];
+    base += fourier_term(c3, 3, signals_base);
+    mirror += fourier_term(c3, 3, signals_mirror);
+    let c4 = configs[slot].rule.centers[4];
+    base += fourier_term(c4, 4, signals_base);
+    mirror += fourier_term(c4, 4, signals_mirror);
+    let c5 = configs[slot].rule.centers[5];
+    base += fourier_term(c5, 5, signals_base);
+    mirror += fourier_term(c5, 5, signals_mirror);
+    let c6 = configs[slot].rule.centers[6];
+    base += fourier_term(c6, 6, signals_base);
+    mirror += fourier_term(c6, 6, signals_mirror);
+    let c7 = configs[slot].rule.centers[7];
+    base += fourier_term(c7, 7, signals_base);
+    mirror += fourier_term(c7, 7, signals_mirror);
+    let c8 = configs[slot].rule.centers[8];
+    base += fourier_term(c8, 8, signals_base);
+    mirror += fourier_term(c8, 8, signals_mirror);
+    let c9 = configs[slot].rule.centers[9];
+    base += fourier_term(c9, 9, signals_base);
+    mirror += fourier_term(c9, 9, signals_mirror);
 
-        // Compute phase from dot product of input with frequency vector
-        let phase = dot(signals, center.frequency);
-
-        // Add per-center phase offset to break degeneracy at origin
-        // Use a deterministic offset based on center index and amplitude values
-        let phase_offset = 2.0 * f32(i) * 0.6283 + center.amplitude.w * 3.14159;
-
-        // Create basis functions from phase with offset
-        // Using sin/cos pairs at fundamental and first harmonic for richer representation
-        let basis = vec4f(
-            sin(phase + phase_offset),
-            cos(phase + phase_offset * 0.7),  // Different offsets for variety
-            sin(phase * 2.0 + phase_offset * 1.3),
-            cos(phase * 2.0 + phase_offset * 0.5)
-        );
-
-        // Weight and accumulate
-        result += center.amplitude * basis;
-    }
-
-    return result;
+    return FourierPair(base, mirror);
 }
 
 //=====================================^^^^^^^^^^^^^^^^^^==================================
@@ -520,8 +570,12 @@ fn y_reflect(p: vec2f) -> vec2f {
 
 // Somewhat arbitrary generator of functions with 4 float inputs and 4 float outputs,
 // varying rule should smoothly change the behavior of black box. Here, we use fourier noise.
-fn black_box(L: vec2f, R: vec2f, slot: i32) -> vec4f {
-    return fourier_noise(slot, vec4f(L, R));
+//
+// Evaluated for the base signal (L, R) and the mirrored one together -- see
+// fourier_noise_pair for why they share one pass.
+fn black_box_pair(L: vec2f, R: vec2f, L_mirror: vec2f, R_mirror: vec2f,
+                  slot: i32) -> FourierPair {
+    return fourier_noise_pair(slot, vec4f(L, R), vec4f(L_mirror, R_mirror));
 }
 
 // What calculate_entity_behavior returns. GLSL used three `out` parameters;
@@ -559,8 +613,9 @@ fn calculate_entity_behavior(L_in: vec2f, R_in: vec2f, axis: vec2f, slot: i32,
 
     // Calculate black box noise values.
     // Note the L/R SWAP in the mirror term, not merely a reflection.
-    let baseterm = black_box(L, R, slot);
-    let mirrorterm = black_box(y_reflect(R), y_reflect(L), slot);
+    let terms = black_box_pair(L, R, y_reflect(R), y_reflect(L), slot);
+    let baseterm = terms.base;
+    let mirrorterm = terms.mirror;
 
     // Combine base and mirror terms to cancel bias
     var force = baseterm.xy + y_reflect(mirrorterm.xy);

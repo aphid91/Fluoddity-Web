@@ -287,8 +287,15 @@ test('the black box reads its rule from the slot, never from a by-value copy', (
     'entityUpdate.wgsl takes a Rule by value');
   assert.ok(!/fn\s+\w+\s*\([^)]*array<FourierCenter/.test(src),
     'entityUpdate.wgsl takes a FourierCenter array by value');
-  assert.match(src, /configs\[slot\]\.rule\.centers\[i\]/,
-    'fourier_noise must read each center from the config buffer');
+  // Each center read ONCE, by a constant index, for both black box terms:
+  // reading them twice doubled the loads, and a loop index kept each read
+  // waiting on the one before (see fourier_noise_pair).
+  for (let i = 0; i < 10; i++) {
+    assert.equal(count(src, new RegExp(`configs\\[slot\\]\\.rule\\.centers\\[${i}\\]`, 'g')), 1,
+      `center ${i} must be read from the config buffer exactly once`);
+  }
+  assert.equal(count(src, /\.rule\.centers\[[^\]0-9]/g), 0,
+    'a center is read by a non-constant index');
 });
 
 test('every shader that knows the slot layout reads it from CONFIG_PER_COHORT', () => {
