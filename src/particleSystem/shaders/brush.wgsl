@@ -83,23 +83,11 @@ fn vs_main(@builtin(vertex_index) vertex_id : u32,
     let entity_vel = e_vel(e);
     let size = e_size(e);
 
-    // STRIP ORDER -- see the header. Not the fan order of brush.vert:25-36.
-    var offsets = array<vec2f, 4>(
-        vec2f(-size, -size),
-        vec2f( size, -size),
-        vec2f(-size,  size),
-        vec2f( size,  size),
-    );
-    // Permuted to match, corner for corner.
-    var uv_coords = array<vec2f, 4>(
-        vec2f(0.0, 0.0),
-        vec2f(1.0, 0.0),
-        vec2f(0.0, 1.0),
-        vec2f(1.0, 1.0),
-    );
-
-    let particle_uv = uv_coords[vertex_id];
-    let vertex_pos = entity_pos + offsets[vertex_id];
+    // STRIP ORDER, computed rather than looked up -- see strip_corner in
+    // common.wgsl for why there is no array here. The uv and the offset are
+    // one value, so they cannot be permuted apart.
+    let particle_uv = strip_corner(vertex_id);
+    let vertex_pos = entity_pos + (particle_uv * 2.0 - 1.0) * size;
 
     var out : VsOut;
     // THE Y FLIP. `world_to_ndc` and `world_to_uv` are the same mapping up to

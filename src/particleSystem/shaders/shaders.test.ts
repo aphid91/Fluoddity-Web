@@ -173,38 +173,41 @@ test('compute-stage sampling uses textureSampleLevel, never textureSample', () =
   assert.ok(source.includes('textureSampleLevel('), 'expected textureSampleLevel in entityUpdate');
 });
 
-test('brush.wgsl builds its quad in triangle-strip order', () => {
+test('strip_corner yields the triangle-strip order', () => {
   // WebGPU has no triangle-fan. The desktop's fan order is
   // (-,-) (+,-) (+,+) (-,+); a STRIP over that produces a bowtie. The port
-  // reorders to (-,-) (+,-) (-,+) (+,+) and permutes the uv array to match.
+  // uses (-,-) (+,-) (-,+) (+,+), computed from vertex_id's two bits.
   //
-  // This is asserted because the failure is INVISIBLE: brush.frag's kernel is
-  // radially symmetric about the quad centre, so a wrong uv permutation renders
-  // a pixel-identical splat. Nothing downstream would ever reveal it.
+  // The expression is checked in the source and then evaluated here, because
+  // the failure is INVISIBLE: the splat kernel is radially symmetric about the
+  // quad centre, so a wrong order that still covers the quad renders a
+  // pixel-identical splat, and a bowtie only loses half of each tiny dot.
   const source = stripComments(expand('brush.wgsl'));
-  const uvArray = /uv_coords\s*=\s*array<vec2f,\s*4>\(([\s\S]*?)\);/.exec(source);
-  assert.ok(uvArray !== null, 'brush.wgsl has no uv_coords array<vec2f, 4>');
-  const uvs = [...uvArray[1]!.matchAll(/vec2f\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/g)].map(
-    (m) => `${Number(m[1])},${Number(m[2])}`,
+  assert.match(
+    source,
+    /fn\s+strip_corner\(vertex_id:\s*u32\)\s*->\s*vec2f\s*\{\s*return\s+vec2f\(f32\(vertex_id\s*&\s*1u\),\s*f32\(vertex_id\s*>>\s*1u\)\);/,
+    'strip_corner changed shape; re-derive the order this test evaluates',
   );
-  assert.deepEqual(
-    uvs,
-    ['0,0', '1,0', '0,1', '1,1'],
-    'brush.wgsl uv_coords must be in strip order (0,0) (1,0) (0,1) (1,1)',
-  );
+  const corners = [0, 1, 2, 3].map((v) => `${v & 1},${v >> 1}`);
+  assert.deepEqual(corners, ['0,0', '1,0', '0,1', '1,1']);
+});
 
-  // And the offsets must be permuted the same way, or uv no longer names the
-  // corner it sits on.
-  const offsets = /offsets\s*=\s*array<vec2f,\s*4>\(([\s\S]*?)\);/.exec(source);
-  assert.ok(offsets !== null, 'brush.wgsl has no offsets array<vec2f, 4>');
-  const signs = [...offsets[1]!.matchAll(/vec2f\(\s*(-?)size\s*,\s*(-?)size\s*\)/g)].map(
-    (m) => `${m[1] === '-' ? '-' : '+'}${m[2] === '-' ? '-' : '+'}`,
-  );
-  assert.deepEqual(
-    signs,
-    ['--', '+-', '-+', '++'],
-    'brush.wgsl offsets must be in strip order matching uv_coords',
-  );
+test('the per-particle vertex shaders index no local array', () => {
+  // A local array indexed by vertex_id is spilled to per-thread scratch memory
+  // by the browser's shader compilers, and these run four times per particle
+  // per step. strip_corner computes the corner instead -- see common.wgsl.
+  for (const name of ['brush.wgsl']) {
+    const source = stripComments(expand(name));
+    assert.ok(!/array<vec2f,\s*4>\(/.test(source), `${name} builds a local vec2f table`);
+    assert.match(source, /strip_corner\(vertex_id\)/, `${name} must use strip_corner`);
+    // uv and offset must be the same corner, or uv no longer names the corner
+    // it sits on.
+    assert.match(
+      source,
+      /let\s+particle_uv\s*=\s*strip_corner\(vertex_id\);[\s\S]*\(particle_uv\s*\*\s*2\.0\s*-\s*1\.0\)\s*\*\s*size/,
+      `${name} must derive the offset from the same corner as the uv`,
+    );
+  }
 });
 
 test('the two canvas-writing stages agree on the Y flip', () => {

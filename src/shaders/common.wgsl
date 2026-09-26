@@ -494,6 +494,24 @@ fn uv_to_world(uv: vec2f, canvas_res: vec2f) -> vec2f {
     return (uv - 0.5) * 2.0 * world_half_extent_from_res(canvas_res);
 }
 
+// The corner of an instanced quad, in TRIANGLE-STRIP order, as a 0..1 uv:
+// (0,0) (1,0) (0,1) (1,1) for vertex_id 0..3. The matching offset from the quad
+// centre is `(strip_corner(v) * 2.0 - 1.0) * half_size`, which pairs uv and
+// corner by construction -- they are the same value.
+//
+// ARITHMETIC, NOT A LOOKUP TABLE, and that is the reason this exists. The
+// per-particle vertex shaders used `var offsets = array<vec2f, 4>(...)` indexed
+// by vertex_id. A local array indexed by a non-constant is spilled to
+// per-thread scratch memory by the browser's shader compilers (the same trap
+// that made entityUpdate's by-value Rule so slow), and these shaders run four
+// times per particle per step. Do not turn this back into a table.
+//
+// Strip, not fan: WebGPU has no triangle-fan, and a strip over the desktop's
+// fan order (brush.vert:25-36) draws a bowtie.
+fn strip_corner(vertex_id: u32) -> vec2f {
+    return vec2f(f32(vertex_id & 1u), f32(vertex_id >> 1u));
+}
+
 // World -> normalized device coords [-1,1] for rasterizing into the canvas.
 fn world_to_ndc(p: vec2f, canvas_res: vec2f) -> vec2f {
     return p / world_half_extent_from_res(canvas_res);

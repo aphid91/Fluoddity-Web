@@ -60,15 +60,6 @@ const SHADERS = ['camera.wgsl', 'camBrush.wgsl'] as const;
 /** Shaders that include the shared fullscreen quad. camBrush has its own verts. */
 const QUAD_SHADERS = ['camera.wgsl'] as const;
 
-/** Parse a `var name = array<vec2f, 4>(...)` literal into ordered pairs. */
-function parseVec2Array(source: string, name: string): string[] {
-  const m = new RegExp(`${name}\\s*=\\s*array<vec2f,\\s*4>\\(([^;]*)\\)\\s*;`).exec(source);
-  assert.ok(m !== null, `could not find the ${name} array`);
-  return [...m[1]!.matchAll(/vec2f\(([^)]*)\)/g)].map((v) =>
-    v[1]!.split(',').map((s) => s.trim()).join(','),
-  );
-}
-
 test('every camera shader expands with common.wgsl included', () => {
   for (const name of SHADERS) {
     const source = expand(name);
@@ -152,24 +143,21 @@ test('camera.wgsl keeps camera.frag\'s 3.1415 literal rather than PI', () => {
   assert.match(source, /atan2\([^)]*\)\s*\/\s*3\.1415\s*\//, 'expected the 3.1415 literal');
 });
 
-test('camBrush.wgsl builds its quad in STRIP order, offsets and uvs together', () => {
+test('camBrush.wgsl builds its quad from strip_corner, offset and uv together', () => {
   // The fragment kernel is `gaussian(uv - 0.5)` gated by
   // `length(uv - 0.5) > 0.5` -- RADIALLY SYMMETRIC about the quad centre. A
-  // wrong uv permutation therefore renders a PIXEL-IDENTICAL sprite and cannot
-  // be caught by looking at it. Both arrays are asserted as ORDERED lists,
-  // because the pairing is the thing that must hold.
+  // uv that named a different corner than the offset would render a
+  // PIXEL-IDENTICAL sprite and cannot be caught by looking at it, so the
+  // pairing is asserted: both come from one strip_corner value. (The strip
+  // order itself is asserted where strip_corner is, in particleSystem's tests.)
+  //
+  // And no local lookup table: one indexed by vertex_id spills to scratch
+  // memory, and this runs four times per particle per frame.
   const source = stripComments(expand('camBrush.wgsl'));
-
-  assert.deepEqual(
-    parseVec2Array(source, 'offsets'),
-    ['-size,-size', 'size,-size', '-size,size', 'size,size'],
-    'offsets must be in strip order, not cam_brush.vert:46-51\'s fan order',
-  );
-  assert.deepEqual(
-    parseVec2Array(source, 'uv_coords'),
-    ['0.0,0.0', '1.0,0.0', '0.0,1.0', '1.0,1.0'],
-    'uv_coords must be permuted to match offsets corner for corner',
-  );
+  assert.ok(!/array<vec2f,\s*4>\(/.test(source), 'camBrush.wgsl builds a local vec2f table');
+  assert.match(source, /let\s+corner\s*=\s*strip_corner\(vertex_id\);/);
+  assert.match(source, /let\s+offset\s*=\s*\(corner\s*\*\s*2\.0\s*-\s*1\.0\)\s*\*\s*size;/);
+  assert.match(source, /out\.uv\s*=\s*corner;/);
 });
 
 test('camBrush.wgsl does NOT flip Y -- unlike its sibling brush.wgsl', () => {

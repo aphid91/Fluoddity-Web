@@ -180,29 +180,19 @@ fn vs_main(@builtin(vertex_index) vertex_id : u32,
     // cam_brush.vert:46-54. TRIANGLE_FAN is not a WebGPU topology, and a strip
     // over the fan's vertex order draws a bowtie.
     //
-    // The uv array is permuted THE SAME WAY, corner for corner. This matters
-    // more than it looks: the fragment kernel below is `gaussian(uv - 0.5)`
-    // gated by `length(uv - 0.5) > 0.5`, which is RADIALLY SYMMETRIC about the
-    // quad's centre -- so permuting the uvs wrongly renders a sprite that is
-    // pixel-for-pixel identical. It cannot be caught by looking at it. Permute
-    // both arrays together, or not at all.
-    var offsets = array<vec2f, 4>(
-        vec2f(-size, -size),
-        vec2f( size, -size),
-        vec2f(-size,  size),
-        vec2f( size,  size),
-    );
-    var uv_coords = array<vec2f, 4>(
-        vec2f(0.0, 0.0),
-        vec2f(1.0, 0.0),
-        vec2f(0.0, 1.0),
-        vec2f(1.0, 1.0),
-    );
+    // The uv and the offset are ONE value (strip_corner, common.wgsl), so they
+    // cannot be permuted apart. That matters more than it looks: the fragment
+    // kernel below is `gaussian(uv - 0.5)` gated by `length(uv - 0.5) > 0.5`,
+    // which is RADIALLY SYMMETRIC about the quad's centre -- so a mismatched
+    // pairing would render a pixel-identical sprite and could not be caught by
+    // looking at it. Computed, not looked up: see strip_corner for why.
+    let corner = strip_corner(vertex_id);
+    let offset = (corner * 2.0 - 1.0) * size;
 
     // The offset is added in WORLD space, before the transform, which is what
     // makes particles world-sized: they grow as you zoom in, exactly as if you
     // were moving closer to a physical object.
-    let vertex_pos = entity_pos + to_velocity_frame(offsets[vertex_id], entity_vel);
+    let vertex_pos = entity_pos + to_velocity_frame(offset, entity_vel);
 
     // ========================================================================
     // NO Y FLIP HERE -- and note that brush.wgsl, which this file otherwise
@@ -231,7 +221,7 @@ fn vs_main(@builtin(vertex_index) vertex_id : u32,
         world_to_screen_ndc(vertex_pos, u.canvas_res.xy, u.canvas_res.zw,
                             u.camera.xy, u.camera.z),
         0.0, 1.0);
-    out.uv = uv_coords[vertex_id];
+    out.uv = corner;
     out.pos_vel = vec4f(entity_pos, entity_vel);
     out.col_params = e_col_params(e);
     out.config_index = e_config_index(e);
