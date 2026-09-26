@@ -189,6 +189,25 @@ export class Camera {
    */
   private samplesTaken = 0;
 
+  /**
+   * Whether this cycle presents the HDR target directly, skipping the
+   * accumulator. Set by `beginFrame`: true when the cycle has exactly ONE
+   * sample, which is every frame with motion blur off and every paused frame.
+   *
+   * WHY. The accumulator exists for temporal supersampling -- it averages N
+   * samples into one frame. At N = 1 that average is the sample itself, and
+   * the clear plus the fullscreen accumulate pass were a copy of the HDR target
+   * into another texture at full window resolution: two passes of pure
+   * bandwidth, which is real money on an integrated GPU.
+   *
+   * HELD ACROSS A PAUSE HOLD, deliberately. A holding frame skips `beginFrame`,
+   * so this still describes the cycle that produced the held still -- and
+   * `result()` and `canHold()` both read it, so they point at whichever texture
+   * that still is actually in. Nothing else renders into the HDR target, so it
+   * survives the hold exactly as the accumulator does.
+   */
+  private direct = false;
+
   private constructor(device: GPUDevice, state: CameraState, targets: RenderTargets) {
     this.device = device;
     this.state = state;
@@ -447,6 +466,7 @@ export class Camera {
    */
   beginFrame(frame: CameraFrame, samples: number): void {
     this.samplesTaken = 0;
+    this.direct = samples === 1;
     const view: CameraView = {
       canvasSize: frame.canvasSize,
       windowSize: frame.windowSize,
@@ -487,7 +507,12 @@ export class Camera {
    * rather than by two places tracking it separately.
    */
   canHold(): boolean {
-    return this.samplesTaken > 0 && this.targets.accum !== null;
+    return this.samplesTaken > 0 && this.presented() !== null;
+  }
+
+  /** The texture this cycle's frame lands in: the HDR target, or the average. */
+  private presented(): GPUTextureView | null {
+    return this.direct ? this.targets.hdr : this.targets.accum;
   }
 
   /**
@@ -507,6 +532,8 @@ export class Camera {
    * up in a profile, the `loadOp` branch is a one-line change.
    */
   clearAccumulator(encoder: GPUCommandEncoder): void {
+    // A one-sample cycle never touches the accumulator -- see `direct`.
+    if (this.direct) return;
     const accum = this.targets.accum;
     if (accum === null) return;
     encoder
@@ -533,7 +560,7 @@ export class Camera {
    */
   result(): GPUTextureView | null {
     if (this.samplesTaken === 0) return null;
-    return this.targets.accum;
+    return this.presented();
   }
 
   /**
@@ -552,7 +579,8 @@ export class Camera {
     } else {
       this.renderTrail(encoder, hdr, frame);
     }
-    this.accumulate(encoder);
+    // A one-sample cycle presents the HDR target as it stands -- see `direct`.
+    if (!this.direct) this.accumulate(encoder);
     this.samplesTaken += 1;
   }
 

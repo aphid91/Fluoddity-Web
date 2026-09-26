@@ -67,6 +67,14 @@ export class Assembler {
    */
   private textureGroupBloomOff: GPUBindGroup | null = null;
   private textureGroupBloomOn: GPUBindGroup | null = null;
+  /**
+   * The source view both groups above were built against. The camera presents
+   * one of TWO textures -- its HDR target when a frame has one sample, the
+   * accumulator when motion blur averages several (`Camera.direct`) -- so the
+   * source can change from one frame to the next, and a group built for the
+   * other one would present a stale picture.
+   */
+  private textureGroupSource: GPUTextureView | null = null;
 
   private readonly uniforms: GPUBuffer;
   /** 1x1 stand-ins. See the class header. */
@@ -290,6 +298,11 @@ export class Assembler {
         ],
       });
 
+    if (source !== this.textureGroupSource) {
+      this.textureGroupBloomOff = null;
+      this.textureGroupBloomOn = null;
+      this.textureGroupSource = source;
+    }
     if (bloomView === null) {
       this.textureGroupBloomOff ??= build(this.dummyHdrView);
       return this.textureGroupBloomOff;
