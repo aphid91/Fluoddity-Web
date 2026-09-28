@@ -368,8 +368,12 @@ export interface Preferences {
  * 1: entity update stopped deriving each particle's rule every step (the
  *    per-cohort config slots), which made it several times faster -- so every
  *    Physics Rate calibrated before that under-uses the machine.
+ * 2: on phones, the black box became a loop instead of hand-unrolled, and the
+ *    trail splat became an atomic deposit instead of a render pass -- together
+ *    several times faster on a Pixel 4a, so phones calibrated before them
+ *    under-use the machine. Desktops were unaffected but recalibrate too.
  */
-export const CALIBRATION_VERSION = 1;
+export const CALIBRATION_VERSION = 2;
 
 /** Whether first-run calibration has run under the current version. */
 export function isCalibrated(prefs: Preferences): boolean {
