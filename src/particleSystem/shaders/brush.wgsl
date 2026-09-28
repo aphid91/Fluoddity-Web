@@ -36,7 +36,7 @@ struct BrushUniforms {
     world      : WorldData,
     // xy: canvas resolution   zw: reserved
     canvas_res : vec4f,
-    // x: frame_count(i)   y: cull probability (EXPERIMENT)   zw: reserved
+    // x: frame_count(i)   yzw: reserved
     flags      : vec4f,
 }
 
@@ -47,8 +47,6 @@ struct BrushUniforms {
 @group(0) @binding(1) var<storage, read> entities : array<Entity>;
 
 fn frame_count() -> i32 { return bitcast<i32>(u.flags.x); }
-// EXPERIMENT: the Monte Carlo cull. 0 draws every particle.
-fn cull_probability() -> f32 { return u.flags.y; }
 
 // The old quad's kernel: brush.frag's `gaussian(uv - 0.5, 0.163)`, cut off at
 // `length(uv - 0.5) > 0.5`.
@@ -77,20 +75,6 @@ fn vs_main(@builtin(instance_index) instance_id : u32) -> VsOut {
     // a mostly-empty sand world, dead particles are nearly the whole draw.
     if (e_is_dead(e) || frame_count() == 0) {
         out.clip = vec4f(0.0, 0.0, 0.0, 0.0);
-        return out;
-    }
-
-    // EXPERIMENT: THE MONTE CARLO CULL. Each particle is dropped with
-    // probability p and the survivors deposit 1/(1-p) as much, so the expected
-    // total is unchanged and only the noise grows. Its own seed, independent of
-    // the pixel draw's two below.
-    //
-    // Culled points go PLAINLY OUTSIDE the clip volume, not to (0,0,0,0): that
-    // point satisfies -w <= x <= w with equality and leaves the driver a divide
-    // by w = 0, which at 90% of the draw may be a slow path of its own.
-    let p = cull_probability();
-    if (p > 0.0 && hash(vec2f(f32(frame_count()) + 0.5, f32(instance_id) + 0.5)) < p) {
-        out.clip = vec4f(-2.0, -2.0, 0.0, 1.0);
         return out;
     }
 
@@ -146,7 +130,7 @@ fn vs_main(@builtin(instance_index) instance_id : u32) -> VsOut {
     let P = clamp(world_trail_persistence(u.world),
                   TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
     let premult = (1.0 - P) / P;
-    out.deposit = e_vel(e) * amount * premult * CANVAS_VALUE_SCALE / (1.0 - p);
+    out.deposit = e_vel(e) * amount * premult * CANVAS_VALUE_SCALE;
     return out;
 }
 

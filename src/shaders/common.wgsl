@@ -84,15 +84,6 @@ const PI: f32 = 3.1415926;
 // camera. Writers: brush.
 const CANVAS_VALUE_SCALE: f32 = 512.0;
 
-// EXPERIMENT: the atomic splat's fixed point. WGSL atomics are integer-only, so
-// a deposit rides in an i32 at this many counts per (already scaled) canvas
-// unit. 2^14 is fp16 matched at both ends: one count is 2^-14, fp16's smallest
-// normal -- so the atomic path resolves exactly the deposits the blended path
-// could -- and +-2^31 counts span +-2^17, twice fp16's 65504 ceiling, so a
-// pile-up saturates in the canvas pass's clamp before it can wrap. The
-// deposit-range reasoning is CANVAS_VALUE_SCALE's, above.
-const SPLAT_FIXED_SCALE: f32 = 16384.0;
-
 // Saturation ceiling for stored (scaled) canvas values, applied by the canvas
 // pass on every write. NEEDED BECAUSE OF fp16: a texel pushed past 65504 rounds
 // to inf, and inf survives decay forever (inf * P == inf) -- one extreme splat

@@ -37,21 +37,6 @@ struct CanvasUniforms {
 
 fn frame_count() -> i32 { return bitcast<i32>(u.flags.x); }
 
-// EXPERIMENT: the atomic splat's accumulator, drained here. See the binding in
-// entityUpdate.wgsl. Plain i32 on this side: each fragment owns its own pair,
-// so nothing else touches it during this pass.
-override ATOMIC_SPLAT: bool = false;
-@group(0) @binding(1) var<storage, read_write> splat : array<i32>;
-
-// This pixel's deposits, as canvas units, zeroing them for the next step.
-fn take_splat(pixel: vec2u) -> vec4f {
-    let i = (pixel.y * textureDimensions(canvas_texture, 0).x + pixel.x) * 2u;
-    let value = vec2f(f32(splat[i]), f32(splat[i + 1u])) / SPLAT_FIXED_SCALE;
-    splat[i] = 0;
-    splat[i + 1u] = 0;
-    return vec4f(value, 0.0, 0.0);
-}
-
 struct VsOut {
     @builtin(position) clip : vec4f,
     @location(0) uv : vec2f,
@@ -133,12 +118,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // FRAME 0 IS THE TRAIL CLEAR. This is not bookkeeping -- `reset()` on the
     // host does nothing but set frame_count to 0, and this line is what
     // actually erases the canvas (see particle_system.py:259-275).
-    // EXPERIMENT: drained BEFORE the frame-0 early out, so a reset still
-    // leaves the accumulator empty. The target is the canvas's size, so the
-    // fragment's own pixel is the accumulator's.
-    var splat_add = vec4f(0.0);
-    if (ATOMIC_SPLAT) { splat_add = take_splat(vec2u(in.clip.xy)); }
-
     if (frame_count() == 0) { return vec4f(0.0, 0.0, 0.0, 0.0); }
 
     var canvas_color : vec4f;
@@ -162,9 +141,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // rounds to inf, and inf survives decay forever (see CANVAS_VALUE_MAX in
     // common.wgsl). This pass touches every texel every step, so a transient
     // inf from an extreme splat pile-up is scrubbed within one step.
-    //
-    // EXPERIMENT: the atomic splat lands after the decay, where the brush pass's
-    // blend would have added it.
-    return clamp(canvas_color * TRAIL_PERSISTENCE + splat_add,
+    return clamp(canvas_color * TRAIL_PERSISTENCE,
                  vec4f(-CANVAS_VALUE_MAX), vec4f(CANVAS_VALUE_MAX));
 }

@@ -83,7 +83,6 @@ import { clearArchive, openArchiveDb } from '../archive/archiveDb.ts';
 import { type ArchiveDocument, buildArchiveDocument } from '../archive/export.ts';
 import type { ArchiveTag } from '../archive/delta.ts';
 import { ParticleSystem } from '../particleSystem/particleSystem.ts';
-import { describeSplatExperiment } from '../particleSystem/splatExperiment.ts';
 import { afterTimedSubmit, beginTimedFrame, resolveTimedFrame } from '../gpu/passTimer.ts';
 // TYPE-ONLY. `recorder.ts` reaches mediabunny through a dynamic `import()`, and
 // a value import here would pull the whole encoder into the main bundle for
@@ -127,7 +126,6 @@ import {
   PREFERENCE_KEYS,
   loadPreferences,
   fieldStrengthsFor,
-  splatExperimentFor,
   requiresRestart,
   savePreferences,
   withValue,
@@ -665,8 +663,6 @@ export class Orchestrator implements CommandBus {
     // user set in an earlier session applies from the first frame rather than
     // from whenever they next touch a control.
     system.setFieldStrengths(fieldStrengthsFor(prefs));
-    // EXPERIMENT: the splat experiments, from the first frame.
-    system.setSplatExperiment(splatExperimentFor(prefs));
 
     const targets = new RenderTargets(opts.device);
     const camera = await Camera.create(opts.device, new CameraState(), targets);
@@ -3159,8 +3155,6 @@ export class Orchestrator implements CommandBus {
     // moves when a slider does, and `runFrame` would rebuild it 30 times a frame
     // for something the user touches once a session (see `setFieldStrengths`).
     this.system.setFieldStrengths(fieldStrengthsFor(this.prefs));
-    // EXPERIMENT: a no-op unless a splat switch moved.
-    this.system.setSplatExperiment(splatExperimentFor(this.prefs));
     savePreferences(this.prefs);
     return needsRebuild ? this.rebuildSystem() : Promise.resolve();
   }
@@ -3244,8 +3238,6 @@ export class Orchestrator implements CommandBus {
     // showing whatever the user had set -- the controls and the simulation
     // disagreeing, with nothing on screen to say so.
     replacement.setFieldStrengths(fieldStrengthsFor(this.prefs));
-    // EXPERIMENT: carried across for the same reason.
-    replacement.setSplatExperiment(splatExperimentFor(this.prefs));
 
     const outgoingSystem = this.system;
     const outgoingField = this.strafeField;
@@ -3526,8 +3518,6 @@ export class Orchestrator implements CommandBus {
      * upstream of it.
      */
     readonly cropVisible: boolean;
-    /** EXPERIMENT: the active splat experiments, for labelling timings. */
-    readonly splatExperiment: string;
   } {
     return {
       preset: this.presetName,
@@ -3545,7 +3535,6 @@ export class Orchestrator implements CommandBus {
       // The same getter the frame path uses, so this reports what is actually
       // drawn rather than a second opinion about it.
       cropVisible: this.cropOverlay !== null,
-      splatExperiment: describeSplatExperiment(splatExperimentFor(this.prefs)),
     };
   }
 

@@ -38,9 +38,6 @@
  * the port validates at the boundary. See `coerce`.
  */
 
-// EXPERIMENT: see `splatExperimentFor`.
-import { MAX_CULL, type SplatExperiment } from '../particleSystem/splatExperiment.ts';
-
 /**
  * Editor preferences. Immutable; edits produce a new object via `withValue`,
  * which is the port of the Python's `dataclasses.replace` on a frozen class.
@@ -363,14 +360,6 @@ export interface Preferences {
    * nothing here a user would meaningfully drag.
    */
   readonly calibrationVersion: number;
-
-  // --- EXPERIMENT: the brush splat ---------------------------------------------
-  // Temporary. See `particleSystem/splatExperiment.ts`. Both defaults are the
-  // real splat.
-  /** Deposit trails with atomics in the entity update instead of a brush pass. */
-  readonly expAtomicSplat: boolean;
-  /** Monte Carlo cull probability for the brush pass, 0..MAX_CULL. */
-  readonly expSplatCull: number;
 }
 
 /**
@@ -442,9 +431,6 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   mobileMode: 0,
   // Zero is what MAKES someone a first-run user -- see the interface.
   calibrationVersion: 0,
-  // EXPERIMENT: both off -- the real splat.
-  expAtomicSplat: false,
-  expSplatCull: 0,
 });
 
 /**
@@ -502,8 +488,6 @@ export const PREFERENCE_KINDS = {
   // AUTO at the one place that reads it (`mobileModeFromValue`).
   mobileMode: 'int',
   calibrationVersion: 'int',
-  expAtomicSplat: 'bool',
-  expSplatCull: 'float',
 } as const satisfies Record<keyof Preferences, 'float' | 'int' | 'bool'>;
 
 export type PreferenceKey = keyof Preferences;
@@ -755,19 +739,5 @@ export function fieldStrengthsFor(prefs: Preferences): {
   return {
     walls: prefs.wallsStrength * WALLS_FIELD_GAIN,
     trails: prefs.trailsStrength * TRAILS_FIELD_GAIN,
-  };
-}
-
-/**
- * EXPERIMENT: the splat experiments these preferences ask for.
- *
- * Imports the experiment's pure leaf module, which keeps `particleSystem/` from
- * ever importing `prefs/`. The cull is clamped here, so a hand-edited value can
- * never reach the shader's 1/(1-p) at p = 1.
- */
-export function splatExperimentFor(prefs: Preferences): SplatExperiment {
-  return {
-    atomicSplat: prefs.expAtomicSplat,
-    cullProbability: Math.min(MAX_CULL, Math.max(0, prefs.expSplatCull)),
   };
 }

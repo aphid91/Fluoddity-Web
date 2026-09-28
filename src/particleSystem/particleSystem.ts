@@ -80,11 +80,6 @@ import {
 } from './uniforms.ts';
 import { workgroupsFor } from './dispatch.ts';
 import {
-  type SplatExperiment,
-  NO_SPLAT_EXPERIMENT,
-  sameSplatExperiment,
-} from './splatExperiment.ts';
-import {
   type PickResult,
   NO_HIT,
   PICK_RESULT_SIZE,
@@ -290,17 +285,6 @@ export class ParticleSystem {
   private readonly brushStride: number;
 
   private computePipeline: GPUComputePipeline | null = null;
-  // EXPERIMENT: the splat experiments (splatExperiment.ts). The modules,
-  // layouts and base constants are held so the entity update and canvas
-  // pipelines can be rebuilt with ATOMIC_SPLAT flipped, without recompiling.
-  private splatExperiment: SplatExperiment = NO_SPLAT_EXPERIMENT;
-  /** The atomic splat's accumulator, or a 16-byte dummy while that is off. */
-  private splatBuffer: GPUBuffer;
-  private entityModule: GPUShaderModule | null = null;
-  private entityPipelineLayout: GPUPipelineLayout | null = null;
-  private slotConstants: Record<string, number> = {};
-  private canvasModule: GPUShaderModule | null = null;
-  private canvasPipelineLayout: GPUPipelineLayout | null = null;
   private canvasPipeline: GPURenderPipeline | null = null;
   private brushPipeline: GPURenderPipeline | null = null;
   /** Pass A: reduce every entity to one packed key by atomicMin. */
@@ -408,9 +392,6 @@ export class ParticleSystem {
     // even where BC_KILL is never selected and nothing ever writes it. This is
     // the same shape the strafe field's 1x1 dummy texture already uses.
     this.lifetimes = opts.lifetimes ?? false;
-    // EXPERIMENT: bound whether or not the atomic splat is on, for the same
-    // reason as the free list below -- see `setSplatExperiment`.
-    this.splatBuffer = this.makeSplatBuffer(false);
     this.freeListBuffer = device.createBuffer({
       label: this.lifetimes ? 'FreeList' : 'FreeList (dummy)',
       size: freeListSize(this.lifetimes ? this.entityCount : 0),
@@ -606,12 +587,6 @@ export class ParticleSystem {
           visibility: GPUShaderStage.COMPUTE,
           buffer: { type: 'storage' },
         },
-        // EXPERIMENT: the atomic splat's accumulator. Always bound, like 3.
-        {
-          binding: 4,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: 'storage' },
-        },
       ],
     });
     const computeTextureLayout = device.createBindGroupLayout({
@@ -625,12 +600,13 @@ export class ParticleSystem {
     });
 
     if (entityModule !== null) {
-      this.entityModule = entityModule;
-      this.entityPipelineLayout = device.createPipelineLayout({
-        bindGroupLayouts: [computeStateLayout, computeTextureLayout],
+      this.computePipeline = device.createComputePipeline({
+        label: 'entity-update',
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [computeStateLayout, computeTextureLayout],
+        }),
+        compute: { module: entityModule, entryPoint: 'main', constants: slotConstants },
       });
-      this.slotConstants = slotConstants;
-      this.buildEntityPipeline();
       this.computeStateLayout = computeStateLayout;
     }
 
@@ -643,13 +619,6 @@ export class ParticleSystem {
           visibility: GPUShaderStage.FRAGMENT,
           buffer: { type: 'uniform', hasDynamicOffset: true },
         },
-        // EXPERIMENT: the atomic splat's accumulator, drained by the fragment
-        // stage. Always bound -- see the entity update's binding 4.
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: 'storage' },
-        },
       ],
     });
     const canvasTextureLayout = device.createBindGroupLayout({
@@ -661,11 +630,19 @@ export class ParticleSystem {
     });
 
     if (canvasModule !== null) {
-      this.canvasModule = canvasModule;
-      this.canvasPipelineLayout = device.createPipelineLayout({
-        bindGroupLayouts: [canvasUniformLayout, canvasTextureLayout],
+      this.canvasPipeline = device.createRenderPipeline({
+        label: 'canvas-update',
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [canvasUniformLayout, canvasTextureLayout],
+        }),
+        vertex: { module: canvasModule, entryPoint: 'vs_main' },
+        fragment: {
+          module: canvasModule,
+          entryPoint: 'fs_main',
+          targets: [{ format: CANVAS_FORMAT }],
+        },
+        primitive: { topology: 'triangle-strip' },
       });
-      this.buildCanvasPipeline();
       this.canvasUniformLayout = canvasUniformLayout;
     }
 
@@ -826,70 +803,6 @@ export class ParticleSystem {
   }
 
   /**
-   * EXPERIMENT: adopt the splat experiments. See splatExperiment.ts.
-   *
-   * The cull probability is read by `runFrame` into the brush uniforms, so it
-   * costs nothing here. Flipping the atomic splat swaps the accumulator for a
-   * full-size one (or back to the dummy), rebuilds the bind groups that hold
-   * it, and rebuilds the two pipelines that compile it in. Unchanged is free,
-   * so calling this on every preference change is fine.
-   */
-  setSplatExperiment(experiment: SplatExperiment): void {
-    if (sameSplatExperiment(experiment, this.splatExperiment)) return;
-    const atomicChanged = experiment.atomicSplat !== this.splatExperiment.atomicSplat;
-    this.splatExperiment = experiment;
-    if (!atomicChanged) return;
-    // A fresh buffer is zeroed, which is the empty accumulator the next entity
-    // update expects -- nothing is carried across the switch.
-    this.splatBuffer.destroy();
-    this.splatBuffer = this.makeSplatBuffer(experiment.atomicSplat);
-    this.buildStateGroups();
-    this.buildEntityPipeline();
-    this.buildCanvasPipeline();
-  }
-
-  /** One (x, y) i32 pair per canvas pixel, or a dummy when the splat is off. */
-  private makeSplatBuffer(atomic: boolean): GPUBuffer {
-    return this.device.createBuffer({
-      label: atomic ? 'atomic-splat' : 'atomic-splat (dummy)',
-      size: atomic ? this.canvasSize[0] * this.canvasSize[1] * 8 : 16,
-      usage: GPUBufferUsage.STORAGE,
-    });
-  }
-
-  private buildEntityPipeline(): void {
-    if (this.entityModule === null || this.entityPipelineLayout === null) return;
-    this.computePipeline = this.device.createComputePipeline({
-      label: 'entity-update',
-      layout: this.entityPipelineLayout,
-      compute: {
-        module: this.entityModule,
-        entryPoint: 'main',
-        constants: {
-          ...this.slotConstants,
-          ATOMIC_SPLAT: this.splatExperiment.atomicSplat ? 1 : 0,
-        },
-      },
-    });
-  }
-
-  private buildCanvasPipeline(): void {
-    if (this.canvasModule === null || this.canvasPipelineLayout === null) return;
-    this.canvasPipeline = this.device.createRenderPipeline({
-      label: 'canvas-update',
-      layout: this.canvasPipelineLayout,
-      vertex: { module: this.canvasModule, entryPoint: 'vs_main' },
-      fragment: {
-        module: this.canvasModule,
-        entryPoint: 'fs_main',
-        targets: [{ format: CANVAS_FORMAT }],
-        constants: { ATOMIC_SPLAT: this.splatExperiment.atomicSplat ? 1 : 0 },
-      },
-      primitive: { topology: 'triangle-strip' },
-    });
-  }
-
-  /**
    * The three bind groups that reference the per-sub-step uniform buffers.
    *
    * Split out of `reload()` because they must ALSO be rebuilt when the physics
@@ -915,7 +828,6 @@ export class ParticleSystem {
             },
           },
           { binding: 3, resource: { buffer: this.freeListBuffer } },
-          { binding: 4, resource: { buffer: this.splatBuffer } },
         ],
       });
     }
@@ -929,7 +841,6 @@ export class ParticleSystem {
             binding: 0,
             resource: { buffer: this.canvasUniforms, size: CANVAS_UNIFORM_SIZE },
           },
-          { binding: 1, resource: { buffer: this.splatBuffer } },
         ],
       });
     }
@@ -2087,7 +1998,6 @@ export class ParticleSystem {
             shove,
             this.strafeFieldBound,
             this.fieldStrengths,
-            this.splatExperiment.cullProbability,
           ),
         ),
         i * this.entityUpdateStride,
@@ -2097,9 +2007,7 @@ export class ParticleSystem {
         i * this.canvasStride,
       );
       brushBytes.set(
-        new Uint8Array(
-          packBrushUniforms(world, canvasRes, fc, this.splatExperiment.cullProbability),
-        ),
+        new Uint8Array(packBrushUniforms(world, canvasRes, fc)),
         i * this.brushStride,
       );
     }
@@ -2176,9 +2084,7 @@ export class ParticleSystem {
   private advance(encoder: GPUCommandEncoder, slot: number): void {
     this.updateEntities(encoder, slot);
     this.updateCanvas(encoder, slot);
-    // EXPERIMENT: under the atomic splat the entity update has already made
-    // the deposits, and the canvas pass above drained them.
-    if (!this.splatExperiment.atomicSplat) this.splatIntoCanvas(encoder, slot);
+    this.splatIntoCanvas(encoder, slot);
   }
 
   private updateEntities(encoder: GPUCommandEncoder, slot: number): void {
@@ -2308,8 +2214,6 @@ export class ParticleSystem {
     // megabytes in the sand modality, where Max Particles and World Size both
     // rebuild the system -- so leaking these would accumulate per change.
     this.freeListBuffer.destroy();
-    // EXPERIMENT: the atomic splat's accumulator (or its dummy).
-    this.splatBuffer.destroy();
     // `headPhase` is set so the in-flight `mapAsync` callback, which fires after
     // this buffer is gone, takes its failure path instead of reading a destroyed
     // buffer. It already catches, but leaving the phase at `mapping` would also
