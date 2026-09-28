@@ -103,6 +103,12 @@ override CONFIG_PER_COHORT: bool = false;
 // The operations, which name the binding above. Must follow it.
 #include "freeListOps.wgsl"
 
+// THE SPLAT ACCUMULATOR: this step's trail deposits, one (x, y) i32 pair per
+// canvas pixel, interleaved, at SPLAT_FIXED_SCALE counts per canvas unit. Every
+// live particle adds to it here -- see `deposit` -- and canvas.wgsl drains it
+// into the canvas and zeroes it, so it is empty again by the next step.
+@group(0) @binding(4) var<storage, read_write> splat : array<atomic<i32>>;
+
 // The desktop's loose uniforms, gathered into one struct. `canvas_res` is the
 // `textureSize()` hoist -- see uniforms.ts.
 struct EntityUpdateUniforms {
@@ -488,6 +494,87 @@ fn initial_position(index: u32, config: ConfigData) -> vec2f {
     return pos;
 }
 
+// ---------------------------------------------------------------------------
+// THE TRAIL DEPOSIT
+// ---------------------------------------------------------------------------
+// Each live particle adds its velocity to ONE canvas pixel per step, with
+// atomics, straight from this pass. This replaced a brush render pass that drew
+// a point per particle and let the blend unit do the adding: same deposits,
+// but no extra graphics pass per sub-step, which roughly doubled the frame rate
+// on a phone GPU and made no difference on desktop ones.
+//
+// WHY ONE PIXEL. The desktop drew an instanced gaussian QUAD ~1.5 px wide, so
+// the rasterizer's per-primitive work dwarfed the pixels it wrote, and what it
+// deposited swung ~700x with the particle's subpixel position: the kernel is
+// only sampled at the pixel centres the quad happens to cover. Instead each
+// particle deposits the quad's EXPECTED TOTAL into one pixel, chosen at random
+// with the same odds the quad spread its weight -- so every pixel receives the
+// same amount on average, without the aliasing. Trails match the quad's in
+// expectation, not texel for texel. This is the desktop's own atomic deposit
+// (Fluoddity experiments2, ca7b4a5).
+//
+// The quad blended `vel * k^2` per pixel, with k = gaussian(uv - 0.5, SIGMA)
+// normalised in the quad's 0..1 uv and cut off at radius RADIUS. Over a quad
+// `dot_px` pixels wide, the sum of k^2 is dot_px^2 times its integral over the
+// disc -- the closed form below, checked numerically in shaders.test.ts -- and
+// k^2 is itself a gaussian of sigma SIGMA/sqrt(2), which is the spread the
+// random pixel is drawn with.
+//
+// CALLED WITH THE STATE BEING WRITTEN, after the move: the order ported from
+// the desktop splats after the entity update (see particleSystem.ts), so a
+// particle deposits from where it has just arrived.
+const SPLAT_SIGMA: f32 = 0.163;
+const SPLAT_RADIUS: f32 = 0.5;
+fn deposit(index: u32, pos: vec2f, vel: vec2f, size: f32) {
+    let res = canvas_res();
+    // Canvas pixels per world unit. The same on both axes -- world space is
+    // area-preserving (common.wgsl) -- so x stands for both.
+    let px_per_world = res.x / (2.0 * world_half_extent_from_res(res).x);
+    // The old quad spanned +-size in world units.
+    let dot_px = 2.0 * size * px_per_world;
+    let amount = (1.0 - exp(-SPLAT_RADIUS * SPLAT_RADIUS / (SPLAT_SIGMA * SPLAT_SIGMA)))
+                 / (4.0 * PI * SPLAT_SIGMA * SPLAT_SIGMA) * dot_px * dot_px;
+
+    // Box-Muller: a gaussian offset with k^2's spread, in pixels. Seeded on
+    // (index, frame), so each particle lands somewhere new every step. u1 is
+    // kept off zero, where log() is -inf.
+    let fc = f32(frame_count());
+    let u1 = max(hash(vec2f(f32(index), fc + 0.25)), 1e-7);
+    let u2 = hash(vec2f(fc + 0.75, f32(index)));
+    let offset_px = sqrt(-2.0 * log(u1)) * vec2f(cos(2.0 * PI * u2), sin(2.0 * PI * u2))
+                    * (SPLAT_SIGMA / sqrt(2.0)) * dot_px;
+
+    // In BC_WRAP a deposit past an edge wraps onto the far side, as the particle
+    // itself would; in every other mode it falls off the canvas and is dropped.
+    var uv = world_to_uv(pos, res) + offset_px / res;
+    if (world_boundary_conditions(u.world) == BC_WRAP) {
+        uv = fract(uv);
+    }
+    if (any(uv < vec2f(0.0)) || any(uv >= vec2f(1.0))) { return; }
+
+    // Read as a texture coordinate, v counts rows from the texture's first row
+    // -- the row `get_can` samples at that same v -- so this pixel, indexed
+    // row-major from row 0, is the texel the sensors will read. canvas.wgsl
+    // drains by the same index. No flip anywhere: the old brush pass had to
+    // negate NDC y to land here, because the rasterizer's y and the texture's v
+    // disagree. The min() guards fract's round-up to 1.0.
+    let pixel = min(vec2u(uv * res), vec2u(res) - 1u);
+
+    // Premultiplied by (1-P)/P so that after the canvas pass's P decay the
+    // steady contribution matches the desktop's (1-P)*brush mix, and scaled by
+    // CANVAS_VALUE_SCALE like every canvas value (see common.wgsl).
+    let P = clamp(world_trail_persistence(u.world),
+                  TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
+    let premult = (1.0 - P) / P;
+    let value = vel * amount * premult * CANVAS_VALUE_SCALE * SPLAT_FIXED_SCALE;
+    // Clamped inside i32 before converting; a single deposit that large is
+    // already far past what the canvas can hold (see SPLAT_FIXED_SCALE).
+    let fixed = vec2i(round(clamp(value, vec2f(-2.0e9), vec2f(2.0e9))));
+    let i = (pixel.y * u32(res.x) + pixel.x) * 2u;
+    atomicAdd(&splat[i], fixed.x);
+    atomicAdd(&splat[i + 1u], fixed.y);
+}
+
 // Return an entity to its initialization state.
 //
 // NOTE: this writes the entity buffer ITSELF, so every caller must return
@@ -503,6 +590,10 @@ fn reset(index: u32, config: ConfigData) {
 
     // store to persistent entity buffer
     entities[index] = make_entity_reset(pos, vel, size, assign_config_index(index));
+    // A respawned particle deposits where it landed. Not on frame 0: that is
+    // the reset sentinel, the canvas pass is clearing, and it must not be
+    // immediately re-dirtied (particle_system.py:259-275).
+    if (frame_count() != 0) { deposit(index, pos, vel, size); }
 }
 
 // mutate_rule now lives in rule.wgsl, beside the generate-or-mutate branch that
@@ -953,6 +1044,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
     }
 
-    // Commit new entity state to buffers.
+    // Commit new entity state to buffers, and lay its trail from there.
     entities[index] = make_entity(pos, vel, e_size(e), config_index, col_params);
+    deposit(index, pos, vel, e_size(e));
 }

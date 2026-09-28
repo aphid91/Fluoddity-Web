@@ -1,10 +1,11 @@
 /**
- * The simulation: entity buffer, trail canvas, and the three passes that
- * advance them. The port of `particle_system/particle_system.py` (472 lines).
+ * The simulation: entity buffer, trail canvas, and the two passes that advance
+ * them. The port of `particle_system/particle_system.py` (472 lines).
  *
  * ## What `advance()` does, and why the order looks wrong
  *
- * Three passes per sub-step, and the order is NOT the obvious one:
+ * The desktop runs three passes per sub-step, and the order is NOT the obvious
+ * one:
  *
  *     update_entities    compute; reads the canvas, rewrites every entity
  *     update_canvas      decay + diffuse, front -> back, THEN SWAP
@@ -13,11 +14,19 @@
  * `particle_system.py:241-245` says it plainly: "The ordering here is a little
  * weird. It doesn't matter so much, but if I weren't trying to support legacy
  * configs, the proper order would be update_entities / splat_into_canvas /
- * update_canvas." It is ported as it IS, not as it should have been -- the
- * shipped presets were tuned against this order. Do not tidy it.
+ * update_canvas." The shipped presets were tuned against this order, so its
+ * EFFECT is kept: each step's splat lands on the freshly-decayed canvas, from
+ * the positions the entity update just wrote. Do not tidy it.
  *
- * Because the swap happens at the end of pass 2, the splat lands on the
- * freshly-decayed texture, and that same texture is what the camera reads.
+ * The web keeps that effect in TWO passes. The entity update adds each
+ * particle's splat to an integer accumulator with atomics as it writes the
+ * particle (entityUpdate.wgsl `deposit`), and the canvas pass adds the
+ * accumulator after its decay and zeroes it (canvas.wgsl). There is no splat
+ * pass: a separate graphics pass per sub-step cost a phone GPU about half its
+ * frame rate, and made no difference on desktop ones.
+ *
+ * The canvas pass swaps at its end, so the texture it just wrote -- decay plus
+ * this step's deposits -- is the front one, and that is what the camera reads.
  *
  * ## No memory barriers
  *
@@ -28,7 +37,7 @@
  *
  * ## One encoder per frame
  *
- * At the default physics rate, `advance()` runs 30x per frame -- 90 GPU passes,
+ * At the default physics rate, `advance()` runs 30x per frame -- 60 GPU passes,
  * plus rendering. WebGPU's per-pass overhead is JS-side and higher than GL's,
  * which docs/WEB_PORT_PLAN.md:558-564 flags as the most likely place this port
  * becomes slower than the desktop. The plan's first-choice mitigation is
@@ -69,11 +78,9 @@ import {
   type FieldStrengths,
   type ShoveState,
   alignTo,
-  BRUSH_UNIFORM_SIZE,
   CANVAS_UNIFORM_SIZE,
   DEFAULT_FIELD_STRENGTHS,
   ENTITY_UPDATE_UNIFORM_SIZE,
-  packBrushUniforms,
   packCanvasUniforms,
   packEntityUpdateUniforms,
   packPickUniforms,
@@ -91,7 +98,6 @@ import { timestampWrites } from '../gpu/passTimer.ts';
 
 import entityUpdateSource from './shaders/entityUpdate.wgsl';
 import canvasSource from './shaders/canvas.wgsl';
-import brushSource from './shaders/brush.wgsl';
 import entityPickSource from './shaders/entityPick.wgsl';
 import cohortRulesSource from './shaders/cohortRules.wgsl';
 import { configSlots } from './configSlots.ts';
@@ -209,6 +215,8 @@ export class ParticleSystem {
    * The dead-index pool. Allocated in both apps so the bind group layout is the
    * same one; a minimal dummy when `lifetimes` is off. See `freeList.wgsl`.
    */
+  /** The splat accumulator. See the constructor and entityUpdate.wgsl. */
+  private readonly splatBuffer: GPUBuffer;
   private readonly freeListBuffer: GPUBuffer;
   /** 4 bytes, for reading the head back. See `recordFreeListRead`. */
   private readonly headStaging: GPUBuffer;
@@ -276,17 +284,14 @@ export class ParticleSystem {
   // reallocates -- see `ensureUniformCapacity`.
   private entityUpdateUniforms: GPUBuffer;
   private canvasUniforms: GPUBuffer;
-  private brushUniforms: GPUBuffer;
-  /** Sub-step slices the three uniform buffers above are sized for. */
+  /** Sub-step slices the two uniform buffers above are sized for. */
   private uniformSlots: number;
   /** Stride between consecutive sub-steps' uniform slices. */
   private readonly entityUpdateStride: number;
   private readonly canvasStride: number;
-  private readonly brushStride: number;
 
   private computePipeline: GPUComputePipeline | null = null;
   private canvasPipeline: GPURenderPipeline | null = null;
-  private brushPipeline: GPURenderPipeline | null = null;
   /** Pass A: reduce every entity to one packed key by atomicMin. */
   private pickReducePipeline: GPUComputePipeline | null = null;
   /** Pass B: one invocation; copies the winner's rule and position. */
@@ -296,15 +301,13 @@ export class ParticleSystem {
 
   private computeStateGroup: GPUBindGroup | null = null;
   private canvasUniformGroup: GPUBindGroup | null = null;
-  private brushStateGroup: GPUBindGroup | null = null;
   private pickGroup: GPUBindGroup | null = null;
   private cohortRulesGroup: GPUBindGroup | null = null;
 
-  // Held so `buildStateGroups` can rebuild the three groups above without
+  // Held so `buildStateGroups` can rebuild the groups above without
   // recompiling shaders -- which is what a physics-rate growth needs.
   private computeStateLayout: GPUBindGroupLayout | null = null;
   private canvasUniformLayout: GPUBindGroupLayout | null = null;
-  private brushStateLayout: GPUBindGroupLayout | null = null;
   private pickLayout: GPUBindGroupLayout | null = null;
   private cohortRulesLayout: GPUBindGroupLayout | null = null;
   // Held for the same reason, one level down: `setStrafeField` rebuilds the
@@ -381,6 +384,16 @@ export class ParticleSystem {
       label: 'ConfigBuffer',
       size: packConfigs(this.configs).byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    // The splat accumulator: one (x, y) i32 pair per canvas pixel, which the
+    // entity update adds each step's deposits to and the canvas pass drains.
+    // Created zeroed, which is the empty accumulator the first step expects;
+    // the canvas pass re-zeroes every pixel it drains. See entityUpdate.wgsl.
+    this.splatBuffer = device.createBuffer({
+      label: 'splat-accumulator',
+      size: this.canvasSize[0] * this.canvasSize[1] * 8,
+      usage: GPUBufferUsage.STORAGE,
     });
 
     // The dead-index pool. See `freeList.wgsl` for the allocation protocol and
@@ -480,7 +493,6 @@ export class ParticleSystem {
     const align = device.limits.minUniformBufferOffsetAlignment;
     this.entityUpdateStride = alignTo(ENTITY_UPDATE_UNIFORM_SIZE, align);
     this.canvasStride = alignTo(CANVAS_UNIFORM_SIZE, align);
-    this.brushStride = alignTo(BRUSH_UNIFORM_SIZE, align);
 
     this.uniformSlots = Math.max(1, Math.trunc(this.physicsSteps));
     this.entityUpdateUniforms = this.makeUniformBuffer(
@@ -488,7 +500,6 @@ export class ParticleSystem {
       this.entityUpdateStride,
     );
     this.canvasUniforms = this.makeUniformBuffer('canvas-uniforms', this.canvasStride);
-    this.brushUniforms = this.makeUniformBuffer('brush-uniforms', this.brushStride);
 
     // --- picking ---------------------------------------------------------
     // 336 bytes: the atomic key, the winner's position, and its 320-byte Rule.
@@ -547,11 +558,10 @@ export class ParticleSystem {
   async reload(): Promise<void> {
     const device = this.device;
 
-    const [entityModule, canvasModule, brushModule, pickModule, rulesModule] =
+    const [entityModule, canvasModule, pickModule, rulesModule] =
       await Promise.all([
         compileModule(device, 'entityUpdate.wgsl', entityUpdateSource),
         compileModule(device, 'canvas.wgsl', canvasSource),
-        compileModule(device, 'brush.wgsl', brushSource),
         compileModule(device, 'entityPick.wgsl', entityPickSource),
         compileModule(device, 'cohortRules.wgsl', cohortRulesSource),
       ]);
@@ -587,6 +597,12 @@ export class ParticleSystem {
           visibility: GPUShaderStage.COMPUTE,
           buffer: { type: 'storage' },
         },
+        // The splat accumulator, which every live particle adds its trail to.
+        {
+          binding: 4,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'storage' },
+        },
       ],
     });
     const computeTextureLayout = device.createBindGroupLayout({
@@ -619,6 +635,12 @@ export class ParticleSystem {
           visibility: GPUShaderStage.FRAGMENT,
           buffer: { type: 'uniform', hasDynamicOffset: true },
         },
+        // The splat accumulator, drained (read and zeroed) per fragment.
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: 'storage' },
+        },
       ],
     });
     const canvasTextureLayout = device.createBindGroupLayout({
@@ -644,58 +666,6 @@ export class ParticleSystem {
         primitive: { topology: 'triangle-strip' },
       });
       this.canvasUniformLayout = canvasUniformLayout;
-    }
-
-    // --- brush splat ------------------------------------------------------
-    // The entity buffer is read in the VERTEX stage here. Same buffer as the
-    // compute pass, different binding type (read-only) and different
-    // visibility, so it needs its own layout.
-    const brushStateLayout = device.createBindGroupLayout({
-      label: 'brush-state',
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: 'uniform', hasDynamicOffset: true },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: 'read-only-storage' },
-        },
-      ],
-    });
-
-    if (brushModule !== null) {
-      this.brushPipeline = device.createRenderPipeline({
-        label: 'brush-splat',
-        layout: device.createPipelineLayout({
-          bindGroupLayouts: [brushStateLayout],
-        }),
-        vertex: { module: brushModule, entryPoint: 'vs_main' },
-        fragment: {
-          module: brushModule,
-          entryPoint: 'fs_main',
-          targets: [
-            {
-              format: CANVAS_FORMAT,
-              // Pure additive: brush.wgsl already carries the full per-splat
-              // weight. moderngl's `blend_func = ONE, ONE` sets colour AND
-              // alpha; WebGPU requires both spelled out. The target is
-              // rg16float so alpha does not exist -- the state is moot, but
-              // omitting it is a validation error rather than a silent default.
-              blend: {
-                color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-                alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-              },
-            },
-          ],
-        },
-        // One single-pixel point per entity -- see the header of brush.wgsl
-        // for why the splat is not a quad.
-        primitive: { topology: 'point-list' },
-      });
-      this.brushStateLayout = brushStateLayout;
     }
 
     // --- picking ----------------------------------------------------------
@@ -828,6 +798,7 @@ export class ParticleSystem {
             },
           },
           { binding: 3, resource: { buffer: this.freeListBuffer } },
+          { binding: 4, resource: { buffer: this.splatBuffer } },
         ],
       });
     }
@@ -841,20 +812,7 @@ export class ParticleSystem {
             binding: 0,
             resource: { buffer: this.canvasUniforms, size: CANVAS_UNIFORM_SIZE },
           },
-        ],
-      });
-    }
-
-    if (this.brushStateLayout !== null) {
-      this.brushStateGroup = device.createBindGroup({
-        label: 'brush-state',
-        layout: this.brushStateLayout,
-        entries: [
-          {
-            binding: 0,
-            resource: { buffer: this.brushUniforms, size: BRUSH_UNIFORM_SIZE },
-          },
-          { binding: 1, resource: { buffer: this.entityBuffer } },
+          { binding: 1, resource: { buffer: this.splatBuffer } },
         ],
       });
     }
@@ -1035,8 +993,8 @@ export class ParticleSystem {
    *                         rule (and re-assigns config_index)
    *     canvas.wgsl         writes the canvas to zero instead of decaying it,
    *                         clearing the trails
-   *     brush.wgsl          discards the frame's splats, so nothing is
-   *                         deposited into the canvas being cleared
+   *                         (and entityUpdate.wgsl deposits no splats, so
+   *                         nothing lands on the canvas being cleared)
    *
    * So nothing is torn down or reallocated here: the GPU rebuilds its own state
    * on the next advance(). Setting frameCount anywhere else, or skipping the
@@ -1725,10 +1683,9 @@ export class ParticleSystem {
   /**
    * The entity buffer, for the camera's PARTICLES mode.
    *
-   * Bound READ-ONLY in a vertex stage (`camBrush.wgsl`), the same way
-   * `brush.wgsl` reads it -- which is why the buffer already carries STORAGE
-   * usage and why both declare `read` rather than `read_write` (a vertex stage
-   * cannot write storage at all).
+   * Bound READ-ONLY in a vertex stage (`camBrush.wgsl`) -- which is why it
+   * declares `read` rather than `read_write` (a vertex stage cannot write
+   * storage at all).
    *
    * Returns the same object as `entityBufferForReadback()`, and is deliberately
    * a SEPARATE method rather than a rename of it. That one's name is
@@ -1982,7 +1939,6 @@ export class ParticleSystem {
     // rebuilt per sub-step here only because each slice must hold a full copy.
     const entityBytes = new Uint8Array(this.entityUpdateStride * steps);
     const canvasBytes = new Uint8Array(this.canvasStride * steps);
-    const brushBytes = new Uint8Array(this.brushStride * steps);
     for (let i = 0; i < steps; i++) {
       const fc = this._frameCount + i;
       entityBytes.set(
@@ -2006,15 +1962,10 @@ export class ParticleSystem {
         new Uint8Array(packCanvasUniforms(world, fc)),
         i * this.canvasStride,
       );
-      brushBytes.set(
-        new Uint8Array(packBrushUniforms(world, canvasRes, fc)),
-        i * this.brushStride,
-      );
     }
     const queue = this.device.queue;
     queue.writeBuffer(this.entityUpdateUniforms, 0, entityBytes);
     queue.writeBuffer(this.canvasUniforms, 0, canvasBytes);
-    queue.writeBuffer(this.brushUniforms, 0, brushBytes);
 
     this.recordRuleBake(encoder);
 
@@ -2062,7 +2013,6 @@ export class ParticleSystem {
 
     this.entityUpdateUniforms.destroy();
     this.canvasUniforms.destroy();
-    this.brushUniforms.destroy();
 
     this.uniformSlots = steps;
     this.entityUpdateUniforms = this.makeUniformBuffer(
@@ -2070,7 +2020,6 @@ export class ParticleSystem {
       this.entityUpdateStride,
     );
     this.canvasUniforms = this.makeUniformBuffer('canvas-uniforms', this.canvasStride);
-    this.brushUniforms = this.makeUniformBuffer('brush-uniforms', this.brushStride);
 
     this.buildStateGroups();
   }
@@ -2084,7 +2033,6 @@ export class ParticleSystem {
   private advance(encoder: GPUCommandEncoder, slot: number): void {
     this.updateEntities(encoder, slot);
     this.updateCanvas(encoder, slot);
-    this.splatIntoCanvas(encoder, slot);
   }
 
   private updateEntities(encoder: GPUCommandEncoder, slot: number): void {
@@ -2135,37 +2083,13 @@ export class ParticleSystem {
     pass.draw(4);
     pass.end();
 
-    // THE SWAP, and it happens here and nowhere else -- so the splat below
-    // lands on the texture this pass just wrote.
+    // THE SWAP, and it happens here and nowhere else -- so the texture this pass
+    // just wrote, decay plus this step's deposits, is the one the next entity
+    // update senses and the camera reads.
     const oldFront = this.front;
     this.front = this.back;
     this.back = oldFront;
     this.frontIsA = !this.frontIsA;
-  }
-
-  private splatIntoCanvas(encoder: GPUCommandEncoder, slot: number): void {
-    if (this.brushPipeline === null || this.brushStateGroup === null) return;
-
-    const pass = encoder.beginRenderPass({
-      label: 'brush-splat',
-      timestampWrites: timestampWrites('brush-splat'),
-      colorAttachments: [
-        {
-          view: this.front.view,
-          // 'load', NEVER 'clear'. The desktop renders into the canvas without
-          // clearing (particle_system.py:433); clearing here would erase the
-          // trails every sub-step.
-          loadOp: 'load',
-          storeOp: 'store',
-        },
-      ],
-    });
-    pass.setPipeline(this.brushPipeline);
-    pass.setBindGroup(0, this.brushStateGroup, [slot * this.brushStride]);
-    // One point per entity, instanced. No vertex buffer -- the entity comes
-    // from the instance index.
-    pass.draw(1, this.activeEntityCount);
-    pass.end();
   }
 
   /**
@@ -2205,7 +2129,7 @@ export class ParticleSystem {
     this.canvasB.texture.destroy();
     this.entityUpdateUniforms.destroy();
     this.canvasUniforms.destroy();
-    this.brushUniforms.destroy();
+    this.splatBuffer.destroy();
     this.pickResult.destroy();
     this.pickStaging.destroy();
     this.pickUniforms.destroy();
@@ -2227,7 +2151,6 @@ export class ParticleSystem {
     return {
       entityUpdate: this.computePipeline !== null,
       canvas: this.canvasPipeline !== null,
-      brush: this.brushPipeline !== null,
       // Both from one module, but reported separately: they are separate
       // pipelines, and browserCheck.mjs greps this line for /FAILED/.
       entityPickReduce: this.pickReducePipeline !== null,

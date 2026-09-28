@@ -81,8 +81,19 @@ const PI: f32 = 3.1415926;
 // P = 0.999 (~3.6e-6) to ~1.8e-3 -- comfortably normal -- while the largest
 // legitimate single splat (fast particle at the P clamp floor) stays around
 // 1e4, under fp16's 65504 ceiling. Readers: get_can() in entity_update,
-// camera. Writers: brush.
+// camera. Writers: the trail deposit (entityUpdate.wgsl `deposit`, drained
+// into the canvas by canvas.wgsl).
 const CANVAS_VALUE_SCALE: f32 = 512.0;
+
+// THE SPLAT ACCUMULATOR'S FIXED POINT. WGSL atomics are integer-only, so each
+// deposit rides in an i32 at this many counts per (already scaled) canvas unit.
+//
+// 2^14 matches fp16 at both ends. One count is 2^-14, fp16's smallest normal,
+// so the accumulator resolves exactly the deposits a blended fp16 splat could;
+// and +-2^31 counts span +-2^17, twice fp16's 65504 ceiling, so a pile-up
+// saturates in the canvas pass's CANVAS_VALUE_MAX clamp before it can wrap.
+// The deposit range this has to hold is CANVAS_VALUE_SCALE's, above.
+const SPLAT_FIXED_SCALE: f32 = 16384.0;
 
 // Saturation ceiling for stored (scaled) canvas values, applied by the canvas
 // pass on every write. NEEDED BECAUSE OF fp16: a texel pushed past 65504 rounds
@@ -97,8 +108,8 @@ const CANVAS_VALUE_MAX: f32 = 60000.0;
 // it exists for typed-in extremes. It was 1e-4, but (1-P)/P at 1e-4 is ~1e4,
 // which times CANVAS_VALUE_SCALE would overflow fp16 on a single splat --
 // 1e-2 caps the premultiply at ~99 and costs nothing anyone uses.
-// The brush and canvas passes MUST clamp with the same bounds, or the splat
-// premultiply and the decay would disagree about what P means.
+// The deposit and the canvas pass MUST clamp with the same bounds, or the
+// splat premultiply and the decay would disagree about what P means.
 const TRAIL_PERSISTENCE_MIN: f32 = 1e-2;
 const TRAIL_PERSISTENCE_MAX: f32 = 0.999;
 
@@ -500,8 +511,8 @@ fn uv_to_world(uv: vec2f, canvas_res: vec2f) -> vec2f {
 // corner by construction -- they are the same value.
 //
 // ARITHMETIC, NOT A LOOKUP TABLE, and that is the reason this exists. The
-// per-particle sprite shaders (camBrush.wgsl; brush.wgsl before it became a
-// point splat) used `var offsets = array<vec2f, 4>(...)` indexed by vertex_id.
+// per-particle sprite shaders (camBrush.wgsl; the brush pass before it became
+// a point splat) used `var offsets = array<vec2f, 4>(...)` indexed by vertex_id.
 // A local array indexed by a non-constant is spilled to per-thread scratch
 // memory by the browser's shader compilers (the same trap that made
 // entityUpdate's by-value Rule so slow), and a sprite shader runs four times

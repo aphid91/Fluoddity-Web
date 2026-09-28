@@ -20,8 +20,8 @@
 // copies did: selection adopted near-zero coefficients and the simulation
 // appeared to die.
 //
-// WHY NOT common.wgsl. That file is included by brush.wgsl and camBrush.wgsl in
-// VERTEX stages, and its own rules 3 and 4 (common.wgsl:38-52) require it to
+// WHY NOT common.wgsl. That file is included by camBrush.wgsl in a VERTEX
+// stage, and its own rules 3 and 4 (common.wgsl:38-52) require it to
 // hold pure, stage-agnostic code only. generate_random_centers is an 80-call
 // hash loop that no vertex stage wants, and get_cohort below could not live
 // there at all -- see its comment. This file is a SIBLING of the two shaders

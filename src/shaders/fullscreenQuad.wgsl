@@ -47,10 +47,12 @@ fn fullscreen_corner(vi: u32) -> vec2f {
 
 // NO Y FLIP, for every consumer of this entry point.
 //
-// The canvas texture is stored TOP-LEFT-ORIGIN: `brush.wgsl` negates NDC y when
-// it splats, precisely so that the stored image matches WebGPU's framebuffer
-// convention. Sampling it straight therefore puts world +y at the top of the
-// screen, matching the desktop. See `web/README.md`'s Y-flip section.
+// The canvas texture is stored TOP-LEFT-ORIGIN: the trail deposit
+// (entityUpdate.wgsl) writes each pixel at the texture row `get_can` samples,
+// and canvas.wgsl flips v to read back the texel it writes, so the stored image
+// matches WebGPU's framebuffer convention. Sampling it straight therefore puts
+// world +y at the top of the screen, matching the desktop. See `web/README.md`'s
+// Y-flip section.
 //
 // The intermediate targets (hdr, accum, the bloom mips) are all WRITTEN by
 // passes using this entry point and READ by passes using this entry point, so

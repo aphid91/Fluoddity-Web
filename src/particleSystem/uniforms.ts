@@ -61,9 +61,6 @@ export const ENTITY_UPDATE_UNIFORM_SIZE = 80;
 /** `CanvasUniforms` -- 48 bytes. world (32) + flags (16). */
 export const CANVAS_UNIFORM_SIZE = 48;
 
-/** `BrushUniforms` -- 64 bytes. world (32) + canvas_res (16) + flags (16). */
-export const BRUSH_UNIFORM_SIZE = 64;
-
 /**
  * How strongly each painted layer acts, already multiplied by its base gain.
  *
@@ -183,31 +180,6 @@ export function packCanvasUniforms(
   const { buffer, i32 } = withWorld(world, CANVAS_UNIFORM_SIZE);
   // flags: x frame_count(i), yzw reserved
   i32[AFTER_WORLD + 0] = frameCount;
-  return buffer;
-}
-
-/**
- * Pack the brush splat pass's uniforms.
- *
- * `canvas_resolution` is a vertex-stage value on the desktop
- * (`brush.vert:7`, set once at reload) and `world`/`frame_count` are
- * fragment-stage; here they share one buffer bound to both stages, because
- * splitting them would mean two buffers and two writes for 64 bytes.
- */
-export function packBrushUniforms(
-  world: WorldConfig,
-  canvasRes: readonly [number, number],
-  frameCount: number,
-): ArrayBuffer {
-  const { buffer, f32, i32 } = withWorld(world, BRUSH_UNIFORM_SIZE);
-
-  // canvas_res: xy, zw reserved
-  f32[AFTER_WORLD + 0] = canvasRes[0];
-  f32[AFTER_WORLD + 1] = canvasRes[1];
-
-  // flags: x frame_count(i), yzw reserved
-  i32[AFTER_WORLD + 4] = frameCount;
-
   return buffer;
 }
 

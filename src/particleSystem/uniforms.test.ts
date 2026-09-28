@@ -17,10 +17,8 @@ import { WORLD_DATA_SIZE } from './layout.ts';
 import {
   type FieldStrengths,
   alignTo,
-  BRUSH_UNIFORM_SIZE,
   CANVAS_UNIFORM_SIZE,
   ENTITY_UPDATE_UNIFORM_SIZE,
-  packBrushUniforms,
   packCanvasUniforms,
   packEntityUpdateUniforms,
   packPickUniforms,
@@ -53,7 +51,6 @@ test('every uniform struct is 16-byte aligned', () => {
   for (const size of [
     ENTITY_UPDATE_UNIFORM_SIZE,
     CANVAS_UNIFORM_SIZE,
-    BRUSH_UNIFORM_SIZE,
   ]) {
     assert.equal(size % 16, 0, `uniform size ${size} is not a multiple of 16`);
   }
@@ -66,7 +63,6 @@ test('WorldData occupies offset 0 of every struct, byte for byte', () => {
   const buffers = [
     packEntityUpdateUniforms(WORLD, [1024, 1024], [512, 512], 7, null, false, STRENGTHS),
     packCanvasUniforms(WORLD, 7),
-    packBrushUniforms(WORLD, [1024, 1024], 7),
   ];
   for (const buffer of buffers) {
     assert.equal(
@@ -175,11 +171,10 @@ test('the strength lanes are floats, not the int lanes beside them', () => {
 test('reserved lanes are left zero', () => {
   // An ArrayBuffer is zero-initialised by spec, which is what lets the packers
   // skip the reserved lanes entirely -- the same reasoning as pack.ts's misc3.
-  const f32 = new Float32Array(packBrushUniforms(WORLD, [1024, 1024], 9));
   const base = WORLD_DATA_SIZE / 4;
-  assert.deepEqual([...f32.slice(base + 2, base + 4)], [0, 0], 'canvas_res.zw must be zero');
-  const i32 = new Int32Array(packBrushUniforms(WORLD, [1024, 1024], 9));
-  assert.deepEqual([...i32.slice(base + 5, base + 8)], [0, 0, 0], 'flags.yzw must be zero');
+  const i32 = new Int32Array(packCanvasUniforms(WORLD, 9));
+  assert.equal(i32[base], 9, 'flags.x is the frame count');
+  assert.deepEqual([...i32.slice(base + 1, base + 4)], [0, 0, 0], 'flags.yzw must be zero');
 });
 
 test('alignTo rounds up to the next multiple, and leaves exact fits alone', () => {

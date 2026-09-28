@@ -112,7 +112,8 @@ export interface CameraFrame {
    *
    * PARTICLES MODE ONLY, and not because it was scoped that way to save work:
    * TRAIL renders the canvas texture, which is a velocity flow field
-   * (`brush.wgsl`'s fragment stage writes `vel`, and the target is rg16float) --
+   * (each particle deposits its `vel` -- entityUpdate.wgsl `deposit` -- into an
+   * rg16float target) --
    * cohort is not in it and cannot be recovered from it. A per-cohort dim is
    * therefore not expressible in that mode at all.
    *

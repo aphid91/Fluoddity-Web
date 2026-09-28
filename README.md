@@ -16,7 +16,7 @@ pipeline over the top.
 
 Scaffold, device acquisition, canvas sizing,
 the WGSL `#include` resolver, the pure-math leaves, `common.wgsl`, **the
-engine** (`entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`, driven by
+engine** (`entityUpdate.wgsl` and `canvas.wgsl`, driven by
 `src/particleSystem/particleSystem.ts`), **the render pipeline** (both camera
 modes, motion blur, bloom, brightness and the tone curve), **picking**
 (`entityPick.wgsl`, with the rule derived on the GPU), **the Orchestrator**
@@ -212,7 +212,7 @@ errors, but only in a browser, so the Node suite would never have seen them.
 | `src/gpu/` | Stateless GPU helpers — the `shared/` analogue (invariant 1) |
 | `src/app/` | Canvas surface and sizing; `renderTargets` (the HDR and accumulation buffers) |
 | `src/particleSystem/` | The simulation: the pure leaves (`coords`, `sizing`, `config`, `pack`, `layout`, `dispatch`, `pick`), `uniforms`, and `particleSystem.ts` |
-| `src/particleSystem/shaders/` | The engine — `entityUpdate.wgsl`, `canvas.wgsl`, `brush.wgsl`, `entityPick.wgsl`, and `rule.wgsl` shared by two of them (invariant 6) |
+| `src/particleSystem/shaders/` | The engine — `entityUpdate.wgsl` (which also deposits the trails, with atomics), `canvas.wgsl`, `entityPick.wgsl`, and `rule.wgsl` shared by two of them (invariant 6) |
 | `src/selection/` | The click-to-adopt ordering, with no GPU and no Project type |
 | `src/camera/` | `cameraState` (pan/zoom/mode), `blurSchedule` and `cameraUniforms` (pure leaves), and `camera.ts` |
 | `src/camera/shaders/` | `camera.wgsl` (TRAIL), `camBrush.wgsl` (PARTICLES), `accumulate.wgsl` |
@@ -339,14 +339,16 @@ Three translation decisions worth knowing before editing the file:
 therefore needs no flip anywhere, and the port needs one in *every* stage that
 rasterizes into the canvas:
 
-- `brush.wgsl` negates NDC y, because it writes through `world_to_ndc` while
-  `get_can` reads through `world_to_uv` — the same mapping up to scale, and both
-  Y-up. Without the negation the splat lands in the mirrored row from the one
-  the sensor reads back.
 - `canvas.wgsl`'s fullscreen quad flips v, because each fragment must read the
   texel it is about to write.
+- The trail splat was once a brush pass that rasterized a point per particle
+  through `world_to_ndc`, and had to negate NDC y to land on the row `get_can`
+  reads through `world_to_uv`. The splat is now an atomic deposit in
+  `entityUpdate.wgsl` that indexes the canvas by texture row directly, so it
+  needs no flip — `shaders.test.ts` asserts that it has none, and that the
+  canvas pass drains the same rows it writes.
 
-Both were originally wrong, and **neither looked like an upside-down picture.**
+Both flips were originally wrong, and **neither looked like an upside-down picture.**
 The canvas is a feedback loop, so reading the mirrored row makes the decay and
 the 5-tap diffusion operate on a mirror of the trail field: measured as ~3×
 less canvas energy by sub-step 3, and dynamics that settled into many small
@@ -361,13 +363,13 @@ contradictory:
 > **Rasterizing INTO the canvas → flip. Sampling the canvas TO the screen → no
 > flip.**
 
-`camBrush.wgsl` is the case that looks wrong and is not. It mirrors
-`brush.wgsl` in almost every respect *and does not negate y*, because the
-difference is the **target**, not the shader: `brush` writes into the canvas
-texture (read back through y-up `world_to_uv`, hence the correction), while
-`camBrush` writes into the HDR screen target, whose only correctness partner is
-`camera.wgsl` walking the same transform backwards from an unflipped quad. The
-two camera modes agree exactly when neither flips.
+`camBrush.wgsl` is the case that looks wrong and is not. It mirrors the old
+brush pass in almost every respect *and does not negate y*, because the
+difference is the **target**, not the shader: the brush pass wrote into the
+canvas texture (read back through y-up `world_to_uv`, hence the correction),
+while `camBrush` writes into the HDR screen target, whose only correctness
+partner is `camera.wgsl` walking the same transform backwards from an unflipped
+quad. The two camera modes agree exactly when neither flips.
 
 **That agreement is the test, and it is free:** switch `?camera=trail` to
 `?camera=particles` and watch whether the structure jumps. It must not
@@ -831,8 +833,8 @@ double-buffer away.
 
 `strafeDraw.wgsl` rasterizes **into** a texture that `entityUpdate.wgsl` samples
 through `world_to_uv_bc` — the same Y-up mapping `get_can` uses for the canvas.
-So it falls on the same side of the rule as `canvas.wgsl` and `brush.wgsl`, and
-carries the same v flip. It deliberately does **not** use `fullscreenQuad.wgsl`,
+So it falls on the same side of the rule as `canvas.wgsl`, and carries the same
+v flip. It deliberately does **not** use `fullscreenQuad.wgsl`,
 whose header excludes exactly this case.
 
 What makes it worse than the two Step 4 flips: **without it the overlay confirms

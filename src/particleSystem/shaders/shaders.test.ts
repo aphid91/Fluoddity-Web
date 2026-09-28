@@ -38,7 +38,6 @@ function expand(name: string): string {
 const SHADERS = [
   'entityUpdate.wgsl',
   'canvas.wgsl',
-  'brush.wgsl',
   'rule.wgsl',
   'entityPick.wgsl',
   'cohortRules.wgsl',
@@ -118,16 +117,6 @@ test('EntityBuffer and ConfigBuffer keep their project-wide binding numbers', ()
     /@group\(0\)\s*@binding\(1\)\s*var<storage,\s*read>\s*configs/,
     'entityUpdate.wgsl must bind configs read-only at group 0 binding 1',
   );
-
-  // The brush reads the SAME buffer in its vertex stage, so it must be
-  // read-only there -- a read_write storage binding is not permitted in a
-  // vertex stage at all, and would fail pipeline creation rather than silently.
-  const brush = stripComments(expand('brush.wgsl'));
-  assert.match(
-    brush,
-    /var<storage,\s*read>\s*entities/,
-    'brush.wgsl must bind entities READ-ONLY (vertex stages cannot write storage)',
-  );
 });
 
 test('the compute workgroup size matches the host dispatch arithmetic', () => {
@@ -179,10 +168,13 @@ test('strip_corner yields the triangle-strip order', () => {
   // uses (-,-) (+,-) (-,+) (+,+), computed from vertex_id's two bits.
   //
   // The expression is checked in the source and then evaluated here, because
-  // the failure is INVISIBLE: the splat kernel is radially symmetric about the
-  // quad centre, so a wrong order that still covers the quad renders a
-  // pixel-identical splat, and a bowtie only loses half of each tiny dot.
-  const source = stripComments(expand('brush.wgsl'));
+  // the failure is INVISIBLE: the particle camera's kernel is radially
+  // symmetric about the quad centre, so a wrong order that still covers the
+  // quad renders a pixel-identical dot, and a bowtie only loses half of each.
+  //
+  // strip_corner lives in common.wgsl (camBrush.wgsl is its user); any shader
+  // that includes common.wgsl carries it.
+  const source = stripComments(expand('canvas.wgsl'));
   assert.match(
     source,
     /fn\s+strip_corner\(vertex_id:\s*u32\)\s*->\s*vec2f\s*\{\s*return\s+vec2f\(f32\(vertex_id\s*&\s*1u\),\s*f32\(vertex_id\s*>>\s*1u\)\);/,
@@ -192,33 +184,31 @@ test('strip_corner yields the triangle-strip order', () => {
   assert.deepEqual(corners, ['0,0', '1,0', '0,1', '1,1']);
 });
 
-test('brush.wgsl splats one point per entity, with no quad left behind', () => {
-  // The quad's per-primitive cost is what the point exists to remove, and a
-  // stray corner table would also be a local array indexed by vertex_id --
-  // spilled to scratch memory by the browser's compilers (see strip_corner).
-  const source = stripComments(expand('brush.wgsl'));
-  assert.ok(!/array<vec2f,\s*4>\(/.test(source), 'brush.wgsl builds a local vec2f table');
-  assert.ok(!/vertex_index/.test(source), 'brush.wgsl reads vertex_index; a point has one vertex');
-  // The deposit is the quad's closed-form expected total, drawn with the
-  // spread of k^2 -- see the test below for why these two expressions.
+test('the trail deposit is the old quad\'s expected total, in one pixel', () => {
+  // Each particle deposits the quad's closed-form expected total, at a pixel
+  // drawn with the spread of k^2 -- see the test below for why these two
+  // expressions -- added into the splat accumulator with atomics.
+  const source = stripComments(expand('entityUpdate.wgsl'));
   assert.match(
     source,
-    /\(1\.0\s*-\s*exp\(-RADIUS\s*\*\s*RADIUS\s*\/\s*\(SIGMA\s*\*\s*SIGMA\)\)\)\s*\/\s*\(4\.0\s*\*\s*PI\s*\*\s*SIGMA\s*\*\s*SIGMA\)\s*\*\s*dot_px\s*\*\s*dot_px/,
-    'brush.wgsl changed the expected-deposit formula',
+    /\(1\.0\s*-\s*exp\(-SPLAT_RADIUS\s*\*\s*SPLAT_RADIUS\s*\/\s*\(SPLAT_SIGMA\s*\*\s*SPLAT_SIGMA\)\)\)\s*\/\s*\(4\.0\s*\*\s*PI\s*\*\s*SPLAT_SIGMA\s*\*\s*SPLAT_SIGMA\)\s*\*\s*dot_px\s*\*\s*dot_px/,
+    'entityUpdate.wgsl changed the expected-deposit formula',
   );
-  assert.match(source, /\(SIGMA\s*\/\s*sqrt\(2\.0\)\)\s*\*\s*dot_px/,
+  assert.match(source, /\(SPLAT_SIGMA\s*\/\s*sqrt\(2\.0\)\)\s*\*\s*dot_px/,
     'the random pixel must be drawn with k^2\'s spread, SIGMA/sqrt(2)');
-  assert.match(source, /const SIGMA: f32 = 0\.163;/);
-  assert.match(source, /const RADIUS: f32 = 0\.5;/);
+  assert.match(source, /const SPLAT_SIGMA: f32 = 0\.163;/);
+  assert.match(source, /const SPLAT_RADIUS: f32 = 0\.5;/);
+  assert.equal(count(source, /atomicAdd\(&splat\[/g), 2,
+    'one atomic add per channel of the deposit');
 });
 
-test('the point splat deposits what the old quad did, on average', () => {
-  // THE CORRECTNESS ARGUMENT FOR THE POINT SPLAT, checked numerically. The
-  // quad wrote vel * k^2 at every pixel centre it covered, k being
+test('the one-pixel deposit matches what the old quad did, on average', () => {
+  // THE CORRECTNESS ARGUMENT FOR THE ONE-PIXEL DEPOSIT, checked numerically.
+  // The quad wrote vel * k^2 at every pixel centre it covered, k being
   // gaussian(uv - 0.5, SIGMA) normalised in the quad's own 0..1 uv and cut off
   // at RADIUS. Averaged over where the quad sits relative to the pixel grid,
-  // that total must equal brush.wgsl's closed form -- which is what the point
-  // deposits every time.
+  // that total must equal the deposit's closed form -- which is what each
+  // particle deposits every time.
   const SIGMA = 0.163;
   const RADIUS = 0.5;
   const k = (du: number, dv: number): number =>
@@ -250,30 +240,38 @@ test('the point splat deposits what the old quad did, on average', () => {
     const average = total / (STEPS * STEPS);
     assert.ok(
       Math.abs(average / closedForm - 1) < 0.01,
-      `dot ${dotPx}px: quad averaged ${average.toFixed(3)}, point deposits ${closedForm.toFixed(3)}`,
+      `dot ${dotPx}px: quad averaged ${average.toFixed(3)}, deposit is ${closedForm.toFixed(3)}`,
     );
   }
 });
 
-test('the two canvas-writing stages agree on the Y flip', () => {
-  // OpenGL's framebuffer origin is bottom-left; WebGPU's is top-left. The GLSL
-  // therefore needs no flip anywhere, and the port needs one in EVERY stage
-  // that rasterizes into the canvas -- brush.wgsl (which writes through
-  // world_to_ndc) and canvas.wgsl (whose fullscreen quad reads back the texel
-  // it writes).
+test('the deposit, the drain and the sensors agree on which pixel is which', () => {
+  // Getting any of these wrong is not a flipped picture, it is a feedback loop
+  // that reads the mirrored row: measured as ~3x less canvas energy by sub-step
+  // 3 and visibly different dynamics. Every stage here was originally wrong at
+  // least once.
   //
-  // Getting either wrong is not a flipped picture, it is a feedback loop that
-  // reads the mirrored row: measured as ~3x less canvas energy by sub-step 3
-  // and visibly different dynamics. Both are asserted because both were
-  // originally wrong.
-  const brush = stripComments(expand('brush.wgsl'));
-  assert.match(
-    brush,
-    /vec4f\(\s*ndc\.x\s*,\s*-ndc\.y/,
-    'brush.wgsl must negate NDC y so the splat lands where get_can reads',
-  );
+  // THE DEPOSIT indexes the accumulator row-major by texture v, which is the
+  // row get_can samples -- so it must NOT flip. (The brush pass it replaced
+  // rasterized, and had to negate NDC y to land on that same row.)
+  const entity = stripComments(expand('entityUpdate.wgsl'));
+  assert.match(entity, /let\s+pixel\s*=\s*min\(vec2u\(uv\s*\*\s*res\),\s*vec2u\(res\)\s*-\s*1u\);/,
+    'the deposit must take its pixel straight from world_to_uv, unflipped');
+  assert.match(entity, /\(pixel\.y\s*\*\s*u32\(res\.x\)\s*\+\s*pixel\.x\)\s*\*\s*2u/,
+    'the deposit must index the accumulator row-major, two i32s per pixel');
 
+  // THE DRAIN reads its own fragment's pixel by the same row-major index, and
+  // does so before the frame-0 early out, or a reset would leave it full.
   const canvas = stripComments(expand('canvas.wgsl'));
+  assert.match(canvas, /take_splat\(vec2u\(in\.clip\.xy\)\)/,
+    'the canvas pass must drain its fragment\'s own pixel');
+  assert.match(canvas, /\(pixel\.y\s*\*\s*textureDimensions\(canvas_texture,\s*0\)\.x\s*\+\s*pixel\.x\)\s*\*\s*2u/,
+    'the drain must index the accumulator as the deposit does');
+  assert.ok(canvas.indexOf('take_splat(vec2u') < canvas.indexOf('frame_count() == 0'),
+    'the drain must run before the frame-0 early out');
+
+  // THE CANVAS PASS rasterizes a fullscreen quad that reads back the texel it
+  // writes, so its v must flip (WebGPU's framebuffer origin is top-left).
   assert.match(
     canvas,
     /0\.5\s*-\s*p\.y\s*\*\s*0\.5/,

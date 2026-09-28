@@ -20,7 +20,7 @@
 // This pass RASTERIZES INTO a texture that `entityUpdate.wgsl` later SAMPLES
 // through `world_to_uv_bc` (:184-188) -- the same Y-up mapping `get_can` uses to
 // read the canvas. So the field falls on the same side of the port's rule as
-// `canvas.wgsl` and `brush.wgsl`:
+// `canvas.wgsl` (and the brush pass that once rasterized splats into the canvas):
 //
 //     Rasterizing INTO the canvas -> flip.  Sampling it TO the screen -> no flip.
 //
@@ -33,7 +33,7 @@
 // particles in the MIRRORED direction, while the field overlay -- which samples
 // with the same unflipped canvas uv the mouse produced -- draws the stroke
 // exactly where you painted it. THE OVERLAY WOULD CONFIRM THE WRONG THING,
-// which makes this worse than the brush.wgsl flip it mirrors: there, at least,
+// which makes this worse than the canvas flips it mirrors: there, at least,
 // nothing agreed with the bug.
 // ============================================================================
 

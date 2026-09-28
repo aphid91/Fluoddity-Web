@@ -2,9 +2,9 @@
 // A port of `camera/shaders/cam_brush.vert` + `cam_brush.frag`, joined into one
 // module because a WebGPU pipeline takes both stages from one place.
 //
-// Unlike `brush.wgsl` (which splats into the canvas in canvas-ndc), this goes
-// all the way to SCREEN ndc, so the camera transform is baked into the vertices
-// here. The present pass must therefore NOT apply the camera again.
+// Unlike the old brush pass (which splatted into the canvas in canvas-ndc),
+// this goes all the way to SCREEN ndc, so the camera transform is baked into
+// the vertices here. The present pass must therefore NOT apply the camera again.
 //
 // Colour is decided HERE and nowhere upstream. `entityUpdate` transmits BOTH
 // signals and chooses neither: `col_params.x` is a raw output of the black box
@@ -60,8 +60,8 @@ struct CamBrushUniforms {
 }
 
 @group(0) @binding(0) var<uniform> u : CamBrushUniforms;
-// READ-ONLY, in the VERTEX STAGE -- exactly how `brush.wgsl` reads it. A vertex
-// stage cannot write storage at all, so `read` is not a choice here.
+// READ-ONLY, in the VERTEX STAGE. A vertex stage cannot write storage at all,
+// so `read` is not a choice here.
 @group(0) @binding(1) var<storage, read> entities : array<Entity>;
 
 fn color_mode() -> i32 { return bitcast<i32>(u.flags.x); }
@@ -155,9 +155,10 @@ fn vs_main(@builtin(vertex_index) vertex_id : u32,
            @builtin(instance_index) instance_id : u32) -> VsOut {
     let e = entities[instance_id];
 
-    // DEAD PARTICLES ARE NOT DRAWN. Same vertex-stage cull as brush.wgsl, for
-    // the same reason -- see the longer note there. A w of 0 empties the clip
-    // volume, so nothing is rasterized and no fragment cost is paid.
+    // DEAD PARTICLES ARE NOT DRAWN, culled in the vertex stage so that at a
+    // mostly-empty sand world, where dead particles are nearly the whole draw,
+    // no fragment cost is paid. A w of 0 empties the clip volume, so nothing is
+    // rasterized.
     if (e_is_dead(e)) {
         var dead : VsOut;
         dead.clip = vec4f(0.0, 0.0, 0.0, 0.0);
@@ -195,14 +196,17 @@ fn vs_main(@builtin(vertex_index) vertex_id : u32,
     let vertex_pos = entity_pos + to_velocity_frame(offset, entity_vel);
 
     // ========================================================================
-    // NO Y FLIP HERE -- and note that brush.wgsl, which this file otherwise
-    // mirrors, DOES negate y. The difference is the TARGET, not the shader.
+    // NO Y FLIP HERE -- and note that the old brush pass, which this file
+    // otherwise mirrored, DID negate y. The difference is the TARGET, not the
+    // shader.
     //
-    //   brush.wgsl    rasterizes into the CANVAS TEXTURE, which is read back
+    //   brush pass    rasterized into the CANVAS TEXTURE, which is read back
     //                 through world_to_uv (y-up). WebGPU's top-left framebuffer
     //                 origin means an unflipped y-up NDC deposits into the
     //                 mirrored row from the one the sensor reads -- a feedback
     //                 loop reading its own mirror. Hence the negation there.
+    //                 (The splat is now an atomic deposit that indexes the
+    //                 canvas by texture row, with no rasterizer and no flip.)
     //
     //   camBrush.wgsl rasterizes into the HDR SCREEN target, which is consumed
     //                 by accumulate -> frameAssembly -> swap chain, all

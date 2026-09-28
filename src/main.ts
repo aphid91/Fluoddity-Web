@@ -107,14 +107,15 @@ async function start(): Promise<void> {
 
   const surface: Surface = createSurface(canvas, device);
 
-  // A vertex-visible storage buffer is what brush.wgsl needs to read entities
-  // in its vertex stage. WebGPU's compatibility mode can report zero of them,
-  // and the failure would otherwise be an opaque pipeline error.
+  // Storage buffers outside compute are what two passes need: camBrush.wgsl
+  // reads the entities in its vertex stage, and canvas.wgsl drains the trail
+  // deposits in its fragment stage. WebGPU's compatibility mode can report zero
+  // of them, and the failure would otherwise be an opaque pipeline error.
   if (device.limits.maxStorageBuffersPerShaderStage === 0) {
     console.error(
-      'This adapter exposes no storage buffers per shader stage, so the brush ' +
-        'splat cannot read the entity buffer in its vertex stage. The trail ' +
-        'canvas will stay empty.',
+      'This adapter exposes no storage buffers per shader stage, so the canvas ' +
+        'pass cannot drain the trail deposits and the particle camera cannot ' +
+        'read the entity buffer. The trail canvas will stay empty.',
     );
   }
 

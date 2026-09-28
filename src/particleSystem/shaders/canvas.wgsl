@@ -8,6 +8,11 @@
 // Runs once per sub-step, over every texel, reading the front canvas and
 // writing the back one. The host swaps them afterwards.
 //
+// It also lands the step's TRAIL DEPOSITS: the entity update added them to the
+// splat accumulator with atomics (entityUpdate.wgsl `deposit`), and each
+// fragment here takes its own pixel's sum, adds it after the decay, and zeroes
+// it for the next step.
+//
 // THREE TRANSLATIONS WORTH KNOWING:
 //
 //  1. `getCan(vec2 p, sampler2D sam)` (canvas.frag:18) took a SAMPLER AS A
@@ -36,6 +41,22 @@ struct CanvasUniforms {
 @group(1) @binding(1) var canvas_sampler : sampler;
 
 fn frame_count() -> i32 { return bitcast<i32>(u.flags.x); }
+
+// The splat accumulator -- see the binding in entityUpdate.wgsl. Plain i32 on
+// this side: each fragment owns its own pair, so nothing else touches it while
+// this pass runs.
+@group(0) @binding(1) var<storage, read_write> splat : array<i32>;
+
+// This pixel's deposits, in canvas units, zeroing them for the next step. The
+// target is the canvas's own size, so the fragment's pixel is the
+// accumulator's -- indexed row-major from the top, as `deposit` writes it.
+fn take_splat(pixel: vec2u) -> vec4f {
+    let i = (pixel.y * textureDimensions(canvas_texture, 0).x + pixel.x) * 2u;
+    let value = vec2f(f32(splat[i]), f32(splat[i + 1u])) / SPLAT_FIXED_SCALE;
+    splat[i] = 0;
+    splat[i + 1u] = 0;
+    return vec4f(value, 0.0, 0.0);
+}
 
 struct VsOut {
     @builtin(position) clip : vec4f,
@@ -118,11 +139,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // FRAME 0 IS THE TRAIL CLEAR. This is not bookkeeping -- `reset()` on the
     // host does nothing but set frame_count to 0, and this line is what
     // actually erases the canvas (see particle_system.py:259-275).
+    // Drained BEFORE the frame-0 early out, so a reset still leaves the
+    // accumulator empty.
+    let splat_add = take_splat(vec2u(in.clip.xy));
+
     if (frame_count() == 0) { return vec4f(0.0, 0.0, 0.0, 0.0); }
 
     var canvas_color : vec4f;
     var TRAIL_DIFFUSION = clamp(world_trail_diffusion(u.world), 0.001, 1.0);
-    // Same bounds as brush.wgsl's premultiply, from common.wgsl -- the splat
+    // Same bounds as the deposit's premultiply, from common.wgsl -- the splat
     // and the decay must agree about what P means.
     let TRAIL_PERSISTENCE = clamp(world_trail_persistence(u.world),
                                   TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
@@ -136,11 +161,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         // the branch above always wins. Kept because the GLSL keeps it.
         canvas_color = textureSampleLevel(canvas_texture, canvas_sampler, in.uv, 0.0);
     }
-    // Brush splats are already mixed into the canvas; just decay by persistence.
+    // Decay by persistence, THEN add this step's deposits: the order the
+    // desktop's separate brush pass gave them, which the presets were tuned
+    // against (see particleSystem.ts).
+    //
     // The clamp is fp16 insurance, not a look decision: past 65504 a texel
     // rounds to inf, and inf survives decay forever (see CANVAS_VALUE_MAX in
-    // common.wgsl). This pass touches every texel every step, so a transient
-    // inf from an extreme splat pile-up is scrubbed within one step.
-    return clamp(canvas_color * TRAIL_PERSISTENCE,
+    // common.wgsl). It also catches a deposit pile-up in the same step.
+    return clamp(canvas_color * TRAIL_PERSISTENCE + splat_add,
                  vec4f(-CANVAS_VALUE_MAX), vec4f(CANVAS_VALUE_MAX));
 }

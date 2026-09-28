@@ -6,9 +6,10 @@
  * cover is the class of mistake a compiler would NOT catch, and Step 5's list
  * is different from Step 4's:
  *
- *   - A Y FLIP IN THE WRONG PLACE. `brush.wgsl` negates NDC y; `camBrush.wgsl`,
- *     which otherwise mirrors it, must NOT. Getting that wrong mirrors PARTICLES
- *     relative to TRAIL, which on a roughly symmetric field is easy to miss.
+ *   - A Y FLIP IN THE WRONG PLACE. A pass rasterizing into the CANVAS negates
+ *     NDC y; `camBrush.wgsl`, which rasterizes to the screen, must NOT. Getting
+ *     that wrong mirrors PARTICLES relative to TRAIL, which on a roughly
+ *     symmetric field is easy to miss.
  *   - A WRONG QUAD PERMUTATION. The sprite's kernel is radially symmetric about
  *     the quad centre, so a permuted uv array renders a PIXEL-IDENTICAL sprite.
  *   - A LOST `@interpolate(flat)`. The hue then interpolates across each quad
@@ -160,19 +161,21 @@ test('camBrush.wgsl builds its quad from strip_corner, offset and uv together', 
   assert.match(source, /out\.uv\s*=\s*corner;/);
 });
 
-test('camBrush.wgsl does NOT flip Y -- unlike its sibling brush.wgsl', () => {
-  // THE most dangerous line in Step 5. `brush.wgsl` negates ndc.y because it
-  // rasterizes into the CANVAS, read back through y-up world_to_uv.
-  // `camBrush.wgsl` rasterizes into the HDR SCREEN target, whose only
-  // correctness partner is camera.wgsl walking the same transform backwards
-  // from an unflipped quad -- so the two modes agree only when neither flips.
+test('camBrush.wgsl does NOT flip Y', () => {
+  // THE most dangerous line in Step 5. The trail splat used to be a sibling
+  // pass that rasterized points into the CANVAS, read back through y-up
+  // world_to_uv, and so had to negate ndc.y. `camBrush.wgsl` rasterizes into the
+  // HDR SCREEN target, whose only correctness partner is camera.wgsl walking the
+  // same transform backwards from an unflipped quad -- so the two modes agree
+  // only when neither flips.
   //
-  // This test exists to catch someone "fixing" camBrush to match brush.
+  // This test exists to catch someone "fixing" camBrush to match a canvas
+  // writer.
   const source = stripComments(expand('camBrush.wgsl'));
   assert.ok(
     !/-\s*ndc\.y/.test(source),
-    'camBrush.wgsl must NOT negate ndc.y -- that is brush.wgsl\'s correction, ' +
-      'and it applies because brush writes to the canvas, not to the screen',
+    'camBrush.wgsl must NOT negate ndc.y -- that correction is for passes that ' +
+      'rasterize into the canvas, not to the screen',
   );
   assert.match(
     source,
