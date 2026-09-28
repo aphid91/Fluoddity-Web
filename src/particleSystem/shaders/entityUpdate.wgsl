@@ -195,11 +195,21 @@ struct FourierPair {
 //  2. EACH CENTER IS READ ONCE, FOR BOTH TERMS. Two separate evaluations read
 //     all ten centers twice.
 //
-//  3. THE LOOP IS UNROLLED BY HAND. WGSL has no unroll hint and the translated
-//     loop stays a loop, so each iteration waited on its own buffer read before
-//     its trig could start. With constant indices the compiler can issue the
-//     reads early and overlap them with the arithmetic. The black box was ~4 ms
-//     of a ~7 ms entity update before this.
+//  3. IT IS A LOOP, AND THE LOOP IS KEPT A LOOP. This was hand-unrolled once,
+//     so the compiler could issue all ten centers' reads early and overlap
+//     them with the trig -- a win on the desktop that measured it. On a phone
+//     (Pixel 4a, Adreno 618) it was the entity update's whole problem: every
+//     center held live at once is ~80 floats of rule data on top of the trig's
+//     temporaries, past the register budget, and the cost went SUPERLINEAR --
+//     evaluating half the centers made the pass ~4x faster. As a loop only one
+//     center is live at a time. That was a large win on the phone and neutral
+//     on every other device tried.
+//
+//     THE BOUND IS OPAQUE ON PURPOSE. `frame_count()` is never negative, so it
+//     is always 10, but the compiler cannot know that -- and a constant 10 is
+//     exactly what invites a driver to unroll the loop straight back into the
+//     form that was slow. This is the form that was measured; do not "simplify"
+//     it to a literal without measuring on a phone again.
 //
 // The rule in the slot is already this cohort's mutation -- cohortRules.wgsl
 // baked it in when the configs were uploaded.
@@ -207,36 +217,12 @@ fn fourier_noise_pair(slot: i32, signals_base: vec4f, signals_mirror: vec4f) -> 
     var base = vec4f(0.0);
     var mirror = vec4f(0.0);
 
-    let c0 = configs[slot].rule.centers[0];
-    base += fourier_term(c0, 0, signals_base);
-    mirror += fourier_term(c0, 0, signals_mirror);
-    let c1 = configs[slot].rule.centers[1];
-    base += fourier_term(c1, 1, signals_base);
-    mirror += fourier_term(c1, 1, signals_mirror);
-    let c2 = configs[slot].rule.centers[2];
-    base += fourier_term(c2, 2, signals_base);
-    mirror += fourier_term(c2, 2, signals_mirror);
-    let c3 = configs[slot].rule.centers[3];
-    base += fourier_term(c3, 3, signals_base);
-    mirror += fourier_term(c3, 3, signals_mirror);
-    let c4 = configs[slot].rule.centers[4];
-    base += fourier_term(c4, 4, signals_base);
-    mirror += fourier_term(c4, 4, signals_mirror);
-    let c5 = configs[slot].rule.centers[5];
-    base += fourier_term(c5, 5, signals_base);
-    mirror += fourier_term(c5, 5, signals_mirror);
-    let c6 = configs[slot].rule.centers[6];
-    base += fourier_term(c6, 6, signals_base);
-    mirror += fourier_term(c6, 6, signals_mirror);
-    let c7 = configs[slot].rule.centers[7];
-    base += fourier_term(c7, 7, signals_base);
-    mirror += fourier_term(c7, 7, signals_mirror);
-    let c8 = configs[slot].rule.centers[8];
-    base += fourier_term(c8, 8, signals_base);
-    mirror += fourier_term(c8, 8, signals_mirror);
-    let c9 = configs[slot].rule.centers[9];
-    base += fourier_term(c9, 9, signals_base);
-    mirror += fourier_term(c9, 9, signals_mirror);
+    let centers = select(10, 0, frame_count() < 0);
+    for (var i = 0; i < centers; i++) {
+        let c = configs[slot].rule.centers[i];
+        base += fourier_term(c, i, signals_base);
+        mirror += fourier_term(c, i, signals_mirror);
+    }
 
     return FourierPair(base, mirror);
 }

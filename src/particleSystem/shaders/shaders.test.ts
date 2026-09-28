@@ -332,15 +332,25 @@ test('the black box reads its rule from the slot, never from a by-value copy', (
     'entityUpdate.wgsl takes a Rule by value');
   assert.ok(!/fn\s+\w+\s*\([^)]*array<FourierCenter/.test(src),
     'entityUpdate.wgsl takes a FourierCenter array by value');
-  // Each center read ONCE, by a constant index, for both black box terms:
-  // reading them twice doubled the loads, and a loop index kept each read
-  // waiting on the one before (see fourier_noise_pair).
-  for (let i = 0; i < 10; i++) {
-    assert.equal(count(src, new RegExp(`configs\\[slot\\]\\.rule\\.centers\\[${i}\\]`, 'g')), 1,
-      `center ${i} must be read from the config buffer exactly once`);
-  }
-  assert.equal(count(src, /\.rule\.centers\[[^\]0-9]/g), 0,
-    'a center is read by a non-constant index');
+  // Each center read ONCE per loop iteration, for both black box terms --
+  // reading them twice doubled the loads -- and straight from the buffer by the
+  // loop counter, so only one center is live at a time (see fourier_noise_pair).
+  assert.equal(count(src, /\.rule\.centers\[/g), 1,
+    'the black box must read its centers in exactly one place');
+  assert.equal(count(src, /configs\[slot\]\.rule\.centers\[i\]/g), 1,
+    'the centers must be read from the config buffer by the loop counter');
+});
+
+test('the black box loop keeps an opaque bound', () => {
+  // THE PHONE INVARIANT. Hand-unrolled, every center is live at once, which on
+  // an Adreno 618 blew the register budget and made the whole entity update
+  // several times slower. A literal bound invites the driver to unroll it back;
+  // the opaque one is the form that was measured. See fourier_noise_pair.
+  const src = stripComments(expand('entityUpdate.wgsl'));
+  assert.match(src, /let\s+centers\s*=\s*select\(\s*10\s*,\s*0\s*,\s*frame_count\(\)\s*<\s*0\s*\)/,
+    'the loop bound must stay opaque to the compiler');
+  assert.match(src, /for\s*\(\s*var\s+i\s*=\s*0\s*;\s*i\s*<\s*centers\s*;/,
+    'the black box must loop over `centers`');
 });
 
 test('every shader that knows the slot layout reads it from CONFIG_PER_COHORT', () => {
