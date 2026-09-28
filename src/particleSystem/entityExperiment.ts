@@ -58,6 +58,12 @@ export interface EntityExperiment {
   readonly canvasLoad: boolean;
   /** Run the canvas update every Nth sub-step, with persistence^N. */
   readonly canvasEvery: number;
+
+  // --- probes for the compute-to-graphics switch ---
+  /** Record no entity update pass at all, except on the reset frame. */
+  readonly skipEntityPass: boolean;
+  /** An empty 1x1 render pass straight after the entity update. */
+  readonly renderProbe: boolean;
 }
 
 /** The choices on offer, indexed by the preferences' stored values. */
@@ -82,6 +88,8 @@ export const NO_EXPERIMENT: EntityExperiment = Object.freeze({
   canvasTaps: 5,
   canvasLoad: false,
   canvasEvery: 1,
+  skipEntityPass: false,
+  renderProbe: false,
 });
 
 /** The `override` values for `canvas.wgsl`, as pipeline `constants`. */
@@ -130,7 +138,9 @@ export function sameExperiment(a: EntityExperiment, b: EntityExperiment): boolea
     a.fuseCanvasSplat === b.fuseCanvasSplat &&
     a.canvasTaps === b.canvasTaps &&
     a.canvasLoad === b.canvasLoad &&
-    a.canvasEvery === b.canvasEvery
+    a.canvasEvery === b.canvasEvery &&
+    a.skipEntityPass === b.skipEntityPass &&
+    a.renderProbe === b.renderProbe
   );
 }
 
@@ -154,5 +164,7 @@ export function describeExperiment(e: EntityExperiment): string {
   if (e.canvasTaps !== 5) parts.push(`taps=${e.canvasTaps}`);
   if (e.canvasLoad) parts.push('canvas-load');
   if (e.canvasEvery !== 1) parts.push(`canvas-every=${e.canvasEvery}`);
+  if (e.skipEntityPass) parts.push('skip-entity');
+  if (e.renderProbe) parts.push('render-probe');
   return parts.join(' ');
 }

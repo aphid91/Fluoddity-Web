@@ -303,6 +303,10 @@ export class ParticleSystem {
   // override constants too.
   private canvasModule: GPUShaderModule | null = null;
   private canvasPipelineLayout: GPUPipelineLayout | null = null;
+  // The Render Probe's own pipeline and 1x1 target, built on first use.
+  private probePipeline: GPURenderPipeline | null = null;
+  private probeTexture: GPUTexture | null = null;
+  private probeView: GPUTextureView | null = null;
   private canvasPipeline: GPURenderPipeline | null = null;
   private brushPipeline: GPURenderPipeline | null = null;
   /** Pass A: reduce every entity to one packed key by atomicMin. */
@@ -2143,12 +2147,18 @@ export class ParticleSystem {
    * within a submission are ordered and WebGPU inserts them.
    */
   private advance(encoder: GPUCommandEncoder, slot: number): void {
-    this.updateEntities(encoder, slot);
+    const fc = this._frameCount + slot;
+    // EXPERIMENT: Skip Entity Pass -- no compute pass at all, so the graphics
+    // passes run back to back. The reset frame still runs it, or every particle
+    // would stay stacked where the buffer was zeroed.
+    if (!this.experiment.skipEntityPass || fc === 0) this.updateEntities(encoder, slot);
+    // EXPERIMENT: Render Probe -- the first render pass after the compute pass,
+    // doing nothing, so it catches whatever that position costs.
+    if (this.experiment.renderProbe) this.recordRenderProbe(encoder);
     // EXPERIMENT: the canvas update every Nth sub-step. Always on frame 0,
     // which is the trail clear. A skipped step does not swap, so the splat
     // lands in the front canvas -- the one the next entity update reads.
     const every = this.experiment.canvasEvery;
-    const fc = this._frameCount + slot;
     const runCanvas = every <= 1 || fc % every === 0;
     if (runCanvas && this.experiment.fuseCanvasSplat && this.fuseCanvasAndSplat(encoder, slot)) {
       return;
@@ -2258,6 +2268,54 @@ export class ParticleSystem {
     this.swapCanvases();
   }
 
+  /**
+   * EXPERIMENT: an empty render pass on a 1x1 target of its own.
+   *
+   * It touches nothing the simulation uses, so any cost it shows is the
+   * position -- first graphics work after compute -- not a resource. It draws
+   * one point rather than only clearing, so a driver cannot turn it into a
+   * plain clear that never engages the graphics pipeline.
+   */
+  private recordRenderProbe(encoder: GPUCommandEncoder): void {
+    if (this.probePipeline === null || this.probeView === null) {
+      const module = this.device.createShaderModule({
+        label: 'render-probe',
+        code:
+          '@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0.0, 0.0, 0.0, 1.0); }\n' +
+          '@fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }\n',
+      });
+      this.probePipeline = this.device.createRenderPipeline({
+        label: 'render-probe',
+        layout: 'auto',
+        vertex: { module, entryPoint: 'vs' },
+        fragment: { module, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
+        primitive: { topology: 'point-list' },
+      });
+      this.probeTexture = this.device.createTexture({
+        label: 'render-probe',
+        size: { width: 1, height: 1 },
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      this.probeView = this.probeTexture.createView();
+    }
+    const pass = encoder.beginRenderPass({
+      label: 'render-probe',
+      timestampWrites: timestampWrites('render-probe'),
+      colorAttachments: [
+        {
+          view: this.probeView,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        },
+      ],
+    });
+    pass.setPipeline(this.probePipeline);
+    pass.draw(1);
+    pass.end();
+  }
+
   private swapCanvases(): void {
     const oldFront = this.front;
     this.front = this.back;
@@ -2342,6 +2400,8 @@ export class ParticleSystem {
     // strand the readback if the object somehow outlived the destroy.
     this.headPhase = 'idle';
     this.headStaging.destroy();
+    // EXPERIMENT: the Render Probe's target, if it was ever built.
+    this.probeTexture?.destroy();
   }
 
   /** True when every pipeline compiled. Surfaced for the startup summary. */

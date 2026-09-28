@@ -153,6 +153,8 @@ test('the registry has the same 35 entries the desktop does, plus the web-only o
     'expCanvasTaps',
     'expCanvasLoad',
     'expCanvasEvery',
+    'expSkipEntityPass',
+    'expRenderProbe',
   ];
   const ported = SETTINGS.filter((s) => !WEB_ONLY.includes(s.field));
   assert.equal(ported.length, 35);

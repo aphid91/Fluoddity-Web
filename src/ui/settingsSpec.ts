@@ -1087,6 +1087,34 @@ export const SETTINGS: readonly Setting[] = [
     group: 'Canvas Update Experiment',
     options: DROPDOWN_MODES.expCanvasEvery,
   }),
+  setting({
+    field: 'expSkipEntityPass',
+    label: 'Skip Entity Pass',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'Records no entity update at all, so particles freeze and the canvas and ' +
+      'splat passes run back to back with no compute between them. If the cost ' +
+      'that moves between canvas-update and brush-splat disappears, it was the ' +
+      'switch from compute to graphics.\n\nTurn it on while the simulation is ' +
+      'running: after a reset the particles freeze piled up at their spawn ' +
+      'points, which makes the splat slow for an unrelated reason.',
+    group: 'Canvas Update Experiment',
+  }),
+  setting({
+    field: 'expRenderProbe',
+    label: 'Render Probe',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'An empty render pass on a tiny target of its own, straight after the ' +
+      'entity update. If render-probe takes the cost and canvas-update drops, ' +
+      'the switch itself is the cost; if the probe is cheap, it is tied to the ' +
+      'canvas texture.',
+    group: 'Canvas Update Experiment',
+  }),
 
   // ================= PREFERENCES: Archive =================
   // **DECLARED LAST, AFTER Behavior, AND THAT IS THE WHOLE POINT.** `grouped()`

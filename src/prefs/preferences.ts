@@ -394,6 +394,9 @@ export interface Preferences {
   readonly expCanvasLoad: boolean;
   /** An index into `EXPERIMENT_CANVAS_EVERY`. */
   readonly expCanvasEvery: number;
+  // Probes for the compute-to-graphics switch. See the same module.
+  readonly expSkipEntityPass: boolean;
+  readonly expRenderProbe: boolean;
 }
 
 /**
@@ -480,6 +483,8 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   expCanvasTaps: 0,
   expCanvasLoad: false,
   expCanvasEvery: 0,
+  expSkipEntityPass: false,
+  expRenderProbe: false,
 });
 
 /**
@@ -551,6 +556,8 @@ export const PREFERENCE_KINDS = {
   expCanvasTaps: 'int',
   expCanvasLoad: 'bool',
   expCanvasEvery: 'int',
+  expSkipEntityPass: 'bool',
+  expRenderProbe: 'bool',
 } as const satisfies Record<keyof Preferences, 'float' | 'int' | 'bool'>;
 
 export type PreferenceKey = keyof Preferences;
@@ -828,5 +835,7 @@ export function entityExperimentFor(prefs: Preferences): EntityExperiment {
     canvasTaps: EXPERIMENT_CANVAS_TAPS[prefs.expCanvasTaps] ?? 5,
     canvasLoad: prefs.expCanvasLoad,
     canvasEvery: EXPERIMENT_CANVAS_EVERY[prefs.expCanvasEvery] ?? 1,
+    skipEntityPass: prefs.expSkipEntityPass,
+    renderProbe: prefs.expRenderProbe,
   };
 }

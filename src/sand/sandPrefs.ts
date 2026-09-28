@@ -95,6 +95,8 @@ const HIDDEN_PREFS: ReadonlySet<string> = new Set([
   'expCanvasTaps',
   'expCanvasLoad',
   'expCanvasEvery',
+  'expSkipEntityPass',
+  'expRenderProbe',
 ]);
 
 export interface SandPrefsCallbacks {
