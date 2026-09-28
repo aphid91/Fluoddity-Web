@@ -903,6 +903,38 @@ export const SETTINGS: readonly Setting[] = [
     options: DROPDOWN_MODES.mobileMode,
   }),
 
+  // ================= PREFERENCES: SPLAT EXPERIMENT =================
+  // Temporary: see `particleSystem/splatExperiment.ts`. Above Archive, which
+  // stays last.
+  setting({
+    field: 'expAtomicSplat',
+    label: 'Atomic Splat',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'Particles add their trails with atomic adds during the entity update, ' +
+      'instead of a separate brush pass drawing a point each. Same trails on ' +
+      'average. brush-splat disappears from the timings; the deposit moves into ' +
+      'entity-update and the drain into canvas-update, so compare gpu total.',
+    group: 'Splat Experiment',
+  }),
+  setting({
+    field: 'expSplatCull',
+    label: 'Splat Cull',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: SLIDER,
+    lo: 0.0,
+    // MAX_CULL in splatExperiment.ts. A literal because this file has no imports.
+    hi: 0.95,
+    help:
+      'Skips each particle\'s splat with this probability and makes the rest ' +
+      'deposit 1/(1-p) as much: the same trails on average, fewer points to ' +
+      'draw, more noise. Brush pass only -- it does nothing under Atomic Splat.',
+    group: 'Splat Experiment',
+  }),
+
   // ================= PREFERENCES: Archive =================
   // **DECLARED LAST, AFTER Behavior, AND THAT IS THE WHOLE POINT.** `grouped()`
   // emits groups in the order their first member is declared, so this one lands

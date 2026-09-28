@@ -198,6 +198,7 @@ export function packBrushUniforms(
   world: WorldConfig,
   canvasRes: readonly [number, number],
   frameCount: number,
+  cullProbability = 0,
 ): ArrayBuffer {
   const { buffer, f32, i32 } = withWorld(world, BRUSH_UNIFORM_SIZE);
 
@@ -205,8 +206,9 @@ export function packBrushUniforms(
   f32[AFTER_WORLD + 0] = canvasRes[0];
   f32[AFTER_WORLD + 1] = canvasRes[1];
 
-  // flags: x frame_count(i), yzw reserved
+  // flags: x frame_count(i), y cull probability (EXPERIMENT), zw reserved
   i32[AFTER_WORLD + 4] = frameCount;
+  f32[AFTER_WORLD + 5] = cullProbability;
 
   return buffer;
 }

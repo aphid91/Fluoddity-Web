@@ -103,6 +103,14 @@ override CONFIG_PER_COHORT: bool = false;
 // The operations, which name the binding above. Must follow it.
 #include "freeListOps.wgsl"
 
+// EXPERIMENT: the atomic splat. On, each live particle adds its trail deposit
+// to this fixed-point accumulator here, instead of the brush pass rasterizing
+// it; canvas.wgsl drains it. Interleaved (x, y) i32 pairs, one per canvas
+// pixel, at SPLAT_FIXED_SCALE counts per unit. A pipeline constant, so off it
+// is compiled out, and the host binds a 16-byte dummy.
+override ATOMIC_SPLAT: bool = false;
+@group(0) @binding(4) var<storage, read_write> splat : array<atomic<i32>>;
+
 // The desktop's loose uniforms, gathered into one struct. `canvas_res` is the
 // `textureSize()` hoist -- see uniforms.ts.
 struct EntityUpdateUniforms {
@@ -488,6 +496,46 @@ fn initial_position(index: u32, config: ConfigData) -> vec2f {
     return pos;
 }
 
+// EXPERIMENT: brush.wgsl's deposit, done with atomics. The same pixel, drawn
+// from the same seeds, and the same amount -- see brush.wgsl for the reasoning,
+// which this follows line for line. Called with an entity's WRITTEN state,
+// because the brush pass reads the buffer after this pass has updated it.
+const SPLAT_SIGMA: f32 = 0.163;
+const SPLAT_RADIUS: f32 = 0.5;
+fn deposit(index: u32, pos: vec2f, vel: vec2f, size: f32) {
+    if (!ATOMIC_SPLAT) { return; }
+    let res = canvas_res();
+    let px_per_world = res.x / (2.0 * world_half_extent_from_res(res).x);
+    let dot_px = 2.0 * size * px_per_world;
+    let amount = (1.0 - exp(-SPLAT_RADIUS * SPLAT_RADIUS / (SPLAT_SIGMA * SPLAT_SIGMA)))
+                 / (4.0 * PI * SPLAT_SIGMA * SPLAT_SIGMA) * dot_px * dot_px;
+
+    let fc = f32(frame_count());
+    let u1 = max(hash(vec2f(f32(index), fc + 0.25)), 1e-7);
+    let u2 = hash(vec2f(fc + 0.75, f32(index)));
+    let offset_px = sqrt(-2.0 * log(u1)) * vec2f(cos(2.0 * PI * u2), sin(2.0 * PI * u2))
+                    * (SPLAT_SIGMA / sqrt(2.0)) * dot_px;
+
+    var uv = world_to_uv(pos, res) + offset_px / res;
+    if (world_boundary_conditions(u.world) == BC_WRAP) {
+        uv = fract(uv);
+    }
+    // Where the rasterizer would have clipped the point.
+    if (any(uv < vec2f(0.0)) || any(uv >= vec2f(1.0))) { return; }
+    // The pixel the point covers, in framebuffer rows from the top -- brush.wgsl
+    // negates NDC y for exactly this, so no flip is needed here.
+    let pixel = min(vec2u(uv * res), vec2u(res) - 1u);
+
+    let P = clamp(world_trail_persistence(u.world),
+                  TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
+    let premult = (1.0 - P) / P;
+    let value = vel * amount * premult * CANVAS_VALUE_SCALE * SPLAT_FIXED_SCALE;
+    let fixed = vec2i(round(clamp(value, vec2f(-2.0e9), vec2f(2.0e9))));
+    let i = (pixel.y * u32(res.x) + pixel.x) * 2u;
+    atomicAdd(&splat[i], fixed.x);
+    atomicAdd(&splat[i + 1u], fixed.y);
+}
+
 // Return an entity to its initialization state.
 //
 // NOTE: this writes the entity buffer ITSELF, so every caller must return
@@ -503,6 +551,9 @@ fn reset(index: u32, config: ConfigData) {
 
     // store to persistent entity buffer
     entities[index] = make_entity_reset(pos, vel, size, assign_config_index(index));
+    // EXPERIMENT: a respawned particle splats where it landed, as the brush pass
+    // would draw it. Not on frame 0, which the brush pass culls.
+    if (frame_count() != 0) { deposit(index, pos, vel, size); }
 }
 
 // mutate_rule now lives in rule.wgsl, beside the generate-or-mutate branch that
@@ -955,4 +1006,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Commit new entity state to buffers.
     entities[index] = make_entity(pos, vel, e_size(e), config_index, col_params);
+    // EXPERIMENT: the atomic splat, from the state just written.
+    deposit(index, pos, vel, e_size(e));
 }

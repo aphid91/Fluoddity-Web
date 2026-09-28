@@ -80,6 +80,9 @@ const HIDDEN_PREFS: ReadonlySet<string> = new Set([
   'motionBlurSamples',
   // The touch layout is the studio panel's, not this one's.
   'mobileMode',
+  // EXPERIMENT: wired into the studio orchestrator only.
+  'expAtomicSplat',
+  'expSplatCull',
 ]);
 
 export interface SandPrefsCallbacks {
