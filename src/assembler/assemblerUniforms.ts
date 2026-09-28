@@ -40,7 +40,7 @@ export const BLOOM_UPSAMPLE_UNIFORM_SIZE = 16;
  *                                         z tonemap_softness w field_opacity
  *   reticle    : vec4f  (16)  offset 48   xy center  z radius  w draw angle
  *   flags      : vec4f  (16)  offset 64   x reticle_style(i)  y trails_opacity
- *                                         z line_enable  w reserved
+ *                                         z line_enable  w source_flipped
  *   crop       : vec4f  (16)  offset 80   xy half-extent  z enable  w dim
  *   capture    : vec4f  (16)  offset 96   xy uv scale  zw uv offset
  *   line       : vec4f  (16)  offset 112  xy anchor  zw cursor (canvas uv)
@@ -224,6 +224,7 @@ export function packFrameAssemblyUniforms(
   prefs: DisplayPreferences,
   bloomAvailable: boolean,
   overlays: OverlayState,
+  sourceFlipped = false,
 ): ArrayBuffer {
   const buffer = new ArrayBuffer(FRAME_ASSEMBLY_UNIFORM_SIZE);
   const f32 = new Float32Array(buffer);
@@ -256,7 +257,7 @@ export function packFrameAssemblyUniforms(
   f32[14] = overlays.reticleRadius;
   f32[15] = overlays.reticleAngle;
 
-  // flags: x reticle_style(i), y trails_opacity, zw reserved
+  // flags: x reticle_style(i), y trails_opacity, z line_enable, w source_flipped
   //
   // `reticle_style` REPLACED A BOOLEAN `reticle_dashed` in this lane. It is an
   // index into RETICLE_STYLES, and 'dashed' is deliberately NOT index 0 -- so a
@@ -268,6 +269,9 @@ export function packFrameAssemblyUniforms(
   // `fieldOpacity` preference with the walls overlay -- one control for how
   // strongly overlays draw, two flags for which ones do.
   f32[17] = overlays.showTrails ? Math.max(0.0, prefs.fieldOpacity) : 0.0;
+  // Whether `source` is stored upside down relative to the accumulator -- see
+  // `Assembler.present`, which is the only thing that can know.
+  f32[19] = sourceFlipped ? 1.0 : 0.0;
 
   // line: xy the anchor, zw the cursor, both in canvas uv. z of `flags` is the
   // enable, because a zero-length segment is a legitimate preview (the frame the

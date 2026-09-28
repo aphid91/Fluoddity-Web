@@ -249,7 +249,16 @@ export class Assembler {
     this.device.queue.writeBuffer(
       this.uniforms,
       0,
-      packFrameAssemblyUniforms(view, prefs, bloomView !== null, overlays),
+      packFrameAssemblyUniforms(
+        view,
+        prefs,
+        bloomView !== null,
+        overlays,
+        // The HDR target is one fullscreen pass short of the accumulator, so it
+        // is stored upside down relative to it -- see frameAssembly.wgsl. Decided
+        // here by identity, so no caller has to know which one it handed over.
+        source === this.targets.hdr,
+      ),
     );
 
     const textures = this.ensureTextureGroup(source, bloomView);

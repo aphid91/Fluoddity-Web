@@ -28,7 +28,8 @@ struct FrameAssemblyUniforms {
     tone       : vec4f,
     // xy: center (canvas uv)   z: radius   w: draw angle (the `fixed` arrow)
     reticle    : vec4f,
-    // x: reticle_style(i)   y: trails_opacity   z: line_enable   w: reserved
+    // x: reticle_style(i)   y: trails_opacity   z: line_enable
+    // w: source_flipped -- see `fs_main`'s source read
     flags      : vec4f,
     // xy: crop half-extent as a fraction of the window   z: enable
     // w: how far the surround is dimmed, 0..1
@@ -54,6 +55,7 @@ struct FrameAssemblyUniforms {
 fn reticle_style() -> i32 { return bitcast<i32>(u.flags.x); }
 fn trails_opacity() -> f32 { return u.flags.y; }
 fn line_enabled() -> bool { return u.flags.z > 0.0; }
+fn source_flipped() -> bool { return u.flags.w > 0.0; }
 fn draw_angle() -> f32 { return u.reticle.w; }
 
 // Reticle styles. MUST match `RETICLE_STYLES` in `assemblerUniforms.ts`, whose
@@ -165,7 +167,14 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
     // wrong place in the exported video, and only in the exported video.
     let uv = in.uv * u.capture.xy + u.capture.zw;
 
-    var color = textureSampleLevel(source, tex_sampler, uv, 0.0).rgb;
+    // THE SOURCE IS UPSIDE DOWN when the camera presents its HDR target
+    // directly (a one-sample frame, `Camera.direct`). Every `fullscreen_vs`
+    // pass reads its input at an unflipped uv and so mirrors it vertically, and
+    // the accumulate pass is one of those -- skipping it skips a mirror. Flipped
+    // AFTER the capture remap: the crop rect is described in the accumulator's
+    // orientation, and in the HDR target that same content sits at 1 - y.
+    let source_uv = select(uv, vec2f(uv.x, 1.0 - uv.y), source_flipped());
+    var color = textureSampleLevel(source, tex_sampler, source_uv, 0.0).rgb;
 
     // -- bloom, added in linear space where adding light is meaningful --
     // The intensity carries the on/off switch (assembler.py:102-109): at zero
@@ -185,7 +194,10 @@ fn fs_main(in: FsQuadVsOut) -> @location(0) vec4f {
         // The REMAPPED uv: the bloom mips are the same size and orientation as
         // the source, so a crop must take the same sub-rect from both or the
         // glow would slide against the image it belongs to.
-        let bloom_uv = vec2f(uv.x, 1.0 - uv.y);
+        //
+        // From `source_uv`, not `uv`: the chain is built FROM the source, so it
+        // inherits the source's orientation and flips with it.
+        let bloom_uv = vec2f(source_uv.x, 1.0 - source_uv.y);
         color += textureSampleLevel(bloom_tex, tex_sampler, bloom_uv, 0.0).rgb * u.tone.x;
     }
 
