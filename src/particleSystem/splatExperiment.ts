@@ -18,8 +18,10 @@
  *
  * The brush pass drops each particle with probability p and scales the
  * survivors by 1/(1-p): the same expected splat, fewer points, more noise. A
- * uniform rather than a constant, so the slider moves without a rebuild. The
- * raster path only -- the atomic path does not read it.
+ * uniform rather than a constant, so the slider moves without a rebuild. Both
+ * paths read it -- the brush pass from its flags, the atomic deposit from the
+ * entity update's `splat` lane -- with the same seed, so they cull the same
+ * particles.
  *
  * TEMPORARY. Meant to be reverted once the question is answered.
  */

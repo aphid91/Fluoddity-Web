@@ -931,7 +931,7 @@ export const SETTINGS: readonly Setting[] = [
     help:
       'Skips each particle\'s splat with this probability and makes the rest ' +
       'deposit 1/(1-p) as much: the same trails on average, fewer points to ' +
-      'draw, more noise. Brush pass only -- it does nothing under Atomic Splat.',
+      'draw or add, more noise. Works with and without Atomic Splat.',
     group: 'Splat Experiment',
   }),
 

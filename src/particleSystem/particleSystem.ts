@@ -2087,6 +2087,7 @@ export class ParticleSystem {
             shove,
             this.strafeFieldBound,
             this.fieldStrengths,
+            this.splatExperiment.cullProbability,
           ),
         ),
         i * this.entityUpdateStride,

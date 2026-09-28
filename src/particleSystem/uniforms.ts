@@ -42,7 +42,10 @@ import { WORLD_DATA_SIZE } from './layout.ts';
 import { PICK_UNIFORM_SIZE } from './pick.ts';
 
 /**
- * `EntityUpdateUniforms` -- 80 bytes.
+ * `EntityUpdateUniforms` -- 96 bytes.
+ *
+ * (EXPERIMENT: `splat` at offset 80 -- x the atomic splat's cull probability,
+ * yzw reserved. Grew the struct from 80; see splatExperiment.ts.)
  *
  *   world      : WorldData  (32)  offset 0
  *   canvas_res : vec4f      (16)  offset 32   xy: canvas   zw: strafe field
@@ -56,7 +59,7 @@ import { PICK_UNIFORM_SIZE } from './pick.ts';
  * via reset/fence, and `:384`); at 600k entities x 30 sub-steps that is not
  * free, and the value is constant for the whole pass anyway.
  */
-export const ENTITY_UPDATE_UNIFORM_SIZE = 80;
+export const ENTITY_UPDATE_UNIFORM_SIZE = 96;
 
 /** `CanvasUniforms` -- 48 bytes. world (32) + flags (16). */
 export const CANVAS_UNIFORM_SIZE = 48;
@@ -144,6 +147,7 @@ export function packEntityUpdateUniforms(
   shove: ShoveState | null,
   strafeFieldActive: boolean,
   strengths: FieldStrengths,
+  cullProbability = 0,
 ): ArrayBuffer {
   const { buffer, f32, i32 } = withWorld(world, ENTITY_UPDATE_UNIFORM_SIZE);
 
@@ -171,6 +175,8 @@ export function packEntityUpdateUniforms(
   i32[AFTER_WORLD + 9] = strafeFieldActive ? 1 : 0;
   f32[AFTER_WORLD + 10] = strengths.walls;
   f32[AFTER_WORLD + 11] = strengths.trails;
+  // EXPERIMENT: splat: x the atomic splat's cull probability, yzw reserved
+  f32[AFTER_WORLD + 12] = cullProbability;
 
   return buffer;
 }

@@ -128,6 +128,8 @@ struct EntityUpdateUniforms {
     // deliberately not in `WorldData`: a downloaded config must not carry someone
     // else's decision to mute the walls they painted and you did not.
     flags      : vec4f,
+    // EXPERIMENT: x: the atomic splat's cull probability   yzw: reserved
+    splat      : vec4f,
 }
 @group(0) @binding(2) var<uniform> u : EntityUpdateUniforms;
 
@@ -504,6 +506,10 @@ const SPLAT_SIGMA: f32 = 0.163;
 const SPLAT_RADIUS: f32 = 0.5;
 fn deposit(index: u32, pos: vec2f, vel: vec2f, size: f32) {
     if (!ATOMIC_SPLAT) { return; }
+    // The Monte Carlo cull: brush.wgsl's, with the same seed, so both paths
+    // drop the same particles. Survivors deposit 1/(1-p) as much, below.
+    let p = u.splat.x;
+    if (p > 0.0 && hash(vec2f(f32(frame_count()) + 0.5, f32(index) + 0.5)) < p) { return; }
     let res = canvas_res();
     let px_per_world = res.x / (2.0 * world_half_extent_from_res(res).x);
     let dot_px = 2.0 * size * px_per_world;
@@ -529,7 +535,7 @@ fn deposit(index: u32, pos: vec2f, vel: vec2f, size: f32) {
     let P = clamp(world_trail_persistence(u.world),
                   TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
     let premult = (1.0 - P) / P;
-    let value = vel * amount * premult * CANVAS_VALUE_SCALE * SPLAT_FIXED_SCALE;
+    let value = vel * amount * premult * CANVAS_VALUE_SCALE * SPLAT_FIXED_SCALE / (1.0 - p);
     let fixed = vec2i(round(clamp(value, vec2f(-2.0e9), vec2f(2.0e9))));
     let i = (pixel.y * u32(res.x) + pixel.x) * 2u;
     atomicAdd(&splat[i], fixed.x);

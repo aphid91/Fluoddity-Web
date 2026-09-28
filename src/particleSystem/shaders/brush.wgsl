@@ -84,9 +84,13 @@ fn vs_main(@builtin(instance_index) instance_id : u32) -> VsOut {
     // probability p and the survivors deposit 1/(1-p) as much, so the expected
     // total is unchanged and only the noise grows. Its own seed, independent of
     // the pixel draw's two below.
+    //
+    // Culled points go PLAINLY OUTSIDE the clip volume, not to (0,0,0,0): that
+    // point satisfies -w <= x <= w with equality and leaves the driver a divide
+    // by w = 0, which at 90% of the draw may be a slow path of its own.
     let p = cull_probability();
     if (p > 0.0 && hash(vec2f(f32(frame_count()) + 0.5, f32(instance_id) + 0.5)) < p) {
-        out.clip = vec4f(0.0, 0.0, 0.0, 0.0);
+        out.clip = vec4f(-2.0, -2.0, 0.0, 1.0);
         return out;
     }
 
