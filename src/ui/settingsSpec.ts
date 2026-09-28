@@ -219,6 +219,10 @@ export const DROPDOWN_MODES = {
   // imports, so the dependency runs one way (mobile -> registry) and a UI module
   // can never end up upstream of the registry.
   mobileMode: ['Auto', 'Always Touch', 'Always Desktop'],
+  // EXPERIMENT: entity update ablations. Indices into the shader's
+  // EXP_EARLY_OUT and `EXPERIMENT_WORKGROUP_SIZES` respectively.
+  expEarlyOut: ['Off', 'Empty Dispatch', 'Move Only'],
+  expWorkgroupSize: ['256', '128', '64'],
 } as const;
 
 // Bounds are fixed and generous rather than user-editable (adjustable slider
@@ -903,6 +907,82 @@ export const SETTINGS: readonly Setting[] = [
     options: DROPDOWN_MODES.mobileMode,
   }),
 
+  // ================= PREFERENCES: EXPERIMENT =================
+  // Temporary: ablations for timing the entity update pass with `?debug`. See
+  // `particleSystem/entityExperiment.ts`. Above Archive, which stays last.
+  setting({
+    field: 'expEarlyOut',
+    label: 'Early Out',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: CHOICE,
+    lo: 0,
+    hi: DROPDOWN_MODES.expEarlyOut.length - 1,
+    help:
+      'Empty Dispatch returns before reading anything: what the pass costs doing ' +
+      'no work. Move Only reads each particle, moves it in a straight line and ' +
+      'writes it back: the memory traffic floor. Both still run the reset frame, ' +
+      'and both override every switch below except Workgroup Size.',
+    group: 'Entity Update Experiment',
+    options: DROPDOWN_MODES.expEarlyOut,
+  }),
+  setting({
+    field: 'expSlimConfig',
+    label: 'Slim Config Load',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'Loads the config without its 320-byte rule. Changes no behaviour -- if ' +
+      'this alone is faster, the whole-struct copy was the cost.',
+    group: 'Entity Update Experiment',
+  }),
+  setting({
+    field: 'expNoSensors',
+    label: 'No Sensor Reads',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help: 'Replaces both canvas texture samples with arithmetic. Particles steer on noise.',
+    group: 'Entity Update Experiment',
+  }),
+  setting({
+    field: 'expBlackBoxCenters',
+    label: 'Black Box Centers',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: INT,
+    lo: 0,
+    hi: 10,
+    help:
+      'Fourier centers evaluated per particle. 10 is the real rule; 0 skips the ' +
+      'black box entirely. The slope says what one center costs.',
+    group: 'Entity Update Experiment',
+  }),
+  setting({
+    field: 'expNoExtras',
+    label: 'No Extras',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'Skips hazard, the stalled-particle rescue, sensor jitter, all three ' +
+      'gravity channels, painted walls and trails, shove and cohort fences.',
+    group: 'Entity Update Experiment',
+  }),
+  setting({
+    field: 'expWorkgroupSize',
+    label: 'Workgroup Size',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: CHOICE,
+    lo: 0,
+    hi: DROPDOWN_MODES.expWorkgroupSize.length - 1,
+    help: 'Threads per workgroup for this pass. Mobile GPUs often prefer 64 or 128.',
+    group: 'Entity Update Experiment',
+    options: DROPDOWN_MODES.expWorkgroupSize,
+  }),
+
   // ================= PREFERENCES: Archive =================
   // **DECLARED LAST, AFTER Behavior, AND THAT IS THE WHOLE POINT.** `grouped()`
   // emits groups in the order their first member is declared, so this one lands
@@ -926,6 +1006,7 @@ export const SETTINGS: readonly Setting[] = [
       'exploration can be studied later. Changes nothing on screen',
     group: 'Archive',
   }),
+
 ];
 
 /**

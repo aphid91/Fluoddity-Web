@@ -90,6 +90,12 @@ import { compileModule } from '../gpu/shaderModule.ts';
 import { timestampWrites } from '../gpu/passTimer.ts';
 
 import entityUpdateSource from './shaders/entityUpdate.wgsl';
+import {
+  type EntityExperiment,
+  NO_EXPERIMENT,
+  experimentConstants,
+  sameExperiment,
+} from './entityExperiment.ts';
 import canvasSource from './shaders/canvas.wgsl';
 import brushSource from './shaders/brush.wgsl';
 import entityPickSource from './shaders/entityPick.wgsl';
@@ -285,6 +291,12 @@ export class ParticleSystem {
   private readonly brushStride: number;
 
   private computePipeline: GPUComputePipeline | null = null;
+  // EXPERIMENT: held so `setEntityExperiment` can rebuild the entity update
+  // pipeline with new override constants without recompiling anything else.
+  private entityModule: GPUShaderModule | null = null;
+  private entityPipelineLayout: GPUPipelineLayout | null = null;
+  private entityConstants: Record<string, number> = {};
+  private experiment: EntityExperiment = NO_EXPERIMENT;
   private canvasPipeline: GPURenderPipeline | null = null;
   private brushPipeline: GPURenderPipeline | null = null;
   /** Pass A: reduce every entity to one packed key by atomicMin. */
@@ -600,13 +612,12 @@ export class ParticleSystem {
     });
 
     if (entityModule !== null) {
-      this.computePipeline = device.createComputePipeline({
-        label: 'entity-update',
-        layout: device.createPipelineLayout({
-          bindGroupLayouts: [computeStateLayout, computeTextureLayout],
-        }),
-        compute: { module: entityModule, entryPoint: 'main', constants: slotConstants },
+      this.entityModule = entityModule;
+      this.entityPipelineLayout = device.createPipelineLayout({
+        bindGroupLayouts: [computeStateLayout, computeTextureLayout],
       });
+      this.entityConstants = slotConstants;
+      this.buildEntityPipeline();
       this.computeStateLayout = computeStateLayout;
     }
 
@@ -800,6 +811,32 @@ export class ParticleSystem {
    */
   setFieldStrengths(strengths: FieldStrengths): void {
     this.fieldStrengths = strengths;
+  }
+
+  /**
+   * EXPERIMENT: adopt a set of entity update ablations. See entityExperiment.ts.
+   *
+   * A change rebuilds the one pipeline -- the switches are override constants,
+   * so they are compiled in. Unchanged is free, so calling it on every
+   * preference change is fine.
+   */
+  setEntityExperiment(experiment: EntityExperiment): void {
+    if (sameExperiment(experiment, this.experiment)) return;
+    this.experiment = experiment;
+    this.buildEntityPipeline();
+  }
+
+  private buildEntityPipeline(): void {
+    if (this.entityModule === null || this.entityPipelineLayout === null) return;
+    this.computePipeline = this.device.createComputePipeline({
+      label: 'entity-update',
+      layout: this.entityPipelineLayout,
+      compute: {
+        module: this.entityModule,
+        entryPoint: 'main',
+        constants: { ...this.entityConstants, ...experimentConstants(this.experiment) },
+      },
+    });
   }
 
   /**
@@ -2103,7 +2140,10 @@ export class ParticleSystem {
     // Bounded by the high-water mark, not the buffer size -- see
     // `activeEntityCount`. In the studio the two are equal, so this dispatches
     // exactly what it always did.
-    pass.dispatchWorkgroups(workgroupsFor(this.activeEntityCount));
+    //
+    // EXPERIMENT: divided by the experiment's workgroup size, which is the
+    // shader's. At the default this is exactly `workgroupsFor`.
+    pass.dispatchWorkgroups(Math.ceil(this.activeEntityCount / this.experiment.workgroupSize));
     pass.end();
   }
 

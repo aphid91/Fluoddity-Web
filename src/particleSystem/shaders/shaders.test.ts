@@ -137,10 +137,18 @@ test('the compute workgroup size matches the host dispatch arithmetic', () => {
   // freeze mid-flight while everything around them keeps moving, which reads as
   // a physics quirk rather than as a bug.
   const source = stripComments(expand('entityUpdate.wgsl'));
-  const match = /@compute\s*@workgroup_size\((\d+)\)/.exec(source);
+  const match = /@compute\s*@workgroup_size\((\w+)\)/.exec(source);
   assert.ok(match !== null, 'entityUpdate.wgsl has no @compute @workgroup_size(N)');
+  // EXPERIMENT: the size is an override while entityExperiment.ts exists, so
+  // compare its DEFAULT -- what every pipeline without the experiment gets.
+  let size = match[1] ?? '';
+  if (!/^\d+$/.test(size)) {
+    const decl = new RegExp(`override\\s+${size}\\s*:\\s*u32\\s*=\\s*(\\d+)u?`).exec(source);
+    assert.ok(decl !== null, `entityUpdate.wgsl has no override ${size} with a default`);
+    size = decl[1] ?? '';
+  }
   assert.equal(
-    Number(match[1]),
+    Number(size),
     WORKGROUP_SIZE,
     'entityUpdate.wgsl @workgroup_size disagrees with WORKGROUP_SIZE in dispatch.ts',
   );

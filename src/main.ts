@@ -1106,6 +1106,8 @@ async function start(): Promise<void> {
         `frame        ${frameMs.toFixed(2)} ms  (${(1000 / frameMs).toFixed(0)} fps)`,
         `orchestrator ${orchestratorMs.toFixed(2)} ms`,
         `adapter      ${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`,
+        // EXPERIMENT: which entity update ablations produced the timings below.
+        `experiment   ${d.entityExperiment}`,
         ...gpuTimingLines(),
         `pipelines    ${Object.entries(status)
           .map(([n, ok]) => `${n}:${ok ? 'ok' : 'FAILED'}`)

@@ -38,6 +38,12 @@
  * the port validates at the boundary. See `coerce`.
  */
 
+// EXPERIMENT: see `entityExperimentFor`.
+import {
+  type EntityExperiment,
+  EXPERIMENT_WORKGROUP_SIZES,
+} from '../particleSystem/entityExperiment.ts';
+
 /**
  * Editor preferences. Immutable; edits produce a new object via `withValue`,
  * which is the port of the Python's `dataclasses.replace` on a frozen class.
@@ -360,6 +366,20 @@ export interface Preferences {
    * nothing here a user would meaningfully drag.
    */
   readonly calibrationVersion: number;
+
+  // --- EXPERIMENT: entity update ablations ------------------------------------
+  // Temporary. Each maps onto a pipeline constant in entityUpdate.wgsl; see
+  // `particleSystem/entityExperiment.ts` for what each removes and why. Every
+  // default is the real shader.
+  /** 0 off, 1 empty dispatch, 2 move only. An index into `DROPDOWN_MODES.expEarlyOut`. */
+  readonly expEarlyOut: number;
+  readonly expSlimConfig: boolean;
+  readonly expNoSensors: boolean;
+  /** Fourier centers evaluated, 0..10. */
+  readonly expBlackBoxCenters: number;
+  readonly expNoExtras: boolean;
+  /** An index into `EXPERIMENT_WORKGROUP_SIZES`. */
+  readonly expWorkgroupSize: number;
 }
 
 /**
@@ -431,6 +451,13 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   mobileMode: 0,
   // Zero is what MAKES someone a first-run user -- see the interface.
   calibrationVersion: 0,
+  // EXPERIMENT: all off -- the real shader.
+  expEarlyOut: 0,
+  expSlimConfig: false,
+  expNoSensors: false,
+  expBlackBoxCenters: 10,
+  expNoExtras: false,
+  expWorkgroupSize: 0,
 });
 
 /**
@@ -488,6 +515,12 @@ export const PREFERENCE_KINDS = {
   // AUTO at the one place that reads it (`mobileModeFromValue`).
   mobileMode: 'int',
   calibrationVersion: 'int',
+  expEarlyOut: 'int',
+  expSlimConfig: 'bool',
+  expNoSensors: 'bool',
+  expBlackBoxCenters: 'int',
+  expNoExtras: 'bool',
+  expWorkgroupSize: 'int',
 } as const satisfies Record<keyof Preferences, 'float' | 'int' | 'bool'>;
 
 export type PreferenceKey = keyof Preferences;
@@ -739,5 +772,23 @@ export function fieldStrengthsFor(prefs: Preferences): {
   return {
     walls: prefs.wallsStrength * WALLS_FIELD_GAIN,
     trails: prefs.trailsStrength * TRAILS_FIELD_GAIN,
+  };
+}
+
+/**
+ * EXPERIMENT: the entity update ablations these preferences ask for.
+ *
+ * Imports the experiment's pure leaf module, which keeps `particleSystem/` from
+ * ever importing `prefs/`. Out-of-range values clamp to something the shader
+ * accepts.
+ */
+export function entityExperimentFor(prefs: Preferences): EntityExperiment {
+  return {
+    earlyOut: Math.min(2, Math.max(0, prefs.expEarlyOut)),
+    slimConfig: prefs.expSlimConfig,
+    noSensors: prefs.expNoSensors,
+    blackBoxCenters: Math.min(10, Math.max(0, prefs.expBlackBoxCenters)),
+    noExtras: prefs.expNoExtras,
+    workgroupSize: EXPERIMENT_WORKGROUP_SIZES[prefs.expWorkgroupSize] ?? 256,
   };
 }
