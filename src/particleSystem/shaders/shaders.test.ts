@@ -137,18 +137,10 @@ test('the compute workgroup size matches the host dispatch arithmetic', () => {
   // freeze mid-flight while everything around them keeps moving, which reads as
   // a physics quirk rather than as a bug.
   const source = stripComments(expand('entityUpdate.wgsl'));
-  const match = /@compute\s*@workgroup_size\((\w+)\)/.exec(source);
+  const match = /@compute\s*@workgroup_size\((\d+)\)/.exec(source);
   assert.ok(match !== null, 'entityUpdate.wgsl has no @compute @workgroup_size(N)');
-  // EXPERIMENT: the size is an override while entityExperiment.ts exists, so
-  // compare its DEFAULT -- what every pipeline without the experiment gets.
-  let size = match[1] ?? '';
-  if (!/^\d+$/.test(size)) {
-    const decl = new RegExp(`override\\s+${size}\\s*:\\s*u32\\s*=\\s*(\\d+)u?`).exec(source);
-    assert.ok(decl !== null, `entityUpdate.wgsl has no override ${size} with a default`);
-    size = decl[1] ?? '';
-  }
   assert.equal(
-    Number(size),
+    Number(match[1]),
     WORKGROUP_SIZE,
     'entityUpdate.wgsl @workgroup_size disagrees with WORKGROUP_SIZE in dispatch.ts',
   );
@@ -343,13 +335,12 @@ test('the black box reads its rule from the slot, never from a by-value copy', (
   // Each center read ONCE, by a constant index, for both black box terms:
   // reading them twice doubled the loads, and a loop index kept each read
   // waiting on the one before (see fourier_noise_pair).
-  //
-  // EXPERIMENT: the loop forms (EXP_BB_FORM) read by a loop index on purpose,
-  // through `center_at`, so this checks the default unrolled path instead.
   for (let i = 0; i < 10; i++) {
-    assert.equal(count(src, new RegExp(`center_at\\(slot, ${i}\\)`, 'g')), 1,
+    assert.equal(count(src, new RegExp(`configs\\[slot\\]\\.rule\\.centers\\[${i}\\]`, 'g')), 1,
       `center ${i} must be read from the config buffer exactly once`);
   }
+  assert.equal(count(src, /\.rule\.centers\[[^\]0-9]/g), 0,
+    'a center is read by a non-constant index');
 });
 
 test('every shader that knows the slot layout reads it from CONFIG_PER_COHORT', () => {

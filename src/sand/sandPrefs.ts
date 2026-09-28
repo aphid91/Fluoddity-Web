@@ -80,23 +80,6 @@ const HIDDEN_PREFS: ReadonlySet<string> = new Set([
   'motionBlurSamples',
   // The touch layout is the studio panel's, not this one's.
   'mobileMode',
-  // EXPERIMENT: wired into the studio orchestrator only.
-  'expEarlyOut',
-  'expSlimConfig',
-  'expNoSensors',
-  'expBlackBoxCenters',
-  'expNoExtras',
-  'expWorkgroupSize',
-  'expBlackBoxForm',
-  'expCheapTrig',
-  'expHalfTrig',
-  'expRuleSlotZero',
-  'expFuseCanvas',
-  'expCanvasTaps',
-  'expCanvasLoad',
-  'expCanvasEvery',
-  'expSkipEntityPass',
-  'expRenderProbe',
 ]);
 
 export interface SandPrefsCallbacks {

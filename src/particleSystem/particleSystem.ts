@@ -90,14 +90,6 @@ import { compileModule } from '../gpu/shaderModule.ts';
 import { timestampWrites } from '../gpu/passTimer.ts';
 
 import entityUpdateSource from './shaders/entityUpdate.wgsl';
-import {
-  type EntityExperiment,
-  NO_EXPERIMENT,
-  canvasExperimentConstants,
-  experimentConstants,
-  sameConstants,
-  sameExperiment,
-} from './entityExperiment.ts';
 import canvasSource from './shaders/canvas.wgsl';
 import brushSource from './shaders/brush.wgsl';
 import entityPickSource from './shaders/entityPick.wgsl';
@@ -293,20 +285,6 @@ export class ParticleSystem {
   private readonly brushStride: number;
 
   private computePipeline: GPUComputePipeline | null = null;
-  // EXPERIMENT: held so `setEntityExperiment` can rebuild the entity update
-  // pipeline with new override constants without recompiling anything else.
-  private entityModule: GPUShaderModule | null = null;
-  private entityPipelineLayout: GPUPipelineLayout | null = null;
-  private entityConstants: Record<string, number> = {};
-  private experiment: EntityExperiment = NO_EXPERIMENT;
-  // The same for the canvas update pipeline, whose ablations are canvas.wgsl
-  // override constants too.
-  private canvasModule: GPUShaderModule | null = null;
-  private canvasPipelineLayout: GPUPipelineLayout | null = null;
-  // The Render Probe's own pipeline and 1x1 target, built on first use.
-  private probePipeline: GPURenderPipeline | null = null;
-  private probeTexture: GPUTexture | null = null;
-  private probeView: GPUTextureView | null = null;
   private canvasPipeline: GPURenderPipeline | null = null;
   private brushPipeline: GPURenderPipeline | null = null;
   /** Pass A: reduce every entity to one packed key by atomicMin. */
@@ -622,12 +600,13 @@ export class ParticleSystem {
     });
 
     if (entityModule !== null) {
-      this.entityModule = entityModule;
-      this.entityPipelineLayout = device.createPipelineLayout({
-        bindGroupLayouts: [computeStateLayout, computeTextureLayout],
+      this.computePipeline = device.createComputePipeline({
+        label: 'entity-update',
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [computeStateLayout, computeTextureLayout],
+        }),
+        compute: { module: entityModule, entryPoint: 'main', constants: slotConstants },
       });
-      this.entityConstants = slotConstants;
-      this.buildEntityPipeline();
       this.computeStateLayout = computeStateLayout;
     }
 
@@ -651,11 +630,19 @@ export class ParticleSystem {
     });
 
     if (canvasModule !== null) {
-      this.canvasModule = canvasModule;
-      this.canvasPipelineLayout = device.createPipelineLayout({
-        bindGroupLayouts: [canvasUniformLayout, canvasTextureLayout],
+      this.canvasPipeline = device.createRenderPipeline({
+        label: 'canvas-update',
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [canvasUniformLayout, canvasTextureLayout],
+        }),
+        vertex: { module: canvasModule, entryPoint: 'vs_main' },
+        fragment: {
+          module: canvasModule,
+          entryPoint: 'fs_main',
+          targets: [{ format: CANVAS_FORMAT }],
+        },
+        primitive: { topology: 'triangle-strip' },
       });
-      this.buildCanvasPipeline();
       this.canvasUniformLayout = canvasUniformLayout;
     }
 
@@ -813,58 +800,6 @@ export class ParticleSystem {
    */
   setFieldStrengths(strengths: FieldStrengths): void {
     this.fieldStrengths = strengths;
-  }
-
-  /**
-   * EXPERIMENT: adopt a set of entity update ablations. See entityExperiment.ts.
-   *
-   * A change rebuilds the one pipeline -- the switches are override constants,
-   * so they are compiled in. Unchanged is free, so calling it on every
-   * preference change is fine.
-   */
-  setEntityExperiment(experiment: EntityExperiment): void {
-    if (sameExperiment(experiment, this.experiment)) return;
-    const previous = this.experiment;
-    this.experiment = experiment;
-    // Each pipeline only when its own constants moved -- the fuse and cadence
-    // switches are host-side and rebuild nothing.
-    if (!sameConstants(experimentConstants(previous), experimentConstants(experiment))) {
-      this.buildEntityPipeline();
-    }
-    if (
-      !sameConstants(canvasExperimentConstants(previous), canvasExperimentConstants(experiment))
-    ) {
-      this.buildCanvasPipeline();
-    }
-  }
-
-  private buildCanvasPipeline(): void {
-    if (this.canvasModule === null || this.canvasPipelineLayout === null) return;
-    this.canvasPipeline = this.device.createRenderPipeline({
-      label: 'canvas-update',
-      layout: this.canvasPipelineLayout,
-      vertex: { module: this.canvasModule, entryPoint: 'vs_main' },
-      fragment: {
-        module: this.canvasModule,
-        entryPoint: 'fs_main',
-        targets: [{ format: CANVAS_FORMAT }],
-        constants: canvasExperimentConstants(this.experiment),
-      },
-      primitive: { topology: 'triangle-strip' },
-    });
-  }
-
-  private buildEntityPipeline(): void {
-    if (this.entityModule === null || this.entityPipelineLayout === null) return;
-    this.computePipeline = this.device.createComputePipeline({
-      label: 'entity-update',
-      layout: this.entityPipelineLayout,
-      compute: {
-        module: this.entityModule,
-        entryPoint: 'main',
-        constants: { ...this.entityConstants, ...experimentConstants(this.experiment) },
-      },
-    });
   }
 
   /**
@@ -2147,69 +2082,9 @@ export class ParticleSystem {
    * within a submission are ordered and WebGPU inserts them.
    */
   private advance(encoder: GPUCommandEncoder, slot: number): void {
-    const fc = this._frameCount + slot;
-    // EXPERIMENT: Skip Entity Pass -- no compute pass at all, so the graphics
-    // passes run back to back. The reset frame still runs it, or every particle
-    // would stay stacked where the buffer was zeroed.
-    if (!this.experiment.skipEntityPass || fc === 0) this.updateEntities(encoder, slot);
-    // EXPERIMENT: Render Probe -- the first render pass after the compute pass,
-    // doing nothing, so it catches whatever that position costs.
-    if (this.experiment.renderProbe) this.recordRenderProbe(encoder);
-    // EXPERIMENT: the canvas update every Nth sub-step. Always on frame 0,
-    // which is the trail clear. A skipped step does not swap, so the splat
-    // lands in the front canvas -- the one the next entity update reads.
-    const every = this.experiment.canvasEvery;
-    const runCanvas = every <= 1 || fc % every === 0;
-    if (runCanvas && this.experiment.fuseCanvasSplat && this.fuseCanvasAndSplat(encoder, slot)) {
-      return;
-    }
-    if (runCanvas) this.updateCanvas(encoder, slot);
+    this.updateEntities(encoder, slot);
+    this.updateCanvas(encoder, slot);
     this.splatIntoCanvas(encoder, slot);
-  }
-
-  /**
-   * EXPERIMENT: the canvas update and the brush splat as ONE render pass.
-   *
-   * The splat only blends onto what the canvas update just wrote, so the two
-   * can share an attachment: the decay quad draws first, the points blend on
-   * top in submission order, and the result is identical. What goes away is a
-   * pass boundary -- on a tiled GPU, storing the whole canvas out to memory and
-   * loading it straight back in.
-   *
-   * Returns false, having recorded nothing, if a pipeline is missing, so the
-   * caller falls back to the separate passes.
-   */
-  private fuseCanvasAndSplat(encoder: GPUCommandEncoder, slot: number): boolean {
-    if (this.canvasPipeline === null || this.canvasUniformGroup === null) return false;
-    if (this.brushPipeline === null || this.brushStateGroup === null) return false;
-    const [wrap, parity] = this.textureGroupIndex();
-    const textures = this.canvasTextureGroups[wrap]?.[parity];
-    if (textures === undefined) return false;
-
-    const pass = encoder.beginRenderPass({
-      label: 'canvas+splat',
-      timestampWrites: timestampWrites('canvas+splat'),
-      colorAttachments: [
-        {
-          view: this.back.view,
-          // 'clear', as updateCanvas: the decay quad writes every texel first.
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
-      ],
-    });
-    pass.setPipeline(this.canvasPipeline);
-    pass.setBindGroup(0, this.canvasUniformGroup, [slot * this.canvasStride]);
-    pass.setBindGroup(1, textures);
-    pass.draw(4);
-    pass.setPipeline(this.brushPipeline);
-    pass.setBindGroup(0, this.brushStateGroup, [slot * this.brushStride]);
-    pass.draw(1, this.activeEntityCount);
-    pass.end();
-
-    this.swapCanvases();
-    return true;
   }
 
   private updateEntities(encoder: GPUCommandEncoder, slot: number): void {
@@ -2228,10 +2103,7 @@ export class ParticleSystem {
     // Bounded by the high-water mark, not the buffer size -- see
     // `activeEntityCount`. In the studio the two are equal, so this dispatches
     // exactly what it always did.
-    //
-    // EXPERIMENT: divided by the experiment's workgroup size, which is the
-    // shader's. At the default this is exactly `workgroupsFor`.
-    pass.dispatchWorkgroups(Math.ceil(this.activeEntityCount / this.experiment.workgroupSize));
+    pass.dispatchWorkgroups(workgroupsFor(this.activeEntityCount));
     pass.end();
   }
 
@@ -2263,60 +2135,8 @@ export class ParticleSystem {
     pass.draw(4);
     pass.end();
 
-    // THE SWAP, and it happens here -- so the splat below lands on the
-    // texture this pass just wrote. (EXPERIMENT: and in `fuseCanvasAndSplat`.)
-    this.swapCanvases();
-  }
-
-  /**
-   * EXPERIMENT: an empty render pass on a 1x1 target of its own.
-   *
-   * It touches nothing the simulation uses, so any cost it shows is the
-   * position -- first graphics work after compute -- not a resource. It draws
-   * one point rather than only clearing, so a driver cannot turn it into a
-   * plain clear that never engages the graphics pipeline.
-   */
-  private recordRenderProbe(encoder: GPUCommandEncoder): void {
-    if (this.probePipeline === null || this.probeView === null) {
-      const module = this.device.createShaderModule({
-        label: 'render-probe',
-        code:
-          '@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0.0, 0.0, 0.0, 1.0); }\n' +
-          '@fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }\n',
-      });
-      this.probePipeline = this.device.createRenderPipeline({
-        label: 'render-probe',
-        layout: 'auto',
-        vertex: { module, entryPoint: 'vs' },
-        fragment: { module, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
-        primitive: { topology: 'point-list' },
-      });
-      this.probeTexture = this.device.createTexture({
-        label: 'render-probe',
-        size: { width: 1, height: 1 },
-        format: 'rgba8unorm',
-        usage: GPUTextureUsage.RENDER_ATTACHMENT,
-      });
-      this.probeView = this.probeTexture.createView();
-    }
-    const pass = encoder.beginRenderPass({
-      label: 'render-probe',
-      timestampWrites: timestampWrites('render-probe'),
-      colorAttachments: [
-        {
-          view: this.probeView,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
-      ],
-    });
-    pass.setPipeline(this.probePipeline);
-    pass.draw(1);
-    pass.end();
-  }
-
-  private swapCanvases(): void {
+    // THE SWAP, and it happens here and nowhere else -- so the splat below
+    // lands on the texture this pass just wrote.
     const oldFront = this.front;
     this.front = this.back;
     this.back = oldFront;
@@ -2400,8 +2220,6 @@ export class ParticleSystem {
     // strand the readback if the object somehow outlived the destroy.
     this.headPhase = 'idle';
     this.headStaging.destroy();
-    // EXPERIMENT: the Render Probe's target, if it was ever built.
-    this.probeTexture?.destroy();
   }
 
   /** True when every pipeline compiled. Surfaced for the startup summary. */

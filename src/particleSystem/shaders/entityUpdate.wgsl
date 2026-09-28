@@ -133,38 +133,6 @@ struct EntityUpdateUniforms {
 @group(1) @binding(2) var strafe_field_texture : texture_2d<f32>;
 @group(1) @binding(3) var strafe_field_sampler : sampler;
 
-// --- EXPERIMENT: ablation switches ------------------------------------------
-// Temporary, for finding what makes this pass slow on one phone. Pipeline
-// constants, so a disabled part is compiled out rather than branched around --
-// see particleSystem/entityExperiment.ts. Every default is the real shader.
-//
-// 0 off; 1 return right after the bounds check (dispatch + pass overhead);
-// 2 read, move ballistically, write (the memory traffic floor). Both still run
-// the reset frame -- see `main`.
-override EXP_EARLY_OUT: u32 = 0u;
-// Build `config` from the loose vec4s, leaving its 320-byte Rule zeroed. The
-// black box reads the rule straight from the buffer, so behaviour is unchanged.
-override EXP_SLIM_CONFIG: bool = false;
-// Replace both canvas samples with arithmetic on the sensor position.
-override EXP_NO_SENSORS: bool = false;
-// Fourier centers evaluated, 0..10. 0 passes the signals through scaled.
-override EXP_BB_CENTERS: u32 = 10u;
-// Skip hazard, stall rescue, sensor jitter, gravity, walls, shove and fences.
-override EXP_NO_EXTRAS: bool = false;
-// The pass's workgroup size. The host divides by the same value.
-override EXP_WORKGROUP_SIZE: u32 = 256u;
-// How the black box walks its centers. 0 the hand-unrolled pair below; 1 one
-// loop evaluating both terms; 2 a loop for base, then a loop for mirror. All
-// three sum in the same order, so the result is the same.
-override EXP_BB_FORM: u32 = 0u;
-// Replace sin/cos with a cheap bounded parabola. Loads and FMAs unchanged.
-override EXP_CHEAP_TRIG: bool = false;
-// One sin/cos pair per term, the rest by double angle and stand-in
-// coefficients: the op count of the angle-addition rewrite, not its result.
-override EXP_HALF_TRIG: bool = false;
-// Every thread reads its rule from slot 0 -- one address for the whole pass.
-override EXP_RULE_SLOT0: bool = false;
-
 fn frame_count() -> i32 { return bitcast<i32>(u.flags.x); }
 fn strafe_field_active() -> bool { return bitcast<i32>(u.flags.y) != 0; }
 fn canvas_res() -> vec2f { return u.canvas_res.xy; }
@@ -185,38 +153,9 @@ fn trails_strength() -> f32 { return u.flags.w; }
 // This is how the entities evaluate their Rule.
 //
 // One center's contribution. `i` is the center's index, for its phase offset.
-// EXPERIMENT: EXP_CHEAP_TRIG. A parabola through one period, bounded like the
-// real thing so particles stay finite, and a handful of ALU ops.
-fn exp_sin(x: f32) -> f32 {
-    if (!EXP_CHEAP_TRIG) { return sin(x); }
-    let t = fract(x * 0.15915494) * 2.0 - 1.0;
-    return -4.0 * t * (1.0 - abs(t));
-}
-fn exp_cos(x: f32) -> f32 {
-    if (!EXP_CHEAP_TRIG) { return cos(x); }
-    return exp_sin(x + 1.5707963);
-}
-
-// `extra` is only read by EXP_HALF_TRIG: the second coefficient vec4 the
-// angle-addition rewrite would store per center. Unused otherwise, so its load
-// is compiled out.
-fn fourier_term(center: FourierCenter, extra: vec4f, i: i32, signals: vec4f) -> vec4f {
+fn fourier_term(center: FourierCenter, i: i32, signals: vec4f) -> vec4f {
     // Compute phase from dot product of input with frequency vector
     let phase = dot(signals, center.frequency);
-
-    // EXPERIMENT: EXP_HALF_TRIG. What the rewrite would cost, not what it would
-    // compute: one sin/cos pair, the second harmonic by double angle, and the
-    // same number of loads and FMAs as baked coefficients would need.
-    if (EXP_HALF_TRIG) {
-        let s1 = exp_sin(phase);
-        let c1 = exp_cos(phase);
-        let s2 = 2.0 * s1 * c1;
-        let c2 = c1 * c1 - s1 * s1;
-        return vec4f(s1 * center.amplitude.x + c1 * center.amplitude.y,
-                     c1 * center.amplitude.z - s1 * center.amplitude.w,
-                     s2 * extra.x + c2 * extra.y,
-                     c2 * extra.z - s2 * extra.w);
-    }
 
     // Add per-center phase offset to break degeneracy at origin
     // Use a deterministic offset based on center index and amplitude values
@@ -225,24 +164,14 @@ fn fourier_term(center: FourierCenter, extra: vec4f, i: i32, signals: vec4f) -> 
     // Create basis functions from phase with offset
     // Using sin/cos pairs at fundamental and first harmonic for richer representation
     let basis = vec4f(
-        exp_sin(phase + phase_offset),
-        exp_cos(phase + phase_offset * 0.7),  // Different offsets for variety
-        exp_sin(phase * 2.0 + phase_offset * 1.3),
-        exp_cos(phase * 2.0 + phase_offset * 0.5)
+        sin(phase + phase_offset),
+        cos(phase + phase_offset * 0.7),  // Different offsets for variety
+        sin(phase * 2.0 + phase_offset * 1.3),
+        cos(phase * 2.0 + phase_offset * 0.5)
     );
 
     // Weight
     return center.amplitude * basis;
-}
-
-// EXPERIMENT: where a center comes from. EXP_RULE_SLOT0 points every thread at
-// slot 0; `center_extra` is the stand-in for EXP_HALF_TRIG's second vec4.
-fn rule_slot(slot: i32) -> i32 { return select(slot, 0, EXP_RULE_SLOT0); }
-fn center_at(slot: i32, k: i32) -> FourierCenter {
-    return configs[rule_slot(slot)].rule.centers[k];
-}
-fn center_extra(slot: i32, k: i32) -> vec4f {
-    return configs[rule_slot(slot)].rule.centers[(k + 5) % 10].frequency;
 }
 
 // Both black box evaluations -- the base term and the mirror term -- at once.
@@ -278,93 +207,36 @@ fn fourier_noise_pair(slot: i32, signals_base: vec4f, signals_mirror: vec4f) -> 
     var base = vec4f(0.0);
     var mirror = vec4f(0.0);
 
-    // EXPERIMENT: EXP_BB_CENTERS. At 0 the signals pass through, so the
-    // sensor reads that feed them stay live.
-    if (EXP_BB_CENTERS == 0u) {
-        return FourierPair(signals_base * 0.01, signals_mirror * 0.01);
-    }
-
-    // EXPERIMENT: EXP_BB_FORM 1 and 2 -- rolled loops, so only one center's
-    // data is live at a time. The bound is made opaque (`fc < 0` never holds)
-    // so the driver cannot unroll it back into the form being compared against.
-    let n = i32(EXP_BB_CENTERS) + select(0, 1, frame_count() < 0);
-    if (EXP_BB_FORM == 1u) {
-        for (var k = 0; k < n; k++) {
-            let c = center_at(slot, k);
-            let x = center_extra(slot, k);
-            base += fourier_term(c, x, k, signals_base);
-            mirror += fourier_term(c, x, k, signals_mirror);
-        }
-        return FourierPair(base, mirror);
-    }
-    if (EXP_BB_FORM == 2u) {
-        for (var k = 0; k < n; k++) {
-            base += fourier_term(center_at(slot, k), center_extra(slot, k), k, signals_base);
-        }
-        for (var k = 0; k < n; k++) {
-            mirror += fourier_term(center_at(slot, k), center_extra(slot, k), k, signals_mirror);
-        }
-        return FourierPair(base, mirror);
-    }
-
-    let c0 = center_at(slot, 0);
-    let x0 = center_extra(slot, 0);
-    base += fourier_term(c0, x0, 0, signals_base);
-    mirror += fourier_term(c0, x0, 0, signals_mirror);
-    if (EXP_BB_CENTERS > 1u) {
-        let c1 = center_at(slot, 1);
-        let x1 = center_extra(slot, 1);
-        base += fourier_term(c1, x1, 1, signals_base);
-        mirror += fourier_term(c1, x1, 1, signals_mirror);
-    }
-    if (EXP_BB_CENTERS > 2u) {
-        let c2 = center_at(slot, 2);
-        let x2 = center_extra(slot, 2);
-        base += fourier_term(c2, x2, 2, signals_base);
-        mirror += fourier_term(c2, x2, 2, signals_mirror);
-    }
-    if (EXP_BB_CENTERS > 3u) {
-        let c3 = center_at(slot, 3);
-        let x3 = center_extra(slot, 3);
-        base += fourier_term(c3, x3, 3, signals_base);
-        mirror += fourier_term(c3, x3, 3, signals_mirror);
-    }
-    if (EXP_BB_CENTERS > 4u) {
-        let c4 = center_at(slot, 4);
-        let x4 = center_extra(slot, 4);
-        base += fourier_term(c4, x4, 4, signals_base);
-        mirror += fourier_term(c4, x4, 4, signals_mirror);
-    }
-    if (EXP_BB_CENTERS > 5u) {
-        let c5 = center_at(slot, 5);
-        let x5 = center_extra(slot, 5);
-        base += fourier_term(c5, x5, 5, signals_base);
-        mirror += fourier_term(c5, x5, 5, signals_mirror);
-    }
-    if (EXP_BB_CENTERS > 6u) {
-        let c6 = center_at(slot, 6);
-        let x6 = center_extra(slot, 6);
-        base += fourier_term(c6, x6, 6, signals_base);
-        mirror += fourier_term(c6, x6, 6, signals_mirror);
-    }
-    if (EXP_BB_CENTERS > 7u) {
-        let c7 = center_at(slot, 7);
-        let x7 = center_extra(slot, 7);
-        base += fourier_term(c7, x7, 7, signals_base);
-        mirror += fourier_term(c7, x7, 7, signals_mirror);
-    }
-    if (EXP_BB_CENTERS > 8u) {
-        let c8 = center_at(slot, 8);
-        let x8 = center_extra(slot, 8);
-        base += fourier_term(c8, x8, 8, signals_base);
-        mirror += fourier_term(c8, x8, 8, signals_mirror);
-    }
-    if (EXP_BB_CENTERS > 9u) {
-        let c9 = center_at(slot, 9);
-        let x9 = center_extra(slot, 9);
-        base += fourier_term(c9, x9, 9, signals_base);
-        mirror += fourier_term(c9, x9, 9, signals_mirror);
-    }
+    let c0 = configs[slot].rule.centers[0];
+    base += fourier_term(c0, 0, signals_base);
+    mirror += fourier_term(c0, 0, signals_mirror);
+    let c1 = configs[slot].rule.centers[1];
+    base += fourier_term(c1, 1, signals_base);
+    mirror += fourier_term(c1, 1, signals_mirror);
+    let c2 = configs[slot].rule.centers[2];
+    base += fourier_term(c2, 2, signals_base);
+    mirror += fourier_term(c2, 2, signals_mirror);
+    let c3 = configs[slot].rule.centers[3];
+    base += fourier_term(c3, 3, signals_base);
+    mirror += fourier_term(c3, 3, signals_mirror);
+    let c4 = configs[slot].rule.centers[4];
+    base += fourier_term(c4, 4, signals_base);
+    mirror += fourier_term(c4, 4, signals_mirror);
+    let c5 = configs[slot].rule.centers[5];
+    base += fourier_term(c5, 5, signals_base);
+    mirror += fourier_term(c5, 5, signals_mirror);
+    let c6 = configs[slot].rule.centers[6];
+    base += fourier_term(c6, 6, signals_base);
+    mirror += fourier_term(c6, 6, signals_mirror);
+    let c7 = configs[slot].rule.centers[7];
+    base += fourier_term(c7, 7, signals_base);
+    mirror += fourier_term(c7, 7, signals_mirror);
+    let c8 = configs[slot].rule.centers[8];
+    base += fourier_term(c8, 8, signals_base);
+    mirror += fourier_term(c8, 8, signals_mirror);
+    let c9 = configs[slot].rule.centers[9];
+    base += fourier_term(c9, 9, signals_base);
+    mirror += fourier_term(c9, 9, signals_mirror);
 
     return FourierPair(base, mirror);
 }
@@ -444,11 +316,6 @@ fn gravity_direction(pos: vec2f, config: ConfigData) -> vec2f {
 // Zero when the slider is centred, which is the whole cost of the feature when
 // it is off.
 fn get_can(p: vec2f, bc: i32, bias: vec2f) -> vec4f {
-    // EXPERIMENT: EXP_NO_SENSORS. No texture traffic at all, painted layer
-    // included; still a function of p, so the sensor offsets stay live.
-    if (EXP_NO_SENSORS) {
-        return vec4f((fract(p * 64.0) - 0.5) * 0.001 + bias, 0.0, 0.0);
-    }
     // The GLSL calls textureSize() here, twice per invocation. Hoisted to the
     // uniform -- see the header of uniforms.ts.
     let res = canvas_res();
@@ -770,51 +637,13 @@ fn calculate_entity_behavior(L_in: vec2f, R_in: vec2f, axis: vec2f, slot: i32,
     return Behavior(force, strafe, color);
 }
 
-// EXPERIMENT: EXP_SLIM_CONFIG. The whole-struct load below copies the 320-byte
-// Rule into a local that is then passed by value, which is the shape the
-// black box note above measured at ~5x on some compilers. Nothing here reads
-// `config.rule`, so a zeroed Rule changes no behaviour.
-fn load_config(slot: i32) -> ConfigData {
-    if (EXP_SLIM_CONFIG) {
-        return ConfigData(Rule(), configs[slot].sensor, configs[slot].force,
-                          configs[slot].misc, configs[slot].force2,
-                          configs[slot].misc2, configs[slot].misc3);
-    }
-    return configs[slot];
-}
-
-// WORKGROUP SIZE -- EXP_WORKGROUP_SIZE, default 256, which must match
-// WORKGROUP_SIZE in dispatch.ts; the host divides by whatever the experiment
-// sets. These live in different files and drifting them under-dispatches
-// silently, leaving a tail of entities frozen; shaders.test.ts asserts they agree.
-@compute @workgroup_size(EXP_WORKGROUP_SIZE)
+// WORKGROUP SIZE 256 -- must match WORKGROUP_SIZE in particleSystem.ts. These
+// live in different files and drifting them under-dispatches silently, leaving
+// a tail of entities frozen; shaders.test.ts asserts they agree.
+@compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
     let index = gid.x;
     if (index >= arrayLength(&entities)) { return; }
-
-    // EXPERIMENT: the early outs. Both still run the RESET FRAME, or every
-    // particle stays stacked where the buffer was zeroed -- a pile-up that makes
-    // the brush splat pathologically slow and skews every other reading. This
-    // whole block returns, so the physics below it is compiled out.
-    if (EXP_EARLY_OUT != 0u) {
-        if (frame_count() == 0) {
-            if (!e_is_dead(entities[index])) {
-                let reset_slot = clamp(assign_config_index(index), 0,
-                                       world_config_count(u.world) - 1);
-                reset(index, load_config(reset_slot));
-            }
-            return;
-        }
-        // 1 -- what the pass costs doing nothing.
-        if (EXP_EARLY_OUT == 1u) { return; }
-        // 2 -- the read and the write, with a move between so the compiler
-        // cannot drop the store as rewriting what was loaded.
-        let moved = entities[index];
-        entities[index] = make_entity(world_wrap(e_pos(moved) + e_vel(moved), canvas_res()),
-                                      e_vel(moved), e_size(moved), e_config_index(moved),
-                                      e_col_params(moved));
-        return;
-    }
 
     let e = entities[index];
 
@@ -846,14 +675,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let config_index = select(e_config_index(e), assign_config_index(index),
                               fc == 0 || CONFIG_PER_COHORT);
     let slot = clamp(config_index, 0, world_config_count(u.world) - 1);
-    let config = load_config(slot);
+    let config = configs[slot];
 
     let sqrt_world_size = world_sqrt_world_size(u.world);
     let canvas_resolution = canvas_res();
 
     let cohort = get_cohort(index, config, arrayLength(&entities));
     // Hazard Rate == probability each frame to reset this particle
-    let hazard_reset = !EXP_NO_EXTRAS && cfg_hazard_rate(config)
+    let hazard_reset = cfg_hazard_rate(config)
         > hash(vec2f(f32(index) / f32(arrayLength(&entities)), f32(fc)));
 
     // frame_count == 0 signals a simulation reset
@@ -889,7 +718,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // same spot get different headings and one particle re-rolls if it stalls
     // again. Note this runs BEFORE the sensors read, so the rescue takes effect
     // on the very step it fires rather than the next one.
-    if (!EXP_NO_EXTRAS && length(vel) < MIN_VELOCITY) {
+    if (length(vel) < MIN_VELOCITY) {
         let kick = hash(vec2f(f32(index) + 7.77, f32(fc))) * 2.0 * PI;
         vel = MIN_VELOCITY * vec2f(cos(kick), sin(kick));
     }
@@ -908,11 +737,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var distance = cfg_sensor_distance(config);
 
     let angle_jitter = cfg_sensor_angle_jitter(config);
-    if (!EXP_NO_EXTRAS && angle_jitter != 0.0) {
+    if (angle_jitter != 0.0) {
         angle += angle_jitter * (2.0 * hash(vec2f(f32(index), f32(fc))) - 1.0);
     }
     let distance_jitter = cfg_sensor_distance_jitter(config);
-    if (!EXP_NO_EXTRAS && distance_jitter != 0.0) {
+    if (distance_jitter != 0.0) {
         // Deliberately UNCLAMPED: a negative distance puts both sensors behind
         // the particle (and swaps which is left), which is a genuinely different
         // look that no combination of the other sliders can reach.
@@ -964,9 +793,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     //
     // Dividing here rather than moving the addition after `sensor_scaling` keeps
     // Sensor Gain applying to the bias, which is deliberate -- see `get_can`.
-    let trail_bias = select(
-        -gravity_expand(cfg_gravity_trails(config)) * gravity_dir / sqrt_world_size,
-        vec2f(0.0), EXP_NO_EXTRAS);
+    let trail_bias =
+        -gravity_expand(cfg_gravity_trails(config)) * gravity_dir / sqrt_world_size;
 
     // Read the trails from canvas.
     let bc = world_boundary_conditions(u.world);
@@ -1019,16 +847,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // once by `gravity_direction` so they can never disagree about it. Computed
     // further up, because the third channel (Trails) biases the sensor read and
     // so needs it before this point -- see the call there.
-    if (!EXP_NO_EXTRAS) {
-        vel += 0.01 / sqrt_world_size * -gravity_expand(cfg_gravity_force(config)) * gravity_dir;
-    }
+    vel += 0.01 / sqrt_world_size * -gravity_expand(cfg_gravity_force(config)) * gravity_dir;
 
     // Move: add vel and strafe to pos.
     pos += vel;
     pos += strafe * cfg_strafe_power(config);
-    if (!EXP_NO_EXTRAS) {
-        pos += 0.01 / sqrt_world_size * -gravity_expand(cfg_gravity_strafe(config)) * gravity_dir;
-    }
+    pos += 0.01 / sqrt_world_size * -gravity_expand(cfg_gravity_strafe(config)) * gravity_dir;
 
     // The painted WALLS layer, in the strafe channel: a displacement, not a
     // force, so no rule can resist it and drag never damps it. Applied before
@@ -1043,7 +867,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     //
     // The gain that used to be here is now inside `get_walls`, folded into the
     // Walls Field Strength preference -- see that function.
-    if (!EXP_NO_EXTRAS) { pos += get_walls(pos, bc); }
+    pos += get_walls(pos, bc);
 
     // The Shove tool, in the same channel and for the same reasons: a
     // displacement, so drag cannot damp it and no rule can resist a direct push.
@@ -1059,7 +883,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // leaving the brush relatively stronger at low rates. Nothing here depends
     // on which: this reads one number per sub-step either way. See
     // `shoveCommands.shoveState` for the tuning argument.
-    if (!EXP_NO_EXTRAS) { pos += get_shove(pos); }
+    pos += get_shove(pos);
 
     // Cohort Fences: hold each particle near its own spawn point, so cohorts
     // stay legible instead of dispersing into each other. A soft wall -- it
@@ -1083,7 +907,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // those, the feature switches off -- and the UI greys the checkbox out in
     // those modes so the reason is visible rather than mysterious.
     let fences = cfg_cohort_fences(config);
-    if (!EXP_NO_EXTRAS && fences && cfg_initial_conditions(config) == IC_GRID) {
+    if (fences && cfg_initial_conditions(config) == IC_GRID) {
         let extent = world_half_extent_from_res(canvas_resolution);
         let cells = grid_cells(max(1, cfg_cohorts(config)), extent);
         let cell_size = 2.0 * extent / cells;

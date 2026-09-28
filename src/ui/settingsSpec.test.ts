@@ -138,23 +138,6 @@ test('the registry has the same 35 entries the desktop does, plus the web-only o
     // there always fans out from red. The bias half of `A * signal + B` was
     // added here.
     'colorOffset',
-    // EXPERIMENT: temporary entity update ablations, web-only diagnostics.
-    'expEarlyOut',
-    'expSlimConfig',
-    'expNoSensors',
-    'expBlackBoxCenters',
-    'expNoExtras',
-    'expWorkgroupSize',
-    'expBlackBoxForm',
-    'expCheapTrig',
-    'expHalfTrig',
-    'expRuleSlotZero',
-    'expFuseCanvas',
-    'expCanvasTaps',
-    'expCanvasLoad',
-    'expCanvasEvery',
-    'expSkipEntityPass',
-    'expRenderProbe',
   ];
   const ported = SETTINGS.filter((s) => !WEB_ONLY.includes(s.field));
   assert.equal(ported.length, 35);
@@ -357,8 +340,7 @@ test('grouped preserves declaration order and omits empty groups', () => {
   assert.deepEqual(
     advanced.map(([name]) => name),
     ['Population', 'Sensors', 'Forces', 'Trails', 'Appearance',
-     'Advanced', 'Simulation', 'Display', 'Behavior', 'Entity Update Experiment',
-     'Canvas Update Experiment', 'Archive'],
+     'Advanced', 'Simulation', 'Display', 'Behavior', 'Archive'],
   );
   // 'Trails' holds one ADVANCED entry, so Basic must not render it.
   const basic = grouped(false, [CONFIG, WORLD, PREFS]);
