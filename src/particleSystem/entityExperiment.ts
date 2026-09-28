@@ -48,7 +48,21 @@ export interface EntityExperiment {
   readonly halfTrig: boolean;
   /** Every thread reads its rule from config slot 0. */
   readonly ruleSlotZero: boolean;
+
+  // --- the canvas update pass (canvas.wgsl) ---
+  /** Record the canvas update and the brush splat in ONE render pass. */
+  readonly fuseCanvasSplat: boolean;
+  /** Texels read per fragment: 5 (the real cross), 1 or 0. */
+  readonly canvasTaps: number;
+  /** textureLoad exact texels instead of sampling through the filter. */
+  readonly canvasLoad: boolean;
+  /** Run the canvas update every Nth sub-step, with persistence^N. */
+  readonly canvasEvery: number;
 }
+
+/** The choices on offer, indexed by the preferences' stored values. */
+export const EXPERIMENT_CANVAS_TAPS: readonly number[] = [5, 1, 0];
+export const EXPERIMENT_CANVAS_EVERY: readonly number[] = [1, 2, 3, 5];
 
 /** The workgroup sizes on offer, indexed by the preference's stored value. */
 export const EXPERIMENT_WORKGROUP_SIZES: readonly number[] = [256, 128, 64];
@@ -64,7 +78,26 @@ export const NO_EXPERIMENT: EntityExperiment = Object.freeze({
   cheapTrig: false,
   halfTrig: false,
   ruleSlotZero: false,
+  fuseCanvasSplat: false,
+  canvasTaps: 5,
+  canvasLoad: false,
+  canvasEvery: 1,
 });
+
+/** The `override` values for `canvas.wgsl`, as pipeline `constants`. */
+export function canvasExperimentConstants(e: EntityExperiment): Record<string, number> {
+  return {
+    EXP_CANVAS_TAPS: e.canvasTaps,
+    EXP_CANVAS_LOAD: e.canvasLoad ? 1 : 0,
+    EXP_CANVAS_EVERY: e.canvasEvery,
+  };
+}
+
+/** Whether two sets of pipeline constants would build the same pipeline. */
+export function sameConstants(a: Record<string, number>, b: Record<string, number>): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+}
 
 /** The `override` values for `entityUpdate.wgsl`, as pipeline `constants`. */
 export function experimentConstants(e: EntityExperiment): Record<string, number> {
@@ -93,7 +126,11 @@ export function sameExperiment(a: EntityExperiment, b: EntityExperiment): boolea
     a.blackBoxForm === b.blackBoxForm &&
     a.cheapTrig === b.cheapTrig &&
     a.halfTrig === b.halfTrig &&
-    a.ruleSlotZero === b.ruleSlotZero
+    a.ruleSlotZero === b.ruleSlotZero &&
+    a.fuseCanvasSplat === b.fuseCanvasSplat &&
+    a.canvasTaps === b.canvasTaps &&
+    a.canvasLoad === b.canvasLoad &&
+    a.canvasEvery === b.canvasEvery
   );
 }
 
@@ -113,5 +150,9 @@ export function describeExperiment(e: EntityExperiment): string {
   if (e.cheapTrig) parts.push('cheap-trig');
   if (e.halfTrig) parts.push('half-trig');
   if (e.ruleSlotZero) parts.push('rule-slot0');
+  if (e.fuseCanvasSplat) parts.push('fuse-canvas');
+  if (e.canvasTaps !== 5) parts.push(`taps=${e.canvasTaps}`);
+  if (e.canvasLoad) parts.push('canvas-load');
+  if (e.canvasEvery !== 1) parts.push(`canvas-every=${e.canvasEvery}`);
   return parts.join(' ');
 }

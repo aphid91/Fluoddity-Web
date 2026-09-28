@@ -41,6 +41,8 @@
 // EXPERIMENT: see `entityExperimentFor`.
 import {
   type EntityExperiment,
+  EXPERIMENT_CANVAS_EVERY,
+  EXPERIMENT_CANVAS_TAPS,
   EXPERIMENT_WORKGROUP_SIZES,
 } from '../particleSystem/entityExperiment.ts';
 
@@ -385,6 +387,13 @@ export interface Preferences {
   readonly expCheapTrig: boolean;
   readonly expHalfTrig: boolean;
   readonly expRuleSlotZero: boolean;
+  // The canvas update pass. See the same module.
+  readonly expFuseCanvas: boolean;
+  /** An index into `EXPERIMENT_CANVAS_TAPS`. */
+  readonly expCanvasTaps: number;
+  readonly expCanvasLoad: boolean;
+  /** An index into `EXPERIMENT_CANVAS_EVERY`. */
+  readonly expCanvasEvery: number;
 }
 
 /**
@@ -467,6 +476,10 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   expCheapTrig: false,
   expHalfTrig: false,
   expRuleSlotZero: false,
+  expFuseCanvas: false,
+  expCanvasTaps: 0,
+  expCanvasLoad: false,
+  expCanvasEvery: 0,
 });
 
 /**
@@ -534,6 +547,10 @@ export const PREFERENCE_KINDS = {
   expCheapTrig: 'bool',
   expHalfTrig: 'bool',
   expRuleSlotZero: 'bool',
+  expFuseCanvas: 'bool',
+  expCanvasTaps: 'int',
+  expCanvasLoad: 'bool',
+  expCanvasEvery: 'int',
 } as const satisfies Record<keyof Preferences, 'float' | 'int' | 'bool'>;
 
 export type PreferenceKey = keyof Preferences;
@@ -807,5 +824,9 @@ export function entityExperimentFor(prefs: Preferences): EntityExperiment {
     cheapTrig: prefs.expCheapTrig,
     halfTrig: prefs.expHalfTrig,
     ruleSlotZero: prefs.expRuleSlotZero,
+    fuseCanvasSplat: prefs.expFuseCanvas,
+    canvasTaps: EXPERIMENT_CANVAS_TAPS[prefs.expCanvasTaps] ?? 5,
+    canvasLoad: prefs.expCanvasLoad,
+    canvasEvery: EXPERIMENT_CANVAS_EVERY[prefs.expCanvasEvery] ?? 1,
   };
 }

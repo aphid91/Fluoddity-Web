@@ -224,6 +224,9 @@ export const DROPDOWN_MODES = {
   expEarlyOut: ['Off', 'Empty Dispatch', 'Move Only'],
   expWorkgroupSize: ['256', '128', '64'],
   expBlackBoxForm: ['Unrolled', 'Loop', 'Two Loops'],
+  // Indices into `EXPERIMENT_CANVAS_TAPS` and `EXPERIMENT_CANVAS_EVERY`.
+  expCanvasTaps: ['5 (real)', '1', '0'],
+  expCanvasEvery: ['1 (real)', '2', '3', '5'],
 } as const;
 
 // Bounds are fixed and generous rather than user-editable (adjustable slider
@@ -1030,6 +1033,59 @@ export const SETTINGS: readonly Setting[] = [
     help: 'Threads per workgroup for this pass. Mobile GPUs often prefer 64 or 128.',
     group: 'Entity Update Experiment',
     options: DROPDOWN_MODES.expWorkgroupSize,
+  }),
+
+  // ================= PREFERENCES: CANVAS EXPERIMENT =================
+  // Temporary, like the group above: ablations for the canvas update pass.
+  setting({
+    field: 'expFuseCanvas',
+    label: 'Fuse Canvas + Splat',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'Records the canvas update and the brush splat as one render pass. Same ' +
+      'result. The overlay then shows one canvas+splat timing: compare it with ' +
+      'canvas-update plus brush-splat.',
+    group: 'Canvas Update Experiment',
+  }),
+  setting({
+    field: 'expCanvasTaps',
+    label: 'Blur Taps',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: CHOICE,
+    lo: 0,
+    hi: DROPDOWN_MODES.expCanvasTaps.length - 1,
+    help:
+      'Texels read per pixel. 1 keeps decay but drops diffusion; 0 reads nothing ' +
+      'and clears the canvas every step -- the cost of the pass with no reads.',
+    group: 'Canvas Update Experiment',
+    options: DROPDOWN_MODES.expCanvasTaps,
+  }),
+  setting({
+    field: 'expCanvasLoad',
+    label: 'Load Instead of Sample',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help: 'Reads exact texels rather than sampling through the filter. Near-identical result.',
+    group: 'Canvas Update Experiment',
+  }),
+  setting({
+    field: 'expCanvasEvery',
+    label: 'Canvas Update Every',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: CHOICE,
+    lo: 0,
+    hi: DROPDOWN_MODES.expCanvasEvery.length - 1,
+    help:
+      'Runs the canvas update only every Nth physics step, decaying N steps at ' +
+      'once. Trails keep roughly their strength, but diffuse less and particles ' +
+      'sense a canvas that has not decayed in between -- the dynamics change.',
+    group: 'Canvas Update Experiment',
+    options: DROPDOWN_MODES.expCanvasEvery,
   }),
 
   // ================= PREFERENCES: Archive =================

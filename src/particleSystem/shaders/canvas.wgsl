@@ -37,6 +37,20 @@ struct CanvasUniforms {
 
 fn frame_count() -> i32 { return bitcast<i32>(u.flags.x); }
 
+// --- EXPERIMENT: canvas update ablations -------------------------------------
+// Temporary, like entityUpdate.wgsl's. Pipeline constants, so the unused path is
+// compiled out; see particleSystem/entityExperiment.ts. Every default is the
+// real shader.
+//
+// Texels read per fragment: 5 the real cross; 1 the centre only (no
+// diffusion); 0 none at all (the canvas is cleared every step).
+override EXP_CANVAS_TAPS: u32 = 5u;
+// Read exact texels with textureLoad instead of sampling through the filter.
+override EXP_CANVAS_LOAD: bool = false;
+// The host runs this pass every Nth sub-step; persistence is raised to the Nth
+// power so trails keep roughly the same strength.
+override EXP_CANVAS_EVERY: u32 = 1u;
+
 struct VsOut {
     @builtin(position) clip : vec4f,
     @location(0) uv : vec2f,
@@ -97,6 +111,27 @@ fn get_can(p: vec2f) -> vec4f {
     return textureSampleLevel(canvas_texture, canvas_sampler, uv, 0.0);
 }
 
+// EXPERIMENT: EXP_CANVAS_LOAD. One exact texel, with the boundary done by hand
+// -- the sampler's address mode is what does it on the sampling path. `t` is in
+// framebuffer pixels, which the V flip in vs_main makes the fragment's own texel.
+fn load_can(t: vec2i) -> vec4f {
+    let size = vec2i(textureDimensions(canvas_texture, 0));
+    var c = clamp(t, vec2i(0), size - 1);
+    if (world_boundary_conditions(u.world) == BC_WRAP) {
+        c = ((t % size) + size) % size;
+    }
+    return textureLoad(canvas_texture, c, 0);
+}
+
+// The 5-tap cross on exact texels. Symmetric, so which neighbour is "north"
+// does not matter.
+fn load_blur(t: vec2i, diffusion_constant: f32) -> vec4f {
+    let K = diffusion_constant;
+    return (load_can(t) * K
+            + load_can(t + vec2i(0, 1)) + load_can(t - vec2i(0, 1))
+            + load_can(t - vec2i(1, 0)) + load_can(t + vec2i(1, 0))) / (4.0 + K);
+}
+
 // Weighted 5-tap cross: centre weight K, four neighbours weight 1.
 fn get_blur(pos: vec2f, diffusion_constant: f32) -> vec4f {
     let imsz = textureDimensions(canvas_texture, 0);
@@ -120,16 +155,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // actually erases the canvas (see particle_system.py:259-275).
     if (frame_count() == 0) { return vec4f(0.0, 0.0, 0.0, 0.0); }
 
+    // EXPERIMENT: EXP_CANVAS_TAPS 0 -- the cost of filling and storing the
+    // canvas with no reads at all.
+    if (EXP_CANVAS_TAPS == 0u) { return vec4f(0.0); }
+
     var canvas_color : vec4f;
     var TRAIL_DIFFUSION = clamp(world_trail_diffusion(u.world), 0.001, 1.0);
     // Same bounds as brush.wgsl's premultiply, from common.wgsl -- the splat
     // and the decay must agree about what P means.
-    let TRAIL_PERSISTENCE = clamp(world_trail_persistence(u.world),
-                                  TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
+    let TRAIL_PERSISTENCE_STEP = clamp(world_trail_persistence(u.world),
+                                       TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
+    // EXPERIMENT: EXP_CANVAS_EVERY. N steps' worth of decay at once.
+    let TRAIL_PERSISTENCE = select(pow(TRAIL_PERSISTENCE_STEP, f32(EXP_CANVAS_EVERY)),
+                                   TRAIL_PERSISTENCE_STEP, EXP_CANVAS_EVERY == 1u);
+    let texel = vec2i(floor(in.clip.xy));
     if (TRAIL_DIFFUSION > 0.0) {
         TRAIL_DIFFUSION = TRAIL_DIFFUSION * TRAIL_DIFFUSION;      // better scaling for slider
         TRAIL_DIFFUSION = 4.0 / (pow(5.0, TRAIL_DIFFUSION) - 1.0); // better scaling for slider
-        canvas_color = get_blur(in.uv, TRAIL_DIFFUSION);
+        // EXPERIMENT: EXP_CANVAS_TAPS 1 and EXP_CANVAS_LOAD.
+        if (EXP_CANVAS_TAPS == 1u) {
+            canvas_color = select(get_can(in.uv), load_can(texel), EXP_CANVAS_LOAD);
+        } else if (EXP_CANVAS_LOAD) {
+            canvas_color = load_blur(texel, TRAIL_DIFFUSION);
+        } else {
+            canvas_color = get_blur(in.uv, TRAIL_DIFFUSION);
+        }
     }
     else {
         // Unreachable as written -- the clamp above has a floor of 0.001, so

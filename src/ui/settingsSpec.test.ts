@@ -149,6 +149,10 @@ test('the registry has the same 35 entries the desktop does, plus the web-only o
     'expCheapTrig',
     'expHalfTrig',
     'expRuleSlotZero',
+    'expFuseCanvas',
+    'expCanvasTaps',
+    'expCanvasLoad',
+    'expCanvasEvery',
   ];
   const ported = SETTINGS.filter((s) => !WEB_ONLY.includes(s.field));
   assert.equal(ported.length, 35);
@@ -352,7 +356,7 @@ test('grouped preserves declaration order and omits empty groups', () => {
     advanced.map(([name]) => name),
     ['Population', 'Sensors', 'Forces', 'Trails', 'Appearance',
      'Advanced', 'Simulation', 'Display', 'Behavior', 'Entity Update Experiment',
-     'Archive'],
+     'Canvas Update Experiment', 'Archive'],
   );
   // 'Trails' holds one ADVANCED entry, so Basic must not render it.
   const basic = grouped(false, [CONFIG, WORLD, PREFS]);
