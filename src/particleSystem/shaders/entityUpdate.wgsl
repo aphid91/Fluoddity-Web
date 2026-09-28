@@ -153,6 +153,17 @@ override EXP_BB_CENTERS: u32 = 10u;
 override EXP_NO_EXTRAS: bool = false;
 // The pass's workgroup size. The host divides by the same value.
 override EXP_WORKGROUP_SIZE: u32 = 256u;
+// How the black box walks its centers. 0 the hand-unrolled pair below; 1 one
+// loop evaluating both terms; 2 a loop for base, then a loop for mirror. All
+// three sum in the same order, so the result is the same.
+override EXP_BB_FORM: u32 = 0u;
+// Replace sin/cos with a cheap bounded parabola. Loads and FMAs unchanged.
+override EXP_CHEAP_TRIG: bool = false;
+// One sin/cos pair per term, the rest by double angle and stand-in
+// coefficients: the op count of the angle-addition rewrite, not its result.
+override EXP_HALF_TRIG: bool = false;
+// Every thread reads its rule from slot 0 -- one address for the whole pass.
+override EXP_RULE_SLOT0: bool = false;
 
 fn frame_count() -> i32 { return bitcast<i32>(u.flags.x); }
 fn strafe_field_active() -> bool { return bitcast<i32>(u.flags.y) != 0; }
@@ -174,9 +185,38 @@ fn trails_strength() -> f32 { return u.flags.w; }
 // This is how the entities evaluate their Rule.
 //
 // One center's contribution. `i` is the center's index, for its phase offset.
-fn fourier_term(center: FourierCenter, i: i32, signals: vec4f) -> vec4f {
+// EXPERIMENT: EXP_CHEAP_TRIG. A parabola through one period, bounded like the
+// real thing so particles stay finite, and a handful of ALU ops.
+fn exp_sin(x: f32) -> f32 {
+    if (!EXP_CHEAP_TRIG) { return sin(x); }
+    let t = fract(x * 0.15915494) * 2.0 - 1.0;
+    return -4.0 * t * (1.0 - abs(t));
+}
+fn exp_cos(x: f32) -> f32 {
+    if (!EXP_CHEAP_TRIG) { return cos(x); }
+    return exp_sin(x + 1.5707963);
+}
+
+// `extra` is only read by EXP_HALF_TRIG: the second coefficient vec4 the
+// angle-addition rewrite would store per center. Unused otherwise, so its load
+// is compiled out.
+fn fourier_term(center: FourierCenter, extra: vec4f, i: i32, signals: vec4f) -> vec4f {
     // Compute phase from dot product of input with frequency vector
     let phase = dot(signals, center.frequency);
+
+    // EXPERIMENT: EXP_HALF_TRIG. What the rewrite would cost, not what it would
+    // compute: one sin/cos pair, the second harmonic by double angle, and the
+    // same number of loads and FMAs as baked coefficients would need.
+    if (EXP_HALF_TRIG) {
+        let s1 = exp_sin(phase);
+        let c1 = exp_cos(phase);
+        let s2 = 2.0 * s1 * c1;
+        let c2 = c1 * c1 - s1 * s1;
+        return vec4f(s1 * center.amplitude.x + c1 * center.amplitude.y,
+                     c1 * center.amplitude.z - s1 * center.amplitude.w,
+                     s2 * extra.x + c2 * extra.y,
+                     c2 * extra.z - s2 * extra.w);
+    }
 
     // Add per-center phase offset to break degeneracy at origin
     // Use a deterministic offset based on center index and amplitude values
@@ -185,14 +225,24 @@ fn fourier_term(center: FourierCenter, i: i32, signals: vec4f) -> vec4f {
     // Create basis functions from phase with offset
     // Using sin/cos pairs at fundamental and first harmonic for richer representation
     let basis = vec4f(
-        sin(phase + phase_offset),
-        cos(phase + phase_offset * 0.7),  // Different offsets for variety
-        sin(phase * 2.0 + phase_offset * 1.3),
-        cos(phase * 2.0 + phase_offset * 0.5)
+        exp_sin(phase + phase_offset),
+        exp_cos(phase + phase_offset * 0.7),  // Different offsets for variety
+        exp_sin(phase * 2.0 + phase_offset * 1.3),
+        exp_cos(phase * 2.0 + phase_offset * 0.5)
     );
 
     // Weight
     return center.amplitude * basis;
+}
+
+// EXPERIMENT: where a center comes from. EXP_RULE_SLOT0 points every thread at
+// slot 0; `center_extra` is the stand-in for EXP_HALF_TRIG's second vec4.
+fn rule_slot(slot: i32) -> i32 { return select(slot, 0, EXP_RULE_SLOT0); }
+fn center_at(slot: i32, k: i32) -> FourierCenter {
+    return configs[rule_slot(slot)].rule.centers[k];
+}
+fn center_extra(slot: i32, k: i32) -> vec4f {
+    return configs[rule_slot(slot)].rule.centers[(k + 5) % 10].frequency;
 }
 
 // Both black box evaluations -- the base term and the mirror term -- at once.
@@ -233,53 +283,87 @@ fn fourier_noise_pair(slot: i32, signals_base: vec4f, signals_mirror: vec4f) -> 
     if (EXP_BB_CENTERS == 0u) {
         return FourierPair(signals_base * 0.01, signals_mirror * 0.01);
     }
-    let c0 = configs[slot].rule.centers[0];
-    base += fourier_term(c0, 0, signals_base);
-    mirror += fourier_term(c0, 0, signals_mirror);
+
+    // EXPERIMENT: EXP_BB_FORM 1 and 2 -- rolled loops, so only one center's
+    // data is live at a time. The bound is made opaque (`fc < 0` never holds)
+    // so the driver cannot unroll it back into the form being compared against.
+    let n = i32(EXP_BB_CENTERS) + select(0, 1, frame_count() < 0);
+    if (EXP_BB_FORM == 1u) {
+        for (var k = 0; k < n; k++) {
+            let c = center_at(slot, k);
+            let x = center_extra(slot, k);
+            base += fourier_term(c, x, k, signals_base);
+            mirror += fourier_term(c, x, k, signals_mirror);
+        }
+        return FourierPair(base, mirror);
+    }
+    if (EXP_BB_FORM == 2u) {
+        for (var k = 0; k < n; k++) {
+            base += fourier_term(center_at(slot, k), center_extra(slot, k), k, signals_base);
+        }
+        for (var k = 0; k < n; k++) {
+            mirror += fourier_term(center_at(slot, k), center_extra(slot, k), k, signals_mirror);
+        }
+        return FourierPair(base, mirror);
+    }
+
+    let c0 = center_at(slot, 0);
+    let x0 = center_extra(slot, 0);
+    base += fourier_term(c0, x0, 0, signals_base);
+    mirror += fourier_term(c0, x0, 0, signals_mirror);
     if (EXP_BB_CENTERS > 1u) {
-        let c1 = configs[slot].rule.centers[1];
-        base += fourier_term(c1, 1, signals_base);
-        mirror += fourier_term(c1, 1, signals_mirror);
+        let c1 = center_at(slot, 1);
+        let x1 = center_extra(slot, 1);
+        base += fourier_term(c1, x1, 1, signals_base);
+        mirror += fourier_term(c1, x1, 1, signals_mirror);
     }
     if (EXP_BB_CENTERS > 2u) {
-        let c2 = configs[slot].rule.centers[2];
-        base += fourier_term(c2, 2, signals_base);
-        mirror += fourier_term(c2, 2, signals_mirror);
+        let c2 = center_at(slot, 2);
+        let x2 = center_extra(slot, 2);
+        base += fourier_term(c2, x2, 2, signals_base);
+        mirror += fourier_term(c2, x2, 2, signals_mirror);
     }
     if (EXP_BB_CENTERS > 3u) {
-        let c3 = configs[slot].rule.centers[3];
-        base += fourier_term(c3, 3, signals_base);
-        mirror += fourier_term(c3, 3, signals_mirror);
+        let c3 = center_at(slot, 3);
+        let x3 = center_extra(slot, 3);
+        base += fourier_term(c3, x3, 3, signals_base);
+        mirror += fourier_term(c3, x3, 3, signals_mirror);
     }
     if (EXP_BB_CENTERS > 4u) {
-        let c4 = configs[slot].rule.centers[4];
-        base += fourier_term(c4, 4, signals_base);
-        mirror += fourier_term(c4, 4, signals_mirror);
+        let c4 = center_at(slot, 4);
+        let x4 = center_extra(slot, 4);
+        base += fourier_term(c4, x4, 4, signals_base);
+        mirror += fourier_term(c4, x4, 4, signals_mirror);
     }
     if (EXP_BB_CENTERS > 5u) {
-        let c5 = configs[slot].rule.centers[5];
-        base += fourier_term(c5, 5, signals_base);
-        mirror += fourier_term(c5, 5, signals_mirror);
+        let c5 = center_at(slot, 5);
+        let x5 = center_extra(slot, 5);
+        base += fourier_term(c5, x5, 5, signals_base);
+        mirror += fourier_term(c5, x5, 5, signals_mirror);
     }
     if (EXP_BB_CENTERS > 6u) {
-        let c6 = configs[slot].rule.centers[6];
-        base += fourier_term(c6, 6, signals_base);
-        mirror += fourier_term(c6, 6, signals_mirror);
+        let c6 = center_at(slot, 6);
+        let x6 = center_extra(slot, 6);
+        base += fourier_term(c6, x6, 6, signals_base);
+        mirror += fourier_term(c6, x6, 6, signals_mirror);
     }
     if (EXP_BB_CENTERS > 7u) {
-        let c7 = configs[slot].rule.centers[7];
-        base += fourier_term(c7, 7, signals_base);
-        mirror += fourier_term(c7, 7, signals_mirror);
+        let c7 = center_at(slot, 7);
+        let x7 = center_extra(slot, 7);
+        base += fourier_term(c7, x7, 7, signals_base);
+        mirror += fourier_term(c7, x7, 7, signals_mirror);
     }
     if (EXP_BB_CENTERS > 8u) {
-        let c8 = configs[slot].rule.centers[8];
-        base += fourier_term(c8, 8, signals_base);
-        mirror += fourier_term(c8, 8, signals_mirror);
+        let c8 = center_at(slot, 8);
+        let x8 = center_extra(slot, 8);
+        base += fourier_term(c8, x8, 8, signals_base);
+        mirror += fourier_term(c8, x8, 8, signals_mirror);
     }
     if (EXP_BB_CENTERS > 9u) {
-        let c9 = configs[slot].rule.centers[9];
-        base += fourier_term(c9, 9, signals_base);
-        mirror += fourier_term(c9, 9, signals_mirror);
+        let c9 = center_at(slot, 9);
+        let x9 = center_extra(slot, 9);
+        base += fourier_term(c9, x9, 9, signals_base);
+        mirror += fourier_term(c9, x9, 9, signals_mirror);
     }
 
     return FourierPair(base, mirror);

@@ -40,6 +40,14 @@ export interface EntityExperiment {
   readonly noExtras: boolean;
   /** Entity update's @workgroup_size. */
   readonly workgroupSize: number;
+  /** 0 hand-unrolled pair; 1 one loop, both terms; 2 base loop then mirror loop. */
+  readonly blackBoxForm: number;
+  /** Replace sin/cos with a cheap bounded parabola. */
+  readonly cheapTrig: boolean;
+  /** One sin/cos pair per term: the op count of the angle-addition rewrite. */
+  readonly halfTrig: boolean;
+  /** Every thread reads its rule from config slot 0. */
+  readonly ruleSlotZero: boolean;
 }
 
 /** The workgroup sizes on offer, indexed by the preference's stored value. */
@@ -52,6 +60,10 @@ export const NO_EXPERIMENT: EntityExperiment = Object.freeze({
   blackBoxCenters: 10,
   noExtras: false,
   workgroupSize: 256,
+  blackBoxForm: 0,
+  cheapTrig: false,
+  halfTrig: false,
+  ruleSlotZero: false,
 });
 
 /** The `override` values for `entityUpdate.wgsl`, as pipeline `constants`. */
@@ -63,6 +75,10 @@ export function experimentConstants(e: EntityExperiment): Record<string, number>
     EXP_BB_CENTERS: e.blackBoxCenters,
     EXP_NO_EXTRAS: e.noExtras ? 1 : 0,
     EXP_WORKGROUP_SIZE: e.workgroupSize,
+    EXP_BB_FORM: e.blackBoxForm,
+    EXP_CHEAP_TRIG: e.cheapTrig ? 1 : 0,
+    EXP_HALF_TRIG: e.halfTrig ? 1 : 0,
+    EXP_RULE_SLOT0: e.ruleSlotZero ? 1 : 0,
   };
 }
 
@@ -73,7 +89,11 @@ export function sameExperiment(a: EntityExperiment, b: EntityExperiment): boolea
     a.noSensors === b.noSensors &&
     a.blackBoxCenters === b.blackBoxCenters &&
     a.noExtras === b.noExtras &&
-    a.workgroupSize === b.workgroupSize
+    a.workgroupSize === b.workgroupSize &&
+    a.blackBoxForm === b.blackBoxForm &&
+    a.cheapTrig === b.cheapTrig &&
+    a.halfTrig === b.halfTrig &&
+    a.ruleSlotZero === b.ruleSlotZero
   );
 }
 
@@ -88,5 +108,10 @@ export function describeExperiment(e: EntityExperiment): string {
   if (e.blackBoxCenters !== 10) parts.push(`bb=${e.blackBoxCenters}`);
   if (e.noExtras) parts.push('no-extras');
   if (e.workgroupSize !== 256) parts.push(`wg=${e.workgroupSize}`);
+  if (e.blackBoxForm === 1) parts.push('loop');
+  if (e.blackBoxForm === 2) parts.push('two-loops');
+  if (e.cheapTrig) parts.push('cheap-trig');
+  if (e.halfTrig) parts.push('half-trig');
+  if (e.ruleSlotZero) parts.push('rule-slot0');
   return parts.join(' ');
 }

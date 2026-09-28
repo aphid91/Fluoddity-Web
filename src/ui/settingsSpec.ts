@@ -223,6 +223,7 @@ export const DROPDOWN_MODES = {
   // EXP_EARLY_OUT and `EXPERIMENT_WORKGROUP_SIZES` respectively.
   expEarlyOut: ['Off', 'Empty Dispatch', 'Move Only'],
   expWorkgroupSize: ['256', '128', '64'],
+  expBlackBoxForm: ['Unrolled', 'Loop', 'Two Loops'],
 } as const;
 
 // Bounds are fixed and generous rather than user-editable (adjustable slider
@@ -957,6 +958,54 @@ export const SETTINGS: readonly Setting[] = [
     help:
       'Fourier centers evaluated per particle. 10 is the real rule; 0 skips the ' +
       'black box entirely. The slope says what one center costs.',
+    group: 'Entity Update Experiment',
+  }),
+  setting({
+    field: 'expBlackBoxForm',
+    label: 'Black Box Form',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: CHOICE,
+    lo: 0,
+    hi: DROPDOWN_MODES.expBlackBoxForm.length - 1,
+    help:
+      'How the centers are walked. Unrolled is the current code. Loop and Two ' +
+      'Loops hold one center at a time; same result, far fewer registers. If ' +
+      'these are much faster, register pressure is the cost.',
+    group: 'Entity Update Experiment',
+    options: DROPDOWN_MODES.expBlackBoxForm,
+  }),
+  setting({
+    field: 'expCheapTrig',
+    label: 'Cheap Trig',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'Replaces every sin and cos with a cheap approximation, keeping all the ' +
+      'loads. The difference is what the trig itself costs.',
+    group: 'Entity Update Experiment',
+  }),
+  setting({
+    field: 'expHalfTrig',
+    label: 'Half Trig',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'One sin/cos pair per term instead of four calls, with placeholder ' +
+      'coefficients: the cost of an exact rewrite, though not its result.',
+    group: 'Entity Update Experiment',
+  }),
+  setting({
+    field: 'expRuleSlotZero',
+    label: 'Rule From Slot 0',
+    tier: ADVANCED,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'Every particle reads the same rule. Shows whether per-cohort rule ' +
+      'addresses cost anything.',
     group: 'Entity Update Experiment',
   }),
   setting({

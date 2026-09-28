@@ -380,6 +380,11 @@ export interface Preferences {
   readonly expNoExtras: boolean;
   /** An index into `EXPERIMENT_WORKGROUP_SIZES`. */
   readonly expWorkgroupSize: number;
+  /** An index into `DROPDOWN_MODES.expBlackBoxForm`. */
+  readonly expBlackBoxForm: number;
+  readonly expCheapTrig: boolean;
+  readonly expHalfTrig: boolean;
+  readonly expRuleSlotZero: boolean;
 }
 
 /**
@@ -458,6 +463,10 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   expBlackBoxCenters: 10,
   expNoExtras: false,
   expWorkgroupSize: 0,
+  expBlackBoxForm: 0,
+  expCheapTrig: false,
+  expHalfTrig: false,
+  expRuleSlotZero: false,
 });
 
 /**
@@ -521,6 +530,10 @@ export const PREFERENCE_KINDS = {
   expBlackBoxCenters: 'int',
   expNoExtras: 'bool',
   expWorkgroupSize: 'int',
+  expBlackBoxForm: 'int',
+  expCheapTrig: 'bool',
+  expHalfTrig: 'bool',
+  expRuleSlotZero: 'bool',
 } as const satisfies Record<keyof Preferences, 'float' | 'int' | 'bool'>;
 
 export type PreferenceKey = keyof Preferences;
@@ -790,5 +803,9 @@ export function entityExperimentFor(prefs: Preferences): EntityExperiment {
     blackBoxCenters: Math.min(10, Math.max(0, prefs.expBlackBoxCenters)),
     noExtras: prefs.expNoExtras,
     workgroupSize: EXPERIMENT_WORKGROUP_SIZES[prefs.expWorkgroupSize] ?? 256,
+    blackBoxForm: Math.min(2, Math.max(0, prefs.expBlackBoxForm)),
+    cheapTrig: prefs.expCheapTrig,
+    halfTrig: prefs.expHalfTrig,
+    ruleSlotZero: prefs.expRuleSlotZero,
   };
 }

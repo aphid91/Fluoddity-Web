@@ -343,12 +343,13 @@ test('the black box reads its rule from the slot, never from a by-value copy', (
   // Each center read ONCE, by a constant index, for both black box terms:
   // reading them twice doubled the loads, and a loop index kept each read
   // waiting on the one before (see fourier_noise_pair).
+  //
+  // EXPERIMENT: the loop forms (EXP_BB_FORM) read by a loop index on purpose,
+  // through `center_at`, so this checks the default unrolled path instead.
   for (let i = 0; i < 10; i++) {
-    assert.equal(count(src, new RegExp(`configs\\[slot\\]\\.rule\\.centers\\[${i}\\]`, 'g')), 1,
+    assert.equal(count(src, new RegExp(`center_at\\(slot, ${i}\\)`, 'g')), 1,
       `center ${i} must be read from the config buffer exactly once`);
   }
-  assert.equal(count(src, /\.rule\.centers\[[^\]0-9]/g), 0,
-    'a center is read by a non-constant index');
 });
 
 test('every shader that knows the slot layout reads it from CONFIG_PER_COHORT', () => {

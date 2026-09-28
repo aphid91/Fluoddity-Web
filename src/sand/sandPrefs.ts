@@ -87,6 +87,10 @@ const HIDDEN_PREFS: ReadonlySet<string> = new Set([
   'expBlackBoxCenters',
   'expNoExtras',
   'expWorkgroupSize',
+  'expBlackBoxForm',
+  'expCheapTrig',
+  'expHalfTrig',
+  'expRuleSlotZero',
 ]);
 
 export interface SandPrefsCallbacks {
