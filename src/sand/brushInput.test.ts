@@ -21,8 +21,8 @@ test('brush sizes are ascending and all positive', () => {
   }
 });
 
-test('there are five sizes and the default is one of them', () => {
-  assert.equal(BRUSH_SIZES.length, 5);
+test('there are four sizes and the default is one of them', () => {
+  assert.equal(BRUSH_SIZES.length, 4);
   assert.ok(DEFAULT_BRUSH_SIZE >= 0 && DEFAULT_BRUSH_SIZE < BRUSH_SIZES.length);
 });
 
@@ -109,7 +109,7 @@ test('a bigger brush spawns proportionally more', () => {
   b.setSize(0);
   const small = b.frame([0, 0], BRUSH_SPAWN, DT, PLENTY)?.count ?? 0;
   b.release();
-  b.setSize(4);
+  b.setSize(BRUSH_SIZES.length - 1);
   const big = b.frame([0, 0], BRUSH_SPAWN, DT, PLENTY)?.count ?? 0;
   assert.ok(big > small * 10, 'area scaling, not radius scaling');
 });

@@ -238,6 +238,18 @@ export class InitialConditions {
   }
 
   /**
+   * Put back only the captured WALLS. Returns false if there is nothing to
+   * restore. Particles, trails and the frame count are left alone, so this
+   * can run mid-simulation.
+   */
+  restoreField(encoder: GPUCommandEncoder): boolean {
+    if (!this.captured || this.box === null || !this.ready) return false;
+    const pending = this.pendingStamp;
+    if (pending !== null) return this.paster.restoreField(pending, this.box);
+    return this.paster.restoreFieldFromVram(encoder, this.copier);
+  }
+
+  /**
    * Start the paste's high-water readback. Call after submitting the frame.
    *
    * A restore sets the mark to the WHOLE BUFFER until this lands, because the

@@ -70,10 +70,10 @@ export const MIN_VISIBLE_COUNT = 5;
 export const KEYED_SLOTS = 10;
 
 /**
- * How many worlds the Select World panel offers besides Custom.
+ * How many worlds the World menu offers besides Custom.
  *
- * FIVE, so the panel is six buttons in three rows of two -- the tool rail's
- * shape, which is what the requirement asked for.
+ * FOUR. The menu is two columns of three: the four worlds, then Custom… on
+ * the last row by itself. It was five when worlds were a panel of six buttons.
  *
  * ## Why it lives here rather than beside the panel that draws it
  *
@@ -87,7 +87,7 @@ export const KEYED_SLOTS = 10;
  * is what stops it being written out three times and drifting, which is exactly
  * what a hand-kept `5` in the session parser was on its way to doing.
  */
-export const ASSIGNABLE_WORLDS = 5;
+export const ASSIGNABLE_WORLDS = 4;
 
 /**
  * The slot whose world settings govern the whole scene.

@@ -87,7 +87,7 @@ export interface SandSession {
   readonly theme: string;
 
   /**
-   * Which saved world each of the five buttons loads. Empty means unassigned.
+   * Which saved world each of the four buttons loads. Empty means unassigned.
    *
    * A DEV SETTING that ships as part of the app's configuration: in the shipping
    * build these point at the worlds a visitor is offered, and in the editor they
@@ -335,7 +335,7 @@ export function parseSession(raw: string): SandSession {
       ? o['worlds'].map((w) => (typeof w === 'string' ? w : ''))
       : [],
     // Clamped to the legal range, treating anything unrecognised as Custom. A
-    // stored index past the five buttons would light nothing and leave the
+    // stored index past the four buttons would light nothing and leave the
     // panel looking broken.
     selectedWorld: asSelectedWorld(o['selectedWorld']),
     // STRICTLY BOOLEAN, defaulting to off. A truthy non-boolean (`"false"`, 1)

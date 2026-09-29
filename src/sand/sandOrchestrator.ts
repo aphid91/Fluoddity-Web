@@ -123,6 +123,15 @@ export class SandOrchestrator {
    */
   private _paused = true;
   private restorePending = false;
+  /** "Restore initial walls", queued for the next frame's encoder. */
+  private wallsRestorePending = false;
+
+  /**
+   * Shove's Push/Pull choice: what the PRIMARY press does (left button, or a
+   * finger). The right button always does the opposite. On touch, where there
+   * is no right button, this is the only way to pull.
+   */
+  shovePull = false;
   /**
    * A world-wide act queued for the top of the next frame.
    *
@@ -618,6 +627,21 @@ export class SandOrchestrator {
     this._paused = !this._paused;
   }
 
+  /** The Play and Pause buttons. */
+  setPaused(paused: boolean): void {
+    this._paused = paused;
+  }
+
+  /**
+   * Walls' "Restore initial walls": put the captured walls back and leave
+   * everything else running. Returns false when nothing has been captured yet.
+   */
+  restoreWalls(): boolean {
+    if (!this.initial.hasSnapshot) return false;
+    this.wallsRestorePending = true;
+    return true;
+  }
+
   /**
    * `R` -- restore the scene the user pressed go on, and return to arranging.
    *
@@ -745,27 +769,37 @@ export class SandOrchestrator {
     );
     replacement.setFrameCount(RESTORE_FRAME);
 
+    // EVERYTHING IS BUILT BEFORE ANYTHING IS SWAPPED. The frame loop keeps
+    // running across these awaits, so swapping the system first and then
+    // awaiting the passes let frames record with a destroyed set of passes
+    // ("freelist-sort-uniforms used in submit while destroyed") -- rare while
+    // only World Size rebuilt, constant once every window resize did.
+    // Scratch buffers are sized to the entity count, so the compactor is
+    // rebuilt alongside rather than resized.
+    const [passes, compactor, initial] = await Promise.all([
+      SandPasses.create(this.device, replacement),
+      Compactor.create(this.device, replacement),
+      InitialConditions.create(this.device, replacement, replacementField),
+    ]);
+
+    // --- the swap: synchronous, so no frame sees half of it ---------------
     const oldSystem = this.system;
     const oldField = this.field;
+    const oldPasses = this.passes;
+    const oldCompactor = this.compactor;
+    const oldInitial = this.initial;
     this.system = replacement;
     this.field = replacementField;
     this.assembler.setStrafeField(replacementField.view());
-
+    this.passes = passes;
+    this.compactor = compactor;
+    this.initial = initial;
     // The outgoing passes own GPU buffers -- uniforms, the sweep cursor and its
     // staging. Dropping the JS reference does not free them, so a session spent
     // tuning World Size leaked one set per change.
-    this.passes.destroy();
-    this.passes = await SandPasses.create(this.device, replacement);
-    // Scratch buffers are sized to the entity count, so the compactor is
-    // rebuilt alongside rather than resized.
-    this.compactor.destroy();
-    this.compactor = await Compactor.create(this.device, replacement);
-    this.initial.destroy();
-    this.initial = await InitialConditions.create(
-      this.device,
-      replacement,
-      replacementField,
-    );
+    oldPasses.destroy();
+    oldCompactor.destroy();
+    oldInitial.destroy();
 
     this._paused = true;
     this.captureArmed = true;
@@ -894,6 +928,13 @@ export class SandOrchestrator {
         // when the next compaction supersedes it.
         this.spawnedSinceCompact = Number.MAX_SAFE_INTEGER;
       }
+    }
+
+    // After the full restore, which puts the walls back itself -- so a walls
+    // restore queued alongside one has nothing left to do.
+    if (this.wallsRestorePending) {
+      this.wallsRestorePending = false;
+      this.initial.restoreField(encoder);
     }
 
     // THE AUTOMATIC TRIGGER, consulted before the decision below so a
@@ -1209,9 +1250,12 @@ export class SandOrchestrator {
     // read. Shove scales by its own.
     const gain = tool === 'erase' ? SHOVE_GAIN : SHOVE_GAIN * this.brush.weight;
     let strength = gain / falloff;
-    // Left pushes away, right pulls in -- the studio's convention. The eraser
-    // only ever reaches here on the right, so it is always a pull.
-    if (input.action === BRUSH_ERASE) strength = -strength;
+    // Left pushes away, right pulls in -- the studio's convention -- unless
+    // Shove's Pull is chosen, which swaps the two. The eraser only ever reaches
+    // here on the right, so it is always a pull.
+    let pull = input.action === BRUSH_ERASE;
+    if (tool === 'shove' && this.shovePull) pull = !pull;
+    if (pull) strength = -strength;
 
     return {
       center: input.cursor,

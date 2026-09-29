@@ -1,5 +1,5 @@
 /**
- * The settings window: Preferences, Config and Dev, as three tabs.
+ * The settings window: Preferences, Config, Dev and UI leftovers, as tabs.
  *
  * ## Why this reads `settingsSpec.ts` rather than listing controls
  *
@@ -53,6 +53,13 @@ import {
 } from './palette.ts';
 import { type SandTheme, THEMES, themeById } from './theme.ts';
 import {
+  type SandTool,
+  TOOLS,
+  TOOL_LABELS,
+  isImplemented,
+  usesStrength,
+} from './tool.ts';
+import {
   COLOR_MODES,
   COLOR_MODE_LABELS,
   type ColorMode,
@@ -80,6 +87,9 @@ const HIDDEN_PREFS: ReadonlySet<string> = new Set([
   'motionBlurSamples',
   // The touch layout is the studio panel's, not this one's.
   'mobileMode',
+  // The world's shape follows the screen here (`main.ts`), so a stored aspect
+  // has nothing to govern -- and writing one would change the studio's.
+  'canvasAspect',
 ]);
 
 export interface SandPrefsCallbacks {
@@ -109,6 +119,8 @@ export interface SandPrefsCallbacks {
   onColorMode(mode: ColorMode): void;
   /** The selected swatch's colour picker moved. */
   onSwatchColor(slot: number, color: SwatchColor): void;
+  /** A tool's strength, on the UI leftovers tab. */
+  onStrength(tool: SandTool, value: number): void;
 
   // --- worlds. Dev-only: this is the level editor half of the app ----------
 
@@ -117,7 +129,7 @@ export interface SandPrefsCallbacks {
   /** "Load world" -- open the library modal. */
   onOpenWorldLibrary(): void;
   /**
-   * One of the five world buttons was pointed at a different save.
+   * One of the four world buttons was pointed at a different save.
    *
    * `name` is empty for None, which is how a button is unassigned.
    */
@@ -196,7 +208,7 @@ export class SandPrefs {
   private poolFolder: FolderApi | null = null;
 
   /**
-   * The five world buttons' assignments, mirrored for Tweakpane to bind.
+   * The four world buttons' assignments, mirrored for Tweakpane to bind.
    *
    * Rebuilt into the dropdowns by `refreshWorlds`, because Tweakpane takes its
    * `options` at bind time and a saved world added later would otherwise not
@@ -214,7 +226,7 @@ export class SandPrefs {
     initial: {
       theme: string;
       visibleCount: number;
-      /** The five assignments, restored from the session. */
+      /** The four assignments, restored from the session. */
       worlds: readonly string[];
       /** The compaction switches, restored from the session. */
       autoCompact: boolean;
@@ -222,6 +234,8 @@ export class SandPrefs {
       auditAfterSweep: boolean;
       /** The colour mode, restored from the session. */
       colorMode: ColorMode;
+      /** Each tool's strength, restored from the session. */
+      strengths: Readonly<Record<SandTool, number>>;
     },
     callbacks: SandPrefsCallbacks,
   ) {
@@ -260,17 +274,61 @@ export class SandPrefs {
     }
 
     const tabs = this.pane.addTab({
-      pages: [{ title: 'Prefs' }, { title: 'Config' }, { title: 'Dev' }],
+      pages: [
+        { title: 'Prefs' },
+        { title: 'Config' },
+        { title: 'Dev' },
+        { title: 'UI leftovers' },
+      ],
     });
-    const [prefsPage, configPage, devPage] = tabs.pages;
-    if (prefsPage === undefined || configPage === undefined || devPage === undefined) {
-      throw new Error('Tweakpane did not build the expected three pages.');
+    const [prefsPage, configPage, devPage, leftoversPage] = tabs.pages;
+    if (
+      prefsPage === undefined ||
+      configPage === undefined ||
+      devPage === undefined ||
+      leftoversPage === undefined
+    ) {
+      throw new Error('Tweakpane did not build the expected four pages.');
     }
     this.configPage = configPage;
 
     this.buildPrefs(prefsPage);
     this.buildDev(devPage);
+    this.buildLeftovers(leftoversPage, initial.strengths);
     this.syncConfig();
+  }
+
+  // -------------------------------------------------------------------------
+  // UI leftovers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Controls the old rail and tray had that the layout-bench UI does not.
+   *
+   * Per-tool STRENGTH is the one so far: it was a number-drag under the size
+   * buttons, and each tool keeps its own. Only the tools that have a strength
+   * and are built get a row -- Erase is a hard-radius kill with nothing to
+   * scale (see `usesStrength`).
+   */
+  private buildLeftovers(
+    page: TabPageApi,
+    strengths: Readonly<Record<SandTool, number>>,
+  ): void {
+    const values: Record<string, number> = {};
+    for (const tool of TOOLS) {
+      if (!usesStrength(tool) || !isImplemented(tool)) continue;
+      values[tool] = strengths[tool];
+      const blade = page.addBinding(values, tool, {
+        label: `${TOOL_LABELS[tool]} strength`,
+        min: 0.01,
+        step: 0.01,
+      });
+      blade.element.title = `${TOOL_LABELS[tool]}'s strength. Each tool keeps its own.`;
+      blade.on('change', () => {
+        const value = Number(values[tool]);
+        if (Number.isFinite(value) && value > 0) this.callbacks.onStrength(tool, value);
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -331,9 +389,7 @@ export class SandPrefs {
    * shove strength and draw power as well as spawn density.
    */
   private buildDev(page: TabPageApi): void {
-    // THE UI COMP. Four of them -- see `theme.ts`. Three are a token swap and
-    // one moves the furniture; the dropdown does not distinguish, because from
-    // here they are all just "which front end".
+    // THE UI LOOK -- see `theme.ts`. Each is a token swap over the same layout.
     const themeBlade = page.addBinding(this.devValues, 'theme', {
       label: 'UI style',
       options: Object.fromEntries(THEMES.map((t) => [t.label, t.id])),
@@ -502,7 +558,7 @@ export class SandPrefs {
   }
 
   /**
-   * The Worlds folder: save one, load one, and point the five buttons at them.
+   * The Worlds folder: save one, load one, and point the four buttons at them.
    *
    * ## This is the level editor, and it is dev-only on purpose
    *
@@ -535,7 +591,7 @@ export class SandPrefs {
   }
 
   /**
-   * The five "which save does button N load" dropdowns.
+   * The four "which save does button N load" dropdowns.
    *
    * ## Rebuilt rather than refreshed, and why that is not a smell
    *
@@ -581,7 +637,7 @@ export class SandPrefs {
   /**
    * Re-read the library and rebuild the dropdowns.
    *
-   * Called after a save or a delete, because both change which names the five
+   * Called after a save or a delete, because both change which names the four
    * buttons may point at -- and a dropdown built before a save would not offer
    * the world the user just created, which is the first thing they would try to
    * assign it to.
@@ -996,8 +1052,8 @@ export class SandPrefs {
 /**
  * The mirror key for world button `i`.
  *
- * Tweakpane binds to a property NAME on an object, so the five dropdowns need
- * five distinct keys. Derived rather than written out, so the count lives only
+ * Tweakpane binds to a property NAME on an object, so the four dropdowns need
+ * four distinct keys. Derived rather than written out, so the count lives only
  * in `ASSIGNABLE_WORLDS`.
  */
 function worldKey(index: number): string {

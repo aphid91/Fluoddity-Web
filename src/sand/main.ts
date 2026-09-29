@@ -8,7 +8,7 @@
  *
  * ## Hotkeys
  *
- *   1-9, 0   select one of the first ten swatches
+ *   1-9, 0   select one of the first ten swatches the bar shows
  *   SPACE    pause / resume. The world starts PAUSED, arranging.
  *   R        restore the initial conditions (does nothing while authoring them)
  *   Shift+V  load a config from the clipboard into the first empty swatch
@@ -34,7 +34,7 @@ import { toDocument } from '../config/persistence.ts';
 import { BC, makeWorldSettings } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
 import {
-  DEFAULT_PREFERENCES,
+  type Preferences,
   loadPreferences,
   requiresRestart,
   savePreferences,
@@ -105,43 +105,111 @@ async function main(): Promise<void> {
   });
   const surface = createSurface(canvas, device);
 
-  // `let`: the sand modality overrides `canvasAspect` for a fresh install, just
-  // below, once the saved value has been read.
+  // `let`: a loaded world replaces it.
+  //
+  // ITS `canvasAspect` IS NEVER USED HERE. The world's shape follows the
+  // canvas (see `worldPrefs`), and the stored value is left untouched because
+  // the studio shares this record -- writing the screen's shape into it would
+  // reshape the studio's world.
   let prefs = loadPreferences();
   // BEFORE sizing: a saved Max Particles has to size the buffer from the start,
   // rather than being applied afterwards as a resize the user did not ask for.
   const session = loadSession();
 
+  const store = await ConfigStore.open();
+
   // ---------------------------------------------------------------------
-  // THE SAND WORLD IS 4:3.
+  // THE UI FIRST, BEFORE THE WORLD.
   //
-  // The studio defaults to a square canvas; this modality does not. The UI is a
-  // tool rail down the left and a swatch tray along the bottom, so the space the
-  // canvas is fitted into is landscape -- and a square world inside a landscape
-  // hole wastes the width on either side of it.
+  // The world is built to the CANVAS'S SHAPE, and the canvas is whatever the
+  // sidebar and the swatch bar leave -- so the shell has to be laid out before
+  // there is a shape to build to. The callbacks name things created further
+  // down (`orch`, `persist`, `notify`...); none of them can fire until startup
+  // has finished and the user presses something.
+  // ---------------------------------------------------------------------
+  const ui = new SandUi(store, {
+    onSelect: (slot) => {
+      selectSwatch(slot);
+    },
+    onBrushSize: (index) => {
+      orch.brush.setSize(index);
+      persist();
+    },
+    onTool: (tool) => {
+      orch.brush.tool = tool;
+      persist();
+    },
+    // "None". The palette refuses this for the master, so the menu hiding the
+    // option and the model rejecting it agree -- see `Palette.clear`.
+    onClearSlot: (slot) => {
+      orch.palette.clear(slot);
+      orch.applyPalette(fallbackConfig, defaultWorld);
+      persist();
+    },
+    onSelectWorld: (index) => {
+      void selectWorld(index);
+    },
+    onLoad: (slot, entry) => {
+      void (async () => {
+        try {
+          const loaded = await store.read(entry);
+          if (loaded.configs[0] === undefined) return;
+          orch.palette.set(slot, {
+            tool: TOOL_CONFIG,
+            config: loaded.configs[0],
+            world: loaded.world,
+            name: entry.name,
+          });
+          orch.applyPalette(fallbackConfig, defaultWorld);
+          persist();
+        } catch (e) {
+          console.error(`Could not load ${entry.name}: ${String(e)}`);
+        }
+      })();
+    },
+    onPlay: () => orch.setPaused(false),
+    onPause: () => orch.setPaused(true),
+    onReset: () => {
+      if (!orch.reset()) {
+        notify('Already editing the initial conditions — nothing to reset to');
+      }
+    },
+    onClearParticles: () => {
+      orch.clearParticles();
+      notify('Cleared all particles');
+    },
+    onClearWalls: () => {
+      orch.clearField('walls');
+      notify('Cleared all walls');
+    },
+    onRestoreWalls: () => {
+      notify(
+        orch.restoreWalls()
+          ? 'Restored the initial walls'
+          : 'No initial conditions yet — they are set when you first press Play',
+      );
+    },
+    onShoveDirection: (pull) => {
+      orch.shovePull = pull;
+    },
+    onNotBuilt: (what) => notify(`${what} is not built yet`),
+  });
+
+  // ---------------------------------------------------------------------
+  // THE WORLD'S SHAPE IS THE CANVAS'S.
   //
-  // It is applied to the PREFERENCE rather than to the element, because
-  // `canvasAspect` defines the shape of the SIMULATED WORLD (`sizing.ts`: "world
-  // space is area-preserving, so the canvas keeps roughly the same pixel count
-  // and the same particle density; it just gets wider and shorter"). Cropping
-  // the element alone would letterbox a square world rather than give us a wide
-  // one, which is not what "crop to the space the trail map fills" asks for.
+  // `canvasAspect` defines the shape of the SIMULATED WORLD (`sizing.ts`: world
+  // space is area-preserving, so a different aspect keeps the pixel count and
+  // the particle density and makes the world wider or taller). Here it is
+  // always the canvas's own, so the world fills the canvas exactly.
   //
-  // A saved `canvasAspect` still wins: this is a DEFAULT for a fresh install,
-  // not an override of a value the user set in the Prefs tab.
-  //
-  // 5:3 rather than 4:3, which is what this first shipped as. The rail and the
-  // tray take a fixed bite out of a landscape window, so the hole the canvas is
-  // fitted into is wider than 4:3 and a 4:3 world left a visible margin either
-  // side of it. 5:3 is a closer fit without going so wide that the world starts
-  // reading as a strip.
-  const SAND_CANVAS_ASPECT = 5 / 3;
-  if (prefs.canvasAspect === DEFAULT_PREFERENCES.canvasAspect) {
-    prefs = { ...prefs, canvasAspect: SAND_CANVAS_ASPECT };
-  }
+  // Applied to a COPY of the preferences at every build, never stored -- see
+  // `prefs` above.
+  // ---------------------------------------------------------------------
+  const worldPrefs = (p: Preferences): Preferences => ({ ...p, canvasAspect: ui.canvasAspect() });
 
   const [derivedCount, canvasDim] = sizingFor(prefs.worldSize);
-  const canvasSize = canvasDimensions(prefs.canvasAspect, canvasDim);
+  const canvasSize = canvasDimensions(ui.canvasAspect(), canvasDim);
   const entityCount = session.maxParticles ?? derivedCount;
 
   // The world a sand scene runs under until a master config is loaded.
@@ -150,8 +218,6 @@ async function main(): Promise<void> {
   // wrapped or respawned, which is requirement 7 and the worked example of the
   // sinks system.
   const defaultWorld = makeWorldSettings({ boundaryConditions: BC.KILL });
-
-  const store = await ConfigStore.open();
   // The default preset if it is present, otherwise the first config in the
   // first ordered category -- a fresh install with a renamed default should
   // still open with something rather than failing.
@@ -200,6 +266,7 @@ async function main(): Promise<void> {
     targets,
   });
   orch.fallbackWorld = defaultWorld;
+  ui.attach(orch.palette);
 
   // ---------------------------------------------------------------------
   // Restore the previous session, or open a fresh one.
@@ -411,61 +478,9 @@ async function main(): Promise<void> {
     persist();
   };
 
-  const ui = new SandUi(orch.palette, store, {
-    onSelect: (slot) => {
-      selectSwatch(slot);
-    },
-    onBrushSize: (index) => {
-      orch.brush.setSize(index);
-      persist();
-    },
-    onTool: (tool) => {
-      orch.brush.tool = tool;
-      persist();
-    },
-    // "None". The palette refuses this for the master, so the menu hiding the
-    // option and the model rejecting it agree -- see `Palette.clear`.
-    onClearSlot: (slot) => {
-      orch.palette.clear(slot);
-      orch.applyPalette(fallbackConfig, defaultWorld);
-      persist();
-    },
-    onStrength: (tool, value) => {
-      orch.brush.setStrength(tool, value);
-      persist();
-    },
-    onClear: (what) => {
-      if (what === 'particles') orch.clearParticles();
-      else orch.clearField(what);
-    },
-    onSelectWorld: (index) => {
-      void selectWorld(index);
-    },
-    onLoad: (slot, entry) => {
-      void (async () => {
-        try {
-          const loaded = await store.read(entry);
-          if (loaded.configs[0] === undefined) return;
-          orch.palette.set(slot, {
-            tool: TOOL_CONFIG,
-            config: loaded.configs[0],
-            world: loaded.world,
-            name: entry.name,
-          });
-          orch.applyPalette(fallbackConfig, defaultWorld);
-          persist();
-        } catch (e) {
-          console.error(`Could not load ${entry.name}: ${String(e)}`);
-        }
-      })();
-    },
-  });
-
-  // The comp the session left us on, and the shape the canvas is cropped to.
-  // Both before the first frame, so nothing renders in the wrong skin or at the
-  // wrong aspect and then jumps.
+  // The look the session left us on, before the first frame so nothing renders
+  // in the wrong skin and then jumps.
   ui.applyTheme(theme);
-  ui.setCanvasAspect(system.canvasSize[0] / system.canvasSize[1]);
 
   // Preferences: world size, canvas aspect, physics rate, brightness, bloom.
   // Driven by the shared settings registry, so this window is a filter over
@@ -474,6 +489,52 @@ async function main(): Promise<void> {
   // `live` is what the frame loop reads. A preference change swaps the whole
   // object rather than mutating one, so a frame always renders one coherent set.
   let live = prefs;
+
+  // ---------------------------------------------------------------------
+  // REBUILDING THE WORLD: for World Size, for a loaded world, and when the
+  // canvas changes shape.
+  //
+  // SERIALIZED. A resize can land while a World Size rebuild is still being
+  // awaited; running two `applyWorldSize` calls at once would have both swap
+  // systems under each other. Each request waits for the one before it.
+  //
+  // WIPE-ON-RESIZE is the deliberate first answer to "what happens to the
+  // scene when the window changes shape": the world is rebuilt to the new
+  // shape and emptied, like any other reshape. Something gentler is for later.
+  // ---------------------------------------------------------------------
+  /** The shape (w/h) the current world was built to. */
+  let builtAspect = canvasSize[0] / canvasSize[1];
+  let rebuildChain: Promise<void> = Promise.resolve();
+  const rebuildWorld = (message: string | null): Promise<void> => {
+    rebuildChain = rebuildChain.then(async () => {
+      try {
+        const next = worldPrefs(live);
+        await orch.applyWorldSize(next, fallbackConfig, defaultWorld);
+        builtAspect = next.canvasAspect;
+        if (message !== null) notify(message);
+      } catch (e) {
+        console.error(`Could not rebuild the world: ${String(e)}`);
+        notify(`World rebuild failed: ${String(e)}`);
+      }
+    });
+    return rebuildChain;
+  };
+
+  // A drag-resize fires continuously, so the rebuild waits for the canvas to
+  // settle; until then the renderer letterboxes the old world into the new
+  // shape. A change under 1% is ignored -- it is a rounding pixel, not a
+  // reshape worth emptying the world for.
+  const RESHAPE_SETTLE_MS = 300;
+  const RESHAPE_TOLERANCE = 0.01;
+  let reshapeTimer: ReturnType<typeof setTimeout> | null = null;
+  new ResizeObserver(() => {
+    if (reshapeTimer !== null) clearTimeout(reshapeTimer);
+    reshapeTimer = setTimeout(() => {
+      reshapeTimer = null;
+      if (Math.abs(ui.canvasAspect() / builtAspect - 1) < RESHAPE_TOLERANCE) return;
+      void rebuildWorld('World reshaped to fit the window — the scene was cleared');
+    }, RESHAPE_SETTLE_MS);
+  }).observe(canvas);
 
   // -------------------------------------------------------------------------
   // THE STATUS LINE HAS TWO WRITERS, AND THE FRAME LOOP WAS WINNING EVERY TIME.
@@ -526,8 +587,14 @@ async function main(): Promise<void> {
       compactionPaused: session.compactionPaused,
       auditAfterSweep,
       colorMode: orch.colorMode,
+      strengths: orch.brush.allStrengths(),
     },
     {
+    // The UI leftovers tab. Each tool keeps its own; see `ToolStrengths`.
+    onStrength: (tool, value) => {
+      orch.brush.setStrength(tool, value);
+      persist();
+    },
     // --- worlds: the level editor half of the Dev tab --------------------
     onSaveWorld: (name) => {
       void saveWorld(name);
@@ -583,18 +650,7 @@ async function main(): Promise<void> {
     },
     onRestartRequired: (next) => {
       live = next;
-      void (async () => {
-        try {
-          notify('Rebuilding world…');
-          await orch.applyWorldSize(next, fallbackConfig, defaultWorld);
-          // A Canvas Aspect change reshapes the world, so the crop follows it.
-          ui.setCanvasAspect(orch.system.canvasSize[0] / orch.system.canvasSize[1]);
-          notify('World rebuilt — the scene was cleared');
-        } catch (e) {
-          console.error(`Could not rebuild the world: ${String(e)}`);
-          notify(`World rebuild failed: ${String(e)}`);
-        }
-      })();
+      void rebuildWorld('World rebuilt — the scene was cleared');
     },
     // A live edit rewrites that ConfigData slot, so every particle already
     // painted from the square obeys the new settings on the next step -- which
@@ -771,8 +827,14 @@ async function main(): Promise<void> {
         persist();
         return;
       }
-      // Arms the Brush as well, like every other selection path.
-      selectSwatch(cycleSlot(orch.palette.selected, steps, orch.palette.visibleCount));
+      // Over the swatches the BAR shows -- in a world, its empty slots are not
+      // there to land on. Arms the Brush as well, like every other selection
+      // path.
+      const shown = ui.displayedSlots();
+      if (shown.length === 0) return;
+      const at = Math.max(0, shown.indexOf(orch.palette.selected));
+      const next = shown[cycleSlot(at, steps, shown.length)];
+      if (next !== undefined) selectSwatch(next);
     },
     { passive: false },
   );
@@ -793,6 +855,7 @@ async function main(): Promise<void> {
 
     if (e.key === 'Escape') {
       ui.closeLoader();
+      ui.setWorldMenu(false);
       worldLoader.close();
       return;
     }
@@ -812,8 +875,10 @@ async function main(): Promise<void> {
 
     const digit = slotForDigit(e.key);
     if (digit !== null) {
+      // The Nth swatch THE BAR SHOWS, which in a world skips its empty slots.
       // Arms the Brush as well -- see `selectSwatch`.
-      selectSwatch(digit);
+      const slot = ui.displayedSlots()[digit];
+      if (slot !== undefined) selectSwatch(slot);
       return;
     }
     if (e.key === ' ') {
@@ -900,7 +965,14 @@ async function main(): Promise<void> {
     }
 
     // --- preferences, which may rebuild the world ------------------------
-    const next = applyWorldPreferences(live, world.preferences);
+    // THE WORLD'S SAVED SHAPE IS NOT ADOPTED: the world always takes the
+    // canvas's shape (see `worldPrefs`), so the stored aspect is kept as it
+    // was and only a World Size change can force a rebuild here. A scene saved
+    // at another shape is rescaled into this one by the paste.
+    const next = {
+      ...applyWorldPreferences(live, world.preferences),
+      canvasAspect: live.canvasAspect,
+    };
     const rebuilding = requiresRestart(next, live);
     live = next;
     prefs = next;
@@ -909,8 +981,7 @@ async function main(): Promise<void> {
     orch.applyPreferences(next);
     if (rebuilding) {
       notify(`Loading "${name}" — rebuilding the world…`);
-      await orch.applyWorldSize(next, fallbackConfig, defaultWorld);
-      ui.setCanvasAspect(orch.system.canvasSize[0] / orch.system.canvasSize[1]);
+      await rebuildWorld(null);
     }
 
     // --- the palette, at its stored slots ---------------------------------
@@ -1212,17 +1283,18 @@ async function main(): Promise<void> {
     ui.refresh({
       tool: orch.brush.tool,
       brushSize: orch.brush.sizeSlot,
-      strength: orch.brush.weight,
+      paused: orch.paused,
       editingInitialConditions: orch.editingInitialConditions,
       // Rebuilt each frame from the store's cached name list, which is
       // refreshed by every save and delete -- so a world deleted while the
-      // panel is on screen is marked within a frame rather than at the next
-      // reload. The list is five short strings; the cost is a lookup each.
+      // menu is on screen is marked within a frame rather than at the next
+      // reload. The list is four short strings; the cost is a lookup each.
       worlds: worldAssignments.map((name) => ({
         name,
         present: name !== '' && worldStore.names().includes(name),
       })),
       selectedWorld,
+      shovePull: orch.shovePull,
     });
     // A live notice outranks the standing line until it lapses -- see `notify`.
     // Without this the loop overwrote every transient message within a frame.

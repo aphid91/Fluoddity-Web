@@ -63,10 +63,16 @@ export { BRUSH_ERASE, BRUSH_SPAWN, type BrushAction } from './tool.ts';
  * ramp still reads the same; the whole set simply moved down. `SIZE_SCALE` is
  * named rather than folded into the literals so the original tuning stays
  * legible and a future re-scale is one number.
+ *
+ * ## FOUR, not five
+ *
+ * The largest (0.2) was dropped with the layout-bench UI, whose size picker is
+ * a 2×2 grid. A stored session still pointing at index 4 is refused by
+ * `setSize` and keeps the default.
  */
 const SIZE_SCALE = 0.65;
 
-export const BRUSH_SIZES: readonly number[] = [0.01, 0.025, 0.05, 0.1, 0.2].map(
+export const BRUSH_SIZES: readonly number[] = [0.01, 0.025, 0.05, 0.1].map(
   (r) => r * SIZE_SCALE,
 );
 

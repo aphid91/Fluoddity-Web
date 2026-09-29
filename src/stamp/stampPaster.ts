@@ -556,6 +556,34 @@ export class StampPaster {
     return true;
   }
 
+  /**
+   * Put back the captured FIELD alone -- the walls -- from VRAM, leaving the
+   * particles and the trail canvas as they are. Sand's "Restore initial walls".
+   *
+   * No clear first, for the reason `restoreFromVram` gives: the copy replaces
+   * every texel of the captured rect.
+   */
+  restoreFieldFromVram(
+    encoder: GPUCommandEncoder,
+    copier: { capturedField: VramLayer | null },
+  ): boolean {
+    if (!this.ready || copier.capturedField === null) return false;
+    this.copyLayerBack(encoder, copier.capturedField, this.field.textureObject());
+    return true;
+  }
+
+  /**
+   * The same from a stamp that has not been through VRAM yet -- a world's
+   * scene before its first press of go. Cleared first, as `restore` does,
+   * because a resampled paste need not cover the whole box.
+   */
+  restoreField(stamp: StampData, dstBox: StampBox): boolean {
+    if (!this.ready) return false;
+    this.zeroRegion(dstBox, this.field.textureObject(), this.field.size);
+    this.pasteLayer(stamp.field, dstBox, this.field.textureObject(), this.field.size);
+    return true;
+  }
+
   private copyLayerBack(
     encoder: GPUCommandEncoder,
     layer: VramLayer | null,
