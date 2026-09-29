@@ -237,6 +237,9 @@ export class SandUi {
   /** A long-press opened a menu; swallow the click its release produces. */
   private suppressClickUntil = 0;
 
+  /** Which worlds the World menu was built with, so it rebuilds on a change. */
+  private worldSignature: string | null = null;
+
   constructor(store: ConfigStore, callbacks: SandUiCallbacks) {
     this.store = store;
     this.callbacks = callbacks;
@@ -269,9 +272,44 @@ export class SandUi {
     this.buildSim(byId('simrow'), byId('reset-slot'));
     this.buildActions();
     this.buildStamps();
-    this.buildWorlds();
+    this.buildWorlds([]);
 
     byId('wtrig').addEventListener('click', () => this.setWorldMenu(!this.worldMenuOpen));
+
+    // A PRESS OUTSIDE THE WORLD MENU CLOSES IT. Capture phase, so it is seen
+    // before anything else handles the press. A press on another control
+    // still does what it does; a press on the CANVAS is used up by the close
+    // -- the whole stroke, down to the release, since `main.ts` paints from
+    // moves with a button held -- so dismissing the menu does not also paint.
+    let swallowing: number | null = null;
+    document.addEventListener(
+      'pointerdown',
+      (e) => {
+        if (!this.worldMenuOpen) return;
+        if (e.target instanceof Node && this.worldPick.contains(e.target)) return;
+        this.setWorldMenu(false);
+        if (e.target === this.canvas) {
+          swallowing = e.pointerId;
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      },
+      { capture: true },
+    );
+    document.addEventListener(
+      'pointermove',
+      (e) => {
+        if (e.pointerId === swallowing) e.stopPropagation();
+      },
+      { capture: true },
+    );
+    const endSwallow = (e: PointerEvent): void => {
+      if (e.pointerId !== swallowing) return;
+      swallowing = null;
+      e.stopPropagation();
+    };
+    document.addEventListener('pointerup', endSwallow, { capture: true });
+    document.addEventListener('pointercancel', endSwallow, { capture: true });
 
     // Clicking the backdrop closes. Scoped to the backdrop itself so a click
     // inside the panel does not.
@@ -347,44 +385,70 @@ export class SandUi {
     const plan = height > width ? 'band' : 'sidebar';
     this.shell.dataset['plan'] = plan;
 
+    // Measured with the tool box down; `boxFits` decides whether it goes up.
+    this.shell.dataset['box'] = 'off';
+    const setScale = (ui: number): void => {
+      this.root.style.setProperty('--ui', String(ui));
+    };
+    const shareAt = (ui: number): number => {
+      setScale(ui);
+      return (this.canvas.clientWidth * this.canvas.clientHeight) / (width * height);
+    };
+    // Whether the tool box fits under Simulation. The free space is the
+    // sidebar's height minus where Simulation ends -- offsetTop differences,
+    // since both share an offset parent.
+    const boxFits = (ui: number): boolean => {
+      setScale(ui);
+      const contentBottom =
+        this.simSection.offsetTop + this.simSection.offsetHeight - this.side.offsetTop;
+      const free = this.side.clientHeight - contentBottom;
+      return free >= (this.token('--box-h', 170) + this.token('--pad', 5)) * ui;
+    };
+    const scrolls = (ui: number): boolean => {
+      setScale(ui);
+      return this.side.scrollHeight > this.side.clientHeight + 1;
+    };
+    /** Bisection for where `below(ui)` stops being true, between lo and hi. */
+    const edge = (lo: number, hi: number, below: (ui: number) => boolean): [number, number] => {
+      for (let k = 0; k < 12; k++) {
+        const mid = (lo + hi) / 2;
+        if (below(mid)) lo = mid;
+        else hi = mid;
+      }
+      return [lo, hi];
+    };
+
     // --- the UI scale ----------------------------------------------------------
     // On a big screen the tuned sizes leave the canvas nearly the whole window
     // and the controls tiny. So the scale rises until the canvas is down to
     // the target share. The share only falls as the scale rises, so bisection
     // finds the smallest scale that meets it. Capped at 4x.
-    const area = width * height;
-    const shareAt = (ui: number): number => {
-      this.root.style.setProperty('--ui', String(ui));
-      return (this.canvas.clientWidth * this.canvas.clientHeight) / area;
-    };
+    //
+    // THE SCALE-UP MAY NOT COST THE SIDEBAR ANYTHING. If the tool box fitted
+    // at the base scale it must still fit, and if the sidebar did not scroll
+    // it must still not scroll -- a bigger UI that pushes the tool box back
+    // into the bar, or hides Reset below a scrollbar, is worse than a canvas
+    // over the target share. Both only get worse as the scale rises, so the
+    // largest scale that keeps them is found by bisection too, and caps the
+    // first. The box condition implies the scroll one (the box is the last
+    // thing in the sidebar), so only one of them is checked.
     const base = this.token('--ui-base', 1.25);
     let ui = base;
     if (shareAt(base) > CANVAS_MAX_SHARE) {
-      let lo = base;
-      let hi = base * 4;
-      for (let k = 0; k < 12; k++) {
-        const mid = (lo + hi) / 2;
-        if (shareAt(mid) > CANVAS_MAX_SHARE) lo = mid;
-        else hi = mid;
+      ui = edge(base, base * 4, (u) => shareAt(u) > CANVAS_MAX_SHARE)[1];
+      if (plan === 'sidebar') {
+        let keeps: ((u: number) => boolean) | null = null;
+        if (boxFits(base)) keeps = boxFits;
+        else if (!scrolls(base)) keeps = (u) => !scrolls(u);
+        if (keeps !== null && !keeps(ui)) ui = edge(base, ui, keeps)[0];
       }
-      ui = hi;
-      shareAt(ui);
     }
+    setScale(ui);
     this.uiScale = ui;
 
     // --- the tool box -----------------------------------------------------------
-    // Only in the sidebar, and only if it fits under Simulation at full size.
-    // Measured with the box down: the free space is the sidebar's height minus
-    // where Simulation ends. offsetTop differences, since both share an
-    // offset parent.
-    this.shell.dataset['box'] = 'off';
-    if (plan === 'sidebar') {
-      const contentBottom =
-        this.simSection.offsetTop + this.simSection.offsetHeight - this.side.offsetTop;
-      const free = this.side.clientHeight - contentBottom;
-      const need = (this.token('--box-h', 170) + this.token('--pad', 5)) * ui;
-      if (free >= need) this.shell.dataset['box'] = 'on';
-    }
+    // Only in the sidebar, and only if it fits under Simulation at this scale.
+    if (plan === 'sidebar' && boxFits(ui)) this.shell.dataset['box'] = 'on';
 
     this.layoutSwatches();
   }
@@ -587,22 +651,18 @@ export class SandUi {
   }
 
   /**
-   * The World menu's grid: two columns, the four worlds and then Custom… on
-   * the last row by itself. Built once; `refresh` relabels.
+   * The World menu's grid: two columns, filled row by row with the ASSIGNED
+   * worlds in order, and Custom… always last. Unassigned worlds take no
+   * space, so with none assigned Custom… sits alone in the top-left.
+   *
+   * Rebuilt only when which worlds are assigned changes; `refreshWorlds`
+   * relabels and marks selection per frame.
    */
-  private buildWorlds(): void {
-    const order: (number | null)[] = [];
-    for (let i = 0; i < ASSIGNABLE_WORLDS; i++) order.push(i);
-    order.push(CUSTOM_WORLD, null);
-
-    for (const index of order) {
+  private buildWorlds(assigned: readonly number[]): void {
+    this.worldGrid.replaceChildren();
+    for (const index of [...assigned, CUSTOM_WORLD]) {
       const cell = document.createElement('div');
       cell.className = 'wsw';
-      if (index === null) {
-        cell.dataset['empty'] = 'true';
-        this.worldGrid.append(cell);
-        continue;
-      }
       cell.dataset['world'] = String(index);
       const name = document.createElement('span');
       name.className = 'wl';
@@ -632,8 +692,18 @@ export class SandUi {
   }
 
   private refreshWorlds(worlds: readonly WorldButtonState[], selected: number): void {
+    const assigned: number[] = [];
+    for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
+      if ((worlds[i]?.name ?? '') !== '') assigned.push(i);
+    }
+    const signature = assigned.join(',');
+    if (signature !== this.worldSignature) {
+      this.worldSignature = signature;
+      this.buildWorlds(assigned);
+    }
+
     for (const cell of this.worldGrid.children) {
-      if (!(cell instanceof HTMLElement) || cell.dataset['world'] === undefined) continue;
+      if (!(cell instanceof HTMLElement)) continue;
       const index = Number(cell.dataset['world']);
       cell.dataset['selected'] = String(index === selected);
       if (index === CUSTOM_WORLD) continue;
@@ -642,9 +712,7 @@ export class SandUi {
       const name = entry?.name ?? '';
       const circle = cell.querySelector('button');
       const label = cell.querySelector('.wl');
-      // An unassigned world is empty space in the grid.
-      cell.dataset['empty'] = String(name === '');
-      if (name === '' || circle === null || label === null) continue;
+      if (circle === null || label === null) continue;
       if (label.textContent !== name) label.textContent = name;
       if (entry?.present === true) {
         delete cell.dataset['missing'];
