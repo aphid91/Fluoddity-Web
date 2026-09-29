@@ -16,6 +16,7 @@ import {
   activeRegion,
   placeScene,
   planFit,
+  trimScene,
 } from './icFit.ts';
 
 function layer(width: number, height: number): StampLayer {
@@ -145,6 +146,39 @@ test('placed particles convert velocity and size to the new world units', () => 
   assert.ok(Math.abs(view.getFloat32(8, true) - 0.0005) < 1e-9);
   assert.ok(Math.abs(view.getFloat32(16, true) - 0.001) < 1e-9);
   assert.equal(view.getUint32(20, true), 3, 'the config index survives bit for bit');
+});
+
+test('a trimmed scene, placed with its frame, places exactly as the untrimmed one', () => {
+  const s = scene(400, 300, [[120, 30], [180, 60]]);
+  s.canvas.data[(40 * 400 + 150) * STAMP_TEXEL_CHANNELS] = 0.5; // a trail texel
+  s.field.data[(10 * s.field.width + 70) * STAMP_TEXEL_CHANNELS] = 1; // a wall
+  const trimmed = trimScene(s);
+  assert.ok(trimmed !== null);
+  assert.ok(trimmed.stamp.canvas.width < 400, 'the saved scene is smaller');
+
+  const whole = activeRegion(s);
+  const fromTrim = activeRegion(trimmed.stamp, trimmed.frame);
+  assert.deepEqual(fromTrim, whole, 'the same region, in the same frame');
+
+  const dst: [number, number] = [640, 480];
+  const a = placeScene(s, whole!, dst);
+  const b = placeScene(trimmed.stamp, fromTrim!, dst, trimmed.frame);
+  assert.deepEqual(pixelRectFor(b.stamp.box, dst), pixelRectFor(a.stamp.box, dst));
+  assert.deepEqual([...b.stamp.canvas.data], [...a.stamp.canvas.data], 'trails identical');
+  assert.deepEqual(
+    [...new Float32Array(b.stamp.particles)],
+    [...new Float32Array(a.stamp.particles)],
+    'particles identical',
+  );
+});
+
+test('a trimmed scene with no frame would touch every edge -- the frame is what keeps its place', () => {
+  const s = scene(400, 300, [[300, 250]]);
+  const trimmed = trimScene(s)!;
+  const withFrame = activeRegion(trimmed.stamp, trimmed.frame)!;
+  assert.ok(withFrame.x0 > 0 && withFrame.y0 > 0, 'placed away from the origin');
+  const without = activeRegion(trimmed.stamp)!;
+  assert.equal(without.x0, 0);
 });
 
 test('a crop keeps the side that touches the world edge', () => {

@@ -54,6 +54,7 @@ import {
 import { SLOT_COUNT } from '../sand/palette.ts';
 import { type SwatchColor, readSwatchColor } from '../sand/swatchColor.ts';
 import { type ColorMode, DEFAULT_COLOR_MODE, asColorMode } from '../sand/colorMode.ts';
+import type { StampBox } from '../stamp/stampBox.ts';
 
 /** The only version this reads or writes. */
 export const WORLD_FORMAT_VERSION = 1;
@@ -165,6 +166,17 @@ export interface WorldDocument {
    * and deriving the count would silently overrule it.
    */
   readonly visibleCount: number;
+  /**
+   * The whole world the SCENE came from, in its world units.
+   *
+   * A saved scene is trimmed to its active region (`icFit.trimScene`), so its
+   * own box says nothing about where in the world it sat. This does: placing a
+   * scene on another screen keeps the ratio of the empty space around it, and
+   * that space is measured against this frame. Null for a world saved before
+   * scenes were trimmed -- its scene is the whole world, and its own box is
+   * the frame.
+   */
+  readonly sceneFrame: StampBox | null;
 }
 
 /**
@@ -180,6 +192,7 @@ export function makeWorldDocument(args: {
   visibleCount: number;
   colorMode?: ColorMode;
   notes?: string;
+  sceneFrame?: StampBox | null;
 }): WorldDocument {
   const slots: WorldSlot[] = [];
   args.slots.forEach((entry, slot) => {
@@ -208,7 +221,31 @@ export function makeWorldDocument(args: {
     preferences: preferences as WorldPreferences,
     visibleCount: args.visibleCount,
     colorMode: args.colorMode ?? DEFAULT_COLOR_MODE,
+    sceneFrame: args.sceneFrame ?? null,
   };
+}
+
+/**
+ * A stored frame, or null. Anything but two finite corners with `max > min`
+ * is dropped: the scene then places as if untrimmed, which is wrong only in
+ * where it sits -- better than a NaN reaching the placement arithmetic.
+ */
+function readFrame(raw: unknown): StampBox | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const o = raw as Record<string, unknown>;
+  const corner = (v: unknown): [number, number] | null =>
+    Array.isArray(v) &&
+    v.length === 2 &&
+    typeof v[0] === 'number' &&
+    typeof v[1] === 'number' &&
+    Number.isFinite(v[0]) &&
+    Number.isFinite(v[1])
+      ? [v[0], v[1]]
+      : null;
+  const min = corner(o['min']);
+  const max = corner(o['max']);
+  if (min === null || max === null || !(max[0] > min[0] && max[1] > min[1])) return null;
+  return { min, max };
 }
 
 /**
@@ -313,6 +350,9 @@ export function readWorld(data: unknown, where = 'world'): WorldDocument {
     // is what it rendered as -- so an old world looks the way it always did
     // rather than switching to a mode its author never chose.
     colorMode: asColorMode(raw['colorMode']),
+    // Optional and unversioned: absent in worlds saved before trimming, which
+    // read back as null and place as they always did.
+    sceneFrame: readFrame(raw['sceneFrame']),
   };
 }
 

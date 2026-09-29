@@ -69,6 +69,25 @@ test('a slot index round-trips through read', () => {
   assert.equal(back.slots[2]?.name, 'Smoke');
 });
 
+test('the scene frame round-trips, and is null when absent or malformed', () => {
+  const frame = { min: [-1.4, -0.7] as [number, number], max: [1.4, 0.7] as [number, number] };
+  const doc = makeWorldDocument({
+    slots: samplePalette(),
+    preferences: DEFAULT_PREFERENCES,
+    visibleCount: 20,
+    sceneFrame: frame,
+  });
+  assert.deepEqual(readWorld(JSON.parse(JSON.stringify(doc))).sceneFrame, frame);
+
+  const old = JSON.parse(JSON.stringify(doc)) as Record<string, unknown>;
+  delete old['sceneFrame'];
+  assert.equal(readWorld(old).sceneFrame, null, 'a world saved before trimming');
+
+  for (const bad of [{ min: [0, 0], max: [0, 1] }, { min: [0, 'x'], max: [1, 1] }, 'nope']) {
+    assert.equal(readWorld({ ...old, sceneFrame: bad }).sceneFrame, null);
+  }
+});
+
 test('a slot index past the palette is refused, not silently dropped later', () => {
   // `Palette.set` would ignore it, but silently -- and the particles pointing at
   // it would render as the fallback material.

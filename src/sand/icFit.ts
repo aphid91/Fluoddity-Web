@@ -28,6 +28,15 @@
  * The result is a stamp already in the destination world's units, with its
  * box snapped to whole canvas pixels, so the GPU paste is an exact copy.
  *
+ * ## A scene and its FRAME
+ *
+ * A saved scene is TRIMMED to its active region (`trimScene`), so its own box
+ * is only part of the world it came from. The FRAME is that whole world's box,
+ * stored beside it (`WorldDocument.sceneFrame`), and it is what the gaps are
+ * measured against when placing -- without it a trimmed scene would touch every
+ * edge. Every function here takes the frame, and treats a missing one as "the
+ * scene's own box", which is what an untrimmed scene is.
+ *
  * A LEAF: data in, data out, testable under `node --test`.
  */
 
@@ -73,21 +82,55 @@ const VEL_X = 2;
 const VEL_Y = 3;
 const SIZE = 4;
 
-/** The scene's canvas size in pixels: its trail layer's. */
-export function sceneCanvas(stamp: StampData): CanvasSize {
-  return [stamp.canvas.width, stamp.canvas.height];
+/**
+ * Where a scene sits in its frame, in the frame's canvas pixels.
+ *
+ * `ppu` is canvas pixels per world unit in the world the scene came from, read
+ * off its trail layer; `ox`/`oy` is where the scene's own box starts within the
+ * frame. All three are exact for a scene `trimScene` produced, since it cuts on
+ * whole pixels.
+ */
+interface Geometry {
+  readonly frame: StampBox;
+  readonly ppu: number;
+  /** The frame's canvas, in pixels. */
+  readonly width: number;
+  readonly height: number;
+  /** The scene's box within the frame, in pixels. */
+  readonly ox: number;
+  readonly oy: number;
+}
+
+function geometryOf(stamp: StampData, frame: StampBox | null): Geometry | null {
+  if (layerIsEmpty(stamp.canvas)) return null;
+  const bw = stamp.box.max[0] - stamp.box.min[0];
+  if (!(bw > 0)) return null;
+  const ppu = stamp.canvas.width / bw;
+  const f = frame ?? stamp.box;
+  const width = Math.round((f.max[0] - f.min[0]) * ppu);
+  const height = Math.round((f.max[1] - f.min[1]) * ppu);
+  if (!(width > 0 && height > 0)) return null;
+  return {
+    frame: f,
+    ppu,
+    width,
+    height,
+    ox: Math.round((stamp.box.min[0] - f.min[0]) * ppu),
+    oy: Math.round((stamp.box.min[1] - f.min[1]) * ppu),
+  };
 }
 
 /**
  * Step 1: the particles' and walls' bounding box plus the trail cushion, in
- * the scene's canvas pixels. Null for a scene with neither.
+ * the FRAME's canvas pixels. Null for a scene with neither.
  */
-export function activeRegion(stamp: StampData): PixelRegion | null {
-  if (layerIsEmpty(stamp.canvas)) return null;
-  const [cw, ch] = sceneCanvas(stamp);
-  const bw = stamp.box.max[0] - stamp.box.min[0];
-  const bh = stamp.box.max[1] - stamp.box.min[1];
-  if (!(bw > 0 && bh > 0)) return null;
+export function activeRegion(
+  stamp: StampData,
+  frame: StampBox | null = null,
+): PixelRegion | null {
+  const g = geometryOf(stamp, frame);
+  if (g === null) return null;
+  const { ppu, width: cw, height: ch } = g;
 
   let x0 = Infinity;
   let y0 = Infinity;
@@ -104,16 +147,17 @@ export function activeRegion(stamp: StampData): PixelRegion | null {
   const count = Math.floor(stamp.particles.byteLength / STAMP_PARTICLE_STRIDE);
   for (let i = 0; i < count; i++) {
     const at = i * STAMP_PARTICLE_STRIDE;
-    const px = ((view.getFloat32(at + POS_X * 4, true) - stamp.box.min[0]) / bw) * cw;
-    const py = ((view.getFloat32(at + POS_Y * 4, true) - stamp.box.min[1]) / bh) * ch;
+    const px = (view.getFloat32(at + POS_X * 4, true) - g.frame.min[0]) * ppu;
+    const py = (view.getFloat32(at + POS_Y * 4, true) - g.frame.min[1]) * ppu;
     if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
     take(Math.floor(px), Math.floor(py), Math.floor(px) + 1, Math.floor(py) + 1);
   }
 
   const field = stamp.field;
   if (!layerIsEmpty(field)) {
-    const sx = cw / field.width;
-    const sy = ch / field.height;
+    // Field texels to frame pixels: the field covers the scene's own box.
+    const sx = stamp.canvas.width / field.width;
+    const sy = stamp.canvas.height / field.height;
     for (let row = 0; row < field.height; row++) {
       for (let col = 0; col < field.width; col++) {
         const at = (row * field.width + col) * STAMP_TEXEL_CHANNELS;
@@ -123,10 +167,10 @@ export function activeRegion(stamp: StampData): PixelRegion | null {
         }
         if (wall) {
           take(
-            Math.floor(col * sx),
-            Math.floor(row * sy),
-            Math.ceil((col + 1) * sx),
-            Math.ceil((row + 1) * sy),
+            g.ox + Math.floor(col * sx),
+            g.oy + Math.floor(row * sy),
+            g.ox + Math.ceil((col + 1) * sx),
+            g.oy + Math.ceil((row + 1) * sy),
           );
         }
       }
@@ -240,21 +284,32 @@ export interface Placement {
   readonly cropped: boolean;
 }
 
+
 /**
  * Step 3: move `region` of `stamp` into a world whose canvas is `canvas`.
  *
- * Particles keep their pixel position relative to the region, and their
+ * `region` is in the frame's pixels (`activeRegion`'s answer for the same
+ * frame). Particles keep their pixel position relative to the region, and their
  * velocity and size are converted to the destination's world units, so they
  * behave as they did. Trails are copied pixel for pixel; walls are resampled
  * nearest onto the same pixels (the wall field has its own, coarser grid).
  */
-export function placeScene(stamp: StampData, region: PixelRegion, canvas: CanvasSize): Placement {
-  const [sw, sh] = sceneCanvas(stamp);
+export function placeScene(
+  stamp: StampData,
+  region: PixelRegion,
+  canvas: CanvasSize,
+  frame: StampBox | null = null,
+): Placement {
+  const g = geometryOf(stamp, frame);
   const [dw, dh] = canvas;
   const rw = region.x1 - region.x0;
   const rh = region.y1 - region.y0;
   const kw = Math.min(rw, dw);
   const kh = Math.min(rh, dh);
+  if (g === null || kw <= 0 || kh <= 0) {
+    return { stamp: { ...stamp, particles: new ArrayBuffer(0) }, cropped: false };
+  }
+  const { width: sw, height: sh, ppu } = g;
 
   const left = region.x0;
   const right = sw - region.x1;
@@ -262,7 +317,7 @@ export function placeScene(stamp: StampData, region: PixelRegion, canvas: Canvas
   const below = region.y0;
   const above = sh - region.y1;
 
-  // The kept part of the region, in scene pixels.
+  // The kept part of the region, in frame pixels.
   const sx0 = region.x0 + cropStart(rw, kw, left, right);
   const sy0 = region.y0 + cropStart(rh, kh, below, above);
   // And where it lands, in destination pixels.
@@ -283,85 +338,144 @@ export function placeScene(stamp: StampData, region: PixelRegion, canvas: Canvas
   };
 
   // --- particles ------------------------------------------------------------
-  const bw = stamp.box.max[0] - stamp.box.min[0];
-  const bh = stamp.box.max[1] - stamp.box.min[1];
   // World units per pixel in each world; a length converts by their ratio.
-  const scale = ((2 * ex) / dw) / (bw / sw);
-  const source = new DataView(stamp.particles);
-  const count = Math.floor(stamp.particles.byteLength / STAMP_PARTICLE_STRIDE);
-  const out = new Uint8Array(count * STAMP_PARTICLE_STRIDE);
-  const outView = new DataView(out.buffer);
-  const bytes = new Uint8Array(stamp.particles);
-  let kept = 0;
-  for (let i = 0; i < count; i++) {
-    const at = i * STAMP_PARTICLE_STRIDE;
-    const px = ((source.getFloat32(at + POS_X * 4, true) - stamp.box.min[0]) / bw) * sw;
-    const py = ((source.getFloat32(at + POS_Y * 4, true) - stamp.box.min[1]) / bh) * sh;
-    if (!(px >= sx0 && px < sx0 + kw && py >= sy0 && py < sy0 + kh)) continue;
-    const to = kept * STAMP_PARTICLE_STRIDE;
-    // Every lane verbatim first -- the config index is an int in float bits,
-    // which must not pass through a float conversion.
-    out.set(bytes.subarray(at, at + STAMP_PARTICLE_STRIDE), to);
-    outView.setFloat32(to + POS_X * 4, worldX(px - sx0 + dx0), true);
-    outView.setFloat32(to + POS_Y * 4, worldY(py - sy0 + dy0), true);
-    outView.setFloat32(to + VEL_X * 4, source.getFloat32(at + VEL_X * 4, true) * scale, true);
-    outView.setFloat32(to + VEL_Y * 4, source.getFloat32(at + VEL_Y * 4, true) * scale, true);
-    outView.setFloat32(to + SIZE * 4, source.getFloat32(at + SIZE * 4, true) * scale, true);
-    kept++;
-  }
+  const scale = ((2 * ex) / dw) * ppu;
+  const particles = filterParticles(stamp, g, sx0, sy0, kw, kh, (px, py, to, view, at, src) => {
+    view.setFloat32(to + POS_X * 4, worldX(px - sx0 + dx0), true);
+    view.setFloat32(to + POS_Y * 4, worldY(py - sy0 + dy0), true);
+    view.setFloat32(to + VEL_X * 4, src.getFloat32(at + VEL_X * 4, true) * scale, true);
+    view.setFloat32(to + VEL_Y * 4, src.getFloat32(at + VEL_Y * 4, true) * scale, true);
+    view.setFloat32(to + SIZE * 4, src.getFloat32(at + SIZE * 4, true) * scale, true);
+  });
 
   return {
     stamp: {
       box,
-      particles: out.buffer.slice(0, kept * STAMP_PARTICLE_STRIDE),
-      canvas: cropLayer(stamp.canvas, sx0, sy0, kw, kh),
-      field: resampleField(stamp.field, [sw, sh], sx0, sy0, kw, kh),
+      particles,
+      canvas: cropLayer(stamp.canvas, sx0 - g.ox, sy0 - g.oy, kw, kh),
+      field: resampleField(stamp, sx0 - g.ox, sy0 - g.oy, kw, kh),
       palette: stamp.palette,
     },
     cropped: kw < rw || kh < rh,
   };
 }
 
-/** A pixel-exact sub-rect of a layer. */
+/**
+ * A whole-world scene cut down to its active region, for SAVING, with the
+ * frame it came from. Nothing moves or rescales: the particles keep their
+ * world positions and the layers keep their pixels, so the trimmed scene
+ * placed with its frame is exactly the untrimmed one. Null for an empty scene.
+ */
+export function trimScene(
+  stamp: StampData,
+): { stamp: StampData; frame: StampBox } | null {
+  const g = geometryOf(stamp, null);
+  const region = activeRegion(stamp, null);
+  if (g === null || region === null) return null;
+  const { x0, y0, x1, y1 } = region;
+  const w = x1 - x0;
+  const h = y1 - y0;
+  const box: StampBox = {
+    min: [g.frame.min[0] + x0 / g.ppu, g.frame.min[1] + y0 / g.ppu],
+    max: [g.frame.min[0] + x1 / g.ppu, g.frame.min[1] + y1 / g.ppu],
+  };
+  return {
+    stamp: {
+      box,
+      particles: filterParticles(stamp, g, x0, y0, w, h, () => {}),
+      canvas: cropLayer(stamp.canvas, x0, y0, w, h),
+      field: resampleField(stamp, x0, y0, w, h),
+      palette: stamp.palette,
+    },
+    frame: g.frame,
+  };
+}
+
+/**
+ * The particles inside a rect of frame pixels, each copied verbatim and then
+ * handed to `rewrite` to change what it needs.
+ */
+function filterParticles(
+  stamp: StampData,
+  g: Geometry,
+  x0: number,
+  y0: number,
+  w: number,
+  h: number,
+  rewrite: (
+    px: number,
+    py: number,
+    to: number,
+    view: DataView,
+    at: number,
+    source: DataView,
+  ) => void,
+): ArrayBuffer {
+  const source = new DataView(stamp.particles);
+  const bytes = new Uint8Array(stamp.particles);
+  const count = Math.floor(stamp.particles.byteLength / STAMP_PARTICLE_STRIDE);
+  const out = new Uint8Array(count * STAMP_PARTICLE_STRIDE);
+  const view = new DataView(out.buffer);
+  let kept = 0;
+  for (let i = 0; i < count; i++) {
+    const at = i * STAMP_PARTICLE_STRIDE;
+    const px = (source.getFloat32(at + POS_X * 4, true) - g.frame.min[0]) * g.ppu;
+    const py = (source.getFloat32(at + POS_Y * 4, true) - g.frame.min[1]) * g.ppu;
+    if (!(px >= x0 && px < x0 + w && py >= y0 && py < y0 + h)) continue;
+    const to = kept * STAMP_PARTICLE_STRIDE;
+    // Every lane verbatim first -- the config index is an int in float bits,
+    // which must not pass through a float conversion.
+    out.set(bytes.subarray(at, at + STAMP_PARTICLE_STRIDE), to);
+    rewrite(px, py, to, view, at, source);
+    kept++;
+  }
+  return out.buffer.slice(0, kept * STAMP_PARTICLE_STRIDE);
+}
+
+/**
+ * A pixel-exact sub-rect of a layer, zero where it runs past the layer's edge
+ * (a region's cushion may reach past a trimmed scene's own box).
+ */
 function cropLayer(layer: StampLayer, x0: number, y0: number, w: number, h: number): StampLayer {
   if (layerIsEmpty(layer) || w <= 0 || h <= 0) return emptyLayer();
   const data = new Float32Array(w * h * STAMP_TEXEL_CHANNELS);
-  const rowFloats = w * STAMP_TEXEL_CHANNELS;
+  const colFrom = Math.max(0, -x0);
+  const colTo = Math.min(w, layer.width - x0);
+  if (colTo <= colFrom) return { width: w, height: h, data };
   for (let row = 0; row < h; row++) {
-    const from = ((y0 + row) * layer.width + x0) * STAMP_TEXEL_CHANNELS;
-    data.set(layer.data.subarray(from, from + rowFloats), row * rowFloats);
+    const srcRow = y0 + row;
+    if (srcRow < 0 || srcRow >= layer.height) continue;
+    const from = (srcRow * layer.width + x0 + colFrom) * STAMP_TEXEL_CHANNELS;
+    const count = (colTo - colFrom) * STAMP_TEXEL_CHANNELS;
+    data.set(layer.data.subarray(from, from + count), (row * w + colFrom) * STAMP_TEXEL_CHANNELS);
   }
   return { width: w, height: h, data };
 }
 
 /**
- * The wall field over a region of canvas pixels, at the field's own
- * resolution, nearest-sampled.
+ * The wall field over a rect of the scene's canvas pixels (relative to its own
+ * box), at the field's own resolution, nearest-sampled; zero past its edge.
  */
 function resampleField(
-  field: StampLayer,
-  canvas: CanvasSize,
+  stamp: StampData,
   x0: number,
   y0: number,
   w: number,
   h: number,
 ): StampLayer {
+  const field = stamp.field;
   if (layerIsEmpty(field) || w <= 0 || h <= 0) return emptyLayer();
-  const fx = field.width / canvas[0];
-  const fy = field.height / canvas[1];
+  const fx = field.width / stamp.canvas.width;
+  const fy = field.height / stamp.canvas.height;
   const width = Math.max(1, Math.round(w * fx));
   const height = Math.max(1, Math.round(h * fy));
   const data = new Float32Array(width * height * STAMP_TEXEL_CHANNELS);
   for (let row = 0; row < height; row++) {
-    const srcRow = Math.min(
-      field.height - 1,
-      Math.floor((y0 + ((row + 0.5) * h) / height) * fy),
-    );
+    const srcRow = Math.floor((y0 + ((row + 0.5) * h) / height) * fy);
+    if (srcRow < 0 || srcRow >= field.height) continue;
     for (let col = 0; col < width; col++) {
-      const srcCol = Math.min(
-        field.width - 1,
-        Math.floor((x0 + ((col + 0.5) * w) / width) * fx),
-      );
+      const srcCol = Math.floor((x0 + ((col + 0.5) * w) / width) * fx);
+      if (srcCol < 0 || srcCol >= field.width) continue;
       const from = (srcRow * field.width + srcCol) * STAMP_TEXEL_CHANNELS;
       const to = (row * width + col) * STAMP_TEXEL_CHANNELS;
       for (let c = 0; c < STAMP_TEXEL_CHANNELS; c++) data[to + c] = field.data[from + c] ?? 0;

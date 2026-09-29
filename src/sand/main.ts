@@ -38,9 +38,10 @@ import {
   loadSandPreferences as loadPreferences,
   saveSandPreferences as savePreferences,
 } from './sandPreferences.ts';
-import { decodeStamp } from '../stamp/stampCodec.ts';
+import { decodeStamp, encodeStamp } from '../stamp/stampCodec.ts';
 import type { StampData } from '../stamp/stampData.ts';
-import { activeRegion, placeScene, planFit } from './icFit.ts';
+import type { StampBox } from '../stamp/stampBox.ts';
+import { activeRegion, placeScene, planFit, trimScene } from './icFit.ts';
 import { screenNdcToWorld, screenToNdc } from '../particleSystem/coords.ts';
 import { SandOrchestrator } from './sandOrchestrator.ts';
 import { SandUi } from './sandUi.ts';
@@ -168,22 +169,25 @@ async function main(): Promise<void> {
         }
       })();
     },
-    onPlay: () => orch.setPaused(false),
-    onPause: () => orch.setPaused(true),
+    onPlay: () => startRunning(),
+    onPause: () => stopRunning(),
     onReset: () => {
       if (!orch.reset()) {
         notify('Already editing the initial conditions — nothing to reset to');
       }
     },
     onClearParticles: () => {
+      arrangementTouched = true;
       orch.clearParticles();
       notify('Cleared all particles');
     },
     onClearWalls: () => {
+      arrangementTouched = true;
       orch.clearField('walls');
       notify('Cleared all walls');
     },
     onRestoreWalls: () => {
+      arrangementTouched = true;
       notify(
         orch.restoreWalls()
           ? 'Restored the initial walls'
@@ -498,9 +502,8 @@ async function main(): Promise<void> {
   // awaited; running two `applyWorldSize` calls at once would have both swap
   // systems under each other. Each request waits for the one before it.
   //
-  // WIPE-ON-RESIZE is the deliberate first answer to "what happens to the
-  // scene when the window changes shape": the world is rebuilt to the new
-  // shape and emptied, like any other reshape. Something gentler is for later.
+  // A RESHAPE PUTS THE INITIAL CONDITIONS BACK, placed to fit the new shape
+  // (`refitWorld`), or empties the world when there are none.
   // ---------------------------------------------------------------------
   /**
    * What the current world was built at: its world size and shape, and the
@@ -513,23 +516,11 @@ async function main(): Promise<void> {
     screenAspect: ui.canvasAspect(),
   };
   let rebuildChain: Promise<void> = Promise.resolve();
-  /**
-   * Rebuild at `shape`, or by default at the TARGET world size and the
-   * screen's shape. Only a loaded scene asks for anything else.
-   */
-  const rebuildWorld = (
-    message: string | null,
-    shape?: { worldSize: number; aspect: number },
-  ): Promise<void> => {
+  /** Run `work` after every rebuild already queued. See SERIALIZED above. */
+  const queued = (work: () => Promise<void>): Promise<void> => {
     rebuildChain = rebuildChain.then(async () => {
       try {
-        const screenAspect = ui.canvasAspect();
-        const worldSize = shape?.worldSize ?? live.worldSize;
-        const worldAspect = shape?.aspect ?? screenAspect;
-        const next: Preferences = { ...live, worldSize, canvasAspect: worldAspect };
-        await orch.applyWorldSize(next, fallbackConfig, defaultWorld);
-        built = { worldSize, worldAspect, screenAspect };
-        if (message !== null) notify(message);
+        await work();
       } catch (e) {
         console.error(`Could not rebuild the world: ${String(e)}`);
         notify(`World rebuild failed: ${String(e)}`);
@@ -537,11 +528,175 @@ async function main(): Promise<void> {
     });
     return rebuildChain;
   };
+  /**
+   * The rebuild itself, unqueued -- callers go through `queued`. At `shape`,
+   * or by default at the TARGET world size and the screen's shape.
+   */
+  const rebuildNow = async (shape?: { worldSize: number; aspect: number }): Promise<void> => {
+    const screenAspect = ui.canvasAspect();
+    const worldSize = shape?.worldSize ?? live.worldSize;
+    const worldAspect = shape?.aspect ?? screenAspect;
+    const next: Preferences = { ...live, worldSize, canvasAspect: worldAspect };
+    await orch.applyWorldSize(next, fallbackConfig, defaultWorld);
+    built = { worldSize, worldAspect, screenAspect };
+  };
+  const rebuildWorld = (
+    message: string | null,
+    shape?: { worldSize: number; aspect: number },
+  ): Promise<void> =>
+    queued(async () => {
+      await rebuildNow(shape);
+      if (message !== null) notify(message);
+    });
+
+  // ---------------------------------------------------------------------
+  // THE INITIAL CONDITIONS, ON THE HOST, so a reshape can place them again.
+  //
+  // The orchestrator's snapshot lives on the GPU, sized to the world it was
+  // taken in; a rebuild destroys it. This is the same scene as a stamp in host
+  // memory, in the world it came from, with the frame that says where in that
+  // world it sat (null when the stamp IS the whole world). Set when a world is
+  // loaded, and when the user presses go on an arrangement (`startRunning`).
+  //
+  // It describes the orchestrator's snapshot only while there IS one, which is
+  // why every use checks `orch.hasInitialConditions` first.
+  // ---------------------------------------------------------------------
+  let icSource: { stamp: StampData; frame: StampBox | null } | null = null;
+
+  /** Two animation frames: long enough for a queued restore to have run. */
+  const nextFrames = (): Promise<void> =>
+    new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+  /**
+   * The initial conditions as a host stamp, for placing into a rebuilt world,
+   * or null when there are none.
+   *
+   *   - MID-ARRANGEMENT, the scene on screen IS the initial conditions being
+   *     authored: read it back, unless it is a loaded world nobody has touched,
+   *     whose saved scene is better (it has not been cropped to this screen).
+   *   - OTHERWISE the saved scene if there is one, else the snapshot -- which
+   *     lives on the GPU, so it is restored first (R) and read back. The
+   *     rebuild resets to the initial conditions anyway, so the restore costs
+   *     nothing that was going to survive.
+   */
+  const currentInitialConditions = async (): Promise<{
+    stamp: StampData;
+    frame: StampBox | null;
+  } | null> => {
+    const fresh = async (): Promise<{ stamp: StampData; frame: null } | null> => {
+      const bytes = await exportSceneQueued();
+      return bytes === null ? null : { stamp: decodeStamp(bytes, 'scene'), frame: null };
+    };
+    if (orch.editingInitialConditions) {
+      return icSource !== null && !arrangementTouched ? icSource : fresh();
+    }
+    if (!orch.hasInitialConditions) return null;
+    if (icSource !== null) return icSource;
+    orch.reset();
+    await nextFrames();
+    return fresh();
+  };
+
+  /**
+   * Rebuild to fit the screen and the target world size, putting the initial
+   * conditions back if there are any -- placed to fit, exactly as a world load
+   * places them (`icFit.ts`). Without them the world is rebuilt empty.
+   *
+   * The scene is reset to its initial conditions either way: like pressing R,
+   * which is the honest answer to a world whose shape just changed under it.
+   */
+  const refitWorld = (why: 'reshaped' | 'rebuilt'): Promise<void> =>
+    queued(async () => {
+      const source = await currentInitialConditions();
+      const region = source === null ? null : activeRegion(source.stamp, source.frame);
+      if (source === null || region === null) {
+        await rebuildNow();
+        notify(`World ${why} — the scene was cleared`);
+        return;
+      }
+      const plan = planFit(
+        region.x1 - region.x0,
+        region.y1 - region.y0,
+        ui.canvasAspect(),
+        live.worldSize,
+      );
+      await rebuildNow({ worldSize: plan.worldSize, aspect: plan.aspect });
+      const placed = placeScene(source.stamp, region, orch.system.canvasSize, source.frame);
+      orch.importScene(placed.stamp);
+      // Placed from `source`, so the arrangement now IS `source` again.
+      icSource = source;
+      arrangementTouched = false;
+      notify(
+        placed.cropped
+          ? `World ${why} — initial conditions cropped to fit`
+          : `World ${why} — initial conditions put back`,
+      );
+    });
+
+  /**
+   * Read the scene back to the host, one at a time.
+   *
+   * SERIALIZED, and never alongside a capture: the export and the capture
+   * share the stamp copier's staging buffers, and a frame that copies into one
+   * while an export has it mapped is rejected whole by WebGPU -- the capture on
+   * it silently lost. So exports queue behind each other, and `startRunning`
+   * holds the go (the frame that captures) until its export has landed.
+   */
+  let exportChain: Promise<unknown> = Promise.resolve();
+  let exportsInFlight = 0;
+  const exportSceneQueued = (): Promise<ArrayBuffer | null> => {
+    exportsInFlight++;
+    const next = exportChain
+      .then(() => orch.exportScene())
+      .finally(() => {
+        exportsInFlight--;
+      });
+    exportChain = next.catch(() => null);
+    return next;
+  };
+
+  /**
+   * Whether the arrangement on screen has been changed since `icSource` was
+   * set -- painted, erased, cleared. A loaded world that has not been touched
+   * is placed afresh from its saved scene on a reshape; one that has is
+   * placed from what is on screen, so the edits survive.
+   */
+  let arrangementTouched = false;
+
+  /**
+   * Play. Instant, unless a scene is being read back (a save, or a reshape
+   * reading the arrangement): the go is the frame that captures, and a capture
+   * alongside a read is rejected -- see `exportSceneQueued`. Then it waits
+   * for the read, a few frames.
+   */
+  let starting = false;
+  const startRunning = (): void => {
+    if (starting) return;
+    // Going from an arrangement the user has changed captures THAT, so the
+    // saved scene no longer describes the initial conditions.
+    if (orch.editingInitialConditions && arrangementTouched) icSource = null;
+    if (exportsInFlight === 0) {
+      orch.setPaused(false);
+      return;
+    }
+    starting = true;
+    void exportChain.finally(() => {
+      // Unless Pause was pressed meanwhile -- see `stopRunning`.
+      if (!starting) return;
+      starting = false;
+      orch.setPaused(false);
+    });
+  };
+  /** Pause, cancelling a go that is still waiting on its copy. */
+  const stopRunning = (): void => {
+    starting = false;
+    orch.setPaused(true);
+  };
 
   // A drag-resize fires continuously, so the rebuild waits for the canvas to
   // settle; until then the renderer letterboxes the old world into the new
   // shape. A change under 1% is ignored -- it is a rounding pixel, not a
-  // reshape worth emptying the world for.
+  // reshape worth rebuilding for.
   const RESHAPE_SETTLE_MS = 300;
   const RESHAPE_TOLERANCE = 0.01;
   let reshapeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -550,7 +705,7 @@ async function main(): Promise<void> {
     reshapeTimer = setTimeout(() => {
       reshapeTimer = null;
       if (Math.abs(ui.canvasAspect() / built.screenAspect - 1) < RESHAPE_TOLERANCE) return;
-      void rebuildWorld('World reshaped to fit the window — the scene was cleared');
+      void refitWorld('reshaped');
     }, RESHAPE_SETTLE_MS);
   }).observe(canvas);
 
@@ -668,7 +823,7 @@ async function main(): Promise<void> {
     },
     onRestartRequired: (next) => {
       live = next;
-      void rebuildWorld('World rebuilt — the scene was cleared');
+      void refitWorld('rebuilt');
     },
     // A live edit rewrites that ConfigData slot, so every particle already
     // painted from the square obeys the new settings on the next step -- which
@@ -790,6 +945,8 @@ async function main(): Promise<void> {
     buttons = e.buttons;
   });
   canvas.addEventListener('pointerdown', (e) => {
+    // Any stroke may change the arrangement -- see `arrangementTouched`.
+    arrangementTouched = true;
     canvas.setPointerCapture(e.pointerId);
     pointer = { x: e.clientX, y: e.clientY };
     buttons = e.buttons;
@@ -901,7 +1058,10 @@ async function main(): Promise<void> {
     }
     if (e.key === ' ') {
       e.preventDefault();
-      orch.togglePause();
+      // Through `startRunning`, like the Play button, so a go that captures
+      // the initial conditions also keeps them on the host.
+      if (orch.paused && !starting) startRunning();
+      else stopRunning();
     } else if (e.key === 'r' || e.key === 'R') {
       // Refused while the initial conditions are being authored -- the scene on
       // screen IS the arrangement, and restoring would discard it in favour of
@@ -926,8 +1086,15 @@ async function main(): Promise<void> {
   async function saveWorld(name: string): Promise<void> {
     try {
       notify(`Saving "${name}"…`);
-      const scene = await orch.exportScene();
+      const whole = await exportSceneQueued();
+      // TRIMMED to the active region, with the frame it came from -- smaller
+      // on disk, and the frame is what lets another screen place it where it
+      // sat (`icFit.trimScene`). An arrangement with nothing in it saves as no
+      // scene at all.
+      const trimmed = whole === null ? null : trimScene(decodeStamp(whole, 'scene'));
+      const scene = trimmed === null ? null : encodeStamp(trimmed.stamp);
       const document = makeWorldDocument({
+        sceneFrame: trimmed?.frame ?? null,
         slots: orch.palette.all().map((slot, index) => ({
           name: slot.name,
           document: slotDocument(slot.config, slot.world),
@@ -1011,7 +1178,9 @@ async function main(): Promise<void> {
         unreadable = true;
       }
     }
-    const region = scene === null ? null : activeRegion(scene);
+    // The frame the scene was trimmed from; null for a world saved untrimmed.
+    const frame = world.sceneFrame;
+    const region = scene === null ? null : activeRegion(scene, frame);
     const screenAspect = ui.canvasAspect();
     const plan =
       region === null
@@ -1065,7 +1234,11 @@ async function main(): Promise<void> {
     // --- the scene, placed ---------------------------------------------------
     // Into the world as it NOW is, which the rebuild above made room for.
     if (scene !== null && region !== null) {
-      const placed = placeScene(scene, region, orch.system.canvasSize);
+      const placed = placeScene(scene, region, orch.system.canvasSize, frame);
+      // Kept as saved, so a later reshape places it afresh from the original
+      // rather than from this placement -- see `icSource`.
+      icSource = { stamp: scene, frame };
+      arrangementTouched = false;
       if (!orch.importScene(placed.stamp)) {
         notify(`"${name}" loaded, but its scene could not be placed`);
       } else if (placed.cropped) {
@@ -1075,7 +1248,10 @@ async function main(): Promise<void> {
       }
     } else {
       // No scene: empty the world rather than leaving the previous one's
-      // particles and walls standing in a world that did not ask for them.
+      // particles and walls standing in a world that did not ask for them --
+      // and its initial conditions, which R would otherwise bring back.
+      icSource = null;
+      orch.invalidateInitialConditions();
       orch.clearParticles();
       orch.clearField('walls');
       notify(
@@ -1168,8 +1344,12 @@ async function main(): Promise<void> {
     orch.palette.setVisibleCount(customVisibleCount);
     orch.applyPalette(fallbackConfig, defaultWorld);
     // Custom has no initial conditions, so it opens empty rather than
-    // inheriting the preset's particles.
+    // inheriting the preset's particles, walls or snapshot -- R, or a reshape,
+    // would otherwise bring the preset's scene back into Custom.
+    icSource = null;
+    orch.invalidateInitialConditions();
     orch.clearParticles();
+    orch.clearField('walls');
   }
 
   const worldLoader = new WorldLoaderUi(worldStore, {
