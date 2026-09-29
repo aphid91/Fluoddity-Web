@@ -26,11 +26,9 @@
 import { Pane } from 'tweakpane';
 import type { FolderApi, TabPageApi } from 'tweakpane';
 
-import {
-  type Preferences,
-  requiresRestart,
-  savePreferences,
-} from '../prefs/preferences.ts';
+import { type Preferences, requiresRestart } from '../prefs/preferences.ts';
+// SAND'S OWN RECORD, never the studio's -- see `sandPreferences.ts`.
+import { saveSandPreferences as savePreferences } from './sandPreferences.ts';
 import {
   BOOL,
   CHOICE,
@@ -91,6 +89,16 @@ const HIDDEN_PREFS: ReadonlySet<string> = new Set([
   // has nothing to govern -- and writing one would change the studio's.
   'canvasAspect',
 ]);
+
+/** Where a setting means something different here than in the studio. */
+const SAND_LABELS: Readonly<Record<string, string>> = {
+  worldSize: 'Target world size',
+};
+const SAND_HELP: Readonly<Record<string, string>> = {
+  worldSize:
+    'The world size sand builds at. A loaded world whose scene needs more room ' +
+    'may grow the world past this, up to 2.5x. Separate from the studio’s.',
+};
 
 export interface SandPrefsCallbacks {
   onChange(prefs: Preferences): void;
@@ -351,12 +359,12 @@ export class SandPrefs {
   }
 
   private bindPref(folder: FolderApi, setting: Setting): void {
-    const blade = folder.addBinding(
-      this.prefValues,
-      setting.field,
-      paramsFor(setting),
-    );
-    if (setting.help !== '') blade.element.title = setting.help;
+    const params = paramsFor(setting);
+    const blade = folder.addBinding(this.prefValues, setting.field, {
+      ...params,
+      label: SAND_LABELS[setting.field] ?? setting.label,
+    });
+    blade.element.title = SAND_HELP[setting.field] ?? setting.help;
 
     // World Size and Canvas Aspect reallocate the world, so they commit on the
     // END of a gesture rather than continuously -- `INPUT` is the registry's

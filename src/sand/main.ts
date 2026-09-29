@@ -33,12 +33,14 @@ import {
 import { toDocument } from '../config/persistence.ts';
 import { BC, makeWorldSettings } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
+import type { Preferences } from '../prefs/preferences.ts';
 import {
-  type Preferences,
-  loadPreferences,
-  requiresRestart,
-  savePreferences,
-} from '../prefs/preferences.ts';
+  loadSandPreferences as loadPreferences,
+  saveSandPreferences as savePreferences,
+} from './sandPreferences.ts';
+import { decodeStamp } from '../stamp/stampCodec.ts';
+import type { StampData } from '../stamp/stampData.ts';
+import { activeRegion, placeScene, planFit } from './icFit.ts';
 import { screenNdcToWorld, screenToNdc } from '../particleSystem/coords.ts';
 import { SandOrchestrator } from './sandOrchestrator.ts';
 import { SandUi } from './sandUi.ts';
@@ -107,10 +109,9 @@ async function main(): Promise<void> {
 
   // `let`: a loaded world replaces it.
   //
-  // ITS `canvasAspect` IS NEVER USED HERE. The world's shape follows the
-  // canvas (see `worldPrefs`), and the stored value is left untouched because
-  // the studio shares this record -- writing the screen's shape into it would
-  // reshape the studio's world.
+  // SAND'S OWN RECORD, not the studio's -- see `sandPreferences.ts`. Its
+  // `worldSize` is the TARGET world size; its `canvasAspect` is never used,
+  // because the world's shape follows the canvas (see `rebuildWorld`).
   let prefs = loadPreferences();
   // BEFORE sizing: a saved Max Particles has to size the buffer from the start,
   // rather than being applied afterwards as a resize the user did not ask for.
@@ -200,14 +201,13 @@ async function main(): Promise<void> {
   //
   // `canvasAspect` defines the shape of the SIMULATED WORLD (`sizing.ts`: world
   // space is area-preserving, so a different aspect keeps the pixel count and
-  // the particle density and makes the world wider or taller). Here it is
-  // always the canvas's own, so the world fills the canvas exactly.
+  // the particle density and makes the world wider or taller). It is the
+  // canvas's own, so the world fills the canvas exactly -- except when a
+  // loaded scene needs a letterboxed shape (`icFit.ts`).
   //
   // Applied to a COPY of the preferences at every build, never stored -- see
-  // `prefs` above.
+  // `prefs` above and `rebuildWorld` below.
   // ---------------------------------------------------------------------
-  const worldPrefs = (p: Preferences): Preferences => ({ ...p, canvasAspect: ui.canvasAspect() });
-
   const [derivedCount, canvasDim] = sizingFor(prefs.worldSize);
   const canvasSize = canvasDimensions(ui.canvasAspect(), canvasDim);
   const entityCount = session.maxParticles ?? derivedCount;
@@ -502,15 +502,33 @@ async function main(): Promise<void> {
   // scene when the window changes shape": the world is rebuilt to the new
   // shape and emptied, like any other reshape. Something gentler is for later.
   // ---------------------------------------------------------------------
-  /** The shape (w/h) the current world was built to. */
-  let builtAspect = canvasSize[0] / canvasSize[1];
+  /**
+   * What the current world was built at: its world size and shape, and the
+   * SCREEN's shape at the time. A letterboxed world's shape differs from the
+   * screen's, so a resize is judged against the screen, not the world.
+   */
+  let built = {
+    worldSize: prefs.worldSize,
+    worldAspect: canvasSize[0] / canvasSize[1],
+    screenAspect: ui.canvasAspect(),
+  };
   let rebuildChain: Promise<void> = Promise.resolve();
-  const rebuildWorld = (message: string | null): Promise<void> => {
+  /**
+   * Rebuild at `shape`, or by default at the TARGET world size and the
+   * screen's shape. Only a loaded scene asks for anything else.
+   */
+  const rebuildWorld = (
+    message: string | null,
+    shape?: { worldSize: number; aspect: number },
+  ): Promise<void> => {
     rebuildChain = rebuildChain.then(async () => {
       try {
-        const next = worldPrefs(live);
+        const screenAspect = ui.canvasAspect();
+        const worldSize = shape?.worldSize ?? live.worldSize;
+        const worldAspect = shape?.aspect ?? screenAspect;
+        const next: Preferences = { ...live, worldSize, canvasAspect: worldAspect };
         await orch.applyWorldSize(next, fallbackConfig, defaultWorld);
-        builtAspect = next.canvasAspect;
+        built = { worldSize, worldAspect, screenAspect };
         if (message !== null) notify(message);
       } catch (e) {
         console.error(`Could not rebuild the world: ${String(e)}`);
@@ -531,7 +549,7 @@ async function main(): Promise<void> {
     if (reshapeTimer !== null) clearTimeout(reshapeTimer);
     reshapeTimer = setTimeout(() => {
       reshapeTimer = null;
-      if (Math.abs(ui.canvasAspect() / builtAspect - 1) < RESHAPE_TOLERANCE) return;
+      if (Math.abs(ui.canvasAspect() / built.screenAspect - 1) < RESHAPE_TOLERANCE) return;
       void rebuildWorld('World reshaped to fit the window — the scene was cleared');
     }, RESHAPE_SETTLE_MS);
   }).observe(canvas);
@@ -964,24 +982,51 @@ async function main(): Promise<void> {
       return;
     }
 
-    // --- preferences, which may rebuild the world ------------------------
-    // THE WORLD'S SAVED SHAPE IS NOT ADOPTED: the world always takes the
-    // canvas's shape (see `worldPrefs`), so the stored aspect is kept as it
-    // was and only a World Size change can force a rebuild here. A scene saved
-    // at another shape is rescaled into this one by the paste.
+    // --- preferences --------------------------------------------------------
+    // THE WORLD'S SAVED SIZE AND SHAPE ARE NOT ADOPTED. The target world size
+    // is the player's (Prefs tab) and the shape is the screen's; the SCENE
+    // decides whether the world grows past the target, below.
     const next = {
       ...applyWorldPreferences(live, world.preferences),
+      worldSize: live.worldSize,
       canvasAspect: live.canvasAspect,
     };
-    const rebuilding = requiresRestart(next, live);
     live = next;
     prefs = next;
     savePreferences(next);
     prefsWindow.adoptPreferences(next);
     orch.applyPreferences(next);
-    if (rebuilding) {
+
+    // --- the scene decides the world ----------------------------------------
+    // Its active region -- particles and walls, plus a cushion of trails -- is
+    // placed pixel for pixel, so the world must have room for it: the target
+    // if that fits, else grown, else letterboxed, else cropped. See `icFit.ts`.
+    let scene: StampData | null = null;
+    let unreadable = false;
+    if (record.scene !== null) {
+      try {
+        scene = decodeStamp(record.scene, 'world');
+      } catch (e) {
+        console.error(`Could not read the scene of "${name}": ${String(e)}`);
+        unreadable = true;
+      }
+    }
+    const region = scene === null ? null : activeRegion(scene);
+    const screenAspect = ui.canvasAspect();
+    const plan =
+      region === null
+        ? null
+        : planFit(region.x1 - region.x0, region.y1 - region.y0, screenAspect, live.worldSize);
+    const shape = {
+      worldSize: plan?.worldSize ?? live.worldSize,
+      aspect: plan?.aspect ?? screenAspect,
+    };
+    if (
+      shape.worldSize !== built.worldSize ||
+      Math.abs(shape.aspect / built.worldAspect - 1) > 1e-6
+    ) {
       notify(`Loading "${name}" — rebuilding the world…`);
-      await rebuildWorld(null);
+      await rebuildWorld(null, shape);
     }
 
     // --- the palette, at its stored slots ---------------------------------
@@ -1017,16 +1062,27 @@ async function main(): Promise<void> {
     prefsWindow.adoptColorMode(world.colorMode);
     orch.applyPalette(fallbackConfig, defaultWorld);
 
-    // --- the scene --------------------------------------------------------
-    if (record.scene !== null) {
-      const ok = await orch.importScene(record.scene);
-      if (!ok) notify(`"${name}" loaded, but its scene could not be read`);
-      else notify(`Loaded "${name}"`);
+    // --- the scene, placed ---------------------------------------------------
+    // Into the world as it NOW is, which the rebuild above made room for.
+    if (scene !== null && region !== null) {
+      const placed = placeScene(scene, region, orch.system.canvasSize);
+      if (!orch.importScene(placed.stamp)) {
+        notify(`"${name}" loaded, but its scene could not be placed`);
+      } else if (placed.cropped) {
+        notify(`Loaded "${name}" — cropped to fit this screen`);
+      } else {
+        notify(`Loaded "${name}"`);
+      }
     } else {
       // No scene: empty the world rather than leaving the previous one's
-      // particles standing in a world that did not ask for them.
+      // particles and walls standing in a world that did not ask for them.
       orch.clearParticles();
-      notify(`Loaded "${name}" — no initial conditions`);
+      orch.clearField('walls');
+      notify(
+        unreadable
+          ? `"${name}" loaded, but its scene could not be read`
+          : `Loaded "${name}" — no initial conditions`,
+      );
     }
     persist();
   }

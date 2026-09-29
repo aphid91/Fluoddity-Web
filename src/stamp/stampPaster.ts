@@ -492,9 +492,23 @@ export class StampPaster {
    * this encoder reads those textures before the frame ends.
    */
   restore(encoder: GPUCommandEncoder, stamp: StampData, dstBox: StampBox): boolean {
+    return this.restoreInto(encoder, stamp, dstBox, dstBox);
+  }
+
+  /**
+   * `restore`, clearing a LARGER box than the one pasted into. A world's
+   * scene is placed as just its active region (`icFit.ts`), and whatever was
+   * in the rest of the world must go too.
+   */
+  restoreInto(
+    encoder: GPUCommandEncoder,
+    stamp: StampData,
+    clearBox: StampBox,
+    dstBox: StampBox,
+  ): boolean {
     if (!this.ready) return false;
-    this.clearParticles(encoder, dstBox);
-    this.clearTextures(dstBox);
+    this.clearParticles(encoder, clearBox);
+    this.clearTextures(clearBox);
     this.pasteTextures(stamp, dstBox);
     // AFTER the clear, as its own pass -- see above.
     this.pasteParticles(encoder, stamp, dstBox);
@@ -574,12 +588,12 @@ export class StampPaster {
 
   /**
    * The same from a stamp that has not been through VRAM yet -- a world's
-   * scene before its first press of go. Cleared first, as `restore` does,
-   * because a resampled paste need not cover the whole box.
+   * scene before its first press of go. `clearBox` is zeroed first, as
+   * `restoreInto` clears, since the scene may cover only part of it.
    */
-  restoreField(stamp: StampData, dstBox: StampBox): boolean {
+  restoreField(stamp: StampData, clearBox: StampBox, dstBox: StampBox): boolean {
     if (!this.ready) return false;
-    this.zeroRegion(dstBox, this.field.textureObject(), this.field.size);
+    this.zeroRegion(clearBox, this.field.textureObject(), this.field.size);
     this.pasteLayer(stamp.field, dstBox, this.field.textureObject(), this.field.size);
     return true;
   }

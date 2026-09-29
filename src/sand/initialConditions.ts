@@ -61,7 +61,7 @@ import { StampCopier } from '../stamp/stampCopier.ts';
 import { StampPaster } from '../stamp/stampPaster.ts';
 import { type StampBox, wholeWorldBox } from '../stamp/stampBox.ts';
 import type { StampData } from '../stamp/stampData.ts';
-import { decodeStamp, encodeStamp } from '../stamp/stampCodec.ts';
+import { encodeStamp } from '../stamp/stampCodec.ts';
 
 // Re-exported so callers have one import for the restore. The definition lives
 // in `restoreFrame.ts` because this module imports `particleSystem.ts`, which
@@ -232,7 +232,8 @@ export class InitialConditions {
     // capture returns it to the ordinary route.
     const pending = this.pendingStamp;
     if (pending !== null) {
-      return this.paster.restore(encoder, pending, this.box);
+      // Placed at its own box, over a cleared world -- see `adoptScene`.
+      return this.paster.restoreInto(encoder, pending, this.box, pending.box);
     }
     return this.paster.restoreFromVram(encoder, this.copier, this.box);
   }
@@ -245,7 +246,7 @@ export class InitialConditions {
   restoreField(encoder: GPUCommandEncoder): boolean {
     if (!this.captured || this.box === null || !this.ready) return false;
     const pending = this.pendingStamp;
-    if (pending !== null) return this.paster.restoreField(pending, this.box);
+    if (pending !== null) return this.paster.restoreField(pending, this.box, pending.box);
     return this.paster.restoreFieldFromVram(encoder, this.copier);
   }
 
@@ -329,32 +330,17 @@ export class InitialConditions {
   }
 
   /**
-   * Adopt a scene from `.fwld` bytes as the snapshot.
+   * Adopt a world's scene as the snapshot, already PLACED for this world by
+   * `icFit.placeScene`: in this world's units, at its own box.
    *
    * The paste itself is deferred to the next frame's restore, so this only
-   * uploads and records. Returns false if the bytes will not decode, which is an
-   * ordinary outcome for a truncated download rather than an exception.
-   *
-   * ## The box comes from the FILE, not from this world
-   *
-   * A world saved at a different World Size has a different world extent, and
-   * its box says so. Keeping the stored box is what lets the paste rescale the
-   * scene into the current world instead of clipping it -- and when the two
-   * match, which is the common case, the comparison is exact and the identity
-   * short-circuit makes the restore bit-perfect.
+   * records. The restore clears the WHOLE world and pastes the scene at its
+   * box, since the scene is only the world's active region.
    */
-  async importScene(bytes: ArrayBuffer): Promise<boolean> {
+  adoptScene(stamp: StampData): boolean {
     if (!this.ready) return false;
-    let stamp: StampData;
-    try {
-      stamp = decodeStamp(bytes, 'world');
-    } catch (e) {
-      console.error(`Could not read the world's scene: ${String(e)}`);
-      return false;
-    }
-
     this.pendingStamp = stamp;
-    this.box = stamp.box;
+    this.box = wholeWorldBox(this.system.canvasSize);
     this.captured = true;
     return true;
   }

@@ -57,6 +57,7 @@ import { type SandTool, actionFor, isFieldTool, usesSwatch } from './tool.ts';
 import type { ShoveState } from '../particleSystem/uniforms.ts';
 import type { BrushParams } from '../strafeField/strafeUniforms.ts';
 import type { FieldLayer } from '../strafeField/fieldLayer.ts';
+import type { StampData } from '../stamp/stampData.ts';
 import { LINE_STROKE_GAIN } from '../strafeField/fieldLayer.ts';
 import { layerForMouseMode } from '../orchestrator/commands.ts';
 import {
@@ -912,6 +913,15 @@ export class SandOrchestrator {
         // readback has not seen, and a restore is not a spawn -- it is the whole
         // pool changing underneath the reading.
         this.markDropHeld = true;
+        // AND ONLY A HEAD READ AFTER THIS RESTORE MAY RELEASE IT. The hold is
+        // lifted when the head changes; right after a world rebuild
+        // `lastSeenHead` is -1, so the new system's first reading -- taken
+        // before this paste, "entirely free" -- counted as a change, lifted the
+        // hold on this very frame, and `dropMarkIfEmpty` zeroed the mark:
+        // a world loaded straight after a rebuild had every particle live but
+        // above the bound, undrawn and unsimulated. Pinning the last-seen head
+        // to the pre-paste value leaves only the paste's own reading to differ.
+        this.lastSeenHead = this.system.availableSlots;
         // THE RESTORE'S OWN READBACK WINDOW OPENS HERE. The paste has just set
         // the mark to the whole buffer and recorded a measurement of where its
         // particles actually landed; anything spawned from now on is something
@@ -1402,7 +1412,8 @@ export class SandOrchestrator {
   }
 
   /**
-   * Adopt a scene from `.fwld` bytes as the initial conditions, and show it.
+   * Adopt a world's scene as the initial conditions, and show it. The scene
+   * arrives already placed for this world -- see `icFit.placeScene`.
    *
    * ## The world is left ARRANGING, not running
    *
@@ -1411,8 +1422,8 @@ export class SandOrchestrator {
    * the same state `R` leaves them in, and it is what makes "click the world
    * again to reset it" mean something.
    */
-  async importScene(bytes: ArrayBuffer): Promise<boolean> {
-    const applied = await this.initial.importScene(bytes);
+  importScene(stamp: StampData): boolean {
+    const applied = this.initial.adoptScene(stamp);
     if (!applied) return false;
     // The restore path proper: the scene is now the snapshot, so put it on
     // screen through the same route `R` uses rather than duplicating it.

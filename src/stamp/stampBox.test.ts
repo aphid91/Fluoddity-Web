@@ -77,14 +77,15 @@ test('a pixel rect rounds outward so no edge texel is dropped', () => {
   assert.ok(rect.height >= 2, `expected outward rounding, got height ${rect.height}`);
 });
 
-test('the pixel rect flips y, because world +y is up and texel row 0 is the top', () => {
-  // A stamp copied without the flip comes back vertically mirrored. The top half
-  // of the WORLD (positive y) must map to the top ROWS (small row indices).
+test('the pixel rect does not flip y: texel row 0 is the world’s minimum y', () => {
+  // The shaders index rows by v = world y / extent + 0.5 with no flip, so the
+  // upper half of the WORLD (positive y) is the HIGH rows. A flip here mirrors
+  // any paste into part of a world; see `pixelRectFor`.
   const canvas = [64, 64] as const;
   const world = wholeWorldBox(canvas);
   const topHalf = makeStampBox([world.min[0], 0], [world.max[0], world.max[1]]);
   const rect = pixelRectFor(topHalf, canvas);
-  assert.equal(rect.y, 0, 'the upper half of the world is the upper rows');
+  assert.equal(rect.y, 32, 'the upper half of the world is the high rows');
   assert.equal(rect.height, 32);
 });
 

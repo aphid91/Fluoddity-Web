@@ -113,14 +113,18 @@ export function boxIsEmpty(box: StampBox): boolean {
  * Containing slightly more than asked is harmless in the other direction: the
  * extra texel is real field data that was inside the drag by up to a pixel.
  *
- * ## The y axis is flipped
+ * ## The y axis is NOT flipped
  *
- * World space has +y UP (`coords.ts`); textures have +y DOWN (row 0 is the top).
- * `worldToUv` already produces a uv whose v grows with world y, so v=0 is the
- * BOTTOM row of the world and texel row 0 is the top. The flip therefore happens
- * here, once, rather than being left for each caller to remember -- a stamp
- * copied without it comes back vertically mirrored, which is the kind of bug
- * that looks like a shader problem for a day.
+ * Texel row r holds world v = r / height: row 0 is the world's MINIMUM y. That
+ * is how every shader indexes the canvas and the field (`entityUpdate.wgsl`'s
+ * `deposit` and `canvas.wgsl` both read "v counts rows from the texture's first
+ * row", with no flip), and it is what a saved scene's layers hold -- walls
+ * painted along the bottom of the screen sit in the first rows.
+ *
+ * This used to flip, on the belief that row 0 is the top of the world. Every
+ * paste was of the whole world, where a flip on the way in and the same flip on
+ * the way out cancel, so it went unseen until a scene was placed into PART of a
+ * world (`icFit.ts`) and its walls landed mirrored away from its particles.
  */
 export function pixelRectFor(box: StampBox, size: CanvasSize): PixelRect {
   const [w, h] = size;
@@ -129,10 +133,8 @@ export function pixelRectFor(box: StampBox, size: CanvasSize): PixelRect {
 
   const x0 = Math.floor(uvMin[0] * w);
   const x1 = Math.ceil(uvMax[0] * w);
-  // FLIPPED: the box's world max-y is the texture's TOP row (smallest row
-  // index), so the v range inverts on the way to rows. See above.
-  const y0 = Math.floor((1 - uvMax[1]) * h);
-  const y1 = Math.ceil((1 - uvMin[1]) * h);
+  const y0 = Math.floor(uvMin[1] * h);
+  const y1 = Math.ceil(uvMax[1] * h);
 
   const cx0 = clampInt(x0, 0, w);
   const cx1 = clampInt(x1, 0, w);
