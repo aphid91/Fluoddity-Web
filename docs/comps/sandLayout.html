@@ -1,0 +1,1214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Sand Layout Bench</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" />
+<style>
+  /* ====================================================================
+     THE BENCH (the page around the mock). Theme-aware.
+     ==================================================================== */
+  :root {
+    color-scheme: light;
+    --bg: #e8ebee;
+    --panel: #f7f8f9;
+    --panel-2: #eceff2;
+    --ink: #1c2228;
+    --dim: #5d6873;
+    --line: #d2d8de;
+    --accent: #a5601a;
+    --accent-ink: #ffffff;
+    --warn: #b93a22;
+    --warn-bg: #f7e3dd;
+    --ok: #2c7a4b;
+    --ok-bg: #dcefe3;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #111417;
+      --panel: #171b1f;
+      --panel-2: #1f2428;
+      --ink: #e1e5e9;
+      --dim: #8b96a1;
+      --line: #2b3238;
+      --accent: #e0a458;
+      --accent-ink: #1b1206;
+      --warn: #ff8266;
+      --warn-bg: #3a1d16;
+      --ok: #72c894;
+      --ok-bg: #16301f;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #111417;
+    --panel: #171b1f;
+    --panel-2: #1f2428;
+    --ink: #e1e5e9;
+    --dim: #8b96a1;
+    --line: #2b3238;
+    --accent: #e0a458;
+    --accent-ink: #1b1206;
+    --warn: #ff8266;
+    --warn-bg: #3a1d16;
+    --ok: #72c894;
+    --ok-bg: #16301f;
+  }
+
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.45 var(--sans);
+  }
+
+  .shell {
+    display: grid;
+    grid-template-columns: 320px minmax(0, 1fr);
+    height: 100%;
+  }
+  .controls {
+    overflow-y: auto;
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+    padding: 16px;
+    box-sizing: border-box;
+  }
+  .main {
+    overflow: auto;
+    padding: 16px;
+    min-width: 0;
+  }
+
+  .ctl-head h1 {
+    margin: 0 0 4px;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  .ctl-head p {
+    margin: 0 0 12px;
+    color: var(--dim);
+    font-size: 13px;
+  }
+
+  details.group {
+    border-top: 1px solid var(--line);
+    padding: 8px 0;
+  }
+  details.group > summary {
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    padding: 4px 0;
+    list-style-position: inside;
+  }
+  .rows { display: grid; gap: 8px; padding-top: 6px; }
+  .row {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr) 44px;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+  }
+  .row .rl { color: var(--ink); }
+  .row output {
+    font: 12px var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--dim);
+    text-align: right;
+  }
+  .row input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
+  .row.seg-row { grid-template-columns: 112px minmax(0, 1fr); }
+  .row.chk { display: flex; gap: 8px; cursor: pointer; }
+  .row.chk input { accent-color: var(--accent); margin: 0; }
+  .row select {
+    grid-column: 2 / 4;
+    font: inherit;
+    padding: 4px 6px;
+    background: var(--panel-2);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+  .seg {
+    display: flex;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    overflow: hidden;
+    background: var(--panel-2);
+  }
+  .seg button {
+    flex: 1 1 0;
+    min-width: 0;
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    font: 12px var(--sans);
+    padding: 5px 4px;
+    cursor: pointer;
+  }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] {
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 500;
+  }
+  .note {
+    font-size: 12px;
+    color: var(--dim);
+    margin: 0;
+  }
+  .btn {
+    appearance: none;
+    font: 13px var(--sans);
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  textarea.export {
+    width: 100%;
+    box-sizing: border-box;
+    height: 150px;
+    font: 11px/1.4 var(--mono);
+    background: var(--panel-2);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px;
+    resize: vertical;
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* --- the gallery ---------------------------------------------------- */
+  .gallery {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 24px 20px;
+    align-items: flex-start;
+  }
+  .card { margin: 0; display: grid; gap: 8px; max-width: 100%; }
+  .card header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .card header b { font-weight: 600; font-size: 14px; }
+  .card header span { color: var(--dim); font: 12px var(--mono); }
+  .card header .btn { margin-left: auto; padding: 2px 10px; font-size: 12px; }
+  .pv {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #000;
+    max-width: 100%;
+  }
+  .pv.touch { border-radius: 14px; border-width: 3px; border-color: var(--ink); }
+  .pv > .app { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font: 11.5px/1.3 var(--mono);
+    font-variant-numeric: tabular-nums;
+    padding: 3px 7px;
+    border-radius: 5px;
+    background: var(--panel-2);
+    color: var(--dim);
+  }
+  .chip.ok { background: var(--ok-bg); color: var(--ok); }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); }
+
+  /* --- this-screen view ------------------------------------------------ */
+  .live { display: none; position: fixed; inset: 0; z-index: 40; background: #000; }
+  .live > .app { position: absolute; top: 0; left: 0; }
+  .ctl-toggle {
+    display: none;
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 8px);
+    right: calc(env(safe-area-inset-right, 0px) + 8px);
+    z-index: 60;
+    opacity: 0.9;
+  }
+  body[data-view="live"] .live,
+  body[data-view="live"] .ctl-toggle { display: block; }
+  body[data-view="live"] .main { display: none; }
+  body[data-view="live"] .controls {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(340px, 92vw);
+    z-index: 55;
+    border-left: 1px solid var(--line);
+    box-shadow: -12px 0 40px rgba(0, 0, 0, 0.35);
+    transform: translateX(105%);
+    transition: transform 0.2s ease;
+    padding-top: calc(env(safe-area-inset-top, 0px) + 48px);
+  }
+  body[data-view="live"].ctl-open .controls { transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    body[data-view="live"] .controls { transition: none; }
+  }
+
+  @media (max-width: 760px) {
+    html, body { height: auto; }
+    .shell { display: block; height: auto; }
+    .controls { border-right: 0; border-bottom: 1px solid var(--line); }
+  }
+
+  /* ====================================================================
+     THE MOCK. Every size below is a unitless CSS-px number from a slider,
+     multiplied by a scale:
+       --ui   the master UI scale
+       --ks   the sidebar's scale = --ui x --side-fit (the scale-down fit)
+       --kb   the swatch bar's scale = --ui
+     ==================================================================== */
+  .app {
+    --st: 0px; --sr: 0px; --sb: 0px; --sl: 0px;
+    --side-fit: 1;
+    --ks: calc(var(--ui) * var(--side-fit));
+    --kb: var(--ui);
+    --cols: 2;
+    position: relative;
+    box-sizing: border-box;
+    overflow: hidden;
+    display: grid;
+    gap: calc(var(--pad) * var(--ui) * 1px);
+    padding:
+      calc(var(--st) + var(--pad) * var(--ui) * 1px)
+      calc(var(--sr) + var(--pad) * var(--ui) * 1px)
+      calc(var(--sb) + var(--pad) * var(--ui) * 1px)
+      calc(var(--sl) + var(--pad) * var(--ui) * 1px);
+    background: var(--m-bg);
+    color: var(--m-ink);
+    font-family: var(--m-font);
+    font-size: calc(11px * var(--ui));
+    line-height: 1.25;
+    text-align: left;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* Skins: the two looks sand.html already has, near enough to judge by. */
+  .app[data-skin="dark"] {
+    --m-bg: #0b0c0f; --m-chrome: #16181d; --m-chrome2: #1d2027; --m-edge: #2a2e37;
+    --m-ink: #d6d9e0; --m-dim: #767c8a; --m-accent: #e8a33d;
+    --m-selbg: #2a2118; --m-selink: #f0c078; --m-seledge: #e8a33d;
+    --m-bw: 1px; --m-cedge: #2a2e37; --rmul: 1;
+    --m-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .app[data-skin="system7"] {
+    --m-bg: #5f5f5f; --m-chrome: #ffffff; --m-chrome2: #ffffff; --m-edge: #000000;
+    --m-ink: #000000; --m-dim: #6b6b6b; --m-accent: #000000;
+    --m-selbg: #000000; --m-selink: #ffffff; --m-seledge: #000000;
+    --m-bw: 2px; --m-cedge: #000000; --rmul: 0;
+    --m-font: ui-monospace, Monaco, Consolas, monospace;
+  }
+
+  /* --- the three plans ------------------------------------------------ */
+  .app[data-plan="sidebar"] {
+    grid-template-columns: calc(var(--side-w) * var(--ks) * 1px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-areas: "side stage" "bar bar";
+  }
+  .app[data-plan="band"] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    grid-template-areas: "stage" "side" "bar";
+  }
+  .app[data-plan="drawer"] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-areas: "stage" "bar";
+  }
+
+  /* --- stage and canvas ---------------------------------------------- */
+  .stage { grid-area: stage; position: relative; min-width: 0; min-height: 0; }
+  .canvas {
+    position: absolute;
+    inset: 0;
+    box-sizing: border-box;
+    overflow: hidden;
+    border: var(--m-bw) solid var(--m-cedge);
+    background:
+      radial-gradient(ellipse 18% 14% at 28% 38%, rgba(232, 163, 61, 0.34), transparent 70%),
+      radial-gradient(ellipse 13% 19% at 64% 58%, rgba(95, 176, 232, 0.28), transparent 70%),
+      radial-gradient(ellipse 10% 9% at 79% 27%, rgba(208, 96, 94, 0.26), transparent 70%),
+      radial-gradient(ellipse 9% 11% at 40% 74%, rgba(124, 194, 122, 0.22), transparent 70%),
+      #000;
+  }
+  .app[data-ic="on"] .canvas { outline: 2px dashed #e8a33d; outline-offset: -6px; }
+  .dims {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font: calc(12px * var(--ui)) / 1.3 ui-monospace, Menlo, Consolas, monospace;
+    color: rgba(255, 255, 255, 0.6);
+    text-align: center;
+    white-space: nowrap;
+  }
+  .dims small { display: block; color: rgba(255, 255, 255, 0.38); font-size: 0.85em; }
+  .status, .icb {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: 92%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border-radius: calc(4px * var(--rmul));
+    font-size: calc(11px * var(--ui));
+    pointer-events: none;
+  }
+  .status {
+    bottom: calc(8px * var(--ui));
+    padding: calc(2px * var(--ui)) calc(8px * var(--ui));
+    background: rgba(11, 12, 15, 0.8);
+    color: #9aa0ac;
+  }
+  .icb {
+    top: calc(14px * var(--ui));
+    padding: calc(6px * var(--ui)) calc(16px * var(--ui));
+    background: rgba(11, 12, 15, 0.86);
+    color: #f0c078;
+    border: 1px solid #e8a33d;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-size: calc(10px * var(--ui));
+  }
+  .app[data-status="off"] .status,
+  .app:not([data-ic="on"]) .icb { display: none; }
+
+  /* --- the sidebar ----------------------------------------------------- */
+  .side {
+    grid-area: side;
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--pad) * var(--ks) * 1px);
+    min-height: 0;
+    min-width: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+  .app[data-overflow="scale"] .side { overflow: hidden; }
+
+  /* Band: the three sections side by side above the swatches. */
+  .app[data-plan="band"] .side { flex-direction: row; overflow: visible; align-items: stretch; }
+  .app[data-plan="band"] .sec { flex: 1 1 0; min-width: 0; }
+  .app[data-plan="band"] .sec.tools { flex-grow: 1.4; }
+
+  /* Drawer: slides over the canvas from the left. */
+  .app[data-plan="drawer"] .side {
+    grid-area: stage;
+    justify-self: start;
+    align-self: stretch;
+    width: calc(var(--drawer-w) * var(--ks) * 1px);
+    max-width: 100%;
+    z-index: 6;
+    box-sizing: border-box;
+    padding: calc(var(--pad) * var(--ks) * 1px);
+    background: var(--m-bg);
+    border: var(--m-bw) solid var(--m-edge);
+    border-radius: calc(var(--radius) * var(--rmul) * var(--ks) * 1px);
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
+  }
+  .app[data-plan="drawer"][data-drawer="closed"] .side {
+    visibility: hidden;
+    transform: translateX(-110%);
+  }
+  .handle {
+    display: none !important;
+    position: absolute;
+    z-index: 4;
+    top: calc(8px * var(--ui));
+    left: calc(8px * var(--ui));
+    height: calc(44px * var(--ui));
+    padding: 0 calc(10px * var(--ui)) !important;
+    gap: calc(6px * var(--ui));
+    opacity: 0.94;
+  }
+  .app[data-plan="drawer"] .handle { display: flex !important; }
+  .handle svg { width: calc(20px * var(--ui)); height: calc(20px * var(--ui)); }
+  .scrim { display: none; position: absolute; inset: 0; z-index: 3; background: rgba(0, 0, 0, 0.4); }
+  .app[data-plan="drawer"][data-drawer="open"] .scrim { display: block; }
+
+  .sec {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--btn-gap) * var(--ks) * 1px);
+    box-sizing: border-box;
+    padding: calc(var(--sec-pad) * var(--ks) * 1px);
+    background: var(--m-chrome);
+    border: var(--m-bw) solid var(--m-edge);
+    border-radius: calc(var(--radius) * var(--rmul) * var(--ks) * 1px);
+  }
+  .lbl {
+    font-size: calc(var(--label-fs) * var(--ks) * 1px);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--m-dim);
+    white-space: nowrap;
+  }
+  .lbl.sub { margin-top: calc(var(--btn-gap) * var(--ks) * 1px); }
+  .grid {
+    display: grid;
+    gap: calc(var(--btn-gap) * var(--ks) * 1px);
+    grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  }
+  .worlds .grid { --cols: var(--world-cols); }
+  .tools .grid.t { --cols: var(--tool-cols); }
+  .sizes { --cols: 2; }
+  .app[data-plan="band"] .worlds .grid { --cols: var(--band-world-cols); }
+  .app[data-plan="band"] .tools .grid.t { --cols: var(--band-tool-cols); }
+  .app[data-plan="band"][data-sizesrow="on"] .sizes { --cols: 4; }
+
+  .b {
+    appearance: none;
+    font: inherit;
+    color: var(--m-ink);
+    background: var(--m-chrome2);
+    border: var(--m-bw) solid var(--m-edge);
+    border-radius: calc(var(--radius) * var(--rmul) * var(--ks) * 1px);
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+  .b[data-sel="true"] {
+    background: var(--m-selbg);
+    color: var(--m-selink);
+    border-color: var(--m-seledge);
+  }
+  .b:disabled { opacity: 0.45; font-style: italic; cursor: default; }
+  .b svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .b svg .fill { fill: currentColor; stroke: none; }
+
+  .world {
+    height: calc(var(--world-h) * var(--ks) * 1px);
+    padding: 0 calc(4px * var(--ks));
+    font-size: calc(11px * var(--ks));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+    line-height: calc(var(--world-h) * var(--ks) * 1px - 2 * var(--m-bw));
+    text-align: center;
+  }
+  .world.custom { font-style: italic; }
+  .tool {
+    height: calc(var(--tool-h) * var(--ks) * 1px);
+    flex-direction: column;
+    gap: calc(3px * var(--ks));
+    font-size: calc(10px * var(--ks));
+  }
+  .tool svg { width: calc(20px * var(--ks)); height: calc(20px * var(--ks)); }
+  .size { height: calc(var(--size-h) * var(--ks) * 1px); }
+  .size i {
+    display: block;
+    border-radius: 50%;
+    background: currentColor;
+    width: calc(var(--dot) * var(--ks) * 1px);
+    height: calc(var(--dot) * var(--ks) * 1px);
+  }
+  .simrow {
+    display: flex;
+    justify-content: center;
+    gap: calc(var(--btn-gap) * 2 * var(--ks) * 1px);
+  }
+  .round {
+    width: calc(var(--sim-d) * var(--ks) * 1px);
+    height: calc(var(--sim-d) * var(--ks) * 1px);
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .round svg { width: 44%; height: 44%; }
+  .reset {
+    height: calc(var(--reset-h) * var(--ks) * 1px);
+    gap: calc(6px * var(--ks));
+    font-size: calc(11px * var(--ks));
+  }
+  .reset svg { width: calc(16px * var(--ks)); height: calc(16px * var(--ks)); }
+  .ctx {
+    height: calc(var(--ctx-h) * var(--ks) * 1px);
+    flex-shrink: 0;
+    box-sizing: border-box;
+    border: 1px dashed var(--m-edge);
+    border-radius: calc(var(--radius) * var(--rmul) * var(--ks) * 1px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: calc(2px * var(--ks));
+    color: var(--m-dim);
+    font-size: calc(10px * var(--ks));
+    text-align: center;
+    overflow: hidden;
+    padding: calc(4px * var(--ks));
+  }
+  .app[data-plan="band"] .ctx { height: calc(var(--band-ctx-h) * var(--ks) * 1px); }
+  .app[data-plan="band"][data-bandctx="off"] .ctx,
+  .app:not([data-plan="band"])[data-ctx="off"] .ctx { display: none; }
+
+  /* --- the swatch bar -------------------------------------------------- */
+  .bar {
+    grid-area: bar;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    min-width: 0;
+    overflow: hidden;
+    padding: calc(var(--bar-pad) * var(--kb) * 1px);
+    background: var(--m-chrome);
+    border: var(--m-bw) solid var(--m-edge);
+    border-radius: calc(var(--radius) * var(--rmul) * var(--kb) * 1px);
+  }
+  .app[data-just="left"] .bar { justify-content: flex-start; }
+  .app[data-just="spread"] .bar { justify-content: space-evenly; }
+  .sw {
+    flex: 0 0 auto;
+    width: calc((var(--sw-d) + var(--sw-gap)) * var(--kb) * 1px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(3px * var(--kb));
+  }
+  .sw span {
+    font-size: calc(var(--sw-name-fs) * var(--kb) * 1px);
+    max-width: calc((var(--sw-d) + var(--sw-gap) - 4) * var(--kb) * 1px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--m-dim);
+  }
+  .sw[data-sel="true"] span { color: var(--m-ink); }
+  .app[data-skin="system7"] .sw span { color: var(--m-ink); }
+  .swb {
+    appearance: none;
+    width: calc(var(--sw-d) * var(--kb) * 1px);
+    height: calc(var(--sw-d) * var(--kb) * 1px);
+    border-radius: 50%;
+    padding: 0;
+    margin: calc(4px * var(--kb)) 0;
+    background: var(--c);
+    border: calc(2px * var(--kb)) solid rgba(0, 0, 0, 0.35);
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+  .sw[data-sel="true"] .swb {
+    box-shadow:
+      0 0 0 calc(2px * var(--kb)) var(--m-chrome),
+      0 0 0 calc(4px * var(--kb)) var(--m-accent);
+  }
+
+  /* --- overlays -------------------------------------------------------- */
+  .safe { position: absolute; z-index: 20; pointer-events: none; display: none;
+    background: repeating-linear-gradient(45deg, rgba(255, 70, 50, 0.28) 0 6px, rgba(255, 70, 50, 0.08) 6px 12px); }
+  .app[data-safe="on"] .safe { display: block; }
+  .safe.t { top: 0; left: 0; right: 0; height: var(--st); }
+  .safe.b { bottom: 0; left: 0; right: 0; height: var(--sb); }
+  .safe.l { top: 0; bottom: 0; left: 0; width: var(--sl); }
+  .safe.r { top: 0; bottom: 0; right: 0; width: var(--sr); }
+  .tgt.small { outline: 3px solid #ff3b30 !important; outline-offset: 1px; }
+</style>
+</head>
+<body data-view="gallery">
+<div class="shell">
+  <aside class="controls" id="controls">
+    <header class="ctl-head">
+      <h1>Sand Layout Bench</h1>
+      <p>A mock of the sand UI on different screens. Nothing is wired up. Sizes are CSS pixels at UI scale 1.</p>
+      <div id="live-readout" class="chips"></div>
+    </header>
+    <div id="groups"></div>
+  </aside>
+  <main class="main"><div id="gallery" class="gallery"></div></main>
+</div>
+<div id="live" class="live"></div>
+<button id="ctl-toggle" class="btn primary ctl-toggle" type="button">Controls</button>
+
+<script>
+(() => {
+  'use strict';
+
+  // ------------------------------------------------------------------
+  // Devices: the VISIBLE browser viewport in CSS px, not the screen, so
+  // the browser's own bars are already subtracted. safe = [top, right,
+  // bottom, left] insets for notches and home indicators.
+  // ------------------------------------------------------------------
+  const DEVICES = [
+    { id: 'desk', name: 'Desktop 1080p', w: 1920, h: 960, touch: false },
+    { id: 'laptop', name: 'Laptop 16:10', w: 1440, h: 790, touch: false },
+    { id: 'small', name: 'Small laptop', w: 1366, h: 657, touch: false },
+    { id: 'ipadL', name: 'iPad, landscape', w: 1180, h: 760, touch: true },
+    { id: 'ipadP', name: 'iPad, portrait', w: 820, h: 1100, touch: true },
+    { id: 'iphone', name: 'iPhone 15 Pro', w: 393, h: 659, touch: true },
+    { id: 'iphoneL', name: 'iPhone 15 Pro, landscape', w: 852, h: 360, touch: true, safe: [0, 59, 21, 59] },
+    { id: 'se', name: 'iPhone SE', w: 375, h: 553, touch: true },
+    { id: 'android', name: 'Android phone', w: 412, h: 790, touch: true },
+    { id: 'custom', name: 'Custom', custom: true },
+  ];
+
+  const WORLDS = [
+    { name: 'Custom', custom: true },
+    { name: 'Garden' },
+    { name: 'Vortex' },
+    { name: 'Hourglass' },
+    { name: 'Reef' },
+    { name: 'Unassigned', empty: true },
+  ];
+  const TOOLS = ['Brush', 'Erase', 'Shove', 'Walls', 'Stamp'];
+  const SIZES = [4, 7, 11, 16];
+  const SWATCHES = [
+    ['Medusa', '#e8a33d'], ['Crystal', '#5fb0e8'], ['Burbles', '#d0605e'], ['Tangle', '#7cc27a'],
+    ['Pebbles', '#b78be0'], ['Stringy', '#e0d45a'], ['Weave', '#4fc3b8'], ['Pseudocrystal', '#e889b5'],
+  ];
+
+  const ICON = {
+    Brush: '<svg viewBox="0 0 24 24"><path d="M14.5 4.5l5 5-7 7-5-5z"/><path d="M7.5 11.5C5 11.5 3.5 13.3 3.5 16v4H7c2.7 0 4.5-1.5 4.5-4"/></svg>',
+    Erase: '<svg viewBox="0 0 24 24"><path d="M4 15l8.5-8.5 6 6L13 18H7z"/><path d="M13 18h7"/></svg>',
+    Shove: '<svg viewBox="0 0 24 24"><path d="M3 12h13"/><path d="M12 7l5 5-5 5"/><path d="M20.5 5v14"/></svg>',
+    Walls: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14"/><path d="M3 9.7h18M3 14.3h18M9 5v4.7M15 5v4.7M6 9.7v4.6M12 9.7v4.6M18 9.7v4.6M9 14.3V19M15 14.3V19"/></svg>',
+    Stamp: '<svg viewBox="0 0 24 24"><path d="M9.5 3h5v6l4 3v3h-13v-3l4-3z"/><path d="M4 19h16"/></svg>',
+    play: '<svg viewBox="0 0 24 24"><path class="fill" d="M8 5.5v13l10.5-6.5z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24"><path class="fill" d="M7 5h3.6v14H7zM13.4 5H17v14h-3.6z"/></svg>',
+    reset: '<svg viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4 4v4.5h4.5"/></svg>',
+    menu: '<svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
+  };
+
+  // ------------------------------------------------------------------
+  // State
+  // ------------------------------------------------------------------
+  const DEFAULTS = {
+    view: 'gallery', zoomMode: 'fit', previewH: 300, focus: 'iphone',
+    portraitPlan: 'band', drawerOpen: false, overflow: 'scroll',
+    skin: 'dark', showStatus: true, showIC: false, showSafe: true,
+    flagTargets: true, minTarget: 44,
+    ui: 1, pad: 8, radius: 6,
+    swCount: 8, swD: 48, swGap: 14, swJustify: 'center', swNameFs: 10, barPad: 6,
+    sideW: 150, secPad: 10, btnGap: 4, labelFs: 9,
+    worldH: 34, worldCols: 2, toolH: 57, toolCols: 2, sizeH: 30,
+    simD: 52, resetH: 36, ctxH: 120,
+    bandWorldCols: 2, bandToolCols: 3, bandSizesRow: true, bandCtxH: 0,
+    drawerW: 230,
+    devices: Object.fromEntries(DEVICES.map((d) => [d.id, d.id !== 'custom'])),
+    customW: 1024, customH: 700, customTouch: false,
+    sel: { world: 0, tool: 0, size: 1, swatch: 0, playing: false },
+  };
+
+  const KEY = 'fluoddity-sand-layout-bench-v1';
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  function load() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (raw) {
+        const o = JSON.parse(raw);
+        return {
+          ...clone(DEFAULTS), ...o,
+          devices: { ...DEFAULTS.devices, ...(o.devices || {}) },
+          sel: { ...DEFAULTS.sel, ...(o.sel || {}) },
+        };
+      }
+    } catch (e) { /* storage unavailable: run on defaults */ }
+    return clone(DEFAULTS);
+  }
+  let S = load();
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* ignore */ }
+  }
+
+  // Unitless numbers the mock's CSS multiplies by its scale.
+  const VARS = {
+    ui: '--ui', pad: '--pad', radius: '--radius',
+    swD: '--sw-d', swGap: '--sw-gap', swNameFs: '--sw-name-fs', barPad: '--bar-pad',
+    sideW: '--side-w', secPad: '--sec-pad', btnGap: '--btn-gap', labelFs: '--label-fs',
+    worldH: '--world-h', worldCols: '--world-cols', toolH: '--tool-h', toolCols: '--tool-cols',
+    sizeH: '--size-h', simD: '--sim-d', resetH: '--reset-h', ctxH: '--ctx-h',
+    bandWorldCols: '--band-world-cols', bandToolCols: '--band-tool-cols', bandCtxH: '--band-ctx-h',
+    drawerW: '--drawer-w',
+  };
+
+  // ------------------------------------------------------------------
+  // Controls
+  // ------------------------------------------------------------------
+  const R = (k, label, min, max, step = 1) => ({ k, type: 'range', label, min, max, step });
+  const SEG = (k, label, opts) => ({ k, type: 'seg', label, opts });
+  const CHK = (k, label) => ({ k, type: 'check', label });
+  const NOTE = (text) => ({ type: 'note', text });
+
+  const GROUPS = [
+    { title: 'View', items: [
+      SEG('view', 'Show', [['gallery', 'All'], ['focus', 'One'], ['live', 'This screen']]),
+      { k: 'focus', type: 'select', label: 'Device (One)' },
+      SEG('zoomMode', 'Zoom', [['fit', 'Same height'], ['true', 'True scale']]),
+      R('previewH', 'Preview size', 140, 640, 10),
+      SEG('skin', 'Look', [['dark', 'Darkroom'], ['system7', 'System 7']]),
+    ] },
+    { title: 'Arrangement', items: [
+      SEG('portraitPlan', 'Portrait', [['sidebar', 'Sidebar'], ['band', 'Band'], ['drawer', 'Drawer']]),
+      CHK('drawerOpen', 'Drawer open (or tap the handle)'),
+      SEG('overflow', 'Sidebar too tall', [['scroll', 'Scroll'], ['scale', 'Scale down']]),
+      NOTE('Landscape screens always use the sidebar. Portrait means taller than wide.'),
+    ] },
+    { title: 'Overall', items: [
+      R('ui', 'UI scale', 0.6, 1.6, 0.05),
+      R('pad', 'Outer gap', 0, 24),
+      R('radius', 'Corner radius', 0, 24),
+    ] },
+    { title: 'Swatch bar', items: [
+      R('swCount', 'Swatches', 5, 8),
+      R('swD', 'Diameter', 24, 96),
+      R('swGap', 'Spacing', 0, 48),
+      SEG('swJustify', 'Align', [['left', 'Left'], ['center', 'Center'], ['spread', 'Spread']]),
+      R('swNameFs', 'Name size', 7, 16),
+      R('barPad', 'Bar padding', 0, 24),
+      NOTE('When they do not fit, the bar shows fewer swatches.'),
+    ] },
+    { title: 'Sidebar', items: [
+      R('sideW', 'Width', 90, 280),
+      R('secPad', 'Panel padding', 2, 24),
+      R('btnGap', 'Button gap', 0, 16),
+      R('labelFs', 'Label size', 7, 14),
+      R('worldH', 'World height', 20, 64),
+      R('worldCols', 'World columns', 1, 3),
+      R('toolH', 'Tool height', 32, 96),
+      R('toolCols', 'Tool columns', 1, 3),
+      R('sizeH', 'Size height', 20, 64),
+      R('simD', 'Play/Pause size', 28, 88),
+      R('resetH', 'Reset height', 20, 64),
+      R('ctxH', 'Context box', 0, 400),
+    ] },
+    { title: 'Band (portrait)', open: false, items: [
+      R('bandWorldCols', 'World columns', 1, 3),
+      R('bandToolCols', 'Tool columns', 2, 5),
+      CHK('bandSizesRow', 'Sizes in one row of 4'),
+      R('bandCtxH', 'Context box', 0, 200),
+      NOTE('Context box 0 hides it in the band.'),
+    ] },
+    { title: 'Drawer (portrait)', open: false, items: [
+      R('drawerW', 'Drawer width', 140, 360),
+    ] },
+    { title: 'Touch and overlays', open: false, items: [
+      CHK('flagTargets', 'Outline small touch targets in red'),
+      R('minTarget', 'Smallest target', 24, 60),
+      CHK('showSafe', 'Show notch / home-bar areas'),
+      CHK('showStatus', 'Status line'),
+      CHK('showIC', 'Editing-initial-conditions banner'),
+    ] },
+    { title: 'Devices', open: false, items: [
+      ...DEVICES.map((d) => ({ type: 'device', id: d.id, label: d.custom ? 'Custom size' : `${d.name}  ${d.w}×${d.h}` })),
+      R('customW', 'Custom width', 320, 2560, 1),
+      R('customH', 'Custom height', 320, 1600, 1),
+      CHK('customTouch', 'Custom is a touch screen'),
+    ] },
+  ];
+
+  const STRUCTURAL = new Set(['view', 'focus', 'customW', 'customH', 'customTouch']);
+  const groupsEl = document.getElementById('groups');
+
+  function fmt(k, v) {
+    if (k === 'ui') return v.toFixed(2) + '×';
+    return String(v);
+  }
+
+  function rowHtml(it) {
+    if (it.type === 'range') {
+      return `<label class="row" for="c-${it.k}"><span class="rl">${it.label}</span>` +
+        `<input type="range" id="c-${it.k}" data-k="${it.k}" min="${it.min}" max="${it.max}" step="${it.step}">` +
+        `<output id="o-${it.k}"></output></label>`;
+    }
+    if (it.type === 'seg') {
+      return `<div class="row seg-row"><span class="rl">${it.label}</span><div class="seg" role="group" aria-label="${it.label}">` +
+        it.opts.map(([v, l]) => `<button type="button" data-seg="${it.k}" data-v="${v}">${l}</button>`).join('') +
+        `</div></div>`;
+    }
+    if (it.type === 'check') {
+      return `<label class="row chk" for="c-${it.k}"><input type="checkbox" id="c-${it.k}" data-k="${it.k}"><span>${it.label}</span></label>`;
+    }
+    if (it.type === 'device') {
+      return `<label class="row chk" for="d-${it.id}"><input type="checkbox" id="d-${it.id}" data-dev="${it.id}"><span>${it.label}</span></label>`;
+    }
+    if (it.type === 'select') {
+      return `<label class="row" for="c-${it.k}"><span class="rl">${it.label}</span><select id="c-${it.k}" data-k="${it.k}">` +
+        DEVICES.map((d) => `<option value="${d.id}">${d.name}</option>`).join('') + `</select></label>`;
+    }
+    return `<p class="note">${it.text}</p>`;
+  }
+
+  function renderControls() {
+    groupsEl.innerHTML = GROUPS.map((g) =>
+      `<details class="group"${g.open === false ? '' : ' open'}><summary>${g.title}</summary>` +
+      `<div class="rows">${g.items.map(rowHtml).join('')}</div></details>`).join('') +
+      `<details class="group" open><summary>Export</summary><div class="rows">` +
+      `<p class="note">These values as CSS custom properties, ready for sand.html.</p>` +
+      `<textarea class="export" id="export" readonly aria-label="Exported CSS"></textarea>` +
+      `<div class="btn-row"><button class="btn primary" id="copy" type="button">Copy CSS</button>` +
+      `<button class="btn" id="reset-all" type="button">Reset everything</button></div></div></details>`;
+  }
+
+  function syncControls() {
+    groupsEl.querySelectorAll('[data-k]').forEach((el) => {
+      const k = el.dataset.k;
+      if (el.type === 'checkbox') el.checked = !!S[k];
+      else el.value = S[k];
+      const out = document.getElementById('o-' + k);
+      if (out) out.textContent = fmt(k, S[k]);
+    });
+    groupsEl.querySelectorAll('[data-seg]').forEach((b) => {
+      b.setAttribute('aria-pressed', String(S[b.dataset.seg] === b.dataset.v));
+    });
+    groupsEl.querySelectorAll('[data-dev]').forEach((el) => { el.checked = !!S.devices[el.dataset.dev]; });
+  }
+
+  function change(k, v) {
+    S[k] = v;
+    save();
+    syncControls();
+    if (STRUCTURAL.has(k)) rebuild(); else applyAll();
+  }
+
+  groupsEl.addEventListener('input', (e) => {
+    const el = e.target;
+    if (el.dataset.dev) { S.devices[el.dataset.dev] = el.checked; save(); rebuild(); return; }
+    const k = el.dataset.k;
+    if (!k) return;
+    if (el.type === 'checkbox') change(k, el.checked);
+    else if (el.type === 'range') change(k, Number(el.value));
+    else change(k, el.value);
+  });
+  let resetArmed = null;
+  groupsEl.addEventListener('click', (e) => {
+    const seg = e.target.closest('[data-seg]');
+    if (seg) { change(seg.dataset.seg, seg.dataset.v); return; }
+    if (e.target.id === 'copy') {
+      const ta = document.getElementById('export');
+      const done = () => { e.target.textContent = 'Copied'; setTimeout(() => { e.target.textContent = 'Copy CSS'; }, 1500); };
+      const fallback = () => { ta.focus(); ta.select(); e.target.textContent = 'Selected: press Ctrl+C'; };
+      try { navigator.clipboard.writeText(ta.value).then(done, fallback); } catch (err) { fallback(); }
+      return;
+    }
+    if (e.target.id === 'reset-all') {
+      if (resetArmed) {
+        clearTimeout(resetArmed); resetArmed = null;
+        S = clone(DEFAULTS); save(); syncControls(); rebuild();
+        e.target.textContent = 'Reset everything';
+      } else {
+        e.target.textContent = 'Click again to reset';
+        resetArmed = setTimeout(() => { resetArmed = null; e.target.textContent = 'Reset everything'; }, 3000);
+      }
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // The mock
+  // ------------------------------------------------------------------
+  function buildApp() {
+    const a = document.createElement('div');
+    a.className = 'app';
+    a.innerHTML =
+      `<div class="stage">` +
+        `<div class="canvas"><div class="dims"></div><div class="icb">Editing initial conditions</div><div class="status"></div></div>` +
+        `<div class="scrim" data-act="drawer"></div>` +
+        `<button class="b handle tgt" type="button" data-act="drawer" aria-label="Tools">${ICON.menu}<span class="h-tool"></span></button>` +
+      `</div>` +
+      `<aside class="side">` +
+        `<section class="sec worlds"><div class="lbl">World</div><div class="grid">` +
+          WORLDS.map((w, i) => `<button class="b world tgt${w.custom ? ' custom' : ''}" type="button" data-act="world" data-i="${i}"${w.empty ? ' disabled' : ''}>${w.name}</button>`).join('') +
+        `</div></section>` +
+        `<section class="sec tools"><div class="lbl">Tools</div><div class="grid t">` +
+          TOOLS.map((t, i) => `<button class="b tool tgt" type="button" data-act="tool" data-i="${i}">${ICON[t]}<span>${t}</span></button>`).join('') +
+          `</div><div class="lbl sub">Size</div><div class="grid sizes">` +
+          SIZES.map((d, i) => `<button class="b size tgt" type="button" data-act="size" data-i="${i}" aria-label="Size ${i + 1}"><i style="--dot:${d}"></i></button>`).join('') +
+        `</div></section>` +
+        `<section class="sec sim"><div class="lbl">Simulation</div>` +
+          `<div class="simrow"><button class="b round tgt" type="button" data-act="play" aria-label="Play">${ICON.play}</button>` +
+          `<button class="b round tgt" type="button" data-act="pause" aria-label="Pause">${ICON.pause}</button></div>` +
+          `<button class="b reset tgt" type="button" data-act="reset">${ICON.reset}<span>Reset</span></button>` +
+          `<div class="ctx"><span>Context controls</span><span>Delete all walls, delete all particles…</span></div>` +
+        `</section>` +
+      `</aside>` +
+      `<footer class="bar">` +
+        SWATCHES.map(([n, c], i) => `<div class="sw" data-i="${i}"><span>${n}</span><button class="swb tgt" type="button" data-act="swatch" data-i="${i}" style="--c:${c}" aria-label="${n}"></button></div>`).join('') +
+      `</footer>` +
+      `<i class="safe t"></i><i class="safe r"></i><i class="safe b"></i><i class="safe l"></i>`;
+    return a;
+  }
+
+  function applySelection(app) {
+    const sel = S.sel;
+    const mark = (q, i) => app.querySelectorAll(q).forEach((el, j) => { el.dataset.sel = String(j === i); });
+    mark('.world', sel.world);
+    mark('.tool', sel.tool);
+    mark('.size', sel.size);
+    mark('.sw', sel.swatch);
+    app.querySelector('[data-act="play"]').dataset.sel = String(sel.playing);
+    app.querySelector('[data-act="pause"]').dataset.sel = String(!sel.playing);
+    app.querySelector('.h-tool').textContent = TOOLS[sel.tool];
+    app.querySelector('.status').textContent =
+      (sel.playing ? 'running' : 'PAUSED — arrange, then SPACE') + '  ·  ~0 particles  ·  no initial conditions yet';
+  }
+
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-act]');
+    if (!t || !t.closest('.app') || t.disabled) return;
+    const i = Number(t.dataset.i);
+    switch (t.dataset.act) {
+      case 'world': S.sel.world = i; break;
+      case 'tool': S.sel.tool = i; break;
+      case 'size': S.sel.size = i; break;
+      case 'swatch': S.sel.swatch = i; S.sel.tool = 0; break;
+      case 'play': S.sel.playing = true; break;
+      case 'pause': S.sel.playing = false; break;
+      case 'drawer': S.drawerOpen = !S.drawerOpen; syncControls(); break;
+      default: return;
+    }
+    save();
+    applyAll();
+  });
+
+  // ------------------------------------------------------------------
+  // Layout of one instance: plan, fits, and the numbers under it.
+  // ------------------------------------------------------------------
+  function layoutInstance(inst) {
+    const { app, w, h, touch } = inst;
+    app.style.width = w + 'px';
+    app.style.height = h + 'px';
+    const [st, sr, sb, sl] = inst.safe;
+    app.style.setProperty('--st', st);
+    app.style.setProperty('--sr', sr);
+    app.style.setProperty('--sb', sb);
+    app.style.setProperty('--sl', sl);
+
+    const portrait = h > w;
+    const plan = portrait ? S.portraitPlan : 'sidebar';
+    const ds = app.dataset;
+    ds.plan = plan;
+    ds.drawer = S.drawerOpen ? 'open' : 'closed';
+    ds.overflow = S.overflow;
+    ds.skin = S.skin;
+    ds.just = S.swJustify;
+    ds.ic = S.showIC ? 'on' : 'off';
+    ds.status = S.showStatus ? 'on' : 'off';
+    ds.safe = S.showSafe ? 'on' : 'off';
+    ds.sizesrow = S.bandSizesRow ? 'on' : 'off';
+    ds.bandctx = S.bandCtxH > 0 ? 'on' : 'off';
+    ds.ctx = S.ctxH > 0 ? 'on' : 'off';
+    applySelection(app);
+
+    // --- sidebar fit: scroll, or scale everything in it down ---
+    const side = app.querySelector('.side');
+    app.style.setProperty('--side-fit', '1');
+    let fit = 1;
+    let hiddenPx = 0;
+    if (plan !== 'band') {
+      const avail = side.clientHeight;
+      let natural = side.scrollHeight;
+      if (S.overflow === 'scale') {
+        for (let k = 0; k < 4 && natural > avail + 1; k++) {
+          fit *= avail / natural;
+          app.style.setProperty('--side-fit', fit.toFixed(4));
+          natural = side.scrollHeight;
+        }
+      } else {
+        hiddenPx = Math.max(0, natural - avail);
+      }
+    }
+
+    // --- swatches: show as many as fit, up to the count ---
+    const bar = app.querySelector('.bar');
+    const cs = getComputedStyle(bar);
+    const barAvail = bar.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const itemW = (S.swD + S.swGap) * S.ui;
+    const fits = Math.max(1, Math.floor((barAvail + 0.5) / itemW));
+    const visible = Math.min(S.swCount, fits);
+    app.querySelectorAll('.sw').forEach((el, i) => { el.hidden = i >= visible; });
+
+    // --- canvas ---
+    const canvas = app.querySelector('.canvas');
+    const cw = canvas.offsetWidth;
+    const ch = canvas.offsetHeight;
+    const aspect = ch > 0 ? cw / ch : 0;
+    app.querySelector('.dims').innerHTML =
+      `${cw} × ${ch}<small>${aspect >= 1 ? aspect.toFixed(2) + ' : 1' : '1 : ' + (1 / aspect).toFixed(2)}</small>`;
+
+    // --- touch targets ---
+    let small = 0;
+    const drawerHidden = plan === 'drawer' && !S.drawerOpen;
+    app.querySelectorAll('.tgt').forEach((el) => {
+      el.classList.remove('small');
+      if (!touch || !S.flagTargets) return;
+      if (el.disabled || el.closest('[hidden]')) return;
+      if (el.classList.contains('handle') && plan !== 'drawer') return;
+      if (drawerHidden && el.closest('.side')) return;
+      if (el.offsetWidth < S.minTarget - 0.5 || el.offsetHeight < S.minTarget - 0.5) {
+        el.classList.add('small');
+        small++;
+      }
+    });
+
+    // --- chips ---
+    const pct = Math.round((cw * ch) / (w * h) * 100);
+    const chips = [
+      ['', `${plan}`],
+      ['', `canvas ${cw}×${ch} · ${pct}% of screen`],
+    ];
+    if (plan !== 'band') {
+      if (S.overflow === 'scale' && fit < 0.999) chips.push(['warn', `sidebar scaled to ${Math.round(fit * 100)}%`]);
+      else if (hiddenPx > 0) chips.push(['warn', `sidebar scrolls ${hiddenPx}px`]);
+      else chips.push(['ok', 'sidebar fits']);
+    }
+    chips.push(visible < S.swCount ? ['warn', `${visible} of ${S.swCount} swatches fit`] : ['ok', `${visible} swatches fit`]);
+    if (touch && S.flagTargets) {
+      chips.push(small > 0 ? ['warn', `${small} targets under ${S.minTarget}px`] : ['ok', `targets ≥ ${S.minTarget}px`]);
+    }
+    return chips.map(([c, t]) => `<span class="chip ${c}">${t}</span>`).join('');
+  }
+
+  // ------------------------------------------------------------------
+  // Views
+  // ------------------------------------------------------------------
+  const gallery = document.getElementById('gallery');
+  const live = document.getElementById('live');
+  const readout = document.getElementById('live-readout');
+  let insts = [];
+
+  function devSize(d) {
+    if (d.custom) return { w: S.customW, h: S.customH, touch: S.customTouch };
+    return { w: d.w, h: d.h, touch: d.touch };
+  }
+
+  function rebuild() {
+    document.body.dataset.view = S.view;
+    gallery.innerHTML = '';
+    live.innerHTML = '';
+    readout.innerHTML = '';
+    insts = [];
+
+    if (S.view === 'live') {
+      const app = buildApp();
+      live.append(app);
+      insts.push({
+        app, live: true,
+        safe: ['env(safe-area-inset-top, 0px)', 'env(safe-area-inset-right, 0px)',
+               'env(safe-area-inset-bottom, 0px)', 'env(safe-area-inset-left, 0px)'],
+      });
+    } else {
+      const list = S.view === 'focus'
+        ? DEVICES.filter((d) => d.id === S.focus)
+        : DEVICES.filter((d) => S.devices[d.id]);
+      for (const d of list) {
+        const { w, h, touch } = devSize(d);
+        const card = document.createElement('figure');
+        card.className = 'card';
+        card.innerHTML =
+          `<header><b>${d.name}</b><span>${w}×${h}${touch ? ' · touch' : ''}</span>` +
+          (S.view === 'gallery' ? `<button class="btn" type="button" data-focus="${d.id}">Open</button>` : '') +
+          `</header><div class="pv${touch ? ' touch' : ''}"></div><figcaption class="chips"></figcaption>`;
+        const app = buildApp();
+        card.querySelector('.pv').append(app);
+        gallery.append(card);
+        const px = d.safe || [0, 0, 0, 0];
+        insts.push({ app, card, w, h, touch, safe: px.map((v) => v + 'px') });
+      }
+      if (list.length === 0) gallery.innerHTML = '<p class="note">No devices selected. Turn some on under Devices.</p>';
+    }
+    applyAll();
+  }
+
+  gallery.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-focus]');
+    if (b) { S.focus = b.dataset.focus; change('view', 'focus'); }
+  });
+
+  function applyAll() {
+    const root = document.documentElement;
+    for (const [k, v] of Object.entries(VARS)) root.style.setProperty(v, String(S[k]));
+
+    for (const inst of insts) {
+      if (inst.live) {
+        inst.w = live.clientWidth;
+        inst.h = live.clientHeight;
+        inst.touch = matchMedia('(pointer: coarse)').matches;
+        readout.innerHTML = `<span class="chip">this screen ${inst.w}×${inst.h}</span>` + layoutInstance(inst);
+        continue;
+      }
+      const chips = layoutInstance(inst);
+      inst.card.querySelector('figcaption').innerHTML = chips;
+
+      let scale;
+      if (S.view === 'focus') {
+        const availW = gallery.clientWidth - 8;
+        const availH = Math.max(240, window.innerHeight - 170);
+        scale = Math.min(availW / inst.w, availH / inst.h, 1);
+      } else if (S.zoomMode === 'true') {
+        scale = S.previewH / 1080;
+      } else {
+        scale = Math.min(S.previewH / inst.h, (S.previewH * 2.2) / inst.w);
+      }
+      const maxW = gallery.clientWidth - 8;
+      if (inst.w * scale > maxW && maxW > 0) scale = maxW / inst.w;
+      const pv = inst.card.querySelector('.pv');
+      pv.style.width = Math.round(inst.w * scale) + 'px';
+      pv.style.height = Math.round(inst.h * scale) + 'px';
+      inst.app.style.transform = `scale(${scale})`;
+    }
+    document.getElementById('export').value = exportCss();
+  }
+
+  function exportCss() {
+    const lines = Object.entries(VARS).map(([k, v]) => `  ${v}: ${S[k]};`);
+    return `/* Fluoddity Sand layout, from the layout bench.\n` +
+      `   Sizes are CSS px at UI scale 1; multiply by --ui. */\n` +
+      `:root {\n${lines.join('\n')}\n  --swatch-count: ${S.swCount};\n  --min-target: ${S.minTarget};\n}\n` +
+      `/* portrait: ${S.portraitPlan} · sidebar too tall: ${S.overflow} · swatches: ${S.swJustify}` +
+      `${S.bandSizesRow ? ' · band sizes in one row' : ''} */\n`;
+  }
+
+  // --- this-screen view: controls slide in over the mock ---
+  document.getElementById('ctl-toggle').addEventListener('click', () => {
+    document.body.classList.toggle('ctl-open');
+  });
+
+  let raf = 0;
+  window.addEventListener('resize', () => {
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(applyAll);
+  });
+
+  renderControls();
+  syncControls();
+  rebuild();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(applyAll);
+})();
+</script>
+</body>
+</html>
