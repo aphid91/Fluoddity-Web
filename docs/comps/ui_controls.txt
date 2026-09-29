@@ -1,0 +1,38 @@
+/* Fluoddity Sand layout, from the layout bench.
+   Sizes are CSS px at UI scale 1; multiply by --ui. /
+:root {
+  --ui: 1.25;
+  --pad: 5;
+  --radius: 0;
+  --sw-d: 44;
+  --sw-gap: 5;
+  --sw-fill: 50;
+  --sw-gap-max: 35;
+  --sw-name-fs: 9;
+  --bar-pad: 0;
+  --side-w: 150;
+  --sec-pad: 10;
+  --btn-gap: 4;
+  --label-fs: 9;
+  --world-h: 35;
+  --world-cols: 2;
+  --tool-h: 44;
+  --tool-cols: 2;
+  --size-h: 44;
+  --sim-d: 44;
+  --reset-h: 44;
+  --box-h: 170;
+  --band-world-cols: 2;
+  --band-tool-cols: 3;
+  --drawer-w: 230;
+  --wbtn-h: 30;
+  --wsw-d: 56;
+  --wsw-gap: 9;
+  --wsw-fs: 10;
+  --wl-bg: 0.5;
+  --size-w: 37;
+  --swatch-count: 7;
+  --min-target: 44;
+  --canvas-max-share: 75;
+}
+/ portrait: band · sidebar too tall: scroll · swatches: spread · band sizes in one row · world swatch · world names in the middle · sidebar tool box when it fits */

@@ -711,7 +711,7 @@
     border-radius: calc(var(--radius) * var(--rmul) * var(--kb) * 1px);
   }
   .app[data-just="left"] :is(.bar, .stamps) { justify-content: flex-start; }
-  .app[data-just="spread"] :is(.bar, .stamps) { justify-content: space-evenly; }
+  .app[data-just="spread"] .bar { justify-content: space-evenly; }
 
   /* --- the bar for every tool but Brush ------------------------------
      The swatch row stays in the layout, invisible, under the tool's own
@@ -749,22 +749,27 @@
   }
   .app[data-skin="system7"] .act.pp[data-sel="true"] { background: var(--m-selbg); color: var(--m-selink); }
 
-  /* Stamp: New stamp in the left fifth, stored stamps laid out like
-     swatches (same circles, same place, no names). */
+  /* Stamp: New stamp sits right beside the leftmost stored stamp, and the
+     group is placed like the swatches (left, or centred for Center and
+     Spread). Stamps use the swatch circles and spacing, without names. */
   .acts[data-for="4"] { inset: calc(var(--bar-pad) * var(--kb) * 1px); }
-  .newstamp {
-    flex: 0 0 20%;
-    margin: calc(4px * var(--kb)) 0;
-    background: var(--m-chrome2);
-    border-color: var(--m-edge);
-  }
   .stamps {
     flex: 1 1 auto;
     min-width: 0;
     display: flex;
-    align-items: flex-end;
+    align-items: stretch;
     justify-content: center;
     overflow: hidden;
+  }
+  .sgroup { display: flex; align-items: flex-end; }
+  .newstamp {
+    flex: 0 0 auto;
+    align-self: stretch;
+    margin: calc(4px * var(--kb)) calc(4px * var(--kb)) calc(4px * var(--kb)) 0;
+    padding: 0 calc(14px * var(--kb));
+    white-space: nowrap;
+    background: var(--m-chrome2);
+    border-color: var(--m-edge);
   }
   /* --- sidebar tool box: under Simulation, when the sidebar has room ---
      Holds Erase/Shove/Walls buttons in one column; under Brush or Stamp it
@@ -936,7 +941,7 @@
     skin: 'dark', showStatus: true, showIC: false, showSafe: true,
     flagTargets: true, minTarget: 44,
     ui: 1.25, maxShare: 75, pad: 5, radius: 0,
-    swCount: 7, swD: 44, swGap: 5, swJustify: 'spread', swNameFs: 9, barPad: 0,
+    swCount: 7, swD: 44, swGap: 5, swFill: 50, swGapMax: 35, swJustify: 'spread', swNameFs: 9, barPad: 0,
     sideW: 150, secPad: 10, btnGap: 4, labelFs: 9,
     worldH: 35, worldCols: 2, toolH: 44, toolCols: 2, sizeH: 44,
     simD: 44, resetH: 44, toolBox: true, boxH: 170,
@@ -973,7 +978,7 @@
   // Unitless numbers the mock's CSS multiplies by its scale.
   const VARS = {
     ui: '--ui', pad: '--pad', radius: '--radius',
-    swD: '--sw-d', swGap: '--sw-gap', swNameFs: '--sw-name-fs', barPad: '--bar-pad',
+    swD: '--sw-d', swGap: '--sw-gap', swFill: '--sw-fill', swGapMax: '--sw-gap-max', swNameFs: '--sw-name-fs', barPad: '--bar-pad',
     sideW: '--side-w', secPad: '--sec-pad', btnGap: '--btn-gap', labelFs: '--label-fs',
     worldH: '--world-h', worldCols: '--world-cols', toolH: '--tool-h', toolCols: '--tool-cols',
     sizeH: '--size-h', simD: '--sim-d', resetH: '--reset-h', boxH: '--box-h',
@@ -1026,6 +1031,9 @@
       R('swCount', 'Swatches', 5, 8),
       R('swD', 'Diameter', 24, 96),
       R('swGap', 'Spacing', 0, 48),
+      R('swFill', 'Fill at least', 0, 100),
+      R('swGapMax', 'Spacing up to', 0, 80),
+      NOTE('If the swatches fill less of the bar than “Fill at least”, their spacing grows, but not past “Spacing up to”. Fill 0 turns this off.'),
       SEG('swJustify', 'Align', [['left', 'Left'], ['center', 'Center'], ['spread', 'Spread']]),
       R('swNameFs', 'Name size', 7, 16),
       R('barPad', 'Bar padding', 0, 24),
@@ -1080,6 +1088,7 @@
     if (k === 'ui') return v.toFixed(2) + '×';
     if (k === 'wlBg') return Math.round(v * 100) + '%';
     if (k === 'maxShare') return v >= 100 ? 'off' : v + '%';
+    if (k === 'swFill') return v <= 0 ? 'off' : v + '%';
     return String(v);
   }
 
@@ -1225,10 +1234,10 @@
         SWATCHES.map(([n, c], i) => `<div class="sw" data-i="${i}"><span>${n}</span><button class="swb tgt" type="button" data-act="swatch" data-i="${i}" style="--c:${c}" aria-label="${n}"></button></div>`).join('') +
         TOOL_ACTIONS.map((acts, tool) => acts === null ? '' :
           `<div class="acts" data-for="${tool}">${acts.map(actButton).join('')}</div>`).join('') +
-        `<div class="acts" data-for="4"><button class="b act newstamp tgt" type="button" data-act="act">New stamp</button>` +
-          `<div class="stamps">` +
+        `<div class="acts" data-for="4"><div class="stamps"><div class="sgroup">` +
+          `<button class="b act newstamp tgt" type="button" data-act="act">New stamp</button>` +
           STAMPS.map((p, i) => `<div class="sw st" data-i="${i}"><span>&nbsp;</span><button class="swb tgt" type="button" data-act="stamp" data-i="${i}" style="--p:${p}" aria-label="Stamp ${i + 1}"></button></div>`).join('') +
-          `</div></div>` +
+          `</div></div></div>` +
       `</footer>` +
       `<i class="safe t"></i><i class="safe r"></i><i class="safe b"></i><i class="safe l"></i>`;
     return a;
@@ -1356,6 +1365,18 @@
     const visible = Math.min(S.swCount, fits);
     app.querySelectorAll('.bar > .sw').forEach((el, i) => { el.hidden = i >= visible; });
 
+    // --- spacing: if the swatches fill too little of the bar, widen the
+    // gaps (up to the cap) until they fill the target share. Only ever
+    // widens, so it cannot change how many fit. Stamps share the spacing.
+    let gap = S.swGap;
+    const fillTarget = (barAvail * S.swFill) / 100;
+    if (S.swFill > 0 && S.swGapMax > gap && visible * (S.swD + gap) * ui < fillTarget) {
+      const want = fillTarget / (visible * ui) - S.swD;
+      gap = Math.min(S.swGapMax, Math.max(gap, want));
+    }
+    app.style.setProperty('--sw-gap', String(gap));
+    const fillPct = Math.round((visible * (S.swD + gap) * ui * 100) / barAvail);
+
     // --- canvas ---
     const canvas = app.querySelector('.canvas');
     const cw = canvas.offsetWidth;
@@ -1394,6 +1415,9 @@
       else chips.push(['ok', 'sidebar fits']);
     }
     chips.push(visible < S.swCount ? ['warn', `${visible} of ${S.swCount} swatches fit`] : ['ok', `${visible} swatches fit`]);
+    chips.push(['', gap > S.swGap + 0.05
+      ? `swatch spacing raised to ${Math.round(gap)} · fill ${fillPct}%`
+      : `swatches fill ${fillPct}% of bar`]);
     if (boxEligible) {
       chips.push(boxOn
         ? ['ok', 'tool box in sidebar']
