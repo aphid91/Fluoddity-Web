@@ -117,6 +117,8 @@ export interface SandPrefsCallbacks {
   onAutoCompact(enabled: boolean): void;
   /** The Dev tab's Audit pool button. Diagnostic; stalls the pipeline. */
   onAuditPool(): void;
+  /** The Dev tab's "Export settings as defaults" button. */
+  onExportSettings(): void;
   /** The Dev tab's "audit after every sweep" switch. */
   onAuditAfterSweep(enabled: boolean): void;
   /** A UI comp was chosen from the Dev tab's dropdown. */
@@ -397,6 +399,14 @@ export class SandPrefs {
    * shove strength and draw power as well as spawn density.
    */
   private buildDev(page: TabPageApi): void {
+    // FIRST ON THE TAB: the shipped-defaults workflow. See `sandDefaults.ts`.
+    const exportButton = page.addButton({ title: 'Export settings as defaults' });
+    exportButton.element.title =
+      'Download every sand setting as sandDefaults.json. Put it at ' +
+      'src/sand/sandDefaults.json and commit it, and new visitors start with ' +
+      'these settings. Returning visitors keep their own.';
+    exportButton.on('click', () => this.callbacks.onExportSettings());
+
     // THE UI LOOK -- see `theme.ts`. Each is a token swap over the same layout.
     const themeBlade = page.addBinding(this.devValues, 'theme', {
       label: 'UI style',

@@ -42,6 +42,14 @@ import { decodeStamp, encodeStamp } from '../stamp/stampCodec.ts';
 import type { StampData } from '../stamp/stampData.ts';
 import type { StampBox } from '../stamp/stampBox.ts';
 import { activeRegion, placeScene, planFit, trimScene } from './icFit.ts';
+import { readSandDefaults, writeSandDefaults } from './sandDefaults.ts';
+// BUNDLED, not fetched: the defaults are part of the build, so a new visitor
+// has them on the first frame with no request that could fail. Replace this
+// file with one from the Dev tab's "Export settings" to change them.
+import sandDefaultsFile from './sandDefaults.json';
+
+/** What a new visitor starts with. See `sandDefaults.ts`. */
+const SAND_DEFAULTS = readSandDefaults(sandDefaultsFile);
 import { screenNdcToWorld, screenToNdc } from '../particleSystem/coords.ts';
 import { SandOrchestrator } from './sandOrchestrator.ts';
 import { SandUi } from './sandUi.ts';
@@ -113,10 +121,11 @@ async function main(): Promise<void> {
   // SAND'S OWN RECORD, not the studio's -- see `sandPreferences.ts`. Its
   // `worldSize` is the TARGET world size; its `canvasAspect` is never used,
   // because the world's shape follows the canvas (see `rebuildWorld`).
-  let prefs = loadPreferences();
+  let prefs = loadPreferences(SAND_DEFAULTS.preferences);
   // BEFORE sizing: a saved Max Particles has to size the buffer from the start,
   // rather than being applied afterwards as a resize the user did not ask for.
-  const session = loadSession();
+  // A new visitor's session starts from the shipped defaults too.
+  const session = loadSession(undefined, SAND_DEFAULTS.session);
 
   const store = await ConfigStore.open();
 
@@ -897,6 +906,20 @@ async function main(): Promise<void> {
       auditAfterSweep = enabled;
       persist();
       notify(enabled ? 'Auditing after every sweep' : 'Sweep auditing off');
+    },
+    // The shipped-defaults workflow: tinker, export, drop the file over
+    // `src/sand/sandDefaults.json`. See `sandDefaults.ts` for what it holds.
+    // `live` rather than `prefs`, and the session as it would be saved, so the
+    // file is exactly what this tab is showing.
+    onExportSettings: () => {
+      const text = writeSandDefaults(live, snapshot());
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'sandDefaults.json';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notify('Exported sandDefaults.json — put it at src/sand/sandDefaults.json');
     },
     onAuditPool: () => {
       void (async () => {

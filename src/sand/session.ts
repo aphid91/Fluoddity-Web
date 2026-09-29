@@ -364,15 +364,20 @@ function asSelectedWorld(raw: unknown): number {
   return index < ASSIGNABLE_WORLDS ? index : CUSTOM_WORLD;
 }
 
+/**
+ * The stored session, or `fallback` for a visitor with none -- the shipped
+ * defaults (`sandDefaults.ts`), where the caller has them.
+ */
 export function loadSession(
   storage: SessionStorage | null = browserSessionStorage(),
+  fallback: SandSession = EMPTY_SESSION,
 ): SandSession {
-  if (storage === null) return EMPTY_SESSION;
+  if (storage === null) return fallback;
   try {
     const raw = storage.getItem(SESSION_KEY);
-    return raw === null ? EMPTY_SESSION : parseSession(raw);
+    return raw === null ? fallback : parseSession(raw);
   } catch {
-    return EMPTY_SESSION;
+    return fallback;
   }
 }
 
