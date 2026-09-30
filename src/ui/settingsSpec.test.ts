@@ -45,6 +45,7 @@ import {
   WORLD,
   bySource,
   grouped,
+  outsideMinMagnitude,
   seedSetting,
   settingFor,
   visible,
@@ -52,6 +53,7 @@ import {
 import {
   BC,
   IC,
+  TRAIL_WEIGHT_MIN,
   makeSimulationConfig,
   makeWorldSettings,
 } from '../particleSystem/config.ts';
@@ -138,6 +140,9 @@ test('the registry has the same 35 entries the desktop does, plus the web-only o
     // there always fans out from red. The bias half of `A * signal + B` was
     // added here.
     'colorOffset',
+    // No desktop equivalent: it only means anything between configs, which
+    // sand runs together and the desktop never did.
+    'trailWeight',
   ];
   const ported = SETTINGS.filter((s) => !WEB_ONLY.includes(s.field));
   assert.equal(ported.length, 35);
@@ -295,8 +300,9 @@ test('basic is a strict subset of advanced', () => {
   const basic = visible(false);
   const all = visible(true);
   // NOT `SETTINGS.length`: `visible()` also drops `panel: false` entries, whose
-  // widget is built somewhere the registry does not reach. See the next test.
-  assert.equal(all.length, SETTINGS.filter((s) => s.panel).length);
+  // widget is built somewhere the registry does not reach (see the next test),
+  // and `studio: false` ones, which only sand renders.
+  assert.equal(all.length, SETTINGS.filter((s) => s.panel && s.studio).length);
   assert.ok(basic.length < all.length);
   assert.ok(basic.every((s) => s.tier === BASIC));
   assert.ok(all.some((s) => s.tier === ADVANCED));
@@ -356,4 +362,35 @@ test('grouped filters by source', () => {
     assert.ok(settings.every((s) => s.source === PREFS));
   }
   assert.equal(bySource(SETTINGS, WORLD).length, 3);
+});
+
+// ---------------------------------------------------------------------------
+// Trail Weight
+// ---------------------------------------------------------------------------
+
+test('Trail Weight is sand-only: the studio panel never renders it', () => {
+  const entry = settingFor(CONFIG, 'trailWeight');
+  assert.ok(entry !== null);
+  assert.equal(entry.studio, false);
+  assert.ok(!visible(true).some((s) => s.field === 'trailWeight'));
+});
+
+test("Trail Weight's floor matches the one the shader enforces", () => {
+  // This file imports nothing, so the spec states the number itself.
+  assert.equal(settingFor(CONFIG, 'trailWeight')?.minMagnitude, TRAIL_WEIGHT_MIN);
+});
+
+test('dragging across zero jumps from +min to -min', () => {
+  const entry = settingFor(CONFIG, 'trailWeight');
+  assert.ok(entry !== null);
+  const min = entry.minMagnitude;
+  assert.equal(outsideMinMagnitude(entry, 0.01), min);
+  assert.equal(outsideMinMagnitude(entry, -0.01), -min);
+  assert.equal(outsideMinMagnitude(entry, 0), min);
+  assert.equal(outsideMinMagnitude(entry, -1), -1);
+  assert.equal(outsideMinMagnitude(entry, min), min);
+  // A setting with no floor passes everything through, zero included.
+  const plain = settingFor(CONFIG, 'gravityTrails');
+  assert.ok(plain !== null);
+  assert.equal(outsideMinMagnitude(plain, 0), 0);
 });

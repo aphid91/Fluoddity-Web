@@ -64,6 +64,7 @@ function distinctConfig(overrides: Partial<SimulationConfig> = {}): SimulationCo
       sensorAngleJitter: 15.25,
       sensorDistanceJitter: 16.25,
       radialGravity: true,
+      trailWeight: 17.25,
       rule: distinctRule(),
       ...overrides,
     },
@@ -159,6 +160,8 @@ test('every float lane holds the field the lane table names', () => {
   assert.equal(f32[LANE.misc2 + 0], config.colorSensitivity);
   assert.equal(f32[LANE.misc2 + 2], config.sensorAngleJitter);
   assert.equal(f32[LANE.misc2 + 3], config.sensorDistanceJitter);
+
+  assert.equal(f32[LANE.misc3 + 3], config.trailWeight);
 });
 
 // ---------------------------------------------------------------------------
@@ -224,7 +227,7 @@ test('reserved lanes are zero without being written', () => {
   const { f32 } = views(packConfigs([distinctConfig()]));
   assert.equal(f32[LANE.misc3 + 1], 0, 'misc3.y');
   assert.equal(f32[LANE.misc3 + 2], 0, 'misc3.z');
-  assert.equal(f32[LANE.misc3 + 3], 0, 'misc3.w');
+  // misc3.w is Trail Weight now, and written -- see the float-lane test.
 
   const world = views(packWorldConfig(referenceWorld())).f32;
   assert.equal(world[WORLD_LANE.bounds + 1], 0, 'bounds.y');
@@ -330,6 +333,10 @@ function parityConfig(): SimulationConfig {
     // reference left misc3.z reserved, zero reproduces its bytes, and zero is
     // what a config saved before this knob existed loads as.
     colorOffset: 0,
+    // NOT IN THE FIXTURE, and NOT zero: unlike the two above, the value that
+    // means "as before" is 1, while the reference left misc3.w at 0. So this
+    // is the second lane the comparison below masks -- see `DIVERGED_LANES`.
+    trailWeight: 1,
     rule: r.rule,
   };
 }
@@ -341,7 +348,7 @@ function toHex(buffer: ArrayBuffer): string {
 }
 
 /**
- * The one lane this port DELIBERATELY no longer packs like the Python.
+ * The lanes this port DELIBERATELY no longer packs like the Python.
  *
  * `force2.w` held a fence STRENGTH there and holds a fence FLAG here, so its
  * four bytes are 0.7071-as-float32 in the golden and 1-as-int32 in ours. That
@@ -357,16 +364,25 @@ function toHex(buffer: ArrayBuffer): string {
  */
 const FENCE_LANE = LANE.force2 + 3;
 
-/** `toHex`, with the diverged lane zeroed in every config record. */
+/**
+ * `misc3.w` was reserved (0) there and is Trail Weight here, whose neutral
+ * value is 1. The same argument as the fence lane: an intended difference,
+ * blanked so it cannot excuse an accidental one.
+ */
+const TRAIL_WEIGHT_LANE = LANE.misc3 + 3;
+
+const DIVERGED_LANES = [FENCE_LANE, TRAIL_WEIGHT_LANE];
+
+/** `toHex`, with the diverged lanes zeroed in every config record. */
 function toHexMasked(buffer: ArrayBuffer): string {
   const words = new Int32Array(buffer.slice(0));
   for (let base = 0; base < words.length; base += CONFIG_DATA_STRIDE / 4) {
-    words[base + FENCE_LANE] = 0;
+    for (const lane of DIVERGED_LANES) words[base + lane] = 0;
   }
   return toHex(words.buffer);
 }
 
-/** The golden hex, with the same lane zeroed at the same offsets. */
+/** The golden hex, with the same lanes zeroed at the same offsets. */
 function maskGolden(hex: string): string {
   const buffer = new Uint8Array(hex.length / 2);
   for (let i = 0; i < buffer.length; i++) {
@@ -378,7 +394,7 @@ function maskGolden(hex: string): string {
 // THE assertion of this file. Compared exactly, not approximately: both
 // np.float32 assignment and Float32Array assignment round to nearest-even, so
 // a faithful port is bit-identical to the desktop's bytes -- everywhere except
-// the one lane whose MEANING changed. See `FENCE_LANE_BYTES`.
+// the lanes whose MEANING changed. See `DIVERGED_LANES`.
 test('parity: a packed config record is byte-identical to the Python', () => {
   assert.equal(
     toHexMasked(packConfigs([parityConfig()])),

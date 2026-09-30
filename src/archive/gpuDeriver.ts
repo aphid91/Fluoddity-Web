@@ -163,6 +163,7 @@ export async function createGpuDeriver(
       sensorDistanceJitter: 0,
       radialGravity: false,
       gravityTrails: 0,
+      trailWeight: 1,
       rule: request.rule,
     };
   }

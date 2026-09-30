@@ -76,7 +76,7 @@ export const LANE = {
   misc2: 96, //   x: color_sensitivity   y: color_by_cohort(i)
   //              z: sensor_angle_jitter w: sensor_distance_jitter
   misc3: 100, //  x: radial_gravity(i)   y: gravity_trails
-  //              z: color_offset        w: reserved
+  //              z: color_offset        w: trail_weight
 } as const;
 
 /** Float32 lane indices within a `WorldData` record. */
@@ -192,6 +192,19 @@ export interface SimulationConfig {
    * pull towards or away from the origin.
    */
   readonly radialGravity: boolean;
+  /**
+   * How heavily this config's trails count against OTHER configs'. Each deposit
+   * is multiplied by it and each sensor read of the swarm's trails divided by
+   * it, so a config alone behaves identically at any weight -- only mixtures
+   * notice. Negative flips the sign of what it lays down, which to another
+   * config reads as trails pointing backwards.
+   *
+   * Magnitude floored at `TRAIL_WEIGHT_MIN` by the shader, so the division is
+   * safe whatever is stored. FORCED TO 1 IN THE STUDIO, where every slot is
+   * the same parent and the weight could only cost precision -- see
+   * `configSlots`.
+   */
+  readonly trailWeight: number;
   /** 80 floats -> 10 FourierCenters, each frequency(4) + amplitude(4). */
   readonly rule: readonly number[];
 }
@@ -232,6 +245,8 @@ export type SimulationConfigRequired = Pick<
  *                                existed meant."
  *   gravityTrails               Default 0 (no bias), so configs saved before
  *                                it existed sense exactly what they always did.
+ *   trailWeight                 Default 1 (no weighting), so mixtures of configs
+ *                                saved before it existed interact as they did.
  *
  * Exported as ONE object, not scattered through a function signature, so the
  * config reader can spread it (`{ ...SIMULATION_CONFIG_DEFAULTS, ...parsed }`)
@@ -253,8 +268,19 @@ export const SIMULATION_CONFIG_DEFAULTS = {
   sensorDistanceJitter: 0.0,
   radialGravity: false,
   gravityTrails: 0.0,
+  // ONE IS "NO WEIGHTING". Every config that predates this knob deposited and
+  // sensed at unit scale, so this is the value that keeps mixtures unchanged.
+  trailWeight: 1.0,
   rule: [] as readonly number[],
 } as const satisfies Omit<SimulationConfig, keyof SimulationConfigRequired>;
+
+/**
+ * The smallest magnitude Trail Weight may have. Reads divide by it, so zero is
+ * the one value it must never reach; the slider jumps across it and the shader
+ * floors whatever arrives. Mirrored by value in `common.wgsl` and
+ * `settingsSpec.ts`, pinned by tests.
+ */
+export const TRAIL_WEIGHT_MIN = 0.02;
 
 /**
  * Build a config from its required fields, filling the rest with the defaults.

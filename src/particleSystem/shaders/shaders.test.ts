@@ -30,6 +30,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const SHARED_DIR = path.join(here, '..', '..', 'shaders');
 
 import { WORKGROUP_SIZE } from '../dispatch.ts';
+import { TRAIL_WEIGHT_MIN } from '../config.ts';
 
 function expand(name: string): string {
   return resolveIncludes(path.join(here, name), { sharedDir: SHARED_DIR });
@@ -645,4 +646,14 @@ test('the reduce pass derives the cohort exactly as derive and entityUpdate do',
     /configs\[entity_slot\(e,\s*index\)\]/,
     'reduce must select the config through entity_slot, as derive does',
   );
+});
+
+test("the shader's Trail Weight floor is the host's", () => {
+  // Reads divide by the weight, so the shader's floor is the one that matters;
+  // the host and the slider must agree with it about where the dead zone is.
+  const match = /const\s+TRAIL_WEIGHT_MIN\s*:\s*f32\s*=\s*([0-9.eE+-]+)\s*;/.exec(
+    stripComments(expand('entityUpdate.wgsl')),
+  );
+  assert.ok(match !== null, 'common.wgsl must declare TRAIL_WEIGHT_MIN');
+  assert.equal(Number(match[1]), TRAIL_WEIGHT_MIN);
 });

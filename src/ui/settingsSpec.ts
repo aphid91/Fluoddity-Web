@@ -169,6 +169,19 @@ export interface Setting {
    * property of the registry entry.
    */
   readonly requires: readonly [field: string, value: number | boolean] | null;
+  /**
+   * Whether the STUDIO renders this control. False for settings that only mean
+   * something between different configs, which the studio never runs together
+   * -- Trail Weight. Sand, which does, builds its config tab from `SETTINGS`
+   * directly and shows them regardless. `visible()` is the filter, like `panel`.
+   */
+  readonly studio: boolean;
+  /**
+   * A SLIDER's smallest magnitude, or 0 for none. Values inside +-this snap
+   * out to it on their own side (zero counts as positive), so dragging across
+   * zero jumps from +min to -min. For a value something DIVIDES by.
+   */
+  readonly minMagnitude: number;
 }
 
 /** Defaults for everything a declaration does not state. */
@@ -189,6 +202,8 @@ const SETTING_DEFAULTS = {
   gates: [] as readonly string[],
   panel: true,
   requires: null as Setting['requires'],
+  studio: true,
+  minMagnitude: 0,
 } as const;
 
 /** The four fields every entry must state, plus whatever it overrides. */
@@ -548,6 +563,30 @@ export const SETTINGS: readonly Setting[] = [
       'Determines how long particle trails remain detectable. At high values, ' +
       'trails will spread widely and decay slowly.',
     group: 'Trails',
+  }),
+  // PER CONFIG, though it sits beside a WORLD setting: it is how this config's
+  // trails weigh against other configs', so each square has its own.
+  //
+  // Not in the studio, which only ever runs one config -- the weight cancels
+  // there, so the control would do nothing. `configSlots` forces it to 1 on
+  // upload as well, so a sand config's weight costs the studio no precision.
+  setting({
+    field: 'trailWeight',
+    label: 'Trail Weight',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: SLIDER,
+    lo: -2.0,
+    hi: 2.0,
+    help:
+      "How much this config's trails count against other configs'. Heavier " +
+      'configs lay stronger trails and are swayed less by lighter ones; a ' +
+      'negative weight lays trails that point backwards to everyone else. Has ' +
+      'no effect on a config on its own.',
+    group: 'Trails',
+    studio: false,
+    // Mirrors TRAIL_WEIGHT_MIN in particleSystem/config.ts, pinned by a test.
+    minMagnitude: 0.02,
   }),
 
   // ================= PROJECT: Appearance =================
@@ -933,10 +972,23 @@ export const SETTINGS: readonly Setting[] = [
  *
  * `panel: false` entries are excluded at this one point rather than at each
  * caller, so nothing downstream -- `grouped()`, the sections, the reveal pass --
- * has to know that a field can have its widget somewhere else.
+ * has to know that a field can have its widget somewhere else. `studio: false`
+ * entries likewise: every caller of this is the studio's panel.
  */
 export function visible(tierAdvanced: boolean): readonly Setting[] {
-  return SETTINGS.filter((s) => s.panel && (tierAdvanced || s.tier === BASIC));
+  return SETTINGS.filter(
+    (s) => s.panel && s.studio && (tierAdvanced || s.tier === BASIC),
+  );
+}
+
+/**
+ * `value` pushed out of the setting's `minMagnitude` dead zone, keeping its
+ * side -- zero counts as positive. Unchanged when the setting has none.
+ */
+export function outsideMinMagnitude(setting: Setting, value: number): number {
+  const min = setting.minMagnitude;
+  if (min <= 0 || Math.abs(value) >= min) return value;
+  return value < 0 ? -min : min;
 }
 
 export function bySource(

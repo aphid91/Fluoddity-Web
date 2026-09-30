@@ -307,7 +307,14 @@ fn gravity_direction(pos: vec2f, config: ConfigData) -> vec2f {
 // aimed, added to the reading exactly where the painted trails layer is added.
 // Zero when the slider is centred, which is the whole cost of the feature when
 // it is off.
-fn get_can(p: vec2f, bc: i32, bias: vec2f) -> vec4f {
+//
+// `weight` is the reader's Trail Weight (cfg_trail_weight), and divides the
+// SWARM'S TRAILS ONLY. That is what makes it invisible to a config alone: its
+// own deposits were multiplied by the same number, so they come back as they
+// went in. The painted layer and the bias are NOT divided -- neither was laid
+// by a config, so dividing them would change how a lone config answers the
+// user's brush and its own gravity, which is exactly what the weight must not do.
+fn get_can(p: vec2f, bc: i32, bias: vec2f, weight: f32) -> vec4f {
     // The GLSL calls textureSize() here, twice per invocation. Hoisted to the
     // uniform -- see the header of uniforms.ts.
     let res = canvas_res();
@@ -323,7 +330,7 @@ fn get_can(p: vec2f, bc: i32, bias: vec2f) -> vec4f {
     let canv = textureSampleLevel(canvas_texture, canvas_sampler,
                                   world_to_uv_bc(p, res, bc), 0.0);
     let trail = clamp(canv, vec4f(-CANVAS_VALUE_MAX), vec4f(CANVAS_VALUE_MAX))
-                / CANVAS_VALUE_SCALE;
+                / (CANVAS_VALUE_SCALE * weight);
 
     // THE USER-DRAWN TRAILS LAYER, added to what the sensors see.
     //
@@ -523,9 +530,18 @@ fn initial_position(index: u32, config: ConfigData) -> vec2f {
 // CALLED WITH THE STATE BEING WRITTEN, after the move: the order ported from
 // the desktop splats after the entity update (see particleSystem.ts), so a
 // particle deposits from where it has just arrived.
+//
+// `weight` is the depositor's Trail Weight -- the multiply half of the pair
+// `get_can` divides by. See cfg_trail_weight.
+//
+// PRECISION AT SMALL WEIGHTS. The deposit is rounded to whole fixed-point
+// counts, so a light config's faint deposits lose resolution the division then
+// amplifies: at 0.02 a slow particle at high persistence deposits under one
+// count per component. Stochastic rounding (floor(value + hash)) would make that
+// unbiased; left out until a weight that small is actually used.
 const SPLAT_SIGMA: f32 = 0.163;
 const SPLAT_RADIUS: f32 = 0.5;
-fn deposit(index: u32, pos: vec2f, vel: vec2f, size: f32) {
+fn deposit(index: u32, pos: vec2f, vel: vec2f, size: f32, weight: f32) {
     let res = canvas_res();
     // Canvas pixels per world unit. The same on both axes -- world space is
     // area-preserving (common.wgsl) -- so x stands for both.
@@ -566,7 +582,7 @@ fn deposit(index: u32, pos: vec2f, vel: vec2f, size: f32) {
     let P = clamp(world_trail_persistence(u.world),
                   TRAIL_PERSISTENCE_MIN, TRAIL_PERSISTENCE_MAX);
     let premult = (1.0 - P) / P;
-    let value = vel * amount * premult * CANVAS_VALUE_SCALE * SPLAT_FIXED_SCALE;
+    let value = vel * weight * amount * premult * CANVAS_VALUE_SCALE * SPLAT_FIXED_SCALE;
     // Clamped inside i32 before converting; a single deposit that large is
     // already far past what the canvas can hold (see SPLAT_FIXED_SCALE).
     let fixed = vec2i(round(clamp(value, vec2f(-2.0e9), vec2f(2.0e9))));
@@ -593,7 +609,7 @@ fn reset(index: u32, config: ConfigData) {
     // A respawned particle deposits where it landed. Not on frame 0: that is
     // the reset sentinel, the canvas pass is clearing, and it must not be
     // immediately re-dirtied (particle_system.py:259-275).
-    if (frame_count() != 0) { deposit(index, pos, vel, size); }
+    if (frame_count() != 0) { deposit(index, pos, vel, size, cfg_trail_weight(config)); }
 }
 
 // mutate_rule now lives in rule.wgsl, beside the generate-or-mutate branch that
@@ -894,8 +910,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Read the trails from canvas.
     let bc = world_boundary_conditions(u.world);
-    var ltap = get_can(pos + left_sensor_offset, bc, trail_bias);
-    var rtap = get_can(pos + right_sensor_offset, bc, trail_bias);
+    let trail_weight = cfg_trail_weight(config);
+    var ltap = get_can(pos + left_sensor_offset, bc, trail_bias, trail_weight);
+    var rtap = get_can(pos + right_sensor_offset, bc, trail_bias, trail_weight);
 
     // NO RULE DERIVATION HERE. The generate-or-mutate branch runs once per
     // config slot in cohortRules.wgsl, and the black box below reads the result
@@ -1065,5 +1082,5 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Commit new entity state to buffers, and lay its trail from there.
     entities[index] = make_entity(pos, vel, e_size(e), config_index, col_params);
-    deposit(index, pos, vel, e_size(e));
+    deposit(index, pos, vel, e_size(e), trail_weight);
 }

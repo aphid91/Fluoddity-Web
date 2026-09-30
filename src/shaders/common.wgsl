@@ -202,10 +202,10 @@ struct ConfigData {
                    // z: sensor_angle_jitter   w: sensor_distance_jitter
     // misc2 had no spares left, so Radial Gravity is rule 2's "add a whole new
     // vec4" case again rather than a reclaimed lane. Gravity (Trails) then took
-    // .y -- rule 2's "claim a reserved lane" case, as did Color Offset in .z.
-    // One spare left.
+    // .y -- rule 2's "claim a reserved lane" case, as did Color Offset in .z
+    // and Trail Weight in .w. No spares left.
     misc3: vec4f,  // x: radial_gravity(i)     y: gravity_trails
-                   // z: color_offset          w: reserved
+                   // z: color_offset          w: trail_weight
 }  // 416 bytes
 
 fn cfg_sensor_gain(c: ConfigData) -> f32     { return c.sensor.x; }
@@ -307,6 +307,22 @@ fn cfg_radial_gravity(c: ConfigData) -> bool { return bitcast<i32>(c.misc3.x) !=
 // LINEAR -1..1 like its siblings, expanded by the same gravity_expand() -- one
 // curve for all three, so the feel of the three sliders matches.
 fn cfg_gravity_trails(c: ConfigData) -> f32 { return c.misc3.y; }
+
+// TRAIL WEIGHT: how heavily a config's trails count against OTHER configs'.
+// Its deposits are multiplied by it and its reads of the swarm's trails divided
+// by it (both in entityUpdate.wgsl), so a config alone is unaffected at any
+// weight. Negative lays trails that point backwards, to everyone else.
+//
+// THE FLOOR IS LOAD-BEARING: reads divide by this. A stored value inside
+// +-TRAIL_WEIGHT_MIN -- a hand-edited file, a typed 0 -- is pushed out to the
+// floor on its own side, zero counting as positive. Mirrored by value in
+// `particleSystem/config.ts` and pinned by a test.
+const TRAIL_WEIGHT_MIN: f32 = 0.02;
+fn cfg_trail_weight(c: ConfigData) -> f32 {
+    let w = c.misc3.w;
+    if (abs(w) >= TRAIL_WEIGHT_MIN) { return w; }
+    return select(TRAIL_WEIGHT_MIN, -TRAIL_WEIGHT_MIN, w < 0.0);
+}
 
 // The width of the Sensor Distance slider (0..5), which is what a distance
 // jitter of 1.0 spans. It lives here rather than being read from the slider

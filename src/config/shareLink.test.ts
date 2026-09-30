@@ -118,9 +118,11 @@ function oneConfig(step: number): Record<string, unknown> {
       // here would round-trip through a codec that had dropped the field
       // entirely, so it would prove nothing about the lane it exists to cover.
       gravity_trails: -0.42,
-      // Non-zero for the same reason, and the LAST scalar in the v3 table --
-      // the position a truncated payload loses first.
+      // Non-zero for the same reason.
       color_offset: 0.37,
+      // Neither 0 nor its default of 1, and the LAST scalar in the v4 table --
+      // the position a truncated payload loses first.
+      trail_weight: -1.5,
     },
   };
 }
@@ -171,6 +173,19 @@ test('the decoded document is still a loadable config', () => {
   assert.equal(saved.configs.length, 1);
   assert.equal(saved.world.boundaryConditions, BC.WRAP);
   assert.equal(saved.configs[0]!.mutationSeed, 0.82);
+});
+
+test('a document with no trail_weight loads, and shares, as weight 1', () => {
+  // A file written before the field existed. The reader defaults it; the
+  // ENCODER must too, because a positional layout cannot leave a field out --
+  // writing its old blanket 0 would come back as a present weight of 0.
+  const doc = validDocument();
+  const config = (doc['configs'] as Record<string, unknown>[])[0]!;
+  delete (config['misc3'] as Record<string, unknown>)['trail_weight'];
+
+  assert.equal(fromDocument(doc).configs[0]!.trailWeight, 1);
+  const shared = fromDocument(decodeShareLink(encodeShareLink(doc)));
+  assert.equal(shared.configs[0]!.trailWeight, 1);
 });
 
 test('the leading # is optional on the way in', () => {

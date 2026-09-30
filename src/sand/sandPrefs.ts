@@ -39,6 +39,7 @@ import {
   SETTINGS,
   type Setting,
   WORLD,
+  outsideMinMagnitude,
 } from '../ui/settingsSpec.ts';
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
 import {
@@ -978,13 +979,14 @@ export class SandPrefs {
           view: 'text',
           label: 'Note',
           parse: (v: string) => v,
-          value: 'Trails/Boundary apply from the master square only',
+          value: 'Trail Persistence/Stiffness and Boundary apply from the master square only',
           disabled: true,
         })
         .element.setAttribute(
           'title',
-          'This square is not the master element, so its Trails and Boundary ' +
-            'settings are saved with it but do not govern the scene.',
+          'This square is not the master element, so its Trail Persistence, ' +
+            'Trail Stiffness and Boundary settings are saved with it but do not ' +
+            'govern the scene. Trail Weight is its own.',
         );
     }
 
@@ -1004,6 +1006,16 @@ export class SandPrefs {
     blade.on('change', () => {
       const entry = this.palette.at(slot);
       if (entry.config === null || entry.world === null) return;
+      // Trail Weight's jump across zero: a drag into the dead zone lands on
+      // the floor on its own side, and the slider is redrawn to say so.
+      const raw = this.configValues[setting.field];
+      if (typeof raw === 'number') {
+        const snapped = outsideMinMagnitude(setting, raw);
+        if (snapped !== raw) {
+          this.configValues[setting.field] = snapped;
+          blade.refresh();
+        }
+      }
       // Split the flat mirror back into its two records by asking the registry
       // which one each field came from -- the same split that built it.
       const config = { ...entry.config } as Record<string, unknown>;

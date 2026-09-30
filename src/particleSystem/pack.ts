@@ -120,15 +120,13 @@ export function writeConfigRecord(
   f32[base + LANE.misc2 + 2] = config.sensorAngleJitter;
   f32[base + LANE.misc2 + 3] = config.sensorDistanceJitter;
 
-  // misc3: radial_gravity(i), gravity_trails, color_offset, one reserved lane.
-  //
-  // The reserved lane is NOT written. An ArrayBuffer is zero-initialized by
-  // spec, which reproduces the Python's `np.zeros` exactly -- so misc3.w is
-  // already 0.0. (Only true for a fresh buffer: `writeConfigRecord` into a
-  // reused buffer would leave stale bytes there. `packConfigs` always allocates.)
+  // misc3: radial_gravity(i), gravity_trails, color_offset, trail_weight
   i32[base + LANE.misc3 + 0] = config.radialGravity ? 1 : 0; // cfg_radial_gravity()
   f32[base + LANE.misc3 + 1] = config.gravityTrails; // cfg_gravity_trails()
   f32[base + LANE.misc3 + 2] = config.colorOffset; // cfg_color_offset()
+  // Raw: the shader floors its magnitude (cfg_trail_weight), so a stored 0
+  // is safe without the host having to agree on the rule.
+  f32[base + LANE.misc3 + 3] = config.trailWeight; // cfg_trail_weight()
 }
 
 /**

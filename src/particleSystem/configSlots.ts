@@ -65,7 +65,15 @@ export function configSlots(
   if (perCohort) {
     const parent = configs[0];
     if (parent === undefined) return [];
-    return new Array<SimulationConfig>(cohortSlotCount(parent)).fill(parent);
+    // TRAIL WEIGHT IS FORCED TO 1 HERE. It only means anything between
+    // DIFFERENT configs, and every studio slot is the same parent, so it
+    // cancels exactly -- except in precision: a weight of 0.02 would push the
+    // trails toward the fixed-point and fp16 floors and then amplify that 50x
+    // on read, and the trail view would draw them 50x fainter. The project
+    // keeps its value (a sand config round-trips through the studio intact);
+    // only the upload ignores it.
+    const slot = parent.trailWeight === 1 ? parent : { ...parent, trailWeight: 1 };
+    return new Array<SimulationConfig>(cohortSlotCount(parent)).fill(slot);
   }
   return configs.map((c) => (c.cohorts === 1 ? c : { ...c, cohorts: 1 }));
 }

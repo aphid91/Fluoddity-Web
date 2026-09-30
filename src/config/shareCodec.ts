@@ -118,8 +118,14 @@
  * v3, and links shared under either still open. A payload written before this
  * knob existed carries no `color_offset` and `persistence.ts` defaults it to 0,
  * which is the bias those configs were already rendering with.
+ *
+ * ## 3 -> 4: `trail_weight`
+ *
+ * A NINETEENTH SCALAR, on the same terms again. A payload from before it
+ * carries no `trail_weight` and `persistence.ts` defaults it to 1, which is
+ * the unweighted deposit and read those configs always had.
  */
-export const CODEC_VERSION = 3;
+export const CODEC_VERSION = 4;
 
 /** Thrown for bytes this decoder will not accept. */
 export class ShareCodecError extends Error {
@@ -187,6 +193,12 @@ const SCALARS_V3: readonly (readonly [string, string])[] = [
   ['misc3', 'color_offset'],
 ] as const;
 
+/** v4 = v3 with `trail_weight` APPENDED, for the same reason as v2 and v3. */
+const SCALARS_V4: readonly (readonly [string, string])[] = [
+  ...SCALARS_V3,
+  ['misc3', 'trail_weight'],
+] as const;
+
 /**
  * Every layout this decoder can read, by the version byte that selects it.
  *
@@ -197,10 +209,11 @@ const SCALARS_BY_CODEC: Readonly<Record<number, readonly (readonly [string, stri
   1: SCALARS_V1,
   2: SCALARS_V2,
   3: SCALARS_V3,
+  4: SCALARS_V4,
 };
 
 /** The table the ENCODER writes. Always the newest. */
-const SCALARS = SCALARS_V3;
+const SCALARS = SCALARS_V4;
 
 /**
  * The booleans, in bit order within the flag byte.
@@ -241,10 +254,21 @@ function block(value: unknown): Record<string, unknown> {
  * defensive: it is a float in every file on disk and a boolean in everything
  * written since, so the encoder meets both.
  */
-function numberOr(raw: Record<string, unknown>, key: string): number {
+function numberOr(raw: Record<string, unknown>, key: string, fallback = 0): number {
   const value = raw[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
+
+/**
+ * What an ABSENT scalar is written as, where that is not 0.
+ *
+ * The layout is positional, so a missing field cannot stay missing -- it is
+ * written as SOMETHING, and the decoder hands that back as present. Every
+ * scalar before `trail_weight` means "as before" at 0, so writing 0 was
+ * harmless; Trail Weight means it at 1, and a 0 would reach the shader floor
+ * as a weight of 0.02. These mirror `persistence.ts`'s `numOr` fallbacks.
+ */
+const ABSENT_AS: Readonly<Record<string, number>> = { trail_weight: 1 };
 
 /** Truthy under both shapes `cohort_fences` has had: `true`, or a float > 0. */
 function flagOf(raw: Record<string, unknown>, key: string): boolean {
@@ -360,7 +384,7 @@ export function encodeDocument(document: unknown): Uint8Array {
     }
 
     for (const [group, key] of SCALARS) {
-      view.setFloat64(at, numberOr(groups[group]!, key), true);
+      view.setFloat64(at, numberOr(groups[group]!, key, ABSENT_AS[key]), true);
       at += 8;
     }
 
@@ -507,6 +531,8 @@ export function decodeDocument(bytes: Uint8Array): unknown {
         ...(values.length > 16 ? { gravity_trails: values[16]! } : {}),
         // Absent from v1 and v2, on exactly the same terms.
         ...(values.length > 17 ? { color_offset: values[17]! } : {}),
+        // Absent from v1 to v3, likewise.
+        ...(values.length > 18 ? { trail_weight: values[18]! } : {}),
       },
     });
   }

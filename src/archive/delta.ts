@@ -174,6 +174,7 @@ const SCALAR_CONFIG_FIELDS = [
   'sensorDistanceJitter',
   'radialGravity',
   'gravityTrails',
+  'trailWeight',
 ] as const satisfies readonly (keyof SimulationConfig)[];
 
 const WORLD_FIELDS = [

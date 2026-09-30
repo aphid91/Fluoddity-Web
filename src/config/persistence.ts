@@ -246,6 +246,9 @@ function configFromDocument(raw: Record<string, unknown>, where: string): Simula
       // Zero means "no bias on the hue", which is where every file written
       // before this knob existed already sat -- so they load looking the same.
       colorOffset: numOr(misc3, 'color_offset', 0.0, where),
+      // One means "no weighting", which is how every file written before this
+      // knob deposited and sensed -- so mixtures of them interact as they did.
+      trailWeight: numOr(misc3, 'trail_weight', 1.0, where),
       rule: rule as readonly number[],
     },
   );
@@ -357,6 +360,7 @@ function configToDocument(config: SimulationConfig): unknown {
       radial_gravity: config.radialGravity,
       gravity_trails: config.gravityTrails,
       color_offset: config.colorOffset,
+      trail_weight: config.trailWeight,
     },
   };
 }
