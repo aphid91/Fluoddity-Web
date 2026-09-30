@@ -10,9 +10,9 @@
  *
  * SETTINGS, not content: every preference, and the session-level choices --
  * look, Custom's swatch count, colour mode, brush size and tool, per-tool
- * strengths, Max Particles, the compaction switches. NOT the Custom palette or
- * the world assignments: those point at configs and saved worlds in the
- * author's own browser, which a new visitor does not have.
+ * strengths, the eraser's mode, Max Particles, the compaction switches. NOT
+ * the Custom palette or the world assignments: those point at configs and
+ * saved worlds in the author's own browser, which a new visitor does not have.
  *
  * ## Tolerant
  *
@@ -50,6 +50,7 @@ const SESSION_KEYS = [
   'brushSize',
   'tool',
   'strengths',
+  'eraseMode',
   'maxParticles',
   'autoCompact',
   'compactionPaused',

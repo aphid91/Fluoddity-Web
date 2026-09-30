@@ -33,7 +33,14 @@ import { BRUSH_SIZES } from './brushInput.ts';
 import { isCompatible } from './compatibility.ts';
 import { ASSIGNABLE_WORLDS, MASTER_SLOT, type Palette, keyLabel } from './palette.ts';
 import { CUSTOM_WORLD } from './session.ts';
-import { type SandTool, TOOLS, TOOL_LABELS } from './tool.ts';
+import {
+  type EraseMode,
+  type SandTool,
+  ERASE_MODE_LABELS,
+  TOOLS,
+  TOOL_LABELS,
+  nextEraseMode,
+} from './tool.ts';
 import type { SandTheme } from './theme.ts';
 import { swatchColorToCss } from './swatchColor.ts';
 // The studio's own tool descriptions, so the two apps cannot describe the same
@@ -108,7 +115,7 @@ const STAMP_ART = [
 type ActionTool = 'erase' | 'shove' | 'walls';
 type ActionId =
   | 'clear-particles'
-  | 'clear-species'
+  | 'erase-mode'
   | 'clear-walls'
   | 'restore-walls'
   | 'push'
@@ -125,7 +132,8 @@ interface ActionSpec {
 const ACTIONS: Readonly<Record<ActionTool, readonly ActionSpec[]>> = {
   erase: [
     { id: 'clear-particles', label: 'Clear all particles', tint: 'red' },
-    { id: 'clear-species', label: 'Clear species…', tint: 'yellow', todo: true },
+    // Its label is the current mode, written by `refresh`.
+    { id: 'erase-mode', label: 'Mode', tint: 'yellow' },
     { id: 'clear-walls', label: 'Clear all walls', tint: 'white' },
   ],
   shove: [
@@ -169,6 +177,10 @@ export interface SandUiCallbacks {
   onRestoreWalls(): void;
   /** Shove's Push (false) or Pull (true). */
   onShoveDirection(pull: boolean): void;
+  /** Erase's Mode button: what the eraser takes from now on. */
+  onEraseMode(mode: EraseMode): void;
+  /** "Set as initial conditions": the paused scene becomes the one R restores. */
+  onSetInitialConditions(): void;
   /** A button for something not built yet. `what` names it for the status line. */
   onNotBuilt(what: string): void;
 }
@@ -191,6 +203,7 @@ export interface SandUiState {
   /** Which world is active, or `CUSTOM_WORLD`. */
   selectedWorld: number;
   shovePull: boolean;
+  eraseMode: EraseMode;
 }
 
 export class SandUi {
@@ -209,6 +222,7 @@ export class SandUi {
   private readonly swatchesEl: HTMLElement;
   private readonly statusEl: HTMLElement;
   private readonly bannerEl: HTMLElement;
+  private readonly setIcButton: HTMLElement;
   private readonly worldPick: HTMLElement;
   private readonly worldGrid: HTMLElement;
   private readonly loaderEl: HTMLElement;
@@ -218,6 +232,10 @@ export class SandUi {
   private readonly toolButtons: HTMLButtonElement[] = [];
   private readonly sizeButtons: HTMLButtonElement[] = [];
   private readonly pushPull: HTMLButtonElement[] = [];
+  /** Erase's Mode button, in the bar and in the tool box. */
+  private readonly eraseModeButtons: HTMLButtonElement[] = [];
+  /** The mode those buttons were last told, for `runAction` to step from. */
+  private eraseMode: EraseMode | null = null;
   private playButton!: HTMLButtonElement;
   private pauseButton!: HTMLButtonElement;
 
@@ -260,6 +278,8 @@ export class SandUi {
     this.swatchesEl = byId('swatches');
     this.statusEl = byId('sand-status');
     this.bannerEl = byId('ic-banner');
+    this.setIcButton = byId('ic-set');
+    this.setIcButton.addEventListener('click', () => this.callbacks.onSetInitialConditions());
     this.worldPick = byId('wpick');
     this.worldGrid = byId('wgrid');
     this.loaderEl = byId('loader');
@@ -570,6 +590,10 @@ export class SandUi {
       button.classList.add('pp');
       this.pushPull.push(button);
     }
+    if (spec.id === 'erase-mode') {
+      button.title = 'What the eraser takes — click to change';
+      this.eraseModeButtons.push(button);
+    }
     return button;
   }
 
@@ -590,8 +614,8 @@ export class SandUi {
       case 'pull':
         this.callbacks.onShoveDirection(true);
         break;
-      case 'clear-species':
-        this.callbacks.onNotBuilt('Clear species');
+      case 'erase-mode':
+        if (this.eraseMode !== null) this.callbacks.onEraseMode(nextEraseMode(this.eraseMode));
         break;
     }
   }
@@ -857,6 +881,12 @@ export class SandUi {
       const pull = el.dataset['action'] === 'pull';
       el.dataset['selected'] = String(pull === state.shovePull);
     }
+    if (this.eraseMode !== state.eraseMode) {
+      this.eraseMode = state.eraseMode;
+      for (const el of this.eraseModeButtons) {
+        el.textContent = `Mode: ${ERASE_MODE_LABELS[state.eraseMode]}`;
+      }
+    }
 
     // --- which bar is up ------------------------------------------------------
     // Brush: the swatches. Stamp: its own bar, always. Erase/Shove/Walls: their
@@ -881,6 +911,12 @@ export class SandUi {
     // --- editing the initial conditions ------------------------------------------
     this.canvas.dataset['editing'] = String(state.editingInitialConditions);
     this.bannerEl.dataset['visible'] = String(state.editingInitialConditions);
+    // The banner's other face: paused on a scene that is NOT being authored,
+    // which is exactly when committing it as the initial conditions means
+    // something. Pressing it re-arms, so the banner takes its place.
+    this.setIcButton.dataset['visible'] = String(
+      state.paused && !state.editingInitialConditions,
+    );
   }
 
   // -------------------------------------------------------------------------

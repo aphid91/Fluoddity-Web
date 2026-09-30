@@ -4,10 +4,16 @@ import assert from 'node:assert/strict';
 import {
   BRUSH_ERASE,
   BRUSH_SPAWN,
+  DEFAULT_ERASE_MODE,
+  ERASE_MODES,
   type SandTool,
   TOOLS,
   actionFor,
+  asEraseMode,
   cycleTool,
+  erasesParticles,
+  erasesWalls,
+  nextEraseMode,
   isFieldTool,
   supportsLineTool,
   usesStrength,
@@ -143,4 +149,32 @@ test('isFieldTool is walls and trails only', () => {
   assert.equal(isFieldTool('erase'), false);
   assert.equal(isFieldTool('brush'), false);
   assert.equal(isFieldTool('shove'), false);
+});
+
+// ---------------------------------------------------------------------------
+// The eraser's Mode
+// ---------------------------------------------------------------------------
+
+test('nextEraseMode cycles through every mode and back', () => {
+  let mode = DEFAULT_ERASE_MODE;
+  const seen = new Set<string>();
+  for (let i = 0; i < ERASE_MODES.length; i++) {
+    seen.add(mode);
+    mode = nextEraseMode(mode);
+  }
+  assert.equal(seen.size, ERASE_MODES.length);
+  assert.equal(mode, DEFAULT_ERASE_MODE);
+});
+
+test('each erase mode takes what its name says', () => {
+  assert.ok(erasesWalls('walls+particles') && erasesParticles('walls+particles'));
+  assert.ok(erasesWalls('walls') && !erasesParticles('walls'));
+  assert.ok(!erasesWalls('particles') && erasesParticles('particles'));
+});
+
+test('asEraseMode falls back to the default for anything unrecognised', () => {
+  assert.equal(asEraseMode('walls'), 'walls');
+  assert.equal(asEraseMode('everything'), DEFAULT_ERASE_MODE);
+  assert.equal(asEraseMode(3), DEFAULT_ERASE_MODE);
+  assert.equal(asEraseMode(undefined), DEFAULT_ERASE_MODE);
 });

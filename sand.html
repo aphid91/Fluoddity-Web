@@ -230,6 +230,7 @@
       }
 
       #ic-banner,
+      #ic-set,
       #sand-status {
         position: absolute;
         left: 50%;
@@ -241,7 +242,8 @@
         border-radius: var(--r);
         pointer-events: none;
       }
-      #ic-banner {
+      #ic-banner,
+      #ic-set {
         top: calc(14 * var(--u));
         padding: calc(6 * var(--u)) calc(16 * var(--u));
         background: var(--ic-bg);
@@ -254,8 +256,22 @@
         display: none;
         z-index: 3;
       }
-      #ic-banner[data-visible='true'] {
+      #ic-banner[data-visible='true'],
+      #ic-set[data-visible='true'] {
         display: block;
+      }
+      /* The banner's twin in the same spot, shown while paused OUTSIDE the
+         editing state: pressing it captures the scene and puts the banner up. */
+      #ic-set {
+        appearance: none;
+        margin: 0;
+        line-height: inherit;
+        pointer-events: auto;
+        cursor: pointer;
+      }
+      #ic-set:hover {
+        background: var(--ic-line);
+        color: var(--ic-bg);
       }
       #sand-status {
         bottom: calc(8 * var(--u));
@@ -914,6 +930,7 @@
           </div>
         </div>
         <div id="ic-banner">Editing Initial Conditions</div>
+        <button type="button" id="ic-set" title="Make the scene on screen the one Reset returns to">Set as initial conditions</button>
         <div id="sand-status"></div>
       </div>
 

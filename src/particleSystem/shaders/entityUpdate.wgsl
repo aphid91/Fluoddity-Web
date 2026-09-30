@@ -758,12 +758,31 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let canvas_resolution = canvas_res();
 
     let cohort = get_cohort(index, config, arrayLength(&entities));
-    // Hazard Rate == probability each frame to reset this particle
-    let hazard_reset = cfg_hazard_rate(config)
+    // Hazard Rate == probability each frame that this particle's life ends
+    let hazard_hit = cfg_hazard_rate(config)
         > hash(vec2f(f32(index) / f32(arrayLength(&entities)), f32(fc)));
 
     // frame_count == 0 signals a simulation reset
-    if (fc == 0 || hazard_reset) { reset(index, config); return; }
+    if (fc == 0) { reset(index, config); return; }
+
+    // WHAT BECOMES OF A HAZARD HIT DEPENDS ON THE APP. The studio respawns it,
+    // as it always has. Sand KILLS it, exactly as BC_KILL does below: sand has
+    // no respawn -- particles come only from the brush -- and reset() would
+    // bring it back at an initial position under the MASTER's config
+    // (assign_config_index), whatever species it was.
+    //
+    // CONFIG_PER_COHORT is the app switch: off exactly when the pipeline has
+    // lifetimes (`particleSystem.ts`), which is also exactly when the free list
+    // is real. The studio binds a dummy, so it must never reach the push.
+    if (hazard_hit) {
+        if (CONFIG_PER_COHORT) {
+            reset(index, config);
+        } else {
+            free_list_give(index);
+            entities[index] = make_entity_dead();
+        }
+        return;
+    }
 
     var pos = e_pos(e);
     var vel = e_vel(e);

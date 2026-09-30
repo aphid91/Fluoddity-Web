@@ -243,3 +243,46 @@ export function clearTargetFor(tool: SandTool): 'walls' | 'trails' | 'particles'
   if (tool === 'brush' || tool === 'erase') return 'particles';
   return null;
 }
+
+/**
+ * What the eraser takes: walls, particles, or both.
+ *
+ * The Erase tool's Mode button cycles these. Its reason to exist is the
+ * one-sided cases -- rubbing out particles without nicking the walls they sit
+ * against, or trimming a wall without thinning the crowd beside it. Both is the
+ * default, because that is what an eraser with no qualifier is expected to do.
+ *
+ * The right-button pull is a particle gesture (see `SandOrchestrator.shoveFor`),
+ * so it goes with `erasesParticles`: in Walls mode there is nothing for it to
+ * feed.
+ */
+export const ERASE_MODES = ['walls+particles', 'particles', 'walls'] as const;
+export type EraseMode = (typeof ERASE_MODES)[number];
+export const DEFAULT_ERASE_MODE: EraseMode = 'walls+particles';
+
+export const ERASE_MODE_LABELS: Readonly<Record<EraseMode, string>> = {
+  'walls+particles': 'Walls+Particles',
+  walls: 'Walls',
+  particles: 'Particles',
+};
+
+/** A stored erase mode, or the default for anything unrecognised. */
+export function asEraseMode(raw: unknown): EraseMode {
+  return typeof raw === 'string' && (ERASE_MODES as readonly string[]).includes(raw)
+    ? (raw as EraseMode)
+    : DEFAULT_ERASE_MODE;
+}
+
+/** The mode after `mode`, wrapping -- what one press of the button does. */
+export function nextEraseMode(mode: EraseMode): EraseMode {
+  const i = ERASE_MODES.indexOf(mode);
+  return ERASE_MODES[(i + 1) % ERASE_MODES.length] ?? DEFAULT_ERASE_MODE;
+}
+
+export function erasesWalls(mode: EraseMode): boolean {
+  return mode !== 'particles';
+}
+
+export function erasesParticles(mode: EraseMode): boolean {
+  return mode !== 'walls';
+}

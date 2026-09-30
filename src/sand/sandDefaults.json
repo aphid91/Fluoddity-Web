@@ -47,6 +47,7 @@
       "trails": 1,
       "stamp": 1
     },
+    "eraseMode": "walls+particles",
     "maxParticles": null,
     "autoCompact": false,
     "compactionPaused": false,

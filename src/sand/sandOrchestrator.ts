@@ -53,7 +53,16 @@ import { SandPasses } from './sandPasses.ts';
 import { Compactor } from './compactor.ts';
 import { InitialConditions, RESTORE_FRAME } from './initialConditions.ts';
 import { Palette, isLoaded } from './palette.ts';
-import { type SandTool, actionFor, isFieldTool, usesSwatch } from './tool.ts';
+import {
+  type EraseMode,
+  type SandTool,
+  DEFAULT_ERASE_MODE,
+  actionFor,
+  erasesParticles,
+  erasesWalls,
+  isFieldTool,
+  usesSwatch,
+} from './tool.ts';
 import type { ShoveState } from '../particleSystem/uniforms.ts';
 import type { BrushParams } from '../strafeField/strafeUniforms.ts';
 import type { FieldLayer } from '../strafeField/fieldLayer.ts';
@@ -134,6 +143,13 @@ export class SandOrchestrator {
    */
   shovePull = false;
   /**
+   * What the Erase tool takes -- its bar's Mode button. Read at the three
+   * places the eraser acts: the kill pass and the pull (particles), and
+   * `paintField` (walls). Brush's right-button erase is not the Erase tool and
+   * ignores it.
+   */
+  eraseMode: EraseMode = DEFAULT_ERASE_MODE;
+  /**
    * A world-wide act queued for the top of the next frame.
    *
    * Exists so a clear and a restore cannot race -- one is a queue write, the
@@ -150,6 +166,8 @@ export class SandOrchestrator {
    * rather than the first ones of the session -- see `reset()`.
    */
   private captureArmed = true;
+  /** "Set as initial conditions", queued for the next frame's encoder. */
+  private capturePending = false;
 
   /**
    * How many dead particles the pool holds, for this frame's spawn cap.
@@ -689,6 +707,28 @@ export class SandOrchestrator {
   }
 
   /**
+   * "Set as initial conditions" -- the paused scene replaces the snapshot.
+   *
+   * Deferred to the next frame's capture point for the reason `reset()` is:
+   * the capture is a set of GPU copies and belongs on the frame's encoder.
+   *
+   * ## IT LEAVES THE USER EDITING
+   *
+   * The capture re-arms rather than disarms, so the banner comes up and further
+   * edits before go are captured over this one by the ordinary 0 -> 1 path.
+   * The button is a way to commit mid-arrangement, not a second kind of go.
+   *
+   * Only meaningful while paused and not already editing -- in that state the
+   * next go captures anyway -- so it returns false there and does nothing.
+   */
+  setInitialConditions(): boolean {
+    if (!this._paused || this.captureArmed) return false;
+    this.capturePending = true;
+    this.captureArmed = true;
+    return true;
+  }
+
+  /**
    * Upload the palette's configs.
    *
    * The MASTER SLOT'S world settings govern -- one `WorldData`, one trail field,
@@ -804,6 +844,8 @@ export class SandOrchestrator {
 
     this._paused = true;
     this.captureArmed = true;
+    // A "set as initial conditions" queued against the old world goes with it.
+    this.capturePending = false;
     this.spawnedSinceRead = 0;
     this.lastSeenHead = -1;
     this.strokePrevUv = null;
@@ -1046,8 +1088,12 @@ export class SandOrchestrator {
     // exists". The requirement is the MOST RECENTLY SET initial conditions: after
     // an R the user edits and presses go again, and that new arrangement is what
     // the next R must restore.
-    if (!this._paused && this.captureArmed) {
-      this.captureArmed = false;
+    //
+    // `capturePending` is the paused capture, which stays armed -- see
+    // `setInitialConditions`.
+    if (this.capturePending || (!this._paused && this.captureArmed)) {
+      this.capturePending = false;
+      this.captureArmed = this._paused;
       this.initial.capture(encoder);
     }
 
@@ -1068,7 +1114,9 @@ export class SandOrchestrator {
       this.system.runFrame(encoder, this.shoveFor(tool, input));
     }
 
-    if (!compacting && command !== null && command.action === BRUSH_ERASE) {
+    // The Erase tool in Walls mode leaves particles alone -- see `eraseMode`.
+    const killsParticles = tool !== 'erase' || erasesParticles(this.eraseMode);
+    if (!compacting && command !== null && command.action === BRUSH_ERASE && killsParticles) {
       this.passes.kill(encoder, world, command.stroke);
       // Nothing is adjusted on the host here: how many particles the eraser took
       // is a GPU-side fact, which is exactly why the free count is read back
@@ -1247,6 +1295,8 @@ export class SandOrchestrator {
     // Erase pulls on the right button only; left is the plain eraser.
     if (tool === 'erase' && input.action !== BRUSH_ERASE) return null;
     if (tool !== 'shove' && tool !== 'erase') return null;
+    // The pull feeds the kill pass, so it goes where the kill does.
+    if (tool === 'erase' && !erasesParticles(this.eraseMode)) return null;
 
     // Per sub-step, so the raw value is divided by a power of the rate -- see the
     // long argument at `shoveCommands.shoveState`. The exponent leaves the brush
@@ -1304,9 +1354,13 @@ export class SandOrchestrator {
     // `eraseOnly` is what carries "this stroke subtracts whatever the button
     // is" down to the draw call -- see below. The eraser has no additive half,
     // so unlike the field tools its right button must not flip it to drawing.
+    //
+    // In Particles mode it leaves the walls alone -- see `eraseMode`.
     const eraseOnly = tool === 'erase';
     const layer = eraseOnly
-      ? ('walls' as FieldLayer)
+      ? erasesWalls(this.eraseMode)
+        ? ('walls' as FieldLayer)
+        : null
       : isFieldTool(tool)
         ? layerForMouseMode(tool)
         : null;
@@ -1539,6 +1593,7 @@ export class SandOrchestrator {
     this.initial = await InitialConditions.create(this.device, replacement, this.field);
     // No snapshot survives the resize, so the next go must take a fresh one.
     this.captureArmed = true;
+    this.capturePending = false;
     this.spawnedSinceRead = 0;
     this.lastSeenHead = -1;
 

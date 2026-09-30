@@ -32,7 +32,15 @@
  */
 
 import { type SavedConfig, fromDocument, toDocument } from '../config/persistence.ts';
-import { type SandTool, DEFAULT_TOOL, TOOL_CONFIG, TOOL_LABELS } from './tool.ts';
+import {
+  type EraseMode,
+  type SandTool,
+  DEFAULT_ERASE_MODE,
+  DEFAULT_TOOL,
+  TOOL_CONFIG,
+  TOOL_LABELS,
+  asEraseMode,
+} from './tool.ts';
 import {
   ASSIGNABLE_WORLDS,
   DEFAULT_VISIBLE_COUNT,
@@ -79,6 +87,8 @@ export interface SandSession {
   readonly tool: SandTool;
   /** Strength per tool -- see `ToolStrengths`. */
   readonly strengths: ToolStrengths;
+  /** What the eraser takes -- see `EraseMode`. */
+  readonly eraseMode: EraseMode;
   /** How many swatches the bar draws. Capacity is fixed; see `palette.ts`. */
   readonly visibleCount: number;
   /** An explicit particle cap, or null to follow World Size. */
@@ -155,6 +165,7 @@ export const EMPTY_SESSION: SandSession = {
   brushSize: 2,
   tool: DEFAULT_TOOL,
   strengths: defaultStrengths(),
+  eraseMode: DEFAULT_ERASE_MODE,
   visibleCount: DEFAULT_VISIBLE_COUNT,
   maxParticles: null,
   theme: '',
@@ -322,6 +333,7 @@ export function parseSession(raw: string): SandSession {
     brushSize: Math.trunc(num('brushSize', EMPTY_SESSION.brushSize)),
     tool: asTool(o['tool']),
     strengths: asStrengths(o['strengths'], legacyWeight),
+    eraseMode: asEraseMode(o['eraseMode']),
     visibleCount: clampVisibleCount(num('visibleCount', DEFAULT_VISIBLE_COUNT)),
     maxParticles:
       typeof max === 'number' && Number.isFinite(max) && max >= 1

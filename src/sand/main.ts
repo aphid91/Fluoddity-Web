@@ -206,6 +206,11 @@ async function main(): Promise<void> {
     onShoveDirection: (pull) => {
       orch.shovePull = pull;
     },
+    onEraseMode: (mode) => {
+      orch.eraseMode = mode;
+      persist();
+    },
+    onSetInitialConditions: () => setInitialConditions(),
     onNotBuilt: (what) => notify(`${what} is not built yet`),
   });
 
@@ -323,6 +328,7 @@ async function main(): Promise<void> {
   orch.brush.setSize(session.brushSize);
   orch.brush.tool = session.tool;
   orch.brush.restoreStrengths(session.strengths);
+  orch.eraseMode = session.eraseMode;
   // So a later World Size change rebuilds at the capped count rather than
   // silently reverting to the derived one.
   orch.setMaxParticlesSetting(session.maxParticles);
@@ -426,6 +432,7 @@ async function main(): Promise<void> {
     brushSize: orch.brush.sizeSlot,
     tool: orch.brush.tool,
     strengths: orch.brush.allStrengths(),
+    eraseMode: orch.eraseMode,
     // CUSTOM'S COUNT, not the live one -- see `customVisibleCount`. Storing
     // the live value would let a loaded world's override leak into Custom.
     visibleCount: customVisibleCount,
@@ -695,6 +702,23 @@ async function main(): Promise<void> {
       starting = false;
       orch.setPaused(false);
     });
+  };
+  /**
+   * "Set as initial conditions": the paused scene becomes the one R restores,
+   * and the user is left editing it. Held behind an export in flight for the
+   * reason the go is -- the capture shares its staging buffers.
+   */
+  const setInitialConditions = (): void => {
+    const commit = (): void => {
+      if (!orch.setInitialConditions()) return;
+      // The scene on screen is now the initial conditions, and no saved scene
+      // describes it -- a reshape must read it back rather than re-place one.
+      icSource = null;
+      arrangementTouched = false;
+      notify('Set as initial conditions');
+    };
+    if (exportsInFlight === 0) commit();
+    else void exportChain.finally(commit);
   };
   /** Pause, cancelling a go that is still waiting on its copy. */
   const stopRunning = (): void => {
@@ -1554,6 +1578,7 @@ async function main(): Promise<void> {
       })),
       selectedWorld,
       shovePull: orch.shovePull,
+      eraseMode: orch.eraseMode,
     });
     // A live notice outranks the standing line until it lapses -- see `notify`.
     // Without this the loop overwrote every transient message within a frame.
