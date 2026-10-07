@@ -63,6 +63,9 @@ import {
   slotForDigit,
 } from './palette.ts';
 import { WorldStore } from '../worlds/worldStore.ts';
+import { BuiltinWorlds, type WorldRecord } from '../worlds/builtinWorlds.ts';
+import { type ExportButton, buildPackZip } from '../worlds/packExport.ts';
+import { builtinRef, parseWorldRef } from '../worlds/worldRef.ts';
 import { WorldLoaderUi } from '../worlds/worldLoaderUi.ts';
 import {
   applyWorldPreferences,
@@ -75,6 +78,7 @@ import {
   CUSTOM_WORLD,
   type SandSession,
   type StoredSlot,
+  hasStoredSession,
   loadSession,
   readSlotDocument,
   saveSession,
@@ -112,6 +116,10 @@ async function main(): Promise<void> {
     throw new Error('No <canvas id="app"> in the document.');
   }
 
+  // THE DEFAULT WORLD PACK, fetched alongside the device rather than after it.
+  // Null when there is none -- see `builtinWorlds.ts`.
+  const builtinsLoading = BuiltinWorlds.load();
+
   const { device } = await acquireDevice((info) => {
     showUnavailableOverlay('GPU device lost', info.message || String(info.reason));
   });
@@ -126,7 +134,20 @@ async function main(): Promise<void> {
   // BEFORE sizing: a saved Max Particles has to size the buffer from the start,
   // rather than being applied afterwards as a resize the user did not ask for.
   // A new visitor's session starts from the shipped defaults too.
-  const session = loadSession(undefined, SAND_DEFAULTS.session);
+  const stored = loadSession(undefined, SAND_DEFAULTS.session);
+  // A NEW VISITOR starts where the world pack says: on its start world, with
+  // its Custom palette. A returning one keeps their own -- their buttons still
+  // follow the pack (`SandSession.worldRefs`), which is how new default worlds
+  // reach them.
+  const builtins = await builtinsLoading;
+  const session: SandSession =
+    builtins !== null && !hasStoredSession()
+      ? {
+          ...stored,
+          slots: builtins.pack.customSlots,
+          selectedWorld: builtins.pack.selectedWorld,
+        }
+      : stored;
 
   const store = await ConfigStore.open();
 
@@ -356,19 +377,22 @@ async function main(): Promise<void> {
   let theme = themeById(session.theme);
 
   // ---------------------------------------------------------------------
-  // WORLDS. The five assignments and which button is lit.
+  // WORLDS. What each button loads, and which button is lit.
   //
   // Mutable for the same reason `theme` is: the Dev tab writes them and
   // `snapshot` reads them back, so an author's layout survives a reload.
   //
-  // `worldAssignments` is padded to the full five here rather than wherever it
-  // is read, so every consumer can index it without a bounds check -- a session
-  // written before this existed carries an empty array.
+  // `worldRefs` is padded to every button here rather than wherever it is
+  // read, so every consumer can index it without a bounds check. NULL FOLLOWS
+  // THE PACK -- `effectiveRef` is what a button actually loads.
   // ---------------------------------------------------------------------
-  const worldAssignments: string[] = Array.from(
+  const worldRefs: (string | null)[] = Array.from(
     { length: ASSIGNABLE_WORLDS },
-    (_, i) => session.worlds[i] ?? '',
+    (_, i) => session.worldRefs[i] ?? null,
   );
+  /** What button `index` loads: its own reference, or the pack's. '' for nothing. */
+  const effectiveRef = (index: number): string =>
+    worldRefs[index] ?? builtinRef(builtins?.pack.assignments[index] ?? '');
   let selectedWorld = session.selectedWorld;
 
   /**
@@ -428,6 +452,36 @@ async function main(): Promise<void> {
 
   const worldStore = await WorldStore.open();
 
+  /** A world's display name: the pack's for a built-in one, the save's otherwise. */
+  const worldLabel = (ref: string): string => {
+    const r = parseWorldRef(ref);
+    if (r === null) return '';
+    return r.kind === 'builtin' ? (builtins?.find(r.id)?.name ?? r.id) : r.name;
+  };
+  /** Whether a reference still names a world that exists. */
+  const worldPresent = (ref: string): boolean => {
+    const r = parseWorldRef(ref);
+    if (r === null) return false;
+    return r.kind === 'builtin'
+      ? (builtins?.find(r.id) ?? null) !== null
+      : worldStore.names().includes(r.name);
+  };
+  /** A world's document and scene, from the pack or the library. */
+  const readWorldRecord = async (ref: string): Promise<WorldRecord | null> => {
+    const r = parseWorldRef(ref);
+    if (r === null) return null;
+    if (r.kind === 'builtin') return builtins === null ? null : builtins.read(r.id);
+    return worldStore.read(r.name);
+  };
+  /** What the Dev tab's world dropdowns offer. */
+  const worldChoices = () => ({
+    builtins: (builtins?.pack.worlds ?? []).map((w) => ({ ref: builtinRef(w.id), label: w.name })),
+    library: worldStore.names(),
+    packDefaults: Array.from({ length: ASSIGNABLE_WORLDS }, (_, i) =>
+      worldLabel(builtinRef(builtins?.pack.assignments[i] ?? '')),
+    ),
+  });
+
   /** The current palette and brush state, as stored. */
   const snapshot = (): SandSession => ({
     // CUSTOM'S PALETTE, which is the live one only while Custom is active. A
@@ -444,7 +498,7 @@ async function main(): Promise<void> {
     visibleCount: customVisibleCount,
     maxParticles: orch.maxParticlesSetting,
     theme: theme.id,
-    worlds: [...worldAssignments],
+    worldRefs: [...worldRefs],
     selectedWorld,
     // The Dev tab's compaction switches. Read from the orchestrator rather than
     // from a mirror here, so the stored value is what is actually in force.
@@ -791,7 +845,8 @@ async function main(): Promise<void> {
     {
       theme: theme.id,
       visibleCount: orch.palette.visibleCount,
-      worlds: worldAssignments,
+      worlds: worldRefs,
+      worldChoices: worldChoices(),
       // The restored compaction switches, so the panel opens agreeing with the
       // orchestrator rather than showing three unticked boxes over a world that
       // is already auto-compacting.
@@ -814,14 +869,20 @@ async function main(): Promise<void> {
     onOpenWorldLibrary: () => {
       worldLoader.show();
     },
-    onAssignWorld: (index, name) => {
-      worldAssignments[index] = name;
+    onAssignWorld: (index, ref) => {
+      worldRefs[index] = ref;
       persist();
+      const label = worldLabel(effectiveRef(index));
       notify(
-        name === ''
-          ? `World ${index + 1} unassigned`
-          : `World ${index + 1} → "${name}"`,
+        ref === null
+          ? `World ${index + 1} follows the world pack${label === '' ? '' : ` → "${label}"`}`
+          : ref === ''
+            ? `World ${index + 1} unassigned`
+            : `World ${index + 1} → "${label}"`,
       );
+    },
+    onExportWorldSetup: () => {
+      void exportWorldSetup();
     },
     onTheme: (next) => {
       theme = next;
@@ -948,12 +1009,7 @@ async function main(): Promise<void> {
     // file is exactly what this tab is showing.
     onExportSettings: () => {
       const text = writeSandDefaults(live, snapshot());
-      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'sandDefaults.json';
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      downloadBlob(new Blob([text], { type: 'application/json' }), 'sandDefaults.json');
       notify('Exported sandDefaults.json — put it at src/sand/sandDefaults.json');
     },
     onAuditPool: () => {
@@ -1165,7 +1221,7 @@ async function main(): Promise<void> {
         colorMode: orch.colorMode,
       });
       await worldStore.save(name, document, scene);
-      prefsWindow.refreshWorlds(worldStore.names(), worldAssignments);
+      prefsWindow.refreshWorlds(worldChoices(), worldRefs);
       notify(
         scene === null
           ? `Saved "${name}" — no initial conditions yet`
@@ -1191,11 +1247,13 @@ async function main(): Promise<void> {
    * Then the palette, so the materials exist before any particle points at
    * them. Then the scene.
    */
-  async function loadWorld(name: string): Promise<void> {
-    const record = await worldStore.read(name);
+  async function loadWorld(ref: string): Promise<boolean> {
+    // `name` is for messages: the save's own, or a built-in world's.
+    const name = worldLabel(ref);
+    const record = await readWorldRecord(ref);
     if (record === null) {
       notify(`"${name}" is missing — it may have been deleted`);
-      return;
+      return false;
     }
 
     let world;
@@ -1204,7 +1262,7 @@ async function main(): Promise<void> {
     } catch (e) {
       console.error(`Could not read the world "${name}": ${String(e)}`);
       notify(`"${name}" could not be read`);
-      return;
+      return false;
     }
 
     // --- preferences --------------------------------------------------------
@@ -1283,6 +1341,9 @@ async function main(): Promise<void> {
     // THE WORLD'S COUNT OVERRIDES THE DEV SLIDER, per the requirement: that
     // slider governs Custom alone from here on.
     if (world.visibleCount > 0) orch.palette.setVisibleCount(world.visibleCount);
+    // EVERY WORLD OPENS ON THE MASTER SWATCH -- the one that grounds its trail
+    // persistence and boundary. A world does not remember a selection.
+    orch.palette.select(MASTER_SLOT);
     // ...and so does its colour mode, for the same reason: how the world looks
     // is the author's statement, not the reader's setting.
     orch.colorMode = world.colorMode;
@@ -1319,6 +1380,7 @@ async function main(): Promise<void> {
       );
     }
     persist();
+    return true;
   }
 
   /**
@@ -1352,10 +1414,10 @@ async function main(): Promise<void> {
       return;
     }
 
-    const name = worldAssignments[index] ?? '';
-    if (name === '') return;
-    if (!worldStore.names().includes(name)) {
-      notify(`"${name}" was deleted — reassign World ${index + 1} on the Dev tab`);
+    const ref = effectiveRef(index);
+    if (ref === '') return;
+    if (!worldPresent(ref)) {
+      notify(`"${worldLabel(ref)}" is missing — reassign World ${index + 1} on the Dev tab`);
       return;
     }
 
@@ -1369,7 +1431,7 @@ async function main(): Promise<void> {
     // the status line; leaving the old world lit through a slow rebuild would
     // look like the click had been ignored.
     selectedWorld = index;
-    await loadWorld(name);
+    await loadWorld(ref);
   }
 
   /**
@@ -1400,6 +1462,8 @@ async function main(): Promise<void> {
     });
     // The world's override ends here -- see `customVisibleCount`.
     orch.palette.setVisibleCount(customVisibleCount);
+    // Like every world, Custom opens on the master swatch.
+    orch.palette.select(MASTER_SLOT);
     orch.applyPalette(fallbackConfig, defaultWorld);
     // Custom has no initial conditions, so it opens empty rather than
     // inheriting the preset's particles, walls or snapshot -- R, or a reshape,
@@ -1408,6 +1472,45 @@ async function main(): Promise<void> {
     orch.invalidateInitialConditions();
     orch.clearParticles();
     orch.clearField('walls');
+  }
+
+  /**
+   * "Export world setup": the buttons, the worlds they load and Custom's
+   * palette, as a world pack (`worldPack.ts`).
+   *
+   * THE WORLDS AS SAVED, not as currently edited: a button's world is its
+   * library save or built-in file. Unsaved edits to the open world are not
+   * exported -- save it first.
+   */
+  async function exportWorldSetup(): Promise<void> {
+    try {
+      notify('Exporting world setup…');
+      const buttons: (ExportButton | null)[] = [];
+      for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
+        const ref = effectiveRef(i);
+        if (ref === '') {
+          buttons.push(null);
+          continue;
+        }
+        const record = await readWorldRecord(ref);
+        if (record === null) {
+          notify(`World ${i + 1}: "${worldLabel(ref)}" could not be read — nothing exported`);
+          return;
+        }
+        buttons.push({ key: ref, name: worldLabel(ref), record });
+      }
+      const zip = await buildPackZip({
+        buttons,
+        selectedWorld,
+        // Custom's palette, which is the live one only while Custom is active.
+        customSlots: customSlots ?? paletteSlots(),
+      });
+      downloadBlob(zip, 'default-worlds.zip');
+      notify('Exported default-worlds.zip — empty public/worlds/default/ and unzip it there');
+    } catch (e) {
+      console.error(`Could not export the world setup: ${String(e)}`);
+      notify(`Export failed: ${String(e)}`);
+    }
   }
 
   const worldLoader = new WorldLoaderUi(worldStore, {
@@ -1422,7 +1525,7 @@ async function main(): Promise<void> {
           // is LEFT IN PLACE rather than cleared: the panel marks it missing,
           // which says what happened, where a silent reset to None would look
           // like the assignment had never been made.
-          prefsWindow.refreshWorlds(worldStore.names(), worldAssignments);
+          prefsWindow.refreshWorlds(worldChoices(), worldRefs);
           notify(`Deleted "${name}"`);
         } catch (e) {
           console.error(`Could not delete "${name}": ${String(e)}`);
@@ -1592,10 +1695,10 @@ async function main(): Promise<void> {
       // refreshed by every save and delete -- so a world deleted while the
       // menu is on screen is marked within a frame rather than at the next
       // reload. The list is four short strings; the cost is a lookup each.
-      worlds: worldAssignments.map((name) => ({
-        name,
-        present: name !== '' && worldStore.names().includes(name),
-      })),
+      worlds: Array.from({ length: ASSIGNABLE_WORLDS }, (_, i) => {
+        const ref = effectiveRef(i);
+        return { name: worldLabel(ref), present: worldPresent(ref) };
+      }),
       selectedWorld,
       shovePull: orch.shovePull,
       eraseMode: orch.eraseMode,
@@ -1617,6 +1720,29 @@ async function main(): Promise<void> {
   };
 
   requestAnimationFrame(frame);
+
+  // THE WORLD THE SESSION IS ON, loaded. The palette restored above is
+  // Custom's; a session on a world button -- or a new visitor starting on the
+  // pack's world -- has to load that world, or the button would be lit over
+  // Custom's materials. A world that has gone, or fails, falls back to Custom.
+  if (selectedWorld !== CUSTOM_WORLD) {
+    const ref = effectiveRef(selectedWorld);
+    if (ref === '' || !worldPresent(ref) || !(await loadWorld(ref))) {
+      selectedWorld = CUSTOM_WORLD;
+      restoreCustomPalette();
+      persist();
+    }
+  }
+}
+
+/** Hand the user a file. */
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 void main().catch((e: unknown) => {

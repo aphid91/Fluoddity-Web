@@ -10,9 +10,9 @@
  *
  * SETTINGS, not content: every preference, and the session-level choices --
  * look, Custom's swatch count, colour mode, the armed tool, per-tool brush
- * sizes and strengths, the eraser's mode, Max Particles, the compaction switches. NOT
- * the Custom palette or the world assignments: those point at configs and
- * saved worlds in the author's own browser, which a new visitor does not have.
+ * sizes and strengths, the eraser's mode, Max Particles, the compaction
+ * switches. NOT the Custom palette or the world buttons: those are content,
+ * and ship in the default world pack instead (`worlds/worldPack.ts`).
  *
  * ## Tolerant
  *

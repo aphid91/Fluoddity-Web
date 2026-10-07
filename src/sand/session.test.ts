@@ -351,23 +351,28 @@ test('a negative or zero particle cap is treated as unset', () => {
 test('a session with no worlds block restores as unassigned custom', () => {
   // Every session written before worlds existed takes this path.
   const session = parseSession(JSON.stringify({ slots: [] }));
-  assert.deepEqual(session.worlds, []);
+  assert.deepEqual(session.worldRefs, []);
   assert.equal(session.selectedWorld, CUSTOM_WORLD);
 });
 
-test('world assignments round-trip', () => {
+test('world references round-trip, null following the pack and empty meaning none', () => {
   const session = parseSession(
-    JSON.stringify({ worlds: ['Dunes', '', 'Reef'], selectedWorld: 2 }),
+    JSON.stringify({ worldRefs: ['Dunes', null, '', 'builtin:reef'], selectedWorld: 2 }),
   );
-  assert.deepEqual(session.worlds, ['Dunes', '', 'Reef']);
+  assert.deepEqual(session.worldRefs, ['Dunes', null, '', 'builtin:reef']);
   assert.equal(session.selectedWorld, 2);
 });
 
-test('a non-string assignment becomes unassigned rather than reaching a dropdown', () => {
+test('the pre-pack worlds array migrates: empty follows the pack, names stay', () => {
+  const session = parseSession(JSON.stringify({ worlds: ['Dunes', '', 'Reef'] }));
+  assert.deepEqual(session.worldRefs, ['Dunes', null, 'Reef']);
+});
+
+test('a non-string reference follows the pack rather than reaching a dropdown', () => {
   // Tweakpane renders a value with no matching option as a blank selection,
   // which reads as a broken control rather than as a bad stored value.
-  const session = parseSession(JSON.stringify({ worlds: ['Dunes', 42, null] }));
-  assert.deepEqual(session.worlds, ['Dunes', '', '']);
+  const session = parseSession(JSON.stringify({ worldRefs: ['Dunes', 42, null] }));
+  assert.deepEqual(session.worldRefs, ['Dunes', null, null]);
 });
 
 test('a selection past the five buttons falls back to custom', () => {

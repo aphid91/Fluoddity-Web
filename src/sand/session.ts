@@ -105,14 +105,14 @@ export interface SandSession {
   readonly theme: string;
 
   /**
-   * Which saved world each of the four buttons loads. Empty means unassigned.
+   * Which world each button loads, as a `worldRef.ts` string.
    *
-   * A DEV SETTING that ships as part of the app's configuration: in the shipping
-   * build these point at the worlds a visitor is offered, and in the editor they
-   * are what the Dev tab's five dropdowns write. Persisted so an author's layout
-   * survives a reload.
+   * NULL MEANS "FOLLOW THE PACK": the button loads whatever the default world
+   * pack assigns it (`worldPack.ts`), so a visitor picks up new default worlds
+   * without doing anything. Only the Dev tab's dropdowns write a non-null
+   * value -- a reference, or '' for a button deliberately left empty.
    */
-  readonly worlds: readonly string[];
+  readonly worldRefs: readonly (string | null)[];
 
   /**
    * Which world button is active, or `CUSTOM_WORLD` for the editable one.
@@ -177,7 +177,7 @@ export const EMPTY_SESSION: SandSession = {
   visibleCount: DEFAULT_VISIBLE_COUNT,
   maxParticles: null,
   theme: '',
-  worlds: [],
+  worldRefs: [],
   // CUSTOM for a fresh session. The requirement asks for world 1 by default,
   // and that is a decision for the SHIPPING build -- which will have worlds
   // assigned. In the editor nothing is assigned yet, so defaulting to world 1
@@ -255,7 +255,7 @@ const EMPTY_STORED: StoredSlot = { name: '', document: null };
  * split exists to remove, for the sake of a square the user can refill with one
  * right-click.
  */
-function asSlot(raw: unknown): StoredSlot {
+export function asSlot(raw: unknown): StoredSlot {
   if (typeof raw !== 'object' || raw === null) return EMPTY_STORED;
   const o = raw as Record<string, unknown>;
 
@@ -371,9 +371,7 @@ export function parseSession(raw: string): SandSession {
     // Strings only, and unassigned for anything else -- a stored entry of the
     // wrong type would otherwise reach a dropdown as a value with no matching
     // option, which Tweakpane renders as a blank selection.
-    worlds: Array.isArray(o['worlds'])
-      ? o['worlds'].map((w) => (typeof w === 'string' ? w : ''))
-      : [],
+    worldRefs: asWorldRefs(o),
     // Clamped to the legal range, treating anything unrecognised as Custom. A
     // stored index past the four buttons would light nothing and leave the
     // panel looking broken.
@@ -391,6 +389,27 @@ export function parseSession(raw: string): SandSession {
   };
 }
 
+/**
+ * Stored world references, migrating the pre-pack `worlds` array.
+ *
+ * Before world packs, '' meant "nothing chosen yet" -- there was nothing else
+ * a button could do -- so it migrates to null, following the pack. A name is
+ * a library world, which a bare string still means.
+ */
+function asWorldRefs(o: Record<string, unknown>): (string | null)[] {
+  const refs = o['worldRefs'];
+  if (Array.isArray(refs)) {
+    return refs.slice(0, ASSIGNABLE_WORLDS).map((r) => (typeof r === 'string' ? r : null));
+  }
+  const legacy = o['worlds'];
+  if (Array.isArray(legacy)) {
+    return legacy
+      .slice(0, ASSIGNABLE_WORLDS)
+      .map((w) => (typeof w === 'string' && w !== '' ? w : null));
+  }
+  return [];
+}
+
 /** A stored boolean, or the fallback for anything that is not one. */
 function asBool(raw: unknown, fallback: boolean): boolean {
   return typeof raw === 'boolean' ? raw : fallback;
@@ -402,6 +421,18 @@ function asSelectedWorld(raw: unknown): number {
   const index = Math.trunc(raw);
   if (index < 0) return CUSTOM_WORLD;
   return index < ASSIGNABLE_WORLDS ? index : CUSTOM_WORLD;
+}
+
+/** Whether this browser has a stored session -- false for a new visitor. */
+export function hasStoredSession(
+  storage: SessionStorage | null = browserSessionStorage(),
+): boolean {
+  if (storage === null) return false;
+  try {
+    return storage.getItem(SESSION_KEY) !== null;
+  } catch {
+    return false;
+  }
 }
 
 /**

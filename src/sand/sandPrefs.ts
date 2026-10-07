@@ -66,6 +66,7 @@ import {
   asColorMode,
 } from './colorMode.ts';
 import type { CameraMode } from '../camera/cameraState.ts';
+import { BUILTIN_PREFIX, isReservedWorldName } from '../worlds/worldRef.ts';
 import {
   type SwatchColor,
   swatchColorFromCss,
@@ -146,15 +147,30 @@ export interface SandPrefsCallbacks {
   /** "Load world" -- open the library modal. */
   onOpenWorldLibrary(): void;
   /**
-   * One of the four world buttons was pointed at a different save.
+   * One of the world buttons was pointed at a different world.
    *
-   * `name` is empty for None, which is how a button is unassigned.
+   * `ref` is a `worldRef.ts` string, '' for None (deliberately empty), or null
+   * for Default -- follow the world pack.
    */
-  onAssignWorld(index: number, name: string): void;
+  onAssignWorld(index: number, ref: string | null): void;
+  /** "Export world setup": the world pack, as a zip. */
+  onExportWorldSetup(): void;
 }
 
 /** The dropdown value meaning "this button is unassigned". */
 export const NO_WORLD = '';
+/** The dropdown value meaning "follow the world pack" -- null in the session. */
+const FOLLOW_PACK = '\u0001pack';
+
+/** What the world dropdowns may offer. */
+export interface WorldChoices {
+  /** The pack's worlds, as references and labels. */
+  readonly builtins: readonly { readonly ref: string; readonly label: string }[];
+  /** The author's saved worlds, by name. */
+  readonly library: readonly string[];
+  /** Per button, the label of the pack's own assignment, or '' for none. */
+  readonly packDefaults: readonly string[];
+}
 
 export class SandPrefs {
   private readonly pane: Pane;
@@ -234,7 +250,8 @@ export class SandPrefs {
   private readonly worldValues: Record<string, string> = {};
   /** The world dropdown blades, kept so they can be rebuilt on a save. */
   private worldFolder: FolderApi | null = null;
-  private worldNames: readonly string[] = [];
+  private worldBlades: { dispose(): void }[] = [];
+  private worldChoices: WorldChoices;
 
   constructor(
     prefs: Preferences,
@@ -243,8 +260,10 @@ export class SandPrefs {
     initial: {
       theme: string;
       visibleCount: number;
-      /** The four assignments, restored from the session. */
-      worlds: readonly string[];
+      /** The button assignments, restored from the session. */
+      worlds: readonly (string | null)[];
+      /** What the world dropdowns offer. */
+      worldChoices: WorldChoices;
       /** The compaction switches, restored from the session. */
       autoCompact: boolean;
       compactionPaused: boolean;
@@ -274,9 +293,8 @@ export class SandPrefs {
     this.palette = palette;
     this.callbacks = callbacks;
     this.prefValues = { ...prefs } as Record<string, unknown>;
-    for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
-      this.worldValues[worldKey(i)] = initial.worlds[i] ?? NO_WORLD;
-    }
+    this.worldChoices = initial.worldChoices;
+    this.setWorldValues(initial.worlds);
 
     this.pane = new Pane({ title: 'Fluoddity Sand', expanded: true });
     const host = this.pane.element.parentElement;
@@ -625,6 +643,13 @@ export class SandPrefs {
       'Worlds are deleted from here too.';
     load.on('click', () => this.callbacks.onOpenWorldLibrary());
 
+    const exportSetup = folder.addButton({ title: 'Export world setup' });
+    exportSetup.element.title =
+      'Download the world buttons, the worlds they load and Custom’s ' +
+      'swatches as a world pack. Empty public/worlds/default/, unzip it there ' +
+      'and commit, and new visitors start with this setup.';
+    exportSetup.on('click', () => this.callbacks.onExportWorldSetup());
+
     this.buildWorldSlots(folder);
   }
 
@@ -643,19 +668,26 @@ export class SandPrefs {
    * exist, which is exactly the dangling reference the dropdown prevents.
    */
   private buildWorldSlots(folder: FolderApi): void {
-    // The options map Tweakpane wants: label -> value. NONE FIRST, so
-    // unassigning is the top entry rather than buried under the saves.
-    const options: Record<string, string> = { 'None': NO_WORLD };
-    for (const name of this.worldNames) options[name] = name;
-
+    const choices = this.worldChoices;
     for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
       const key = worldKey(i);
-      // A STORED NAME THAT NO LONGER EXISTS is kept as an option rather than
-      // silently reset, so a button assigned to a world that was deleted shows
-      // what it is pointing at instead of quietly reading "None". The panel
-      // marks it as missing; see `SandUi`.
-      const current = this.worldValues[key] ?? NO_WORLD;
-      if (current !== NO_WORLD && !(current in options)) {
+      // The options map Tweakpane wants: label -> value. DEFAULT FIRST, naming
+      // what the pack puts here, then None, then the pack's worlds and the
+      // library's.
+      const packDefault = choices.packDefaults[i] ?? '';
+      const options: Record<string, string> = {
+        [`Default (${packDefault === '' ? 'none' : packDefault})`]: FOLLOW_PACK,
+        'None': NO_WORLD,
+      };
+      for (const b of choices.builtins) options[`${b.label} (built-in)`] = b.ref;
+      for (const name of choices.library) options[name] = name;
+
+      // A STORED REFERENCE THAT NO LONGER EXISTS is kept as an option rather
+      // than silently reset, so a button assigned to a world that was deleted
+      // shows what it is pointing at instead of quietly reading "None". The
+      // panel marks it as missing; see `SandUi`.
+      const current = this.worldValues[key] ?? FOLLOW_PACK;
+      if (!Object.values(options).includes(current)) {
         options[`${current} (missing)`] = current;
       }
 
@@ -664,35 +696,38 @@ export class SandPrefs {
         options,
       });
       blade.element.title =
-        `Which saved world the panel's World ${i + 1} button loads. ` +
-        'None leaves the button empty.';
+        `Which world the panel's World ${i + 1} button loads. Default follows ` +
+        'the shipped world pack, so it changes when the pack does; None ' +
+        'leaves the button empty.';
       blade.on('change', () => {
-        this.callbacks.onAssignWorld(i, String(this.worldValues[key] ?? NO_WORLD));
+        const value = String(this.worldValues[key] ?? FOLLOW_PACK);
+        this.callbacks.onAssignWorld(i, value === FOLLOW_PACK ? null : value);
       });
+      this.worldBlades.push(blade);
+    }
+  }
+
+  private setWorldValues(refs: readonly (string | null)[]): void {
+    for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
+      this.worldValues[worldKey(i)] = refs[i] ?? FOLLOW_PACK;
     }
   }
 
   /**
-   * Re-read the library and rebuild the dropdowns.
+   * Rebuild the dropdowns with new choices.
    *
-   * Called after a save or a delete, because both change which names the four
+   * Called after a save or a delete, because both change which worlds the
    * buttons may point at -- and a dropdown built before a save would not offer
    * the world the user just created, which is the first thing they would try to
    * assign it to.
    */
-  refreshWorlds(names: readonly string[], assignments: readonly string[]): void {
-    this.worldNames = names;
-    for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
-      this.worldValues[worldKey(i)] = assignments[i] ?? NO_WORLD;
-    }
+  refreshWorlds(choices: WorldChoices, refs: readonly (string | null)[]): void {
+    this.worldChoices = choices;
+    this.setWorldValues(refs);
     const folder = this.worldFolder;
     if (folder === null) return;
-    // The two buttons are children 0 and 1; everything after them is a
-    // dropdown from the previous build. Disposing from the end keeps the
-    // indices stable as they go.
-    for (let i = folder.children.length - 1; i >= 2; i--) {
-      folder.children[i]?.dispose();
-    }
+    for (const blade of this.worldBlades) blade.dispose();
+    this.worldBlades = [];
     this.buildWorldSlots(folder);
   }
 
@@ -712,8 +747,12 @@ export class SandPrefs {
     if (name === null) return;
     const trimmed = name.trim();
     if (trimmed === '') return;
+    if (isReservedWorldName(trimmed)) {
+      window.alert(`A world name may not start with "${BUILTIN_PREFIX}".`);
+      return;
+    }
     if (
-      this.worldNames.includes(trimmed) &&
+      this.worldChoices.library.includes(trimmed) &&
       !window.confirm(`"${trimmed}" already exists. Replace it?`)
     ) {
       return;

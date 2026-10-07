@@ -38,9 +38,9 @@ test('a file from before per-tool sizes gives every tool its brushSize', () => {
 });
 
 test('the file carries settings, not the palette or the world assignments', () => {
-  const session = { ...EMPTY_SESSION, worlds: ['Mine'], selectedWorld: 0 };
+  const session = { ...EMPTY_SESSION, worldRefs: ['Mine'], selectedWorld: 0 };
   const text = JSON.parse(writeSandDefaults(DEFAULT_PREFERENCES, session));
-  assert.equal(text.session.worlds, undefined);
+  assert.equal(text.session.worldRefs, undefined);
   assert.equal(text.session.slots, undefined);
   assert.equal(text.session.selectedWorld, undefined);
 });
