@@ -9,8 +9,8 @@
  * ## What is in it
  *
  * SETTINGS, not content: every preference, and the session-level choices --
- * look, Custom's swatch count, colour mode, brush size and tool, per-tool
- * strengths, the eraser's mode, Max Particles, the compaction switches. NOT
+ * look, Custom's swatch count, colour mode, the armed tool, per-tool brush
+ * sizes and strengths, the eraser's mode, Max Particles, the compaction switches. NOT
  * the Custom palette or the world assignments: those point at configs and
  * saved worlds in the author's own browser, which a new visitor does not have.
  *
@@ -47,7 +47,7 @@ const SESSION_KEYS = [
   'theme',
   'visibleCount',
   'colorMode',
-  'brushSize',
+  'brushSizes',
   'tool',
   'strengths',
   'eraseMode',
@@ -95,7 +95,18 @@ export function readSandDefaults(raw: unknown): SandDefaults {
       if (value !== undefined) picked[key] = value;
     }
   }
-  const session = parseSession(JSON.stringify({ ...EMPTY_SESSION, ...picked }));
+  // A FILE FROM BEFORE SIZES WERE PER TOOL carries one `brushSize`. The parser
+  // seeds every tool from it, but only if `brushSizes` is absent -- so the base
+  // drops its own rather than letting the defaults outvote the file.
+  const base: Record<string, unknown> = { ...EMPTY_SESSION };
+  if (typeof sessionRaw === 'object' && sessionRaw !== null && picked['brushSizes'] === undefined) {
+    const legacySize = (sessionRaw as Record<string, unknown>)['brushSize'];
+    if (legacySize !== undefined) {
+      delete base['brushSizes'];
+      picked['brushSize'] = legacySize;
+    }
+  }
+  const session = parseSession(JSON.stringify({ ...base, ...picked }));
 
   return { preferences: Object.freeze(preferences) as unknown as Preferences, session };
 }

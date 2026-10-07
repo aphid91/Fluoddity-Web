@@ -19,12 +19,22 @@ test('the shipped file parses, with nothing rejected', () => {
 
 test('export then read is the identity for everything the file carries', () => {
   const prefs = { ...DEFAULT_PREFERENCES, worldSize: 0.3, physicsSteps: 9, brightness: 1.5 };
-  const session = { ...EMPTY_SESSION, theme: 'system7', visibleCount: 12, brushSize: 1 };
+  const session = {
+    ...EMPTY_SESSION,
+    theme: 'system7',
+    visibleCount: 12,
+    brushSizes: { ...EMPTY_SESSION.brushSizes, walls: 0, shove: 3 },
+  };
   const back = readSandDefaults(JSON.parse(writeSandDefaults(prefs, session)));
   assert.deepEqual({ ...back.preferences }, { ...prefs });
   assert.equal(back.session.theme, 'system7');
   assert.equal(back.session.visibleCount, 12);
-  assert.equal(back.session.brushSize, 1);
+  assert.deepEqual(back.session.brushSizes, session.brushSizes);
+});
+
+test('a file from before per-tool sizes gives every tool its brushSize', () => {
+  const { session } = readSandDefaults({ session: { brushSize: 0 } });
+  assert.deepEqual(session.brushSizes, { brush: 0, erase: 0, shove: 0, walls: 0, trails: 0 });
 });
 
 test('the file carries settings, not the palette or the world assignments', () => {

@@ -79,6 +79,46 @@ export const BRUSH_SIZES: readonly number[] = [0.01, 0.025, 0.05, 0.1].map(
 /** Default index into `BRUSH_SIZES`. The middle one. */
 export const DEFAULT_BRUSH_SIZE = 2;
 
+/** Whether `value` is a usable index into `BRUSH_SIZES`. */
+export function isBrushSizeIndex(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value < BRUSH_SIZES.length
+  );
+}
+
+/**
+ * The tools a brush size means something to: all but Stamp, which places a
+ * shape of its own size.
+ */
+export type SizedTool = Exclude<SandTool, 'stamp'>;
+
+export function isSizedTool(tool: SandTool): tool is SizedTool {
+  return tool !== 'stamp';
+}
+
+/**
+ * Brush size per tool, as indices into `BRUSH_SIZES`.
+ *
+ * PER TOOL for the reason `ToolStrengths` is: the useful size depends on the
+ * job. Walls want a fine line and Shove a broad sweep, and one shared size had
+ * to be re-picked on every tool change.
+ */
+export type ToolSizes = Readonly<Record<SizedTool, number>>;
+
+/** Every tool at the default size. Written out for the reason `defaultStrengths` is. */
+export function defaultSizes(): ToolSizes {
+  return {
+    brush: DEFAULT_BRUSH_SIZE,
+    erase: DEFAULT_BRUSH_SIZE,
+    shove: DEFAULT_BRUSH_SIZE,
+    walls: DEFAULT_BRUSH_SIZE,
+    trails: DEFAULT_BRUSH_SIZE,
+  };
+}
+
 /**
  * Particles created per unit of world area per second, at a rate multiplier of 1.
  *
@@ -143,8 +183,8 @@ export interface BrushCommand {
 }
 
 export class BrushInput {
-  /** Index into `BRUSH_SIZES`. */
-  private sizeIndex = DEFAULT_BRUSH_SIZE;
+  /** Each tool's index into `BRUSH_SIZES`. See `ToolSizes`. */
+  private sizes: Record<SizedTool, number> = defaultSizes();
   /** Last frame's cursor, or null when no stroke is in progress. */
   private previous: Vec2 | null = null;
 
@@ -215,7 +255,7 @@ export class BrushInput {
    * brushes want world units; `worldRadius` converts.
    */
   get radius(): number {
-    return BRUSH_SIZES[this.sizeIndex] ?? BRUSH_SIZES[DEFAULT_BRUSH_SIZE] ?? 0.05;
+    return BRUSH_SIZES[this.sizeSlot ?? DEFAULT_BRUSH_SIZE] ?? BRUSH_SIZES[DEFAULT_BRUSH_SIZE] ?? 0.05;
   }
 
   /**
@@ -254,13 +294,29 @@ export class BrushInput {
     return uvRadiusToWorld(this.reticleRadius);
   }
 
-  get sizeSlot(): number {
-    return this.sizeIndex;
+  /** The armed tool's size, or null under Stamp, which has none. */
+  get sizeSlot(): number | null {
+    return isSizedTool(this.tool) ? this.sizes[this.tool] : null;
   }
 
+  /** Set the ARMED tool's size. Out-of-range indices, and Stamp, are ignored. */
   setSize(index: number): void {
-    if (index < 0 || index >= BRUSH_SIZES.length) return;
-    this.sizeIndex = index;
+    if (!isSizedTool(this.tool) || !isBrushSizeIndex(index)) return;
+    this.sizes[this.tool] = index;
+  }
+
+  /** Every tool's size, for the session snapshot. */
+  allSizes(): ToolSizes {
+    return { ...this.sizes };
+  }
+
+  /** Re-apply sizes restored from a previous session. */
+  restoreSizes(values: Partial<Record<SizedTool, number>>): void {
+    for (const [tool, value] of Object.entries(values)) {
+      if (tool in this.sizes && isBrushSizeIndex(value)) {
+        this.sizes[tool as SizedTool] = value;
+      }
+    }
   }
 
   /** End the stroke. The next press starts fresh rather than joining to this. */

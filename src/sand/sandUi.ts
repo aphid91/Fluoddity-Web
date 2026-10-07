@@ -197,7 +197,8 @@ export interface WorldButtonState {
 
 export interface SandUiState {
   tool: SandTool;
-  brushSize: number;
+  /** The armed tool's size, or null for a tool without one (Stamp). */
+  brushSize: number | null;
   paused: boolean;
   editingInitialConditions: boolean;
   /** The four assignments. */

@@ -331,7 +331,7 @@ async function main(): Promise<void> {
   }
   orch.palette.setVisibleCount(session.visibleCount);
   orch.palette.select(session.selected);
-  orch.brush.setSize(session.brushSize);
+  orch.brush.restoreSizes(session.brushSizes);
   orch.brush.tool = session.tool;
   orch.brush.restoreStrengths(session.strengths);
   orch.eraseMode = session.eraseMode;
@@ -435,7 +435,7 @@ async function main(): Promise<void> {
     // user's own -- see `customSlots`.
     slots: customSlots ?? paletteSlots(),
     selected: orch.palette.selected,
-    brushSize: orch.brush.sizeSlot,
+    brushSizes: orch.brush.allSizes(),
     tool: orch.brush.tool,
     strengths: orch.brush.allStrengths(),
     eraseMode: orch.eraseMode,

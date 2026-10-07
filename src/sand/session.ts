@@ -47,7 +47,14 @@ import {
   SLOT_COUNT,
   clampVisibleCount,
 } from './palette.ts';
-import { type ToolStrengths, defaultStrengths } from './brushInput.ts';
+import {
+  type SizedTool,
+  type ToolSizes,
+  type ToolStrengths,
+  defaultSizes,
+  defaultStrengths,
+  isBrushSizeIndex,
+} from './brushInput.ts';
 import { type SwatchColor, readSwatchColor } from './swatchColor.ts';
 import { type ColorMode, DEFAULT_COLOR_MODE, asColorMode } from './colorMode.ts';
 
@@ -82,7 +89,8 @@ export interface StoredSlot {
 export interface SandSession {
   readonly slots: readonly StoredSlot[];
   readonly selected: number;
-  readonly brushSize: number;
+  /** Brush size per tool -- see `ToolSizes`. Stamp has none. */
+  readonly brushSizes: ToolSizes;
   /** Which tool the left rail has armed. */
   readonly tool: SandTool;
   /** Strength per tool -- see `ToolStrengths`. */
@@ -162,7 +170,7 @@ export const CUSTOM_WORLD = -1;
 export const EMPTY_SESSION: SandSession = {
   slots: [],
   selected: 0,
-  brushSize: 2,
+  brushSizes: defaultSizes(),
   tool: DEFAULT_TOOL,
   strengths: defaultStrengths(),
   eraseMode: DEFAULT_ERASE_MODE,
@@ -295,6 +303,26 @@ function asStrengths(raw: unknown, legacyWeight: number | null): ToolStrengths {
 }
 
 /**
+ * Stored brush sizes, filling anything missing.
+ *
+ * A session written before sizes were per tool carries one `brushSize`. It
+ * seeds EVERY tool, unlike the legacy strength: one size was in use for all of
+ * them, so each tool picking up where it was is exactly right.
+ */
+function asSizes(raw: unknown, legacySize: unknown): ToolSizes {
+  const out = defaultSizes() as Record<SizedTool, number>;
+  if (isBrushSizeIndex(legacySize)) {
+    for (const tool of Object.keys(out) as SizedTool[]) out[tool] = legacySize;
+  }
+  if (typeof raw === 'object' && raw !== null) {
+    for (const [tool, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (tool in out && isBrushSizeIndex(value)) out[tool as SizedTool] = value;
+    }
+  }
+  return out;
+}
+
+/**
  * Parse a stored session, filling anything missing from `EMPTY_SESSION`.
  *
  * UNKNOWN KEYS ARE IGNORED and absent ones defaulted, so a downgrade does not
@@ -330,7 +358,7 @@ export function parseSession(raw: string): SandSession {
   return {
     slots,
     selected: Math.max(0, Math.min(SLOT_COUNT - 1, Math.trunc(num('selected', 0)))),
-    brushSize: Math.trunc(num('brushSize', EMPTY_SESSION.brushSize)),
+    brushSizes: asSizes(o['brushSizes'], o['brushSize']),
     tool: asTool(o['tool']),
     strengths: asStrengths(o['strengths'], legacyWeight),
     eraseMode: asEraseMode(o['eraseMode']),

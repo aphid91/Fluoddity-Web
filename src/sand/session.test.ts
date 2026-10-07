@@ -85,7 +85,7 @@ test('a session round-trips through storage', () => {
       { name: '', document: null },
     ],
     selected: 5,
-    brushSize: 4,
+    brushSizes: { ...EMPTY_SESSION.brushSizes, walls: 0, shove: 3 },
     tool: 'shove',
     strengths: { ...EMPTY_SESSION.strengths, shove: 2.5, walls: 0.4 },
     visibleCount: 24,
@@ -100,7 +100,8 @@ test('a session round-trips through storage', () => {
   const back = loadSession(storage);
 
   assert.equal(back.selected, 5);
-  assert.equal(back.brushSize, 4);
+  assert.equal(back.brushSizes.walls, 0);
+  assert.equal(back.brushSizes.shove, 3);
   assert.equal(back.tool, 'shove');
   assert.equal(back.strengths.shove, 2.5);
   assert.equal(back.strengths.walls, 0.4);
@@ -271,8 +272,8 @@ test('unparseable JSON falls back rather than throwing', () => {
 
 test('unknown keys are ignored and missing ones defaulted', () => {
   // A downgrade must not break on a field a newer build wrote.
-  const parsed = parseSession(JSON.stringify({ somethingNew: 1, brushSize: 3 }));
-  assert.equal(parsed.brushSize, 3);
+  const parsed = parseSession(JSON.stringify({ somethingNew: 1, visibleCount: 12 }));
+  assert.equal(parsed.visibleCount, 12);
   assert.equal(parsed.tool, EMPTY_SESSION.tool);
   assert.deepEqual(parsed.slots, []);
 });
@@ -282,7 +283,26 @@ test('non-finite numbers are rejected, not stored', () => {
   // stops working.
   const parsed = parseSession(JSON.stringify({ visibleCount: null, brushSize: 'x' }));
   assert.equal(parsed.visibleCount, EMPTY_SESSION.visibleCount);
-  assert.equal(parsed.brushSize, EMPTY_SESSION.brushSize);
+  assert.deepEqual(parsed.brushSizes, EMPTY_SESSION.brushSizes);
+});
+
+test('a pre-split brushSize seeds every tool', () => {
+  const parsed = parseSession(JSON.stringify({ brushSize: 1 }));
+  assert.deepEqual(parsed.brushSizes, { brush: 1, erase: 1, shove: 1, walls: 1, trails: 1 });
+});
+
+test('an explicit brushSizes block wins over the legacy brushSize', () => {
+  const parsed = parseSession(JSON.stringify({ brushSize: 1, brushSizes: { walls: 0 } }));
+  assert.equal(parsed.brushSizes.walls, 0);
+  assert.equal(parsed.brushSizes.shove, 1, 'others take the legacy size');
+});
+
+test('out-of-range, fractional and unknown sizes are dropped', () => {
+  const parsed = parseSession(
+    JSON.stringify({ brushSizes: { brush: 4, erase: -1, shove: 1.5, walls: 'big', stamp: 0 } }),
+  );
+  assert.deepEqual(parsed.brushSizes, EMPTY_SESSION.brushSizes);
+  assert.equal('stamp' in parsed.brushSizes, false);
 });
 
 test('the selected slot is clamped into the palette', () => {

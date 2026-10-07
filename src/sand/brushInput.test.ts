@@ -36,6 +36,29 @@ test('setSize ignores out-of-range indices', () => {
   assert.equal(b.radius, BRUSH_SIZES[0]);
 });
 
+test('each tool keeps its own size', () => {
+  const b = new BrushInput();
+  b.tool = 'walls';
+  b.setSize(0);
+  b.tool = 'shove';
+  b.setSize(3);
+  b.tool = 'walls';
+  assert.equal(b.sizeSlot, 0);
+  assert.equal(b.radius, BRUSH_SIZES[0]);
+  b.tool = 'shove';
+  assert.equal(b.radius, BRUSH_SIZES[3]);
+  assert.equal(b.allSizes().brush, DEFAULT_BRUSH_SIZE, 'untouched tools keep the default');
+});
+
+test('stamp has no size, and setSize under it changes nothing', () => {
+  const b = new BrushInput();
+  const before = b.allSizes();
+  b.tool = 'stamp';
+  assert.equal(b.sizeSlot, null);
+  b.setSize(0);
+  assert.deepEqual(b.allSizes(), before);
+});
+
 // ---------------------------------------------------------------------------
 // Stroke continuity -- the part that is easy to get wrong
 // ---------------------------------------------------------------------------

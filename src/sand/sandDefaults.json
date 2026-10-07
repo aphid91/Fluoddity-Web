@@ -37,7 +37,6 @@
     "theme": "darkroom",
     "visibleCount": 30,
     "colorMode": "behavior",
-    "brushSize": 2,
     "tool": "brush",
     "strengths": {
       "brush": 1,
@@ -46,6 +45,13 @@
       "walls": 1,
       "trails": 1,
       "stamp": 1
+    },
+    "brushSizes": {
+      "brush": 2,
+      "erase": 2,
+      "shove": 2,
+      "walls": 2,
+      "trails": 2
     },
     "eraseMode": "walls+particles",
     "maxParticles": null,
