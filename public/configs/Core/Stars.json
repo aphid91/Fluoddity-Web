@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "world": {
     "trail_persistence": 0.9380000233650208,
     "trail_diffusion": 1,
