@@ -17,7 +17,7 @@ import {
   ENTITIES_PER_PARTIAL,
   partialCount,
 } from '../particleSystem/compactPlan.ts';
-import { STAMP_PARTICLE_STRIDE, STAMP_TEXEL_CHANNELS } from './stampData.ts';
+import { CANVAS_CHANNELS, FIELD_CHANNELS, STAMP_PARTICLE_STRIDE } from './stampData.ts';
 
 // ---------------------------------------------------------------------------
 // The shared partition.
@@ -94,6 +94,8 @@ test('a particle block is exactly stride-by-count when non-empty', () => {
 // diagonally, because every row is offset from the last by a few bytes.
 // ---------------------------------------------------------------------------
 
+// The row arithmetic is generic; these use the field's four channels of f32.
+const STAMP_TEXEL_CHANNELS = FIELD_CHANNELS;
 const BYTES_PER_TEXEL = STAMP_TEXEL_CHANNELS * 4;
 
 test('every aligned row is a multiple of the copy alignment', () => {
@@ -161,6 +163,22 @@ test('pack and unpack are exact inverses at every awkward width', () => {
       height,
       STAMP_TEXEL_CHANNELS,
       padded,
+    );
+    assert.deepEqual(Array.from(back), Array.from(tight), `${width}x${height}`);
+  }
+});
+
+test('pack and unpack round-trip a two-channel (canvas) layer too', () => {
+  for (const [width, height] of [[1, 1], [3, 2], [17, 5], [100, 7]] as const) {
+    const padded = alignedBytesPerRow(width, CANVAS_CHANNELS * 2);
+    const tight = new Float32Array(width * height * CANVAS_CHANNELS);
+    for (let i = 0; i < tight.length; i++) tight[i] = i + 0.5;
+    const back = unpackRows(
+      packRows(tight, width, height, CANVAS_CHANNELS, padded * 2),
+      width,
+      height,
+      CANVAS_CHANNELS,
+      padded * 2,
     );
     assert.deepEqual(Array.from(back), Array.from(tight), `${width}x${height}`);
   }

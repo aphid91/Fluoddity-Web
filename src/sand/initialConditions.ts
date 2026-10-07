@@ -60,7 +60,7 @@ import type { StrafeField } from '../strafeField/strafeField.ts';
 import { StampCopier } from '../stamp/stampCopier.ts';
 import { StampPaster } from '../stamp/stampPaster.ts';
 import { type StampBox, wholeWorldBox } from '../stamp/stampBox.ts';
-import type { StampData } from '../stamp/stampData.ts';
+import { type StampData, CANVAS_CHANNELS, FIELD_CHANNELS } from '../stamp/stampData.ts';
 import { encodeStamp } from '../stamp/stampCodec.ts';
 
 // Re-exported so callers have one import for the restore. The definition lives
@@ -313,8 +313,8 @@ export class InitialConditions {
     // unsubmitted copy never resolves.
     const count = await this.copier.readCount();
     const particles = await this.copier.readParticles(count);
-    const canvas = await this.copier.readLayer(staged.canvas);
-    const field = await this.copier.readLayer(staged.field);
+    const canvas = await this.copier.readLayer(staged.canvas, CANVAS_CHANNELS);
+    const field = await this.copier.readLayer(staged.field, FIELD_CHANNELS);
 
     return encodeStamp({
       box,

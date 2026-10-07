@@ -5,7 +5,8 @@ import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
 import { wholeWorldBox, pixelRectFor } from '../stamp/stampBox.ts';
 import {
   STAMP_PARTICLE_STRIDE,
-  STAMP_TEXEL_CHANNELS,
+  CANVAS_CHANNELS,
+  FIELD_CHANNELS,
   type StampData,
   type StampLayer,
 } from '../stamp/stampData.ts';
@@ -19,8 +20,8 @@ import {
   trimScene,
 } from './icFit.ts';
 
-function layer(width: number, height: number): StampLayer {
-  return { width, height, data: new Float32Array(width * height * STAMP_TEXEL_CHANNELS) };
+function layer(width: number, height: number, channels: number): StampLayer {
+  return { width, height, channels, data: new Float32Array(width * height * channels) };
 }
 
 /**
@@ -41,7 +42,7 @@ function scene(w: number, h: number, particles: [number, number][]): StampData {
     view.setFloat32(at + 16, 0.002, true); // size
     view.setUint32(at + 20, 3, true); // config index, as int bits
   });
-  return { box, particles: bytes, canvas: layer(w, h), field: layer(w / 2, h / 2), palette: [] };
+  return { box, particles: bytes, canvas: layer(w, h, CANVAS_CHANNELS), field: layer(w / 2, h / 2, FIELD_CHANNELS), palette: [] };
 }
 
 test('the active region is the particles plus the trail cushion', () => {
@@ -57,7 +58,7 @@ test('the active region is the particles plus the trail cushion', () => {
 test('walls count toward the region', () => {
   const s = scene(400, 300, []);
   // A wall texel at field (10, 20) covers canvas pixels 20..22, 40..42.
-  s.field.data[(20 * s.field.width + 10) * STAMP_TEXEL_CHANNELS] = 1;
+  s.field.data[(20 * s.field.width + 10) * FIELD_CHANNELS] = 1;
   const region = activeRegion(s);
   assert.deepEqual(region, {
     x0: 20 - TRAIL_CUSHION_PX,
@@ -137,6 +138,28 @@ test('placed particles keep their pixel offset from the placed layers', () => {
   assert.ok(Math.abs(py - (rect.y + 25.5)) < 1e-3, `landed at row ${py}`);
 });
 
+test('a trail texel stays under its particle when the scene is placed', () => {
+  // The trail canvas is two channels, and a layer that assumed four packed two
+  // texels into each: it round-tripped in place and landed offset once moved.
+  const s = scene(400, 300, [[150, 225]]);
+  const at = (225 * 400 + 150) * CANVAS_CHANNELS;
+  s.canvas.data[at] = 0.25;
+  s.canvas.data[at + 1] = -0.75;
+  const region = activeRegion(s)!;
+  const dst: [number, number] = [800, 600];
+  const { stamp } = placeScene(s, region, dst);
+
+  const view = new DataView(stamp.particles);
+  const box = wholeWorldBox(dst);
+  const px = Math.floor(((view.getFloat32(0, true) - box.min[0]) / (box.max[0] - box.min[0])) * 800);
+  const py = Math.floor(((view.getFloat32(4, true) - box.min[1]) / (box.max[1] - box.min[1])) * 600);
+  const rect = pixelRectFor(stamp.box, dst);
+  const local = ((py - rect.y) * stamp.canvas.width + (px - rect.x)) * CANVAS_CHANNELS;
+  assert.equal(stamp.canvas.channels, CANVAS_CHANNELS);
+  assert.equal(stamp.canvas.data[local], 0.25);
+  assert.equal(stamp.canvas.data[local + 1], -0.75);
+});
+
 test('placed particles convert velocity and size to the new world units', () => {
   const s = scene(400, 300, [[150, 225]]);
   const region = { x0: 100, y0: 200, x1: 200, y1: 250 };
@@ -150,8 +173,8 @@ test('placed particles convert velocity and size to the new world units', () => 
 
 test('a trimmed scene, placed with its frame, places exactly as the untrimmed one', () => {
   const s = scene(400, 300, [[120, 30], [180, 60]]);
-  s.canvas.data[(40 * 400 + 150) * STAMP_TEXEL_CHANNELS] = 0.5; // a trail texel
-  s.field.data[(10 * s.field.width + 70) * STAMP_TEXEL_CHANNELS] = 1; // a wall
+  s.canvas.data[(40 * 400 + 150) * CANVAS_CHANNELS] = 0.5; // a trail texel
+  s.field.data[(10 * s.field.width + 70) * FIELD_CHANNELS] = 1; // a wall
   const trimmed = trimScene(s);
   assert.ok(trimmed !== null);
   assert.ok(trimmed.stamp.canvas.width < 400, 'the saved scene is smaller');

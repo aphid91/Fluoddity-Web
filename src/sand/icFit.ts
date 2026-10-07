@@ -45,7 +45,6 @@ import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
 import type { StampBox } from '../stamp/stampBox.ts';
 import {
   STAMP_PARTICLE_STRIDE,
-  STAMP_TEXEL_CHANNELS,
   type StampData,
   type StampLayer,
   emptyLayer,
@@ -160,9 +159,9 @@ export function activeRegion(
     const sy = stamp.canvas.height / field.height;
     for (let row = 0; row < field.height; row++) {
       for (let col = 0; col < field.width; col++) {
-        const at = (row * field.width + col) * STAMP_TEXEL_CHANNELS;
+        const at = (row * field.width + col) * field.channels;
         let wall = false;
-        for (let c = 0; c < STAMP_TEXEL_CHANNELS; c++) {
+        for (let c = 0; c < field.channels; c++) {
           if (Math.abs(field.data[at + c] ?? 0) > WALL_EPSILON) wall = true;
         }
         if (wall) {
@@ -437,19 +436,20 @@ function filterParticles(
  * (a region's cushion may reach past a trimmed scene's own box).
  */
 function cropLayer(layer: StampLayer, x0: number, y0: number, w: number, h: number): StampLayer {
-  if (layerIsEmpty(layer) || w <= 0 || h <= 0) return emptyLayer();
-  const data = new Float32Array(w * h * STAMP_TEXEL_CHANNELS);
+  const ch = layer.channels;
+  if (layerIsEmpty(layer) || w <= 0 || h <= 0) return emptyLayer(ch);
+  const data = new Float32Array(w * h * ch);
   const colFrom = Math.max(0, -x0);
   const colTo = Math.min(w, layer.width - x0);
-  if (colTo <= colFrom) return { width: w, height: h, data };
+  if (colTo <= colFrom) return { width: w, height: h, channels: ch, data };
   for (let row = 0; row < h; row++) {
     const srcRow = y0 + row;
     if (srcRow < 0 || srcRow >= layer.height) continue;
-    const from = (srcRow * layer.width + x0 + colFrom) * STAMP_TEXEL_CHANNELS;
-    const count = (colTo - colFrom) * STAMP_TEXEL_CHANNELS;
-    data.set(layer.data.subarray(from, from + count), (row * w + colFrom) * STAMP_TEXEL_CHANNELS);
+    const from = (srcRow * layer.width + x0 + colFrom) * ch;
+    const count = (colTo - colFrom) * ch;
+    data.set(layer.data.subarray(from, from + count), (row * w + colFrom) * ch);
   }
-  return { width: w, height: h, data };
+  return { width: w, height: h, channels: ch, data };
 }
 
 /**
@@ -464,22 +464,23 @@ function resampleField(
   h: number,
 ): StampLayer {
   const field = stamp.field;
-  if (layerIsEmpty(field) || w <= 0 || h <= 0) return emptyLayer();
+  const ch = field.channels;
+  if (layerIsEmpty(field) || w <= 0 || h <= 0) return emptyLayer(ch);
   const fx = field.width / stamp.canvas.width;
   const fy = field.height / stamp.canvas.height;
   const width = Math.max(1, Math.round(w * fx));
   const height = Math.max(1, Math.round(h * fy));
-  const data = new Float32Array(width * height * STAMP_TEXEL_CHANNELS);
+  const data = new Float32Array(width * height * ch);
   for (let row = 0; row < height; row++) {
     const srcRow = Math.floor((y0 + ((row + 0.5) * h) / height) * fy);
     if (srcRow < 0 || srcRow >= field.height) continue;
     for (let col = 0; col < width; col++) {
       const srcCol = Math.floor((x0 + ((col + 0.5) * w) / width) * fx);
       if (srcCol < 0 || srcCol >= field.width) continue;
-      const from = (srcRow * field.width + srcCol) * STAMP_TEXEL_CHANNELS;
-      const to = (row * width + col) * STAMP_TEXEL_CHANNELS;
-      for (let c = 0; c < STAMP_TEXEL_CHANNELS; c++) data[to + c] = field.data[from + c] ?? 0;
+      const from = (srcRow * field.width + srcCol) * ch;
+      const to = (row * width + col) * ch;
+      for (let c = 0; c < ch; c++) data[to + c] = field.data[from + c] ?? 0;
     }
   }
-  return { width, height, data };
+  return { width, height, channels: ch, data };
 }

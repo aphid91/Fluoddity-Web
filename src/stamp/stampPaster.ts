@@ -49,7 +49,7 @@ import type { VramLayer } from './stampCopier.ts';
 import {
   type StampData,
   type StampLayer,
-  STAMP_TEXEL_CHANNELS,
+  channelsOf,
   layerIsEmpty,
   particleCount,
 } from './stampData.ts';
@@ -349,7 +349,7 @@ export class StampPaster {
   ): void {
     const rect = pixelRectFor(box, size);
     if (rect.width <= 0 || rect.height <= 0) return;
-    const texels = rect.width * rect.height * STAMP_TEXEL_CHANNELS;
+    const texels = rect.width * rect.height * channelsOf(texture.format);
     this.writeRegion(
       texture,
       rect.x,
@@ -388,7 +388,9 @@ export class StampPaster {
   ): void {
     if (width <= 0 || height <= 0) return;
     const bits = toHalfBits(data);
-    const bytesPerRow = width * STAMP_TEXEL_CHANNELS * 2;
+    // The texture's OWN texel size: `writeTexture` copies raw texels and never
+    // converts format, so `data` must already be in the texture's layout.
+    const bytesPerRow = width * channelsOf(texture.format) * 2;
     this.device.queue.writeTexture(
       { texture, origin: { x, y } },
       bits,
@@ -432,6 +434,16 @@ export class StampPaster {
     size: readonly [number, number],
   ): void {
     if (layerIsEmpty(layer)) return;
+    // REFUSED, not converted. A layer with another texel layout would be
+    // written as scrambled texels, which is the bug this check replaces.
+    if (layer.channels !== channelsOf(texture.format)) {
+      console.error(
+        `Stamp layer has ${layer.channels} channels; ${texture.label} has ` +
+          `${channelsOf(texture.format)}. Not pasted.`,
+      );
+      return;
+    }
+    const ch = layer.channels;
     const rect = pixelRectFor(dstBox, size);
     if (rect.width <= 0 || rect.height <= 0) return;
 
@@ -443,7 +455,7 @@ export class StampPaster {
       return;
     }
 
-    const out = new Float32Array(rect.width * rect.height * STAMP_TEXEL_CHANNELS);
+    const out = new Float32Array(rect.width * rect.height * ch);
     for (let row = 0; row < rect.height; row++) {
       // Sample at the texel CENTRE, which is what keeps a resample from drifting
       // half a texel toward the origin.
@@ -456,9 +468,9 @@ export class StampPaster {
           layer.width - 1,
           Math.floor(((col + 0.5) / rect.width) * layer.width),
         );
-        const from = (srcRow * layer.width + srcCol) * STAMP_TEXEL_CHANNELS;
-        const to = (row * rect.width + col) * STAMP_TEXEL_CHANNELS;
-        for (let c = 0; c < STAMP_TEXEL_CHANNELS; c++) {
+        const from = (srcRow * layer.width + srcCol) * ch;
+        const to = (row * rect.width + col) * ch;
+        for (let c = 0; c < ch; c++) {
           out[to + c] = layer.data[from + c] ?? 0;
         }
       }

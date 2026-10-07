@@ -57,7 +57,7 @@ import {
 import {
   type StampLayer,
   type StampPaletteRef,
-  STAMP_TEXEL_CHANNELS,
+  channelsOf,
   emptyLayer,
 } from './stampData.ts';
 // THE CODEC'S OWN CONVERSION, imported rather than duplicated. That module is a
@@ -81,8 +81,8 @@ import scanSource from '../sand/shaders/compactScan.wgsl';
 /** `vec4f` src box + `vec4f` dst box + `vec4u` params. */
 const UNIFORM_SIZE = 48;
 
-/** Bytes per texel in a captured layer: 4 channels of f32. */
-const READBACK_BYTES_PER_TEXEL = STAMP_TEXEL_CHANNELS * 4;
+/** Bytes per channel as the texture holds it: half-float. */
+const BYTES_PER_CHANNEL = 2;
 
 /**
  * A texture layer captured into VRAM, before readback.
@@ -96,6 +96,8 @@ interface StagedLayer {
   readonly rect: PixelRect;
   readonly buffer: GPUBuffer;
   readonly bytesPerRow: number;
+  /** The source texture's own channel count -- see `channelsOf`. */
+  readonly channels: number;
 }
 
 /**
@@ -561,7 +563,10 @@ export class StampCopier {
     // THE 256-BYTE ROW RULE. `copyTextureToBuffer` rejects any other stride, and
     // a wrong one reads back an image sheared diagonally. `unpackRows` removes
     // the padding on the way out.
-    const bytesPerRow = alignedBytesPerRow(rect.width, READBACK_BYTES_PER_TEXEL);
+    // The texture's OWN texel size. A copy moves raw texels and never converts
+    // format, so the layer must have exactly the texture's channels.
+    const channels = channelsOf(texture.format);
+    const bytesPerRow = alignedBytesPerRow(rect.width, channels * BYTES_PER_CHANNEL);
     const buffer = this.device.createBuffer({
       label: `stamp-${label}-staging`,
       size: bytesPerRow * rect.height,
@@ -573,7 +578,7 @@ export class StampCopier {
       { buffer, bytesPerRow, rowsPerImage: rect.height },
       { width: rect.width, height: rect.height },
     );
-    return { rect, buffer, bytesPerRow };
+    return { rect, buffer, bytesPerRow, channels };
   }
 
   /**
@@ -587,14 +592,16 @@ export class StampCopier {
    * half-floats as one garbage float. That mistake produces plausible-looking
    * noise rather than an error.
    */
-  async readLayer(staged: StagedLayer | null): Promise<StampLayer> {
-    if (staged === null) return emptyLayer();
+  async readLayer(staged: StagedLayer | null, emptyChannels: number): Promise<StampLayer> {
+    // Nothing was staged for an empty rect, so the caller says what an empty
+    // layer of this kind looks like.
+    if (staged === null) return emptyLayer(emptyChannels);
     await staged.buffer.mapAsync(GPUMapMode.READ);
     const raw = new Uint16Array(staged.buffer.getMappedRange().slice(0));
     staged.buffer.unmap();
     staged.buffer.destroy();
 
-    const { rect, bytesPerRow } = staged;
+    const { rect, bytesPerRow, channels } = staged;
     // Widen first, then strip the row padding: the padding is measured in BYTES
     // and the unpack works in floats, so the stride converts once here.
     const widened = new Float32Array(raw.length);
@@ -606,10 +613,10 @@ export class StampCopier {
       widened,
       rect.width,
       rect.height,
-      STAMP_TEXEL_CHANNELS,
+      channels,
       bytesPerRow * 2,
     );
-    return { width: rect.width, height: rect.height, data };
+    return { width: rect.width, height: rect.height, channels, data };
   }
 
   /** Read the packed particles back. Call after the encoder is submitted. */

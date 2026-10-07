@@ -102,7 +102,7 @@ export function particleBlockBytes(count: number, stride: number): number {
  *
  * `copyTextureToBuffer` requires `bytesPerRow` to be a multiple of 256. A layer
  * whose natural row length is not -- which is most of them, since a row is
- * `width * 4 channels * 4 bytes` and any width not a multiple of 16 breaks it --
+ * `width * channels * 2 bytes` of half-float, 4 or 8 bytes a texel --
  * must be copied with a PADDED row stride and unpacked afterwards.
  *
  * Getting this wrong does not produce a small error: the copy is rejected

@@ -65,22 +65,35 @@ import type { StampBox } from './stampBox.ts';
 export const STAMP_PARTICLE_STRIDE = ENTITY_STRIDE;
 
 /**
- * Channels per texel in a captured texture layer.
+ * Channels per texel in each captured layer: exactly what its texture holds.
  *
- * FOUR for both, though they mean different things: the canvas is rg16float
- * (a 2D trail vector, two channels unused) and the field is rgba16float (rg =
- * walls, ba = trails). Captured at four channels each so one readback path and
- * one paste path serve both -- the alternative is two of everything to save two
- * channels on a texture that is already the smaller of the pair.
+ * The canvas is `rg16float` (a 2D trail vector) and the field `rgba16float`
+ * (rg = walls, ba = painted trails). A GPU copy moves raw texels and never
+ * converts format, so a layer that claimed four channels for the canvas would
+ * hold two real texels per "texel" -- which is what this used to do. It
+ * round-tripped at the identity, where the read and write mistakes cancel, and
+ * scrambled the trails the moment a scene was cropped or moved (`icFit.ts`).
  */
-export const STAMP_TEXEL_CHANNELS = 4;
+export const CANVAS_CHANNELS = 2;
+export const FIELD_CHANNELS = 4;
+
+/**
+ * Channels per texel of a texture format a layer can be captured from.
+ * Throws on any other format, rather than guessing a stride.
+ */
+export function channelsOf(format: string): number {
+  if (format === 'rg16float') return 2;
+  if (format === 'rgba16float') return 4;
+  throw new Error(`No stamp layer layout for texture format ${format}`);
+}
 
 /**
  * One captured texture layer.
  *
- * `data` is `width * height * STAMP_TEXEL_CHANNELS` float32s, row-major from the
- * TOP row -- the same order `copyTextureToBuffer` produces, so no re-ordering
- * happens on either side of the readback.
+ * `data` is `width * height * channels` float32s, row-major from the FIRST
+ * row (the world's minimum y -- see `pixelRectFor`) -- the same order
+ * `copyTextureToBuffer` produces, so no re-ordering happens on either side of
+ * the readback.
  *
  * ## Float32, though the textures are float16
  *
@@ -94,7 +107,9 @@ export const STAMP_TEXEL_CHANNELS = 4;
 export interface StampLayer {
   readonly width: number;
   readonly height: number;
-  /** `width * height * 4` float32s, row-major, top row first. */
+  /** Channels per texel -- `CANVAS_CHANNELS` or `FIELD_CHANNELS`. */
+  readonly channels: number;
+  /** `width * height * channels` float32s, row-major. */
   readonly data: Float32Array;
 }
 
@@ -133,8 +148,8 @@ export function particleCount(stamp: StampData): number {
 }
 
 /** An empty layer, for a stamp with no coverage of that resource. */
-export function emptyLayer(): StampLayer {
-  return { width: 0, height: 0, data: new Float32Array(0) };
+export function emptyLayer(channels: number): StampLayer {
+  return { width: 0, height: 0, channels, data: new Float32Array(0) };
 }
 
 /** Whether a layer holds any texels. */
@@ -154,7 +169,7 @@ export function layerIsEmpty(layer: StampLayer): boolean {
 export function layerIsWellFormed(layer: StampLayer): boolean {
   if (layer.width < 0 || layer.height < 0) return false;
   if (!Number.isInteger(layer.width) || !Number.isInteger(layer.height)) return false;
-  return layer.data.length === layer.width * layer.height * STAMP_TEXEL_CHANNELS;
+  return layer.data.length === layer.width * layer.height * layer.channels;
 }
 
 /**
@@ -171,6 +186,12 @@ export function stampProblem(stamp: StampData): string | null {
     return (
       `particle block is ${stamp.particles.byteLength} bytes, not a multiple of ` +
       `the ${STAMP_PARTICLE_STRIDE}-byte entity stride`
+    );
+  }
+  if (stamp.canvas.channels !== CANVAS_CHANNELS || stamp.field.channels !== FIELD_CHANNELS) {
+    return (
+      `layers have ${stamp.canvas.channels} and ${stamp.field.channels} channels; ` +
+      `expected ${CANVAS_CHANNELS} (canvas) and ${FIELD_CHANNELS} (field)`
     );
   }
   if (!layerIsWellFormed(stamp.canvas)) {

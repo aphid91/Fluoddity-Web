@@ -45,7 +45,8 @@ import {
   type StampData,
   type StampLayer,
   type StampPaletteRef,
-  STAMP_TEXEL_CHANNELS,
+  CANVAS_CHANNELS,
+  FIELD_CHANNELS,
   emptyLayer,
   stampProblem,
 } from './stampData.ts';
@@ -396,16 +397,17 @@ export function decodeStamp(buffer: ArrayBuffer, where = 'stamp'): StampData {
       throw new StampFormatError(`${where}: "${key}" has non-integer dimensions`);
     }
     const ref = readBlockRef(o['block'], where, `${key}.block`);
-    if (width === 0 || height === 0) return emptyLayer();
+    const channels = key === 'canvas' ? CANVAS_CHANNELS : FIELD_CHANNELS;
+    if (width === 0 || height === 0) return emptyLayer(channels);
     const block = slice(ref, key);
-    const expected = width * height * STAMP_TEXEL_CHANNELS * 2;
+    const expected = width * height * channels * 2;
     if (block.byteLength !== expected) {
       throw new StampFormatError(
         `${where}: "${key}" is ${width}x${height} and should hold ${expected} ` +
           `bytes of half-float, but its block is ${block.byteLength}`,
       );
     }
-    return { width, height, data: fromHalfBits(new Uint16Array(block)) };
+    return { width, height, channels, data: fromHalfBits(new Uint16Array(block)) };
   };
 
   const paletteRaw = header['palette'];

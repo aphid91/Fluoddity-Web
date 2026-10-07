@@ -15,7 +15,8 @@ import {
 import {
   type StampData,
   STAMP_PARTICLE_STRIDE,
-  STAMP_TEXEL_CHANNELS,
+  CANVAS_CHANNELS,
+  FIELD_CHANNELS,
   emptyLayer,
   particleCount,
 } from './stampData.ts';
@@ -88,19 +89,19 @@ function sampleStamp(): StampData {
   floats[8] = 1.5;
   floats[9] = -2.25;
 
-  const canvasTexels = 3 * 2 * STAMP_TEXEL_CHANNELS;
+  const canvasTexels = 3 * 2 * CANVAS_CHANNELS;
   const canvasData = new Float32Array(canvasTexels);
   for (let i = 0; i < canvasTexels; i++) canvasData[i] = i / 4;
 
-  const fieldTexels = 2 * 2 * STAMP_TEXEL_CHANNELS;
+  const fieldTexels = 2 * 2 * FIELD_CHANNELS;
   const fieldData = new Float32Array(fieldTexels);
   for (let i = 0; i < fieldTexels; i++) fieldData[i] = -i / 8;
 
   return {
     box: makeStampBox([-1, -0.5], [1, 0.5]),
     particles,
-    canvas: { width: 3, height: 2, data: canvasData },
-    field: { width: 2, height: 2, data: fieldData },
+    canvas: { width: 3, height: 2, channels: CANVAS_CHANNELS, data: canvasData },
+    field: { width: 2, height: 2, channels: FIELD_CHANNELS, data: fieldData },
     palette: [
       { slot: 0, name: 'Tangle' },
       { slot: 7, name: '' },
@@ -145,8 +146,8 @@ test('a stamp with no particles round-trips', () => {
 test('a stamp with empty layers round-trips', () => {
   const stamp: StampData = {
     ...sampleStamp(),
-    canvas: emptyLayer(),
-    field: emptyLayer(),
+    canvas: emptyLayer(CANVAS_CHANNELS),
+    field: emptyLayer(FIELD_CHANNELS),
   };
   const decoded = decodeStamp(encodeStamp(stamp));
   assert.equal(decoded.canvas.width, 0);
@@ -197,7 +198,7 @@ test('encoding refuses a stamp whose layer dimensions disagree with its data', (
   // surface as a world rendering black days later.
   const broken: StampData = {
     ...sampleStamp(),
-    canvas: { width: 4, height: 4, data: new Float32Array(8) },
+    canvas: { width: 4, height: 4, channels: CANVAS_CHANNELS, data: new Float32Array(8) },
   };
   assert.throws(() => encodeStamp(broken), (e: unknown) => {
     assert.ok(e instanceof StampFormatError);
