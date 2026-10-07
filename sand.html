@@ -850,6 +850,15 @@
         margin-bottom: 6px;
         padding-bottom: 6px;
       }
+      /* "Paste from link" -- an action, not a config, so it is set apart
+         from the list the same way "None" is. */
+      .entry[data-paste='true'] {
+        color: var(--accent);
+        border-bottom: 1px solid var(--edge-soft);
+        border-radius: 0;
+        margin-bottom: 6px;
+        padding-bottom: 6px;
+      }
       /* Compatible with the master element's world settings -- see
          compatibility.ts. Green means "this will look like it should here". */
       .entry[data-compatible='true'] {

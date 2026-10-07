@@ -12,6 +12,7 @@
  *   SPACE    pause / resume. The world starts PAUSED, arranging.
  *   R        restore the initial conditions (does nothing while authoring them)
  *   Shift+V  load a config from the clipboard into the first empty swatch
+ *            (the load menu's "Paste from link…" does the same for any swatch)
  *   left     apply the armed tool
  *   right    apply its inverse
  */
@@ -152,6 +153,9 @@ async function main(): Promise<void> {
     },
     // "None". The palette refuses this for the master, so the menu hiding the
     // option and the model rejecting it agree -- see `Palette.clear`.
+    onPasteLink: (slot) => {
+      void pasteIntoSwatch(slot);
+    },
     onClearSlot: (slot) => {
       orch.palette.clear(slot);
       orch.applyPalette(fallbackConfig, defaultWorld);
@@ -1442,7 +1446,17 @@ async function main(): Promise<void> {
       notify('No empty swatch — right-click one to load into it');
       return;
     }
+    await pasteIntoSwatch(slot);
+  }
 
+  /**
+   * Decode a share link or config from the clipboard into `slot`.
+   *
+   * The body of Shift+V, and the load menu's "Paste from link…" row, which is
+   * the same thing aimed at a chosen swatch -- and the only way to do it on a
+   * phone, which has no Shift+V.
+   */
+  async function pasteIntoSwatch(slot: number): Promise<void> {
     const clip = await readText();
     const text =
       clip !== null && clip.trim() !== ''

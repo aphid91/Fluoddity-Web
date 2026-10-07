@@ -157,6 +157,8 @@ export interface SandUiCallbacks {
   onTool(tool: SandTool): void;
   /** A config was chosen for a swatch in the load menu. */
   onLoad(slot: number, entry: ConfigEntry): void;
+  /** "Paste from link…" was chosen: decode the clipboard into this swatch. */
+  onPasteLink(slot: number): void;
   /** "None" was chosen: empty this swatch. */
   onClearSlot(slot: number): void;
   /** A brush-size button was pressed. */
@@ -951,7 +953,22 @@ export class SandUi {
     const palette = this.palette;
     if (palette === null) return;
 
-    // "NONE", ABOVE EVERYTHING ELSE -- it empties the swatch. Absent on the
+    // "PASTE FROM LINK", AT THE VERY TOP -- Shift+V aimed at this swatch, and
+    // the only way to load a shared config on a phone. The clipboard is read
+    // inside this click, which is the gesture browsers require for it.
+    const paste = document.createElement('button');
+    paste.type = 'button';
+    paste.className = 'entry';
+    paste.dataset['paste'] = 'true';
+    paste.textContent = 'Paste from link…';
+    paste.title = 'Load a Fluoddity share link or config from the clipboard';
+    paste.addEventListener('click', () => {
+      this.closeLoader();
+      this.callbacks.onPasteLink(slot);
+    });
+    this.loaderListEl.append(paste);
+
+    // "NONE", NEXT -- it empties the swatch. Absent on the
     // master: the master is where the scene's trail persistence and boundary
     // come from, so it may not be empty.
     if (slot !== MASTER_SLOT) {
