@@ -88,7 +88,7 @@ test('export does not rewrite the stored document', () => {
 
 test('export pretty-prints, so the files are readable in configs/', () => {
   const [file] = exportFiles([{ name: 'Krill', document: document() }]);
-  assert.match(file!.text, /\n {2}"version": 8/);
+  assert.match(file!.text, /\n {2}"version": 9/);
   assert.ok(file!.text.endsWith('\n'), 'files end with a newline');
 });
 

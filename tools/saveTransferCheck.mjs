@@ -225,7 +225,7 @@ if (alpha.found !== true) {
   if (alpha.filename === 'TransferAlpha.json') pass('PASS 1: export names the file after the save');
   else fail(`PASS 1: filename was ${alpha.filename}`);
 
-  if (alpha.version === 8) pass('PASS 1: the exported file is version 8');
+  if (alpha.version === 9) pass('PASS 1: the exported file is version 9');
   else fail(`PASS 1: exported version was ${alpha.version}`);
 
   if (alpha.identical) pass('PASS 1: exported bytes equal the stored document');

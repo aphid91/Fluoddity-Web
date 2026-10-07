@@ -1,5 +1,5 @@
 /**
- * The v8 save format: reader, writer, and filename sanitizer.
+ * The v9 save format: reader, writer, and filename sanitizer.
  *
  * A port of `particle_system/persistence.py` (373 lines), minus everything v7.
  *
@@ -19,6 +19,15 @@
  * friendlier message, because that would be a v7 code path with a v7's worth of
  * assumptions about what those files contain. A version that is not 8 is
  * unrecognized, full stop.
+ *
+ * ## v8 IS READ, AND MIGRATED ON THE WAY IN
+ *
+ * v9 changed what MUTATION does, not the shape of the file: `rule.wgsl` used to
+ * scale each frequency vec4 by one random factor and now draws four, at twice
+ * the range. A v8 document is therefore read exactly as before and then
+ * migrated by `migrateMutationV8`, so every source -- saves, presets, share
+ * links, the clipboard, sand palettes -- gets the same treatment from the one
+ * place that interprets them. Nothing is logged; the result is simply v9.
  *
  * ## The tolerances are not optional
  *
@@ -44,9 +53,14 @@ import {
   makeSimulationConfig,
   makeWorldSettings,
 } from '../particleSystem/config.ts';
+import { cohortSlotCount } from '../particleSystem/configSlots.ts';
+import { mutateRuleV1, ruleSeedV1 } from './mutationV1.ts';
 
-/** The only version this port reads or writes. */
-export const FORMAT_VERSION = 8;
+/** The version this port writes. */
+export const FORMAT_VERSION = 9;
+
+/** The one older version still read -- and migrated. See `migrateMutationV8`. */
+export const MIGRATED_VERSION = 8;
 
 /** Thrown for anything this reader will not accept. */
 export class ConfigFormatError extends Error {
@@ -269,7 +283,7 @@ export function fromDocument(data: unknown, where = 'config'): SavedConfig {
   const raw = data as Record<string, unknown>;
 
   const version = raw['version'];
-  if (version !== FORMAT_VERSION) {
+  if (version !== FORMAT_VERSION && version !== MIGRATED_VERSION) {
     throw new ConfigFormatError(
       `${where}: unrecognized config version ${String(version)}; expected ${FORMAT_VERSION}`,
     );
@@ -287,9 +301,10 @@ export function fromDocument(data: unknown, where = 'config'): SavedConfig {
     throw new ConfigFormatError(`${where}: "configs" is empty`);
   }
 
-  const configs = configsRaw.map((c, i) =>
+  const read = configsRaw.map((c, i) =>
     configFromDocument(block(c), `${where}: configs[${i}]`),
   );
+  const configs = version === MIGRATED_VERSION ? read.map(migrateMutationV8) : read;
 
   const world = makeWorldSettings({
     trailPersistence: num(worldRaw, 'trail_persistence', where),
@@ -310,6 +325,47 @@ export function fromDocument(data: unknown, where = 'config'): SavedConfig {
     world,
     notes: typeof raw['notes'] === 'string' ? raw['notes'] : '',
   };
+}
+
+/**
+ * One v8 config, made to behave under v9's mutation as it did under v8's.
+ *
+ * Three cases, and only one changes anything:
+ *
+ *   SCALE 0, or a ZERO-SENTINEL rule   unchanged. Mutating at amount 0 is the
+ *                                      identity in both algorithms, and a
+ *                                      sentinel is generated, never mutated.
+ *   ONE COHORT                         BAKED: the rule becomes the one that
+ *                                      cohort obeyed under v8, and the scale
+ *                                      goes to 0 -- so the shader's v9 mutation
+ *                                      is the identity and the particles obey
+ *                                      exactly what they did.
+ *   SEVERAL COHORTS                    unchanged, and they WILL look different:
+ *                                      each cohort's variation is now drawn by
+ *                                      v9. No single rule can stand in for N
+ *                                      mutated siblings, and the variation is
+ *                                      the point of those configs anyway.
+ *
+ * Cohort 0's seed is `ruleSeedV1(seed, 0)`: a single-cohort config fills one
+ * slot, in the studio and in sand alike (`configSlots.ts`), and `cohortRules`
+ * derives it as cohort 0.
+ */
+export function migrateMutationV8(config: SimulationConfig): SimulationConfig {
+  if (config.mutationScale === 0 || isZeroSentinel(config.rule)) return config;
+  if (cohortSlotCount(config) !== 1) return config;
+  return {
+    ...config,
+    rule: mutateRuleV1(config.rule, config.mutationScale, ruleSeedV1(config.mutationSeed, 0)),
+    mutationScale: 0,
+  };
+}
+
+/**
+ * The "no rule given, generate one" signal: exactly the two lanes
+ * `derive_entity_rule` tests -- `centers[0].frequency` and `centers[5].amplitude`.
+ */
+function isZeroSentinel(rule: readonly number[]): boolean {
+  return [0, 1, 2, 3, 44, 45, 46, 47].every((i) => rule[i] === 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +422,7 @@ function configToDocument(config: SimulationConfig): unknown {
 }
 
 /**
- * Build a v8 document. The port of `to_dict` (`persistence.py:166-181`).
+ * Build a v9 document. The port of `to_dict` (`persistence.py:166-181`).
  *
  * WRITES THE WHOLE CONFIG BUFFER, not just the selected slot: saving only
  * config 0 was removed on the desktop because it silently dropped the others

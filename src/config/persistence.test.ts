@@ -1,5 +1,5 @@
 /**
- * Tests for the v8 save format.
+ * Tests for the v9 save format, and the v8 documents it migrates.
  *
  * Absorbs `defaultConfig.test.ts`, retargeted at the document form. Those
  * assertions are not thrown away: they were the only check that the shipped
@@ -30,9 +30,11 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { BC, IC, makeSimulationConfig, makeWorldSettings } from '../particleSystem/config.ts';
+import { mutateRuleV1, ruleSeedV1 } from './mutationV1.ts';
 import {
   ConfigFormatError,
   FORMAT_VERSION,
+  MIGRATED_VERSION,
   fromDocument,
   sanitizeName,
   toDocument,
@@ -64,10 +66,16 @@ const REPO_ROOT = path.join(here, '..', '..');
  */
 const REFERENCE_DIR = path.join(REPO_ROOT, 'configs-bu');
 
-/** A minimal valid v8 document, which each case below perturbs. */
+/**
+ * A minimal valid CURRENT document, which each case below perturbs.
+ *
+ * v9, not v8: its single cohort and nonzero mutation scale are exactly what a
+ * v8 read migrates, and these cases are about the reader, not the migration.
+ * The migration has its own section.
+ */
 function validDocument(): Record<string, unknown> {
   return {
-    version: 8,
+    version: 9,
     world: {
       trail_persistence: 0.9,
       trail_diffusion: 1.0,
@@ -310,7 +318,7 @@ test('v7 is rejected, with no v7 code path to reject it', () => {
   doc['version'] = 7;
   assert.throws(() => fromDocument(doc), ConfigFormatError);
 
-  doc['version'] = 9;
+  doc['version'] = 10;
   assert.throws(() => fromDocument(doc), ConfigFormatError);
 
   delete doc['version'];
@@ -393,13 +401,76 @@ test('sanitizeName CAN return empty, which the caller must check', () => {
   assert.equal(sanitizeName('   '), '');
 });
 
-test('FORMAT_VERSION is 8 and is what the writer emits', () => {
-  assert.equal(FORMAT_VERSION, 8);
+test('FORMAT_VERSION is 9 and is what the writer emits', () => {
+  assert.equal(FORMAT_VERSION, 9);
   const doc = toDocument(
     fromDocument(validDocument()).configs,
     fromDocument(validDocument()).world,
   ) as Record<string, unknown>;
-  assert.equal(doc['version'], 8);
+  assert.equal(doc['version'], 9);
+});
+
+// ---------------------------------------------------------------------------
+// v8 -> v9: the mutation migration
+// ---------------------------------------------------------------------------
+
+/** `validDocument` as v8, with its first config's fields overridden. */
+function v8Document(over: { scale?: number; cohorts?: number; rule?: number[] } = {}) {
+  const doc = validDocument();
+  doc['version'] = MIGRATED_VERSION;
+  const c = (doc['configs'] as Record<string, unknown>[])[0]!;
+  const lane = (key: string) => c[key] as Record<string, unknown>;
+  if (over.scale !== undefined) lane('sensor')['mutation_scale'] = over.scale;
+  if (over.cohorts !== undefined) lane('misc')['cohorts'] = over.cohorts;
+  if (over.rule !== undefined) c['rule'] = over.rule;
+  return doc;
+}
+
+const ruleOf = (doc: Record<string, unknown>) =>
+  (doc['configs'] as { rule: number[] }[])[0]!.rule;
+
+test('v8, one cohort, nonzero scale: BAKED -- cohort 0 rule, scale 0', () => {
+  const doc = v8Document();
+  const [config] = fromDocument(doc).configs;
+  assert.equal(config!.mutationScale, 0);
+  assert.deepEqual(config!.rule, mutateRuleV1(ruleOf(doc), 0.1, ruleSeedV1(0.82, 0)));
+  // Everything else untouched -- the seed especially, which still drives a
+  // future scale above 0.
+  assert.equal(config!.mutationSeed, 0.82);
+  assert.equal(config!.cohorts, 1);
+});
+
+test('v8, scale 0: unchanged', () => {
+  const doc = v8Document({ scale: 0 });
+  const [config] = fromDocument(doc).configs;
+  assert.deepEqual(config!.rule, ruleOf(doc));
+});
+
+test('v8, several cohorts: unchanged, scale kept', () => {
+  const doc = v8Document({ cohorts: 16 });
+  const [config] = fromDocument(doc).configs;
+  assert.deepEqual(config!.rule, ruleOf(doc));
+  assert.equal(config!.mutationScale, 0.1);
+});
+
+test('v8, zero-sentinel rule: unchanged -- it is generated, never mutated', () => {
+  const doc = v8Document({ rule: new Array<number>(80).fill(0) });
+  const [config] = fromDocument(doc).configs;
+  assert.equal(config!.mutationScale, 0.1);
+  assert.ok(config!.rule.every((v) => v === 0));
+});
+
+test('v9 is NEVER migrated, whatever its scale and cohorts', () => {
+  const doc = validDocument();
+  const [config] = fromDocument(doc).configs;
+  assert.equal(config!.mutationScale, 0.1);
+  assert.deepEqual(config!.rule, ruleOf(doc));
+});
+
+test('a migrated v8 document writes back as v9 and reads back identically', () => {
+  const read = fromDocument(v8Document());
+  const again = fromDocument(toDocument(read.configs, read.world, read.notes));
+  assert.deepEqual(again, read);
 });
 
 // ---------------------------------------------------------------------------
@@ -431,7 +502,11 @@ test('parses the real shipped presets to the values the reference reader produce
     const raw = JSON.parse(
       fs.readFileSync(path.join(REFERENCE_DIR, `${name}.json`), 'utf8'),
     );
-    const parsed = fromDocument(raw, `${name}.json`);
+    // Read as v9, i.e. WITHOUT the mutation migration: the fixture records what
+    // the reference READER produced, and the migration is a later, separate
+    // step with its own tests below. Starcrossedv8 would otherwise come back
+    // baked, which is correct and not what this test is about.
+    const parsed = fromDocument({ ...raw, version: FORMAT_VERSION }, `${name}.json`);
     const config = parsed.configs[0]!;
 
     for (const [key, value] of Object.entries(expected.config)) {

@@ -282,7 +282,7 @@ if (savedNow?.length === 1 && record.name === 'check meplease') {
   fail(`expected one record named "check meplease", got ${JSON.stringify(savedNow)}`);
 }
 
-if (record?.version === 8 && !record?.hasCamera && record?.configs >= 1) {
+if (record?.version === 9 && !record?.hasCamera && record?.configs >= 1) {
   pass('the stored document is v8, carries NO camera, and holds every config slot');
 } else {
   fail(`stored document is malformed: ${JSON.stringify(record)}`);

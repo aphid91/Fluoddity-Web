@@ -58,10 +58,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 // src/config -> src -> repo root, which is where `configs/` lives.
 const REPO_ROOT = path.join(here, '..', '..');
 
-/** A minimal valid v8 document. Mirrors `persistence.test.ts:46`. */
+/** A minimal valid current (v9) document. Mirrors `persistence.test.ts`'s. */
 function validDocument(): Record<string, unknown> {
   return {
-    version: 8,
+    version: 9,
     world: {
       trail_persistence: 0.9,
       trail_diffusion: 1.0,
@@ -422,12 +422,12 @@ test('a future version decodes here and is rejected by the reader', () => {
   // NOT A VERSION CHECK IN THIS FILE. Transport does not get an opinion about
   // meaning; `fromDocument` is the one interpreter and gives the message that
   // actually says what is wrong.
-  const hash = encodeShareLink({ ...validDocument(), version: 9 });
+  const hash = encodeShareLink({ ...validDocument(), version: 10 });
   const doc = decodeShareLink(hash);
-  assert.equal((doc as Record<string, unknown>)['version'], 9);
+  assert.equal((doc as Record<string, unknown>)['version'], 10);
   assert.throws(() => fromDocument(doc, 'shared link'), {
     name: 'ConfigFormatError',
-    message: /shared link.*version 9/,
+    message: /shared link.*version 10/,
   });
 });
 

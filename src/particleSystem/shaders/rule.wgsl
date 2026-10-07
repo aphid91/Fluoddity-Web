@@ -124,7 +124,12 @@ fn mutate_rule(current_rule: Rule, amount: f32, cohort: f32) -> Rule {
         // reassociating a float add is not required to be value-preserving.
         let amp_mutation = amount * (-1.0 + 2.0 * hash4(-0.5 + vec2f(-f32(i) + seed, f32(i))));
         rule.centers[i].amplitude += amp_mutation;
-        rule.centers[i].frequency *= 1.0 + amount * 0.5 * (hash(vec2f(seed, f32(i))) - 0.5);
+        // FOUR DRAWS, one per component, like the amplitude above. The desktop
+        // drew one scalar and scaled the whole vec4 by it, which only ever
+        // stretched a frequency and never turned it. Factor range is
+        // 1 +/- amount/2, double the old 1 +/- amount/4. `.x` is the old draw.
+        let freq_mutation = amount * (hash4(vec2f(seed, f32(i))) - 0.5);
+        rule.centers[i].frequency *= 1.0 + freq_mutation;
     }
     return rule;
 }
