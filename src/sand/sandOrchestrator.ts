@@ -33,6 +33,7 @@
 
 import type { Assembler } from '../assembler/assembler.ts';
 import type { Camera } from '../camera/camera.ts';
+import type { CameraMode } from '../camera/cameraState.ts';
 import type { RenderTargets } from '../app/renderTargets.ts';
 import type { StrafeField } from '../strafeField/strafeField.ts';
 // The value import as well as the type: `applyWorldSize` builds a replacement.
@@ -1616,6 +1617,16 @@ export class SandOrchestrator {
    * frame still renders.
    */
   colorMode: ColorMode = DEFAULT_COLOR_MODE;
+
+  /**
+   * Flip the camera between particles and the trail map. The Dev tab's View
+   * button. Like `colorMode`, the next frame reads it -- paused frames
+   * included -- so nothing else has to happen.
+   */
+  toggleCameraMode(): CameraMode {
+    this.camera.state.toggleMode();
+    return this.camera.state.mode;
+  }
 
   private renderInto(
     encoder: GPUCommandEncoder,

@@ -935,6 +935,11 @@ async function main(): Promise<void> {
       persist();
       notify(enabled ? 'Auditing after every sweep' : 'Sweep auditing off');
     },
+    onToggleView: () => {
+      const mode = orch.toggleCameraMode();
+      notify(mode === 'trail' ? 'Showing the trail map' : 'Showing particles');
+      return mode;
+    },
     // The shipped-defaults workflow: tinker, export, drop the file over
     // `src/sand/sandDefaults.json`. See `sandDefaults.ts` for what it holds.
     // `live` rather than `prefs`, and the session as it would be saved, so the

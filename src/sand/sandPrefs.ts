@@ -65,6 +65,7 @@ import {
   DEFAULT_COLOR_MODE,
   asColorMode,
 } from './colorMode.ts';
+import type { CameraMode } from '../camera/cameraState.ts';
 import {
   type SwatchColor,
   swatchColorFromCss,
@@ -118,6 +119,11 @@ export interface SandPrefsCallbacks {
   onAutoCompact(enabled: boolean): void;
   /** The Dev tab's Audit pool button. Diagnostic; stalls the pipeline. */
   onAuditPool(): void;
+  /**
+   * The Dev tab's View button: flip between the particle camera and the trail
+   * map. Returns the mode now showing, for the button's label.
+   */
+  onToggleView(): CameraMode;
   /** The Dev tab's "Export settings as defaults" button. */
   onExportSettings(): void;
   /** The Dev tab's "audit after every sweep" switch. */
@@ -465,6 +471,19 @@ export class SandPrefs {
       if (requested === this.committedMaxParticles) return;
       this.committedMaxParticles = requested;
       this.callbacks.onMaxParticles(requested);
+    });
+
+    // THE VIEW: particles or the trail map. A debugging view -- it is how a
+    // restored trail map is checked -- so it is neither persisted nor exported,
+    // and the button says which one is up so it cannot be left on unnoticed.
+    const viewLabel = (mode: CameraMode): string =>
+      mode === 'trail' ? 'View: Trail map' : 'View: Particles';
+    const viewButton = page.addButton({ title: viewLabel('particles') });
+    viewButton.element.title =
+      'Switch between the particle camera and the trail map. Useful for ' +
+      'checking that a world’s trails were restored. Not saved.';
+    viewButton.on('click', () => {
+      viewButton.title = viewLabel(this.callbacks.onToggleView());
     });
 
     this.buildColor(page);
