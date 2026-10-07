@@ -176,7 +176,9 @@ async function main(): Promise<void> {
             name: entry.name,
           });
           orch.applyPalette(fallbackConfig, defaultWorld);
-          persist();
+          // Selected, with the brush armed: an element is loaded to be painted
+          // with, so the next stroke should lay it down without another click.
+          selectSwatch(slot);
         } catch (e) {
           console.error(`Could not load ${entry.name}: ${String(e)}`);
         }
@@ -1495,12 +1497,11 @@ async function main(): Promise<void> {
       world: saved.world,
       name: 'Pasted',
     });
-    // Selected as well as filled: the user pasted it to use it, and leaving the
-    // selection on whatever was armed before would make the paste look like it
-    // had gone somewhere else.
-    orch.palette.select(slot);
     orch.applyPalette(fallbackConfig, defaultWorld);
-    persist();
+    // Selected as well as filled, with the brush armed: the user pasted it to
+    // use it, and leaving the selection on whatever was armed before would make
+    // the paste look like it had gone somewhere else.
+    selectSwatch(slot);
     notify(`Loaded into swatch ${slot + 1}`);
   }
 
