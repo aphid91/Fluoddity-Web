@@ -53,7 +53,7 @@ const CANVAS_MAX_SHARE = 0.75;
 /** Swatches filling less than this share of the bar get wider spacing... */
 const SWATCH_FILL = 0.5;
 /** ...but never more than this, in the same units as `--sw-gap`. */
-const SWATCH_GAP_MAX = 35;
+const SWATCH_GAP_MAX = 45;
 /** How long a touch must hold still on a swatch to open its menu. */
 const LONG_PRESS_MS = 500;
 /** How far a touch may wander and still count as holding still, in px. */
