@@ -88,6 +88,23 @@ export interface CropOverlayOptions {
    * is nobody's business but the user's.
    */
   readonly warnAboveDevicePx: number;
+  /**
+   * CIRCLE MODE, for sand's swatch icons: the drag starts at the centre and the
+   * pointer sets the radius, so the shape is locked to 1:1. The selection is
+   * the circle's bounding square.
+   *
+   * A drag shorter than `minRadiusCss` CANCELS rather than growing -- an icon
+   * has no minimum worth enforcing, and a tap is how the user backs out. The
+   * square is not clamped to the window either: the part of a circle hanging
+   * off the canvas captures as black, which is what the user saw selected.
+   *
+   * The QR options above are ignored in this mode; pass zeroes.
+   */
+  readonly circle?: {
+    readonly minRadiusCss: number;
+    /** The banner text. */
+    readonly instruction: string;
+  };
 }
 
 /**
@@ -233,8 +250,11 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
     // The resting message. Kept in a const because `draw` swaps the banner to
     // the size caution and has to be able to put this back -- rebuilding the
     // string there would be the same sentence written twice.
+    const circle = options.circle ?? null;
     const instruction =
-      minCss > 0
+      circle !== null
+        ? circle.instruction
+        : minCss > 0
         ? `Drag to choose the shareable area — at least ${Math.ceil(minCss)}px on each side. Esc to cancel.`
         : 'Drag to choose the area to capture. Esc to cancel.';
 
@@ -252,7 +272,14 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
     /** The captured pointer, so `finish` can release it. `null` when none is. */
     let activePointer: number | null = null;
 
-    const rectFrom = (x: number, y: number): CropSelection => ({
+    const rectFrom = (x: number, y: number): CropSelection => {
+      if (circle !== null) {
+        const r = Math.hypot(x - startX, y - startY);
+        return { x: startX - r, y: startY - r, width: 2 * r, height: 2 * r };
+      }
+      return cornerRect(x, y);
+    };
+    const cornerRect = (x: number, y: number): CropSelection => ({
       x: Math.min(startX, x),
       y: Math.min(startY, y),
       width: Math.abs(x - startX),
@@ -268,7 +295,11 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
       const dw = Math.round(rect.width * ratio);
       const dh = Math.round(rect.height * ratio);
 
-      const tooSmall = rect.width < minCss || rect.height < minCss;
+      // In circle mode "too small" means "will cancel" -- see `circle`.
+      const tooSmall =
+        circle !== null
+          ? rect.width / 2 < circle.minRadiusCss
+          : rect.width < minCss || rect.height < minCss;
       const tooLarge =
         options.warnAboveDevicePx > 0 &&
         (dw > options.warnAboveDevicePx || dh > options.warnAboveDevicePx);
@@ -280,6 +311,9 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
       const accent = tooSmall ? TOO_SMALL : tooLarge ? TOO_LARGE : '#fff';
 
       box.style.display = 'block';
+      // A round box dims everything outside the CIRCLE: the shadow that does
+      // the dimming follows the border radius.
+      box.style.borderRadius = circle !== null ? '50%' : '';
       box.style.left = `${rect.x}px`;
       box.style.top = `${rect.y}px`;
       box.style.width = `${rect.width}px`;
@@ -306,7 +340,11 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
       // THREE STATES, IN THE PRIORITY THE ACCENT ALREADY USES: the correction
       // outranks the caution, and a selection that is neither is just a size.
       hint.style.display = 'block';
-      hint.textContent = tooSmall
+      hint.textContent = circle !== null
+        ? tooSmall
+          ? 'too small — release to cancel'
+          : `${dw} px across`
+        : tooSmall
         ? `${dw} x ${dh} — too small, will grow to ${options.minDevicePx}`
         : tooLarge
           ? `${dw} x ${dh} — ${LARGE_READOUT_NOTE}`
@@ -437,6 +475,10 @@ export function pickCropRegion(options: CropOverlayOptions): Promise<CropSelecti
       if (!dragging) return;
       dragging = false;
       const rect = rectFrom(event.clientX, event.clientY);
+      if (circle !== null) {
+        finish(rect.width / 2 < circle.minRadiusCss ? null : rect);
+        return;
+      }
       // A click with no drag is a cancel, not a zero-sized selection that then
       // gets grown into an arbitrary square.
       if (rect.width < 8 && rect.height < 8) {

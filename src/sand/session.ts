@@ -57,6 +57,7 @@ import {
 } from './brushInput.ts';
 import { type SwatchColor, readSwatchColor } from './swatchColor.ts';
 import { type ColorMode, DEFAULT_COLOR_MODE, asColorMode } from './colorMode.ts';
+import { readSwatchIcon } from './swatchIcon.ts';
 
 export const SESSION_KEY = 'fluoddity.sand.session';
 
@@ -84,6 +85,8 @@ export interface StoredSlot {
    * spaced defaults rather than failing to parse.
    */
   readonly color?: SwatchColor;
+  /** The swatch's captured icon -- see `swatchIcon.ts`. Absent for none. */
+  readonly icon?: string;
 }
 
 export interface SandSession {
@@ -157,6 +160,15 @@ export interface SandSession {
    * `worldFormat.ts`.
    */
   readonly colorMode: ColorMode;
+
+  /**
+   * CUSTOM'S world icon, for its World menu swatch, or null for the stand-in.
+   *
+   * Custom's for the reason `slots` is Custom's: a preset world's icon is the
+   * world's own and comes back with it on every load. Saving Custom as a world
+   * carries this into the saved document.
+   */
+  readonly worldIcon: string | null;
 }
 
 /**
@@ -191,6 +203,7 @@ export const EMPTY_SESSION: SandSession = {
   auditAfterSweep: false,
   // The original look, so a fresh install renders as it always did.
   colorMode: DEFAULT_COLOR_MODE,
+  worldIcon: null,
 };
 
 /** The subset of `localStorage` this needs, so tests can supply their own. */
@@ -267,10 +280,14 @@ export function asSlot(raw: unknown): StoredSlot {
   // A malformed colour is dropped and the caller substitutes the spaced
   // default -- see `readSwatchColor`.
   const color = readSwatchColor(o['color']);
+  const document = o['document'] ?? null;
+  // An icon pictures a material, so an empty swatch keeps none.
+  const icon = document === null ? null : readSwatchIcon(o['icon']);
   return {
     name: typeof o['name'] === 'string' ? o['name'] : '',
-    document: o['document'] ?? null,
+    document,
     ...(color === null ? {} : { color }),
+    ...(icon === null ? {} : { icon }),
   };
 }
 
@@ -386,6 +403,7 @@ export function parseSession(raw: string): SandSession {
     // Anything unrecognised is the original look -- a session from a build with
     // a mode this one does not have should render rather than fail.
     colorMode: asColorMode(o['colorMode']),
+    worldIcon: readSwatchIcon(o['worldIcon']),
   };
 }
 

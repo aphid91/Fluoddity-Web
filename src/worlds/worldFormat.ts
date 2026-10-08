@@ -54,6 +54,7 @@ import {
 import { SLOT_COUNT } from '../sand/palette.ts';
 import { type SwatchColor, readSwatchColor } from '../sand/swatchColor.ts';
 import { type ColorMode, DEFAULT_COLOR_MODE, asColorMode } from '../sand/colorMode.ts';
+import { readSwatchIcon } from '../sand/swatchIcon.ts';
 import type { StampBox } from '../stamp/stampBox.ts';
 
 /** The only version this reads or writes. */
@@ -138,6 +139,12 @@ export interface WorldSlot {
    * stays missing" contract `readWorld` keeps for preferences.
    */
   readonly color?: SwatchColor;
+  /**
+   * The swatch's captured icon, shown in place of the colour. An image URL --
+   * see `sand/swatchIcon.ts` for the forms it takes. Optional: most slots, and
+   * every world saved before icons, have none.
+   */
+  readonly icon?: string;
 }
 
 /** A world's JSON half. The scene rides alongside as `.fwld` bytes. */
@@ -177,6 +184,11 @@ export interface WorldDocument {
    * the frame.
    */
   readonly sceneFrame: StampBox | null;
+  /**
+   * The world's own icon, for its World menu swatch, or null for the stand-in
+   * artwork. An image URL, like a slot's.
+   */
+  readonly icon: string | null;
 }
 
 /**
@@ -187,12 +199,18 @@ export interface WorldDocument {
  * header.
  */
 export function makeWorldDocument(args: {
-  slots: readonly { name: string; document: unknown | null; color?: SwatchColor }[];
+  slots: readonly {
+    name: string;
+    document: unknown | null;
+    color?: SwatchColor;
+    icon?: string;
+  }[];
   preferences: Preferences;
   visibleCount: number;
   colorMode?: ColorMode;
   notes?: string;
   sceneFrame?: StampBox | null;
+  icon?: string | null;
 }): WorldDocument {
   const slots: WorldSlot[] = [];
   args.slots.forEach((entry, slot) => {
@@ -208,6 +226,7 @@ export function makeWorldDocument(args: {
       name: entry.name,
       document: entry.document,
       ...(entry.color === undefined ? {} : { color: entry.color }),
+      ...(entry.icon === undefined ? {} : { icon: entry.icon }),
     });
   });
 
@@ -222,6 +241,7 @@ export function makeWorldDocument(args: {
     visibleCount: args.visibleCount,
     colorMode: args.colorMode ?? DEFAULT_COLOR_MODE,
     sceneFrame: args.sceneFrame ?? null,
+    icon: args.icon ?? null,
   };
 }
 
@@ -314,11 +334,14 @@ export function readWorld(data: unknown, where = 'world'): WorldDocument {
       // claim a colour its author never chose -- the same reason a missing
       // preference stays missing. See `readSwatchColor` for what it accepts.
       const color = readSwatchColor(o['color']);
+      // Likewise an icon that is not a plain image URL -- see `readSwatchIcon`.
+      const icon = readSwatchIcon(o['icon']);
       slots.push({
         slot,
         name: typeof o['name'] === 'string' ? o['name'] : '',
         document: o['document'],
         ...(color === null ? {} : { color }),
+        ...(icon === null ? {} : { icon }),
       });
     }
   }
@@ -353,7 +376,49 @@ export function readWorld(data: unknown, where = 'world'): WorldDocument {
     // Optional and unversioned: absent in worlds saved before trimming, which
     // read back as null and place as they always did.
     sceneFrame: readFrame(raw['sceneFrame']),
+    // Optional: a world saved before icons shows the stand-in artwork.
+    icon: readSwatchIcon(raw['icon']),
   };
+}
+
+/**
+ * A copy of a RAW world document with every icon passed through `map` -- the
+ * world's own and each slot's. `map` returning null drops that icon.
+ *
+ * ON THE RAW JSON rather than a `WorldDocument`, because both callers move
+ * documents without interpreting them: `builtinWorlds.ts` resolves a pack's
+ * file names to URLs, and `packExport.ts` turns data URLs into files. Parsing
+ * and rewriting through `readWorld` would drop anything this build does not
+ * know about. Anything that is not an object passes through untouched.
+ */
+export async function mapWorldIcons(
+  raw: unknown,
+  map: (icon: string) => string | null | Promise<string | null>,
+): Promise<unknown> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
+  const doc = { ...(raw as Record<string, unknown>) };
+  const one = async (target: Record<string, unknown>): Promise<void> => {
+    const icon = readSwatchIcon(target['icon']);
+    if (icon === null) {
+      delete target['icon'];
+      return;
+    }
+    const mapped = await map(icon);
+    if (mapped === null) delete target['icon'];
+    else target['icon'] = mapped;
+  };
+  if (doc['icon'] !== undefined && doc['icon'] !== null) await one(doc);
+  if (Array.isArray(doc['slots'])) {
+    doc['slots'] = await Promise.all(
+      doc['slots'].map(async (item: unknown) => {
+        if (typeof item !== 'object' || item === null) return item;
+        const slot = { ...(item as Record<string, unknown>) };
+        if (slot['icon'] !== undefined) await one(slot);
+        return slot;
+      }),
+    );
+  }
+  return doc;
 }
 
 /** Whether a preference key is one a world is allowed to state. */

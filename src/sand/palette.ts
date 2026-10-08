@@ -112,6 +112,16 @@ export interface PaletteSlot {
   readonly world: WorldSettings | null;
   /** Display name: the config file's, or empty. */
   readonly name: string;
+  /**
+   * A captured picture shown in place of the colour -- see `swatchIcon.ts`.
+   *
+   * ON THE ENTRY, unlike the colour, because it belongs to the MATERIAL: it is
+   * a picture of what this config looks like. Every `set` builds a fresh entry,
+   * so loading a different config, pasting one or clearing the swatch drops the
+   * icon with no extra bookkeeping, while `edit` and a rename (`{...entry}`)
+   * keep it.
+   */
+  readonly icon?: string;
 }
 
 export const EMPTY_SLOT: PaletteSlot = {
@@ -378,6 +388,20 @@ export class Palette {
   clear(slot: number): void {
     if (slot === MASTER_SLOT) return;
     this.set(slot, EMPTY_SLOT);
+  }
+
+  /**
+   * Set or clear a swatch's icon. Null puts the flat colour back.
+   *
+   * DOES NOT BUMP THE GENERATION, for the reason `setColor` gives: the Config
+   * tab shows nothing of it. Refused on an empty swatch -- there is no material
+   * to picture, and the next load would drop it anyway.
+   */
+  setIcon(slot: number, icon: string | null): void {
+    const current = this.slots[slot];
+    if (current === undefined || current.config === null) return;
+    const { icon: _old, ...rest } = current;
+    this.slots[slot] = icon === null ? rest : { ...rest, icon };
   }
 
   /** Select a flat slot index -- what clicking a swatch does. */

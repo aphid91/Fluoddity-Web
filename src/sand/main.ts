@@ -70,10 +70,13 @@ import { WorldLoaderUi } from '../worlds/worldLoaderUi.ts';
 import {
   applyWorldPreferences,
   makeWorldDocument,
+  mapWorldIcons,
   readWorld,
 } from '../worlds/worldFormat.ts';
 import { TOOL_CONFIG, cycleTool } from './tool.ts';
 import { defaultSwatchColor } from './swatchColor.ts';
+import { SWATCH_ICON_PX, WORLD_ICON_PX, readSwatchIcon } from './swatchIcon.ts';
+import { captureCircleIcon, inlineIcon } from './iconCapture.ts';
 import {
   CUSTOM_WORLD,
   type SandSession,
@@ -146,6 +149,7 @@ async function main(): Promise<void> {
           ...stored,
           slots: builtins.pack.customSlots,
           selectedWorld: builtins.pack.selectedWorld,
+          worldIcon: builtins.pack.customIcon,
         }
       : stored;
 
@@ -181,6 +185,18 @@ async function main(): Promise<void> {
       orch.palette.clear(slot);
       orch.applyPalette(fallbackConfig, defaultWorld);
       persist();
+    },
+    onCaptureSlotIcon: (slot) => {
+      void captureIcon(
+        SWATCH_ICON_PX,
+        `Drag a circle to picture swatch ${slot + 1}. Esc or a tap clears its icon.`,
+        (icon) => {
+          orch.palette.setIcon(slot, icon);
+          return icon === null
+            ? `Swatch ${slot + 1} is back to its colour`
+            : `Captured an icon for swatch ${slot + 1}`;
+        },
+      );
     },
     onSelectWorld: (index) => {
       void selectWorld(index);
@@ -334,6 +350,7 @@ async function main(): Promise<void> {
       config: saved.configs[0],
       world: saved.world,
       name: stored.name,
+      ...(stored.icon === undefined ? {} : { icon: stored.icon }),
     });
     restoredAny = true;
   });
@@ -438,6 +455,26 @@ async function main(): Promise<void> {
   let customSlots: readonly StoredSlot[] | null =
     session.selectedWorld === CUSTOM_WORLD ? null : session.slots;
 
+  /**
+   * THE CURRENT WORLD'S ICON, for its World menu swatch, or null for the
+   * stand-in artwork. Set by a world load and by "Capture world swatch icon";
+   * saved with the world. Like a palette edit, a capture on a preset lasts
+   * until that world is loaded again.
+   */
+  let worldIcon: string | null = null;
+  /**
+   * CUSTOM'S icon. The live one while Custom is active, and held here, like
+   * `customSlots`, while a preset is loaded -- but always current, so
+   * `snapshot` and the Custom button can read it either way.
+   */
+  let customWorldIcon: string | null = session.worldIcon;
+  if (session.selectedWorld === CUSTOM_WORLD) worldIcon = customWorldIcon;
+  /** Set the open world's icon -- Custom's too, when Custom is the world. */
+  const setWorldIcon = (icon: string | null): void => {
+    worldIcon = icon;
+    if (selectedWorld === CUSTOM_WORLD) customWorldIcon = icon;
+  };
+
   /** The live palette, in the session's stored shape. */
   const paletteSlots = (): StoredSlot[] =>
     orch.palette.all().map((slot, index) => ({
@@ -448,6 +485,7 @@ async function main(): Promise<void> {
       // EVEN WHEN THE SWATCH IS EMPTY -- a half-coloured palette is work in
       // progress and must survive a reload. See `StoredSlot.color`.
       color: orch.palette.colorOf(index),
+      ...(slot.icon === undefined ? {} : { icon: slot.icon }),
     }));
 
   const worldStore = await WorldStore.open();
@@ -465,6 +503,30 @@ async function main(): Promise<void> {
     return r.kind === 'builtin'
       ? (builtins?.find(r.id) ?? null) !== null
       : worldStore.names().includes(r.name);
+  };
+  /**
+   * Library worlds' icons, for the World menu. Read once per world and cached:
+   * a library read brings the whole scene with it, so the menu must not do one
+   * per frame. Kept current by `saveWorld` and the library's delete.
+   */
+  const libraryIcons = new Map<string, string | null>();
+  const iconOfDocument = (document: unknown): string | null =>
+    typeof document === 'object' && document !== null
+      ? readSwatchIcon((document as Record<string, unknown>)['icon'])
+      : null;
+  /** What a world button shows when it is not the world that is open. */
+  const savedWorldIcon = (ref: string): string | null => {
+    const r = parseWorldRef(ref);
+    if (r === null) return null;
+    if (r.kind === 'builtin') return builtins?.iconUrl(r.id) ?? null;
+    if (libraryIcons.has(r.name)) return libraryIcons.get(r.name) ?? null;
+    // Null while the read is in flight, so it starts only once.
+    libraryIcons.set(r.name, null);
+    void worldStore
+      .read(r.name)
+      .then((record) => libraryIcons.set(r.name, iconOfDocument(record?.document)))
+      .catch(() => undefined);
+    return null;
   };
   /** A world's document and scene, from the pack or the library. */
   const readWorldRecord = async (ref: string): Promise<WorldRecord | null> => {
@@ -506,6 +568,7 @@ async function main(): Promise<void> {
     compactionPaused: orch.compactionStats.paused,
     auditAfterSweep,
     colorMode: orch.colorMode,
+    worldIcon: customWorldIcon,
   });
 
   /**
@@ -884,6 +947,19 @@ async function main(): Promise<void> {
     onExportWorldSetup: () => {
       void exportWorldSetup();
     },
+    onCaptureWorldIcon: () => {
+      void captureIcon(
+        WORLD_ICON_PX,
+        'Drag a circle to picture this world. Esc or a tap clears its icon.',
+        (icon) => {
+          setWorldIcon(icon);
+          if (icon === null) return 'World icon cleared — back to the stand-in';
+          return selectedWorld === CUSTOM_WORLD
+            ? 'Captured Custom’s icon — saving it as a world carries it along'
+            : 'Captured the world icon — save the world to keep it';
+        },
+      );
+    },
     onTheme: (next) => {
       theme = next;
       ui.applyTheme(next);
@@ -1053,6 +1129,8 @@ async function main(): Promise<void> {
   let buttons = 0;
   /** Shift arms the line tool in the painting tools. Tracked on both edges. */
   let shiftHeld = false;
+  /** An icon capture is up -- see `captureIcon`. */
+  let capturing = false;
 
   canvas.addEventListener('pointermove', (e) => {
     pointer = { x: e.clientX, y: e.clientY };
@@ -1138,6 +1216,8 @@ async function main(): Promise<void> {
 
   window.addEventListener('keydown', (e) => {
     shiftHeld = e.shiftKey;
+    // A capture is modal: its overlay takes Escape, and nothing else should run.
+    if (capturing) return;
     // A typed field owns its own keys -- the Weight input in particular, where
     // `1`-`0` must enter digits rather than switch palette squares.
     if (e.target instanceof HTMLInputElement) return;
@@ -1207,20 +1287,26 @@ async function main(): Promise<void> {
       // scene at all.
       const trimmed = whole === null ? null : trimScene(decodeStamp(whole, 'scene'));
       const scene = trimmed === null ? null : encodeStamp(trimmed.stamp);
-      const document = makeWorldDocument({
+      const made = makeWorldDocument({
         sceneFrame: trimmed?.frame ?? null,
         slots: orch.palette.all().map((slot, index) => ({
           name: slot.name,
           document: slotDocument(slot.config, slot.world),
           color: orch.palette.colorOf(index),
+          ...(slot.icon === undefined ? {} : { icon: slot.icon }),
         })),
+        icon: worldIcon,
         preferences: live,
         visibleCount: orch.palette.visibleCount,
         // The world's own look, saved with it -- a world built to be read by
         // material is not the same world under Behavior. See `WorldDocument`.
         colorMode: orch.colorMode,
       });
+      // Icons INLINE, so a world built from a pack world keeps its pictures
+      // when the pack changes -- see `inlineIcon`.
+      const document = await mapWorldIcons(made, inlineIcon);
       await worldStore.save(name, document, scene);
+      libraryIcons.set(name, iconOfDocument(document));
       prefsWindow.refreshWorlds(worldChoices(), worldRefs);
       notify(
         scene === null
@@ -1334,6 +1420,7 @@ async function main(): Promise<void> {
         config: saved.configs[0],
         world: saved.world,
         name: stored.name,
+        ...(stored.icon === undefined ? {} : { icon: stored.icon }),
       });
       // An older world states no colour and keeps the default set just above.
       if (stored.color !== undefined) orch.palette.setColor(stored.slot, stored.color);
@@ -1348,6 +1435,9 @@ async function main(): Promise<void> {
     // is the author's statement, not the reader's setting.
     orch.colorMode = world.colorMode;
     prefsWindow.adoptColorMode(world.colorMode);
+    // The world's icon is the open world's -- Custom's as well when a library
+    // world is loaded into Custom to be edited, like its palette.
+    setWorldIcon(world.icon);
     orch.applyPalette(fallbackConfig, defaultWorld);
 
     // --- the scene, placed ---------------------------------------------------
@@ -1449,6 +1539,9 @@ async function main(): Promise<void> {
 
     for (let slot = 0; slot < SLOT_COUNT; slot++) {
       if (slot !== MASTER_SLOT) orch.palette.clear(slot);
+      // Custom's colours come back with its materials. Without this the last
+      // preset's colours stayed, and were then saved as Custom's own.
+      orch.palette.setColor(slot, stored[slot]?.color ?? defaultSwatchColor(slot));
     }
     stored.forEach((entry, slot) => {
       const saved = readSlotDocument(entry.document);
@@ -1458,8 +1551,10 @@ async function main(): Promise<void> {
         config: saved.configs[0],
         world: saved.world,
         name: entry.name,
+        ...(entry.icon === undefined ? {} : { icon: entry.icon }),
       });
     });
+    worldIcon = customWorldIcon;
     // The world's override ends here -- see `customVisibleCount`.
     orch.palette.setVisibleCount(customVisibleCount);
     // Like every world, Custom opens on the master swatch.
@@ -1504,6 +1599,7 @@ async function main(): Promise<void> {
         selectedWorld,
         // Custom's palette, which is the live one only while Custom is active.
         customSlots: customSlots ?? paletteSlots(),
+        customIcon: customWorldIcon,
       });
       downloadBlob(zip, 'default-worlds.zip');
       notify('Exported default-worlds.zip — empty public/worlds/default/ and unzip it there');
@@ -1521,6 +1617,7 @@ async function main(): Promise<void> {
       void (async () => {
         try {
           await worldStore.remove(name);
+          libraryIcons.delete(name);
           // A deleted world may still be assigned to a button. The assignment
           // is LEFT IN PLACE rather than cleared: the panel marks it missing,
           // which says what happened, where a silent reset to None would look
@@ -1534,6 +1631,35 @@ async function main(): Promise<void> {
       })();
     },
   });
+
+  /**
+   * Run one icon capture and hand the result to `apply`, which returns the
+   * status line to show. NULL IS A RESULT, not a failure: a cancelled capture
+   * clears the icon -- that is the requirement, and how an icon is removed.
+   *
+   * The Dev panel is hidden for the gesture, since it floats over the canvas.
+   * A capture that throws leaves the icon as it was.
+   */
+  async function captureIcon(
+    size: number,
+    instruction: string,
+    apply: (icon: string | null) => string,
+  ): Promise<void> {
+    if (capturing) return;
+    capturing = true;
+    prefsWindow.setHidden(true);
+    try {
+      const icon = await captureCircleIcon(canvas as HTMLCanvasElement, size, instruction);
+      notify(apply(icon));
+      persist();
+    } catch (e) {
+      console.error(`Icon capture failed: ${String(e)}`);
+      notify(`Icon capture failed: ${String(e)}`);
+    } finally {
+      prefsWindow.setHidden(false);
+      capturing = false;
+    }
+  }
 
   /**
    * Shift+V -- decode a config from the clipboard into the first empty swatch.
@@ -1697,9 +1823,15 @@ async function main(): Promise<void> {
       // reload. The list is four short strings; the cost is a lookup each.
       worlds: Array.from({ length: ASSIGNABLE_WORLDS }, (_, i) => {
         const ref = effectiveRef(i);
-        return { name: worldLabel(ref), present: worldPresent(ref) };
+        return {
+          name: worldLabel(ref),
+          present: worldPresent(ref),
+          // The OPEN world shows its live icon, so a capture shows at once.
+          icon: i === selectedWorld ? worldIcon : savedWorldIcon(ref),
+        };
       }),
       selectedWorld,
+      customIcon: customWorldIcon,
       shovePull: orch.shovePull,
       eraseMode: orch.eraseMode,
     });

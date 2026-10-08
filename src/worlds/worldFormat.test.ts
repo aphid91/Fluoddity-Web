@@ -9,6 +9,7 @@ import {
   defaultWorldPreferences,
   isWorldPreferenceKey,
   makeWorldDocument,
+  mapWorldIcons,
   readWorld,
 } from './worldFormat.ts';
 import { DEFAULT_PREFERENCES, type Preferences } from '../prefs/preferences.ts';
@@ -374,4 +375,55 @@ test('a document with no slots at all is legal', () => {
     visibleCount: 10,
   });
   assert.deepEqual(back.slots, []);
+});
+
+// ---------------------------------------------------------------------------
+// Icons
+// ---------------------------------------------------------------------------
+
+const ICON = 'data:image/jpeg;base64,AAAA';
+
+test('the world icon and slot icons round-trip, at their slots', () => {
+  const slots = samplePalette().map((s, i) => (i === 3 ? { ...s, icon: ICON } : s));
+  const doc = makeWorldDocument({
+    slots,
+    preferences: DEFAULT_PREFERENCES,
+    visibleCount: 20,
+    icon: ICON,
+  });
+  const back = readWorld(JSON.parse(JSON.stringify(doc)));
+  assert.equal(back.icon, ICON);
+  assert.deepEqual(back.slots.map((s) => s.icon), [undefined, ICON, undefined]);
+});
+
+test('a world predating icons, or with a bad one, reads back with none', () => {
+  const back = readWorld({
+    version: WORLD_FORMAT_VERSION,
+    slots: [{ slot: 2, name: 'Sand', document: { version: 8 }, icon: 'url(evil)' }],
+    preferences: {},
+    visibleCount: 10,
+  });
+  assert.equal(back.icon, null);
+  assert.equal(back.slots.length, 1, 'the material survives');
+  assert.equal(back.slots[0]?.icon, undefined);
+});
+
+test('mapWorldIcons rewrites every icon and leaves the rest alone', async () => {
+  const raw = {
+    version: WORLD_FORMAT_VERSION,
+    icon: ICON,
+    future: 'kept',
+    slots: [
+      { slot: 0, document: { version: 8 }, icon: ICON },
+      { slot: 1, document: { version: 8 } },
+      { slot: 2, document: { version: 8 }, icon: 'bad"' },
+    ],
+  };
+  const out = (await mapWorldIcons(raw, () => 'w.abcd.jpg')) as typeof raw;
+  assert.equal(out.icon, 'w.abcd.jpg');
+  assert.equal(out.future, 'kept');
+  assert.equal(out.slots[0]?.icon, 'w.abcd.jpg');
+  assert.equal('icon' in (out.slots[1] ?? {}), false);
+  assert.equal('icon' in (out.slots[2] ?? {}), false, 'an invalid icon is dropped');
+  assert.equal(raw.slots[0]?.icon, ICON, 'the input is not mutated');
 });

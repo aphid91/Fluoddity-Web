@@ -405,3 +405,34 @@ test('the custom sentinel is not a legal button index', () => {
   // check, which is why it is negative rather than one past the end.
   assert.ok(CUSTOM_WORLD < 0);
 });
+
+test('swatch icons and Custom’s world icon round-trip', () => {
+  const storage = memory();
+  const icon = 'data:image/jpeg;base64,AAAA';
+  saveSession(
+    {
+      ...EMPTY_SESSION,
+      slots: [{ name: 'Sand', document: { version: 8 }, icon }],
+      worldIcon: icon,
+    },
+    storage,
+  );
+  const back = loadSession(storage);
+  assert.equal(back.slots[0]?.icon, icon);
+  assert.equal(back.worldIcon, icon);
+});
+
+test('a bad icon, or one on an empty swatch, is dropped', () => {
+  const parsed = parseSession(
+    JSON.stringify({
+      slots: [
+        { name: 'Sand', document: { version: 8 }, icon: 'javascript:alert(1)' },
+        { name: '', document: null, icon: 'data:image/jpeg;base64,AAAA' },
+      ],
+      worldIcon: 42,
+    }),
+  );
+  assert.equal(parsed.slots[0]?.icon, undefined);
+  assert.equal(parsed.slots[1]?.icon, undefined);
+  assert.equal(parsed.worldIcon, null);
+});

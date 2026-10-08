@@ -43,6 +43,7 @@ import {
 } from './tool.ts';
 import type { SandTheme } from './theme.ts';
 import { swatchColorToCss } from './swatchColor.ts';
+import { iconToCss } from './swatchIcon.ts';
 // The studio's own tool descriptions, so the two apps cannot describe the same
 // tool differently.
 import { TOOL_HELP } from '../ui/menuHelp.ts';
@@ -95,7 +96,7 @@ const RESET_ICON = '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4 4v4.5h4
 
 /**
  * Stand-in artwork for the World menu's swatches, by world index; Custom has
- * its own. Placeholders until worlds carry a thumbnail.
+ * its own. Shown for a world with no captured icon.
  */
 const WORLD_ART = [
   'radial-gradient(circle at 35% 35%, #b7e07a, #3f8a4a 55%, #173a22)',
@@ -161,6 +162,8 @@ export interface SandUiCallbacks {
   onPasteLink(slot: number): void;
   /** "None" was chosen: empty this swatch. */
   onClearSlot(slot: number): void;
+  /** "Capture swatch icon…" was chosen: drag a circle to picture this swatch. */
+  onCaptureSlotIcon(slot: number): void;
   /** A brush-size button was pressed. */
   onBrushSize(index: number): void;
   /**
@@ -193,6 +196,8 @@ export interface WorldButtonState {
   readonly name: string;
   /** Whether that save still exists. False marks it as deleted. */
   readonly present: boolean;
+  /** Its icon as an image URL, or null for the stand-in artwork. */
+  readonly icon: string | null;
 }
 
 export interface SandUiState {
@@ -205,6 +210,8 @@ export interface SandUiState {
   worlds: readonly WorldButtonState[];
   /** Which world is active, or `CUSTOM_WORLD`. */
   selectedWorld: number;
+  /** Custom's icon, or null for its stand-in artwork. */
+  customIcon: string | null;
   shovePull: boolean;
   eraseMode: EraseMode;
 }
@@ -260,6 +267,8 @@ export class SandUi {
 
   /** Which worlds the World menu was built with, so it rebuilds on a change. */
   private worldSignature: string | null = null;
+  /** The icon each swatch element was last painted with -- see `paintIcon`. */
+  private readonly paintedIcons = new WeakMap<HTMLElement, string | null>();
 
   constructor(store: ConfigStore, callbacks: SandUiCallbacks) {
     this.store = store;
@@ -718,7 +727,29 @@ export class SandUi {
     this.worldPick.dataset['open'] = String(open);
   }
 
-  private refreshWorlds(worlds: readonly WorldButtonState[], selected: number): void {
+  /**
+   * Point a swatch's custom property at an icon, or at `fallback` without one.
+   * Written only when the icon changes: a data URL is kilobytes of text, and
+   * restyling every swatch every frame would make the browser re-parse it.
+   */
+  private paintIcon(
+    el: HTMLElement,
+    property: string,
+    icon: string | null,
+    fallback: string | null,
+  ): void {
+    if (this.paintedIcons.has(el) && this.paintedIcons.get(el) === icon) return;
+    this.paintedIcons.set(el, icon);
+    if (icon !== null) el.style.setProperty(property, iconToCss(icon));
+    else if (fallback !== null) el.style.setProperty(property, fallback);
+    else el.style.removeProperty(property);
+  }
+
+  private refreshWorlds(
+    worlds: readonly WorldButtonState[],
+    selected: number,
+    customIcon: string | null,
+  ): void {
     const assigned: number[] = [];
     for (let i = 0; i < ASSIGNABLE_WORLDS; i++) {
       if ((worlds[i]?.name ?? '') !== '') assigned.push(i);
@@ -733,13 +764,21 @@ export class SandUi {
       if (!(cell instanceof HTMLElement)) continue;
       const index = Number(cell.dataset['world']);
       cell.dataset['selected'] = String(index === selected);
-      if (index === CUSTOM_WORLD) continue;
-
-      const entry = worlds[index];
-      const name = entry?.name ?? '';
       const circle = cell.querySelector('button');
+      if (circle === null) continue;
+      const custom = index === CUSTOM_WORLD;
+      const entry = custom ? undefined : worlds[index];
+      this.paintIcon(
+        circle,
+        '--g',
+        custom ? customIcon : (entry?.icon ?? null),
+        custom ? CUSTOM_ART : (WORLD_ART[index] ?? CUSTOM_ART),
+      );
+      if (custom) continue;
+
+      const name = entry?.name ?? '';
       const label = cell.querySelector('.wl');
-      if (circle === null || label === null) continue;
+      if (label === null) continue;
       if (label.textContent !== name) label.textContent = name;
       if (entry?.present === true) {
         delete cell.dataset['missing'];
@@ -868,6 +907,8 @@ export class SandUi {
             `${slot === MASTER_SLOT ? '  (master — grounds the world settings)' : ''}`;
         // A CUSTOM PROPERTY so the stylesheet decides how the colour is used.
         circle.style.setProperty('--swatch-color', swatchColorToCss(palette.colorOf(slot)));
+        // The icon, when there is one, covers the colour -- see `swatchIcon.ts`.
+        this.paintIcon(circle, '--swatch-icon', empty ? null : (entry.icon ?? null), null);
       }
     }
 
@@ -909,7 +950,7 @@ export class SandUi {
       this.toolboxLabel.textContent = TOOL_LABELS[boxTool];
     }
 
-    this.refreshWorlds(state.worlds, state.selectedWorld);
+    this.refreshWorlds(state.worlds, state.selectedWorld, state.customIcon);
 
     // --- editing the initial conditions ------------------------------------------
     this.canvas.dataset['editing'] = String(state.editingInitialConditions);
@@ -954,7 +995,26 @@ export class SandUi {
     const palette = this.palette;
     if (palette === null) return;
 
-    // "PASTE FROM LINK", AT THE VERY TOP -- Shift+V aimed at this swatch, and
+    // "CAPTURE SWATCH ICON", ABOVE EVERYTHING -- an authoring act on the
+    // material already here, so only offered when there is one. Cancelling
+    // the capture clears the icon, which is also how one is removed.
+    if (palette.at(slot).config !== null) {
+      const capture = document.createElement('button');
+      capture.type = 'button';
+      capture.className = 'entry';
+      capture.dataset['capture'] = 'true';
+      capture.textContent = 'Capture swatch icon…';
+      capture.title =
+        'Drag a circle on the canvas to picture this swatch. Esc, or a tap, ' +
+        'clears the icon back to the flat colour.';
+      capture.addEventListener('click', () => {
+        this.closeLoader();
+        this.callbacks.onCaptureSlotIcon(slot);
+      });
+      this.loaderListEl.append(capture);
+    }
+
+    // "PASTE FROM LINK", NEXT -- Shift+V aimed at this swatch, and
     // the only way to load a shared config on a phone. The clipboard is read
     // inside this click, which is the gesture browsers require for it.
     const paste = document.createElement('button');

@@ -13,14 +13,21 @@ import {
 } from './worldPack.ts';
 import { builtinRef, formatWorldRef, isReservedWorldName, parseWorldRef } from './worldRef.ts';
 
-const WORLD = { id: 'dunes', name: 'Dunes', document: 'dunes.ab12cd34.json', scene: 'dunes.ef56.fwldz' };
+const WORLD = {
+  id: 'dunes',
+  name: 'Dunes',
+  document: 'dunes.ab12cd34.json',
+  scene: 'dunes.ef56.fwldz',
+  icon: 'dunes.9a8b.jpg',
+};
 
 test('a written pack reads back', () => {
   const pack = {
-    worlds: [WORLD, { id: 'reef', name: 'Reef', document: 'reef.1.json', scene: null }],
+    worlds: [WORLD, { id: 'reef', name: 'Reef', document: 'reef.1.json', scene: null, icon: null }],
     assignments: ['dunes', '', 'reef', ''],
     selectedWorld: 2,
-    customSlots: [{ name: 'Sand', document: { v: 8 } }],
+    customSlots: [{ name: 'Sand', document: { v: 8 }, icon: 'custom.11.jpg' }],
+    customIcon: 'custom.22.jpg',
   };
   const back = readPack(JSON.parse(writePack(pack)));
   assert.equal(back.version, PACK_VERSION);
@@ -28,6 +35,26 @@ test('a written pack reads back', () => {
   assert.deepEqual(back.assignments, pack.assignments);
   assert.equal(back.selectedWorld, 2);
   assert.equal(back.customSlots[0]?.name, 'Sand');
+  assert.equal(back.customSlots[0]?.icon, 'custom.11.jpg');
+  assert.equal(back.customIcon, 'custom.22.jpg');
+});
+
+test('a pack predating icons reads back with none', () => {
+  const { icon: _icon, ...old } = WORLD;
+  const back = readPack({ version: PACK_VERSION, worlds: [old] });
+  assert.equal(back.worlds[0]?.icon, null);
+  assert.equal(back.customIcon, null);
+});
+
+test('an icon name that could leave the pack folder costs the icon, not the world', () => {
+  const back = readPack({
+    version: PACK_VERSION,
+    worlds: [{ ...WORLD, icon: '../x.jpg' }],
+    customIcon: 'a/b.jpg',
+  });
+  assert.equal(back.worlds[0]?.id, 'dunes');
+  assert.equal(back.worlds[0]?.icon, null);
+  assert.equal(back.customIcon, null);
 });
 
 test('an unknown version is refused', () => {
@@ -70,6 +97,7 @@ test('pack ids are url-safe and unique', () => {
   assert.equal(packId('Dunes', new Set(['dunes', 'dunes-2'])), 'dunes-3');
   assert.equal(packId('???', new Set()), 'world');
   assert.equal(packFileName('dunes', 'ab12', 'fwldz'), 'dunes.ab12.fwldz');
+  assert.equal(packFileName('dunes', 'ab12', 'jpg'), 'dunes.ab12.jpg');
 });
 
 test('gzip is recognised by its magic number', () => {

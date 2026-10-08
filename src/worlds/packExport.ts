@@ -5,12 +5,18 @@
  * `public/worlds/default/` -- empty that folder, unzip into it, commit. See
  * `worldPack.ts` for the format.
  *
+ * ICONS LEAVE THE DOCUMENTS. Each one -- a world's, its swatches', Custom's --
+ * is written as its own content-named file and the document keeps the file's
+ * name. See `worldPack.ts` on why.
+ *
  * `fflate` is imported on demand: exporting is a dev act, and a visitor should
  * not download a zip writer they will never run.
  */
 
 import type { StoredSlot } from '../sand/session.ts';
+import { iconExtension } from '../sand/swatchIcon.ts';
 import type { WorldRecord } from './builtinWorlds.ts';
+import { mapWorldIcons } from './worldFormat.ts';
 import { type PackWorld, packFileName, packId, writePack } from './worldPack.ts';
 
 /** One button's world, with a key that is the same for the same world. */
@@ -26,8 +32,25 @@ export async function buildPackZip(args: {
   readonly buttons: readonly (ExportButton | null)[];
   readonly selectedWorld: number;
   readonly customSlots: readonly StoredSlot[];
+  /** Custom's world icon, or null. */
+  readonly customIcon: string | null;
 }): Promise<Blob> {
   const files: Record<string, Uint8Array<ArrayBuffer>> = {};
+
+  /**
+   * Write an icon as a file and return its name. `fetch` reads a data URL and
+   * an already-published pack icon alike. Named by content, so an icon shared
+   * by two swatches or two worlds is one file.
+   */
+  const iconFile = async (owner: string, icon: string): Promise<string> => {
+    const res = await fetch(icon);
+    if (!res.ok) throw new Error(`could not read an icon of "${owner}": HTTP ${res.status}`);
+    const blob = await res.blob();
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const name = packFileName(owner, await shortHash(bytes), iconExtension(blob.type));
+    files[name] = bytes;
+    return name;
+  };
   const worlds: PackWorld[] = [];
   const idForKey = new Map<string, string>();
   const taken = new Set<string>();
@@ -44,9 +67,16 @@ export async function buildPackZip(args: {
       taken.add(id);
       idForKey.set(button.key, id);
 
-      const docBytes = new TextEncoder().encode(JSON.stringify(button.record.document));
-      const document = packFileName(id, await shortHash(docBytes), 'json');
-      files[document] = docBytes;
+      const ownerId = id;
+      const document = await mapWorldIcons(button.record.document, (icon) =>
+        iconFile(ownerId, icon),
+      );
+      const ownIcon = (document as { icon?: unknown } | null)?.icon;
+      const icon = typeof ownIcon === 'string' ? ownIcon : null;
+
+      const docBytes = new TextEncoder().encode(JSON.stringify(document));
+      const documentFile = packFileName(id, await shortHash(docBytes), 'json');
+      files[documentFile] = docBytes;
 
       let scene: string | null = null;
       if (button.record.scene !== null) {
@@ -54,7 +84,7 @@ export async function buildPackZip(args: {
         scene = packFileName(id, await shortHash(gz), 'fwldz');
         files[scene] = gz;
       }
-      worlds.push({ id, name: button.name, document, scene });
+      worlds.push({ id, name: button.name, document: documentFile, scene, icon });
     }
     assignments.push(id);
   }
@@ -65,8 +95,17 @@ export async function buildPackZip(args: {
       ? args.selectedWorld
       : -1;
 
+  const customSlots: StoredSlot[] = [];
+  for (const slot of args.customSlots) {
+    customSlots.push(
+      slot.icon === undefined ? slot : { ...slot, icon: await iconFile('custom', slot.icon) },
+    );
+  }
+  const customIcon =
+    args.customIcon === null ? null : await iconFile('custom', args.customIcon);
+
   files['manifest.json'] = new TextEncoder().encode(
-    writePack({ worlds, assignments, selectedWorld, customSlots: args.customSlots }),
+    writePack({ worlds, assignments, selectedWorld, customSlots, customIcon }),
   );
 
   const { zipSync } = await import('fflate');

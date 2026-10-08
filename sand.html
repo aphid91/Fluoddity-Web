@@ -377,6 +377,9 @@
         padding: 0;
         margin: 0;
         background: var(--g);
+        /* For a captured icon; a stand-in gradient ignores these. */
+        background-size: cover;
+        background-position: center;
         border: calc(2 * var(--u)) solid rgba(255, 255, 255, 0.28);
         cursor: pointer;
         box-sizing: border-box;
@@ -719,6 +722,11 @@
         padding: 0;
         margin: calc(4 * var(--u)) 0;
         background: var(--swatch-color, var(--ink-dim));
+        /* A captured icon covers the colour (swatchIcon.ts). After the
+           shorthand, which would otherwise reset it. */
+        background-image: var(--swatch-icon, none);
+        background-size: cover;
+        background-position: center;
         border: calc(2 * var(--u)) solid rgba(0, 0, 0, 0.35);
         cursor: pointer;
         box-sizing: border-box;
@@ -852,7 +860,8 @@
       }
       /* "Paste from link" -- an action, not a config, so it is set apart
          from the list the same way "None" is. */
-      .entry[data-paste='true'] {
+      .entry[data-paste='true'],
+      .entry[data-capture='true'] {
         color: var(--accent);
         border-bottom: 1px solid var(--edge-soft);
         border-radius: 0;

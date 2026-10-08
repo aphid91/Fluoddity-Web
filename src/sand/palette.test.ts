@@ -342,3 +342,42 @@ test('a generation bump marks a REPLACEMENT, not an edit', () => {
   p.set(1, entry('b'));
   assert.ok(p.generationOf(1) > afterSet, 'a load does');
 });
+
+// ---------------------------------------------------------------------------
+// Icons -- a picture of the material, so it goes when the material does
+// ---------------------------------------------------------------------------
+
+const ICON = 'data:image/jpeg;base64,AAAA';
+
+test('an icon survives a settings edit and a rename', () => {
+  const palette = new Palette();
+  palette.set(3, entry('Sand'));
+  palette.setIcon(3, ICON);
+  palette.edit(3, CONFIG, WORLD);
+  assert.equal(palette.at(3).icon, ICON, 'edit');
+  palette.set(3, { ...palette.at(3), name: 'Renamed' });
+  assert.equal(palette.at(3).icon, ICON, 'rename');
+});
+
+test('loading a different config, or clearing, drops the icon', () => {
+  const palette = new Palette();
+  palette.set(3, entry('Sand'));
+  palette.setIcon(3, ICON);
+  palette.set(3, entry('Smoke'));
+  assert.equal(palette.at(3).icon, undefined, 'load');
+  palette.setIcon(3, ICON);
+  palette.clear(3);
+  assert.equal(palette.at(3).icon, undefined, 'clear');
+});
+
+test('setting a null icon puts the colour back; an empty swatch takes none', () => {
+  const palette = new Palette();
+  palette.set(3, entry('Sand'));
+  palette.setIcon(3, ICON);
+  const generation = palette.generationOf(3);
+  palette.setIcon(3, null);
+  assert.equal(palette.at(3).icon, undefined);
+  assert.equal(palette.generationOf(3), generation, 'no Config tab rebuild');
+  palette.setIcon(5, ICON);
+  assert.equal(palette.at(5).icon, undefined);
+});

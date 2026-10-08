@@ -9,17 +9,27 @@
  *     manifest.json                 this module's format
  *     <id>.<hash>.json              one world's document (`worldFormat.ts`)
  *     <id>.<hash>.fwldz             its scene: a `.fwld` stamp, gzipped
+ *     <id>.<hash>.jpg               its icon, and its swatches' icons
  *
  * The Dev tab's "Export world setup" writes the folder as a zip; unzip it over
  * `public/worlds/default/` (emptied first) and commit.
  *
  * ## Why a folder of files, not one bundle
  *
- * A WORLD is the unit -- a document plus its scene, and later an icon -- and
+ * A WORLD is the unit -- a document, its scene and its icons -- and
  * the manifest is only a LINEUP that points at worlds. A future gallery serves
  * the same units from object storage, so the format written here is that one.
  * Separate files also load lazily: a visitor fetches only the scene of the
  * world they open.
+ *
+ * ## Icons are files too
+ *
+ * In the author's library an icon is a data URL inside the document
+ * (`sand/swatchIcon.ts`); the exporter writes each one out as a file and puts
+ * its NAME in the document instead, and `builtinWorlds.ts` resolves the names
+ * against the pack's address on the way in. A world's own icon is ALSO named
+ * here in the manifest, so the World menu can show it without fetching the
+ * world.
  *
  * ## The hash in the name
  *
@@ -61,6 +71,8 @@ export interface PackWorld {
   readonly document: string;
   /** The scene's file (gzipped `.fwld`), or null for a world without one. */
   readonly scene: string | null;
+  /** The world's icon file, or null for the stand-in artwork. */
+  readonly icon: string | null;
 }
 
 export interface WorldPack {
@@ -72,6 +84,8 @@ export interface WorldPack {
   readonly selectedWorld: number;
   /** Custom's palette for a new visitor, in the session's stored shape. */
   readonly customSlots: readonly StoredSlot[];
+  /** Custom's world icon file for a new visitor, or null. */
+  readonly customIcon: string | null;
 }
 
 /** Thrown for a manifest this reader will not accept. */
@@ -113,6 +127,8 @@ export function readPack(raw: unknown, where = 'world pack'): WorldPack {
       const id = w['id'];
       const document = w['document'];
       const scene = w['scene'];
+      // Optional and tolerant: a bad icon name costs the icon, not the world.
+      const icon = asFile(w['icon']);
       if (typeof id !== 'string' || !ID_PATTERN.test(id) || seen.has(id)) continue;
       if (typeof document !== 'string' || !FILE_PATTERN.test(document)) continue;
       if (scene !== null && (typeof scene !== 'string' || !FILE_PATTERN.test(scene))) continue;
@@ -122,6 +138,7 @@ export function readPack(raw: unknown, where = 'world pack'): WorldPack {
         name: typeof w['name'] === 'string' && w['name'] !== '' ? w['name'] : id,
         document,
         scene,
+        icon,
       });
     }
   }
@@ -147,7 +164,19 @@ export function readPack(raw: unknown, where = 'world pack'): WorldPack {
   const customRaw = Array.isArray(o['customSlots']) ? o['customSlots'] : [];
   const customSlots = customRaw.slice(0, SLOT_COUNT).map(asSlot);
 
-  return { version: PACK_VERSION, worlds, assignments, selectedWorld, customSlots };
+  return {
+    version: PACK_VERSION,
+    worlds,
+    assignments,
+    selectedWorld,
+    customSlots,
+    customIcon: asFile(o['customIcon']),
+  };
+}
+
+/** A pack file name, or null. */
+function asFile(raw: unknown): string | null {
+  return typeof raw === 'string' && FILE_PATTERN.test(raw) ? raw : null;
 }
 
 /** The manifest's text. */
@@ -160,6 +189,7 @@ export function writePack(pack: Omit<WorldPack, 'version'>): string {
         assignments: pack.assignments,
         selectedWorld: pack.selectedWorld,
         customSlots: pack.customSlots,
+        customIcon: pack.customIcon,
       },
       null,
       2,
@@ -187,7 +217,11 @@ export function packId(name: string, taken: ReadonlySet<string>): string {
 }
 
 /** An asset's file name: the world's id, a content hash, the extension. */
-export function packFileName(id: string, hash: string, extension: 'json' | 'fwldz'): string {
+export function packFileName(
+  id: string,
+  hash: string,
+  extension: 'json' | 'fwldz' | 'jpg' | 'png' | 'webp',
+): string {
   return `${id}.${hash}.${extension}`;
 }
 

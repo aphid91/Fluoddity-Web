@@ -155,6 +155,8 @@ export interface SandPrefsCallbacks {
   onAssignWorld(index: number, ref: string | null): void;
   /** "Export world setup": the world pack, as a zip. */
   onExportWorldSetup(): void;
+  /** "Capture world swatch icon": drag a circle to picture the current world. */
+  onCaptureWorldIcon(): void;
 }
 
 /** The dropdown value meaning "this button is unassigned". */
@@ -602,6 +604,15 @@ export class SandPrefs {
   }
 
   /**
+   * Hide the panel, or show it again. For a capture: the panel floats over the
+   * canvas and would hide part of what is being pictured.
+   */
+  setHidden(hidden: boolean): void {
+    const host = this.pane.element.parentElement;
+    if (host !== null) host.style.visibility = hidden ? 'hidden' : '';
+  }
+
+  /**
    * Adopt a colour mode set from outside the panel -- a world load.
    *
    * The same second-writer problem `adoptPreferences` solves: the dropdown
@@ -649,6 +660,13 @@ export class SandPrefs {
       'swatches as a world pack. Empty public/worlds/default/, unzip it there ' +
       'and commit, and new visitors start with this setup.';
     exportSetup.on('click', () => this.callbacks.onExportWorldSetup());
+
+    const icon = folder.addButton({ title: 'Capture world swatch icon' });
+    icon.element.title =
+      'Drag a circle on the canvas to picture the current world in the World ' +
+      'menu. Esc, or a tap, clears it back to the stand-in. Like a palette ' +
+      'edit, it is kept by saving the world.';
+    icon.on('click', () => this.callbacks.onCaptureWorldIcon());
 
     this.buildWorldSlots(folder);
   }
