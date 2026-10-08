@@ -129,23 +129,7 @@
         touch-action: none;
       }
 
-      #gpu-error {
-        position: fixed;
-        inset: 0;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 2rem;
-        text-align: center;
-        font: 16px/1.5 system-ui, sans-serif;
-        color: #eee;
-        background: #1a1a1a;
-      }
-
-      #gpu-error h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
-      #gpu-error p  { margin: 0; max-width: 44rem; color: #bbb; }
+      /* #gpu-error styles itself inline -- see showUnavailableOverlay. */
 
       /* The settings panel's tab strip scrolls horizontally when its buttons
          cannot fit, which is what stops an overflowing tab becoming

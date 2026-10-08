@@ -399,8 +399,8 @@ fn e_config_index(e: Entity) -> i32   { return bitcast<i32>(e.misc.y); }
 // correct for its own purpose -- it makes a SHRUNK ConfigBuffer degrade
 // gracefully -- so the dead test goes above it rather than replacing it.
 //
-// The studio never produces one of these: nothing there writes a negative
-// index, so `e_is_dead` is always false and the branch is uniformly not taken.
+// The studio produces these only through BC_KILL, and its reset frame brings
+// them back (see the dead-particle note in entityUpdate's `main`).
 // ---------------------------------------------------------------------------
 // `make_entity_dead` is NOT here: it calls make_entity, which is declared below,
 // and WGSL requires declaration before use. It sits under that function instead.

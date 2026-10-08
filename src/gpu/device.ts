@@ -144,21 +144,49 @@ export async function acquireDevice(onLost?: (info: GPUDeviceLostInfo) => void):
  * The plan's requirement is explicit: a clear "WebGPU unavailable" message, not
  * a blank canvas. A black canvas is a *successful* frame in this app, so a
  * silent failure would be indistinguishable from working correctly.
+ *
+ * STYLED INLINE, not by the page's stylesheet. Only `index.html` ever had rules
+ * for `#gpu-error`; sand's page did not, so in sand a lost device appended an
+ * unstyled div below a full-viewport layout -- off screen, invisible -- and all
+ * the user saw was the dead canvas. Inline styles make every page that calls
+ * this get the same overlay, above the UI.
+ *
+ * `reload` adds a button for the device-lost case, where reloading genuinely
+ * fixes it (a fresh page gets a fresh device). It is left off for "no WebGPU at
+ * all", where a reload would only show the same message again.
  */
-export function showUnavailableOverlay(title: string, detail: string): void {
+export function showUnavailableOverlay(title: string, detail: string, reload = false): void {
   const existing = document.getElementById('gpu-error');
   existing?.remove();
 
   const overlay = document.createElement('div');
   overlay.id = 'gpu-error';
   overlay.setAttribute('role', 'alert');
+  overlay.style.cssText =
+    'position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;' +
+    'justify-content:center;align-items:center;gap:0.5rem;padding:2rem;text-align:center;' +
+    'font:16px/1.5 system-ui,sans-serif;color:#eee;background:#1a1a1a;';
 
   const heading = document.createElement('h1');
   heading.textContent = title;
+  heading.style.cssText = 'margin:0;font-size:1.25rem;font-weight:600;';
 
   const body = document.createElement('p');
   body.textContent = detail;
+  body.style.cssText = 'margin:0;max-width:44rem;color:#bbb;';
 
   overlay.append(heading, body);
+
+  if (reload) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Reload';
+    button.style.cssText =
+      'margin-top:1rem;padding:0.6rem 1.6rem;font:inherit;color:#111;background:#eee;' +
+      'border:0;border-radius:6px;cursor:pointer;';
+    button.addEventListener('click', () => window.location.reload());
+    overlay.append(button);
+  }
+
   document.body.append(overlay);
 }

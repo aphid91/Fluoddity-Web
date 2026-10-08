@@ -121,7 +121,7 @@ async function main(): Promise<void> {
   const builtinsLoading = BuiltinWorlds.load();
 
   const { device } = await acquireDevice((info) => {
-    showUnavailableOverlay('GPU device lost', info.message || String(info.reason));
+    showUnavailableOverlay('GPU device lost', info.message || String(info.reason), true);
   });
   const surface = createSurface(canvas, device);
 

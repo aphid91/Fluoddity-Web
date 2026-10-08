@@ -102,7 +102,7 @@ async function start(): Promise<void> {
   let deviceLost = false;
   const { adapter, device } = await acquireDevice((info) => {
     deviceLost = true;
-    showUnavailableOverlay('GPU device lost', info.message || String(info.reason));
+    showUnavailableOverlay('GPU device lost', info.message || String(info.reason), true);
   });
 
   const surface: Surface = createSurface(canvas, device);

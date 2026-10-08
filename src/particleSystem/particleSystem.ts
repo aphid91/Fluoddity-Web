@@ -151,9 +151,9 @@ export interface ParticleSystemOptions {
   /**
    * Whether particles can be born and die -- the sand modality's mode.
    *
-   * OFF IS THE STUDIO, exactly as it was: every particle is permanently alive,
-   * the free list is a minimal dummy that nothing writes, and `BC_KILL` is
-   * unreachable because no studio config selects it. On, the pool is sized to
+   * OFF IS THE STUDIO: every particle starts alive, the free list is a minimal
+   * dummy nothing reads, and a particle `BC_KILL` removes stays dead only until
+   * the next reset frame, which resurrects it. On, the pool is sized to
    * the entity count and `resetLifetimes()` starts the world empty.
    *
    * A construction option rather than a setting: it decides how big a GPU buffer

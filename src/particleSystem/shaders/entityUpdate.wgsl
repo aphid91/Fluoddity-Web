@@ -97,8 +97,10 @@ override CONFIG_PER_COHORT: bool = false;
 // BOUND IN BOTH APPS, because WebGPU validates a bind group against the layout
 // whether or not the shader reads it -- unlike GL, where an unused binding is
 // simply absent. The studio binds a MINIMAL DUMMY (see `freeListBufferFor` in
-// particleSystem.ts): it never selects BC_KILL, so nothing ever touches it. This
-// is the same shape `strafe_field_texture` already uses with its 1x1 dummy.
+// particleSystem.ts). The studio CAN select BC_KILL, whose push lands in the
+// dummy's one slot or is dropped by the bounds test in free_list_give; nothing in
+// the studio ever takes from it, so either outcome is inert. This is the same
+// shape `strafe_field_texture` already uses with its 1x1 dummy.
 @group(0) @binding(3) var<storage, read_write> freelist : FreeList;
 // The operations, which name the binding above. Must follow it.
 #include "freeListOps.wgsl"
@@ -753,11 +755,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // clamp is right for its own job (a shrunk ConfigBuffer degrades gracefully)
     // so this test goes above it rather than replacing it.
     //
-    // NOT GUARDED ON fc == 0. On a reset frame the studio rebuilds every entity
-    // below, and a dead particle must NOT be resurrected by that path -- the
-    // sand modality restores to frame 1 precisely so it never runs, but a stray
-    // frame 0 must leave the dead dead rather than repopulating the world.
-    if (e_is_dead(e)) { return; }
+    // A RESET FRAME RESURRECTS IN THE STUDIO, AND ONLY THERE. The studio can
+    // select BC_KILL too, and its particles have no other way back: there is no
+    // brush to respawn them, so without this a kill boundary empties the world
+    // until a page reload. A reset means "start over", which includes the dead,
+    // so on frame 0 they fall through to reset() below like everyone else.
+    //
+    // Sand must NOT be repopulated by that path -- it restores to frame 1
+    // precisely so it never runs, but a stray frame 0 must leave the dead dead.
+    // CONFIG_PER_COHORT is the app switch, as it is for the hazard branch below.
+    if (e_is_dead(e) && !(CONFIG_PER_COHORT && fc == 0)) { return; }
 
     // Select this entity's config. On a reset frame the entity's stored
     // config_index is not yet meaningful (nothing has been written), so ask
