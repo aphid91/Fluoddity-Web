@@ -31,6 +31,9 @@ import {
   ruleIsGeneratedOnGpu,
   selectionIsNoOp,
   setPopulationLayout,
+  CAMERA_HAZARD_RATE,
+  applyCameraSetup,
+  hasCameraSetup,
 } from './settingsCommands.ts';
 import { type Project, makeProject, selectedConfig } from '../project/project.ts';
 import { DEFAULT_PREFERENCES } from '../prefs/preferences.ts';
@@ -360,4 +363,27 @@ test('selection stays live under a generated rule, unlike the reroll', () => {
     assert.equal(selectionIsNoOp(project), false, `selection is live at ${String(scale)}`);
     assert.equal(rerollIsNoOp(project), true, `reroll is inert at ${String(scale)}`);
   }
+});
+
+test('the camera setup sets Random and the hazard rate, and nothing else', () => {
+  assert.equal(hasCameraSetup(project), false);
+  const next = applyCameraSetup(project);
+  const before = selectedConfig(project);
+  const after = selectedConfig(next);
+  assert.equal(after.initialConditions, IC.RANDOM);
+  assert.equal(after.hazardRate, CAMERA_HAZARD_RATE);
+  assert.equal(hasCameraSetup(next), true);
+  // Everything else is the user's and stays put.
+  assert.deepEqual(
+    { ...after, initialConditions: before.initialConditions, hazardRate: before.hazardRate },
+    before,
+  );
+});
+
+test('the camera hazard rate is ~2/3 of the way along the Hazard Rate slider', () => {
+  // The slider is cubed: value = lo + (hi - lo) * pos**curve. The request was
+  // "about 60%, about 0.003"; pin that it lands in that neighbourhood.
+  const hazard = SETTINGS.find((s) => s.field === 'hazardRate')!;
+  const pos = Math.cbrt((CAMERA_HAZARD_RATE - hazard.lo) / (hazard.hi - hazard.lo));
+  assert.ok(pos > 0.6 && pos < 0.7, `slider position ${pos}`);
 });

@@ -44,8 +44,7 @@ import {
   buildLinkSection,
 } from './linkSection.ts';
 import type { LinkSettings } from '../../config/urlOptions.ts';
-import { buildCameraSection } from './cameraSection.ts';
-import type { Webcam } from '../../webcam/webcam.ts';
+import { type CameraSectionOptions, buildCameraSection } from './cameraSection.ts';
 
 /**
  * The Project tab. **TOUCH ONLY, and first in the strip when it exists.**
@@ -182,7 +181,7 @@ export function buildSettingsSection(
    * NO tab, on the same terms as `recording` above. The camera itself is not
    * this section's: hiding the tab leaves it running.
    */
-  camera?: Webcam,
+  camera?: CameraSectionOptions,
 ): SettingsSectionHandle {
   // The host folder's own header goes too: the tab strip sits directly beneath
   // it and names both pages, so a "Settings" bar above them is a third label for

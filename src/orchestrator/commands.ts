@@ -443,6 +443,12 @@ export type Command =
    * simulation restarts.
    */
   | { readonly kind: 'setPopulationLayout'; readonly cohorts: number }
+  /**
+   * The Camera tab's "works best with" button: Random initial conditions and a
+   * high Hazard Rate on the selected config, as ONE undo step -- one click, one
+   * intent, like `setPopulationLayout`. See `applyCameraSetup`.
+   */
+  | { readonly kind: 'applyCameraSetup' }
   | { readonly kind: 'randomizeBehavior' }
   // --- drawing (the field arrives in Step 9; the prefs are live now) ---
   | {

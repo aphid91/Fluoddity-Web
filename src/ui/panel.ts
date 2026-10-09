@@ -96,6 +96,7 @@ import {
   CAMERA_TAB,
   DRAWING_TAB,
   LINK_TAB,
+  PROJECT_TAB,
   PREFS_TAB,
   RECORDING_TAB,
   buildSettingsSection,
@@ -1055,7 +1056,14 @@ export class Panel {
             : undefined,
           // Undefined -- and so NO camera tab -- unless the menu item is ticked
           // and this build has a camera to control.
-          this.cameraShown && this.webcam !== null ? this.webcam : undefined,
+          this.cameraShown && this.webcam !== null
+            ? {
+                webcam: this.webcam,
+                onSetupForCamera: () => {
+                  this.setupForCamera();
+                },
+              }
+            : undefined,
         );
         this.settings = handle;
         side.sections.push(handle);
@@ -2375,6 +2383,103 @@ export class Panel {
       if (this.hiddenFlag) this.setHidden(false);
     }
     this.rebuild();
+  }
+
+  /**
+   * The Camera tab's notice: Random initial conditions and a high Hazard Rate
+   * on the selected config, then SHOW the user where that happened.
+   *
+   * Four steps, in this order:
+   *
+   *   1. Tick Project's Advanced if it is not -- Hazard Rate is an Advanced
+   *      control, and flashing a control that is not built shows nothing.
+   *   2. Apply the setup, as one undo step (`applyCameraSetup`). A no-op when
+   *      it is already in place; the flash below still happens, which is the
+   *      point of clicking again.
+   *   3. On touch, bring the Project tab forward -- there it shares the strip
+   *      with Camera, and the controls cannot be seen from behind it.
+   *   4. Rebuild if the tier or tab changed, then flash once the rebuilt panel
+   *      has drawn the new values (`flashCameraSetupControls`).
+   */
+  private setupForCamera(): void {
+    let rebuild = false;
+    if (!this.bus.status().advancedProject) {
+      this.bus.dispatch({ kind: 'editViewPref', field: 'advancedProject', value: true });
+      rebuild = true;
+    }
+    this.bus.dispatch({ kind: 'applyCameraSetup' });
+    if (this.mobile && this.activeTab !== PROJECT_TAB) {
+      this.activeTab = PROJECT_TAB;
+      rebuild = true;
+    }
+    // Deferred: this runs inside a click on the Camera tab, whose pane the
+    // rebuild disposes. Same reason as `requestRebuild`.
+    queueMicrotask(() => {
+      if (rebuild) this.rebuild();
+      // Two frames: one for the rebuilt panel to lay out, one for the frame
+      // loop's refresh to write the new values into it -- the Hazard Rate
+      // slider only replaces its checkbox once the value it shows is non-zero.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          this.flashCameraSetupControls();
+        }),
+      );
+    });
+  }
+
+  /**
+   * Scroll Initial Conditions and Hazard Rate into view and flash them.
+   *
+   * Found by their `data-setting` tags rather than through the sections, so a
+   * rebuild in between cannot hand back a stale blade. Hazard Rate is whichever
+   * of its two blades is showing -- the slider normally, but the checkbox if the
+   * value has not landed yet. A collapsed group around them is opened first:
+   * scrolling to a control inside a folded group scrolls to nothing.
+   */
+  private flashCameraSetupControls(): void {
+    const visible = (el: Element | null): el is HTMLElement =>
+      el instanceof HTMLElement && el.offsetParent !== null;
+    const find = (key: string): HTMLElement | null => {
+      const matches = document.querySelectorAll(`[data-setting="${key}"]`);
+      for (const el of matches) if (visible(el)) return el;
+      return (matches[0] as HTMLElement | undefined) ?? null;
+    };
+    const targets = [
+      find('config.initialConditions'),
+      find('config.hazardRate') ?? find('config.hazardRate.gate'),
+    ].filter((el): el is HTMLElement => el !== null);
+    if (targets.length === 0) return;
+
+    // Open any folded folder around them. Tweakpane animates the unfold, so
+    // the scroll waits for it rather than measuring a half-open group.
+    let unfolded = false;
+    for (const el of targets) {
+      for (let f = el.closest('.tp-fldv'); f !== null; f = f.parentElement?.closest('.tp-fldv') ?? null) {
+        if (!f.classList.contains('tp-fldv-expanded')) {
+          (f.querySelector(':scope > .tp-fldv_b') as HTMLElement | null)?.click();
+          unfolded = true;
+        }
+      }
+    }
+
+    window.setTimeout(
+      () => {
+        // CENTRED ON THE FIRST: the two sit two rows apart in Population, so
+        // centring Initial Conditions brings Hazard Rate with it. One smooth
+        // scroll, because a second would cancel the first mid-flight.
+        targets[0]!.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        for (const el of targets) {
+          el.animate(
+            [
+              { backgroundColor: 'rgba(138,180,248,0.45)', boxShadow: 'inset 0 0 0 2px #8ab4f8' },
+              { backgroundColor: 'rgba(138,180,248,0)', boxShadow: 'inset 0 0 0 2px rgba(138,180,248,0)' },
+            ],
+            { duration: 650, iterations: 3, easing: 'ease-out' },
+          );
+        }
+      },
+      unfolded ? 300 : 0,
+    );
   }
 
   /**

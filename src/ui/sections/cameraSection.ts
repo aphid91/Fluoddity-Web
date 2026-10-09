@@ -63,10 +63,25 @@ function optionsOf<T extends string>(
   return out;
 }
 
+/**
+ * A clickable callout at the top of the tab. The studio's says what the camera
+ * works best with and sets it up; sand has no Project panel to point at, and
+ * passes none.
+ */
+export interface CameraNotice {
+  /** Bold lead-in, e.g. "Attention!". */
+  readonly lead: string;
+  readonly text: string;
+  /** The underlined call to action at the end. */
+  readonly action: string;
+  readonly onClick: () => void;
+}
+
 export function buildCameraControls(
   container: FolderApi | TabPageApi,
   webcam: Webcam,
   help: AttachHelp,
+  notice?: CameraNotice,
 ): CameraControlsHandle {
   // Every binding reads from this one mirror, refreshed from the Webcam each
   // frame. `refreshing` is what tells a change event the USER made apart from
@@ -214,6 +229,9 @@ export function buildCameraControls(
   // button. `linkSection.ts` inserts its prose last for the same reason.
   insertAfter(startButton.element, status);
   insertAfter(previewToggle, frame);
+  if (notice !== undefined) {
+    startButton.element.parentElement?.insertBefore(noticeElement(notice), startButton.element);
+  }
 
   let attached = false;
   let shownAspect = 0;
@@ -298,6 +316,16 @@ export function buildCameraControls(
   };
 }
 
+/** What the studio's Camera tab is handed. */
+export interface CameraSectionOptions {
+  readonly webcam: Webcam;
+  /**
+   * The notice's action: set the project up for the camera and show where.
+   * The Panel's, because it owns both panes, the tabs and the rebuild.
+   */
+  readonly onSetupForCamera: () => void;
+}
+
 /**
  * The studio's Camera tab. A thin adapter: the Panel refreshes every section
  * every frame and disposes them on rebuild, which is exactly the handle
@@ -307,16 +335,52 @@ export function buildCameraSection(
   folder: FolderApi,
   _status: Status,
   ctx: SectionContext,
-  webcam: Webcam,
+  opts: CameraSectionOptions,
 ): SectionHandle {
-  const controls = buildCameraControls(folder, webcam, (element, title, body) => {
-    ctx.tooltip.attach(element, { title, body });
-  });
+  const controls = buildCameraControls(
+    folder,
+    opts.webcam,
+    (element, title, body) => {
+      ctx.tooltip.attach(element, { title, body });
+    },
+    {
+      lead: 'Attention!',
+      text: 'Camera input works best with random initial conditions and a high hazard rate.',
+      action: 'Click here to enable them',
+      onClick: opts.onSetupForCamera,
+    },
+  );
   return {
     bindings: [],
     refresh: () => controls.refresh(),
     dispose: () => controls.dispose(),
   };
+}
+
+/**
+ * The callout: bold, in the tab strip's accent, and a button so it is
+ * reachable by keyboard and reads as clickable to assistive tech.
+ */
+function noticeElement(notice: CameraNotice): HTMLElement {
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.dataset['setting'] = 'camera.notice';
+  el.style.cssText =
+    'display:block;width:calc(100% - 8px);margin:4px 4px 8px;padding:8px 10px;' +
+    'text-align:left;cursor:pointer;font:600 12px/1.45 system-ui,sans-serif;' +
+    'color:#e8e8ea;background:rgba(138,180,248,0.14);' +
+    'border:1px solid rgba(138,180,248,0.55);border-radius:6px;';
+  const lead = document.createElement('span');
+  lead.textContent = `${notice.lead} `;
+  lead.style.color = '#8ab4f8';
+  const action = document.createElement('span');
+  action.textContent = notice.action;
+  action.style.textDecoration = 'underline';
+  el.append(lead, `${notice.text} `, action);
+  el.addEventListener('click', () => {
+    notice.onClick();
+  });
+  return el;
 }
 
 /**

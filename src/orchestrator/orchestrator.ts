@@ -168,6 +168,8 @@ import {
   ruleIsSentinel,
   selectionIsNoOp,
   setPopulationLayout,
+  applyCameraSetup,
+  hasCameraSetup,
 } from './settingsCommands.ts';
 import { type PresetCatalog, loadSavedInto, switchPreset } from './projectCommands.ts';
 
@@ -2729,6 +2731,17 @@ export class Orchestrator implements CommandBus {
         // effect on a restart, so without this the layout the button promises
         // would not appear until something else happened to reset.
         this.system.reset();
+        return;
+      }
+
+      case 'applyCameraSetup': {
+        // Nothing to record when it is already in place -- the panel still
+        // flashes the controls, but an undo step that changes nothing would be
+        // a dead entry in History.
+        if (hasCameraSetup(this.project)) return;
+        const before = this.project;
+        this.setProject(applyCameraSetup(this.project));
+        this.recordHistory(before, 'camera setup');
         return;
       }
 

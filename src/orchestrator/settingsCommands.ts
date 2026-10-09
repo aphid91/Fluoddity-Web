@@ -178,6 +178,36 @@ export function setPopulationLayout(project: Project, cohorts: number): Project 
 }
 
 /**
+ * The Hazard Rate the camera setup asks for: ~67% of the slider's travel on its
+ * cubed curve (`0.01 * 0.67**3`). High enough that the swarm keeps renewing
+ * itself across the whole world, which is what lets a camera field sculpt it
+ * rather than push one settled shape around.
+ */
+export const CAMERA_HAZARD_RATE = 0.003;
+
+/**
+ * The Camera tab's "works best with" setup, on the SELECTED config: Random
+ * initial conditions and a high Hazard Rate. Random spreads the particles over
+ * the whole picture, and the hazard keeps respawning them there -- so the
+ * camera has material everywhere rather than only where the swarm happened to
+ * settle.
+ *
+ * NO RESET. Initial conditions are where hazard respawns land, so the swarm
+ * redistributes on its own within seconds; restarting would throw away what the
+ * user is looking at for the sake of getting there one moment sooner.
+ */
+export function applyCameraSetup(project: Project): Project {
+  const random = editSelected(project, 'initialConditions', IC.RANDOM);
+  return editSelected(random, 'hazardRate', CAMERA_HAZARD_RATE);
+}
+
+/** Whether the selected config already has the camera setup. */
+export function hasCameraSetup(project: Project): boolean {
+  const config = selectedConfig(project);
+  return config.initialConditions === IC.RANDOM && config.hazardRate === CAMERA_HAZARD_RATE;
+}
+
+/**
  * Whether the selected config's rule is the all-zero sentinel.
  *
  * Not used by the commands above -- it is what a UI needs to say "this config's
