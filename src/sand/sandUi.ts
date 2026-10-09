@@ -34,6 +34,7 @@ import { isCompatible } from './compatibility.ts';
 import { ASSIGNABLE_WORLDS, MASTER_SLOT, type Palette, keyLabel } from './palette.ts';
 import { CUSTOM_WORLD, readSlotDocument } from './session.ts';
 import type { SourceSwatch, SwatchSource } from './swatchSources.ts';
+import { loadCollapsedCategories, saveCollapsedCategories } from './loaderCollapse.ts';
 import {
   type EraseMode,
   type SandTool,
@@ -1075,12 +1076,43 @@ export class SandUi {
     const catalog = this.store.catalog();
     const master = palette.master.world;
 
+    // COLLAPSIBLE, and remembered -- see `loaderCollapse.ts`. Read per opening
+    // rather than held, so a fold made in another tab is honoured here too.
+    const collapsed = loadCollapsedCategories();
+
     for (const [category, names] of Object.entries(catalog.categories)) {
       if (names.length === 0) continue;
 
+      // A BUTTON INSIDE THE HEADING, so it keeps the heading's look and gains
+      // a keyboard-reachable toggle. The arrow comes from the same CSS rule
+      // the Worlds rows use.
       const heading = document.createElement('h3');
-      heading.textContent = category;
-      this.loaderListEl.append(heading);
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'category-toggle';
+      toggle.dataset['category'] = category;
+      toggle.textContent = category;
+      heading.append(toggle);
+      const group = document.createElement('div');
+      this.loaderListEl.append(heading, group);
+
+      // Compatibility is marked when a category is first SHOWN: each mark
+      // reads a config, and a folded Archive should not cost a read per entry
+      // on every opening.
+      const marks: (() => void)[] = [];
+      const setExpanded = (expanded: boolean): void => {
+        group.hidden = !expanded;
+        toggle.dataset['expanded'] = String(expanded);
+        if (expanded) for (const mark of marks.splice(0)) mark();
+      };
+      toggle.addEventListener('click', () => {
+        const expanding = group.hidden;
+        setExpanded(expanding);
+        const now = loadCollapsedCategories();
+        if (expanding) now.delete(category);
+        else now.add(category);
+        saveCollapsedCategories(now);
+      });
 
       for (const name of names) {
         const entry = this.store.entry(category, name);
@@ -1094,12 +1126,13 @@ export class SandUi {
           this.closeLoader();
           this.callbacks.onLoad(slot, entry);
         });
-        this.loaderListEl.append(button);
+        group.append(button);
 
         if (master !== null) {
-          void this.markCompatible(button, entry, master);
+          marks.push(() => void this.markCompatible(button, entry, master));
         }
       }
+      setExpanded(!collapsed.has(category));
     }
 
     this.fillWorldSources(slot, master);

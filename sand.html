@@ -876,12 +876,25 @@
       }
       /* The Worlds section: a palette per row, its swatches beneath when
          expanded. The arrow is the only cue the row opens rather than loads. */
+      /* A config category's heading: the whole heading toggles its list. */
+      .category-toggle {
+        background: none;
+        border: 0;
+        padding: 0;
+        font: inherit;
+        color: inherit;
+        letter-spacing: inherit;
+        text-transform: inherit;
+        cursor: pointer;
+      }
+      .category-toggle::before,
       .entry[data-source]::before {
         content: '\25B8';
         display: inline-block;
         width: 1em;
         color: var(--ink-dim);
       }
+      .category-toggle[data-expanded='true']::before,
       .entry[data-source][data-expanded='true']::before {
         content: '\25BE';
       }
