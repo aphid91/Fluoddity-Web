@@ -128,6 +128,11 @@ struct EntityUpdateUniforms {
     // deliberately not in `WorldData`: a downloaded config must not carry someone
     // else's decision to mute the walls they painted and you did not.
     flags      : vec4f,
+    // x: camera walls strength   y: camera trails strength   zw: reserved
+    //
+    // Both zero while no camera runs, and `get_camera` then skips the sample.
+    // A NEW vec4 rather than more spare lanes: `flags` had none left.
+    camera     : vec4f,
 }
 @group(0) @binding(2) var<uniform> u : EntityUpdateUniforms;
 
@@ -140,6 +145,12 @@ struct EntityUpdateUniforms {
 // whether the shader reads them, unlike GL).
 @group(1) @binding(2) var strafe_field_texture : texture_2d<f32>;
 @group(1) @binding(3) var strafe_field_sampler : sampler;
+// The camera's vector field (see webcam/). Rebuilt from the camera picture on
+// every new video frame -- nothing accumulates in it, which is why it is a
+// texture of its own rather than more channels of the painted field above: the
+// painted field persists, and a camera written into it would leave its last
+// frame behind for good when it stopped. A 1x1 placeholder until bound.
+@group(1) @binding(4) var camera_field_texture : texture_2d<f32>;
 
 fn frame_count() -> i32 { return bitcast<i32>(u.flags.x); }
 fn strafe_field_active() -> bool { return bitcast<i32>(u.flags.y) != 0; }
@@ -148,6 +159,8 @@ fn canvas_res() -> vec2f { return u.canvas_res.xy; }
 // factor -- do not reapply that constant here. See `get_walls`.
 fn walls_strength() -> f32 { return u.flags.z; }
 fn trails_strength() -> f32 { return u.flags.w; }
+fn camera_walls_strength() -> f32 { return u.camera.x; }
+fn camera_trails_strength() -> f32 { return u.camera.y; }
 
 //=========================================================================================
 //------------------------------------RANDOM / HASH / NOISE--------------------------------
@@ -265,6 +278,26 @@ fn get_field(p: vec2f, bc: i32) -> vec4f {
                               world_to_uv_bc(p, res, bc), 0.0);
 }
 
+// The camera field at a world position, times `strength` -- or zero, without
+// sampling, when the strength is zero. Each destination calls this with its own
+// strength and exactly one of the two is ever nonzero, so the camera costs at
+// most one fetch per caller and none at all while it is off.
+//
+// THE CANVAS'S RESOLUTION, NOT THE FIELD'S, goes to `world_to_uv_bc`. That
+// argument only supplies the world's ASPECT (`world_half_extent_from_res`), and
+// the camera field is a fixed square texture whose own shape says nothing about
+// the world's -- `webcamField.ts` stretches it over the world and corrects for
+// the stretch in its own passes. Shares the painted field's sampler, so it
+// follows the boundary mode the same way.
+//
+// AN `if`, NOT A MULTIPLY BY ZERO: the point is to skip the fetch.
+fn get_camera(p: vec2f, bc: i32, strength: f32) -> vec2f {
+    if (strength == 0.0) { return vec2f(0.0); }
+    let uv = world_to_uv_bc(p, canvas_res(), bc);
+    return textureSampleLevel(camera_field_texture, strafe_field_sampler, uv, 0.0).rg
+         * strength;
+}
+
 // The WALLS layer: a displacement added straight to position.
 //
 // `walls_strength` REPLACED THE `STRAFE_FIELD_GAIN` CONSTANT that used to live in
@@ -273,7 +306,8 @@ fn get_field(p: vec2f, bc: i32) -> vec4f {
 // field changes on upgrade. What the slider buys is the ability to mute a painted
 // set of walls (0.0) or lean on it (4.0) without repainting.
 fn get_walls(p: vec2f, bc: i32) -> vec2f {
-    return get_field(p, bc).rg * walls_strength();
+    return get_field(p, bc).rg * walls_strength()
+         + get_camera(p, bc, camera_walls_strength());
 }
 
 // Which way is "down" for this particle, shared by all three gravity channels.
@@ -366,7 +400,11 @@ fn get_can(p: vec2f, bc: i32, bias: vec2f, weight: f32) -> vec4f {
     // population hears the canvas, and a bias it cannot distinguish from the
     // canvas must be heard just as loudly. A config with the gain at zero senses
     // nothing at all, and this is nothing at all along with it.
-    let painted = get_field(p, bc).ba * trails_strength();
+    //
+    // THE CAMERA, when it feeds Trails, rides this same addition for the same
+    // reason: to a particle it is one more trail it did not lay itself.
+    let painted = get_field(p, bc).ba * trails_strength()
+                + get_camera(p, bc, camera_trails_strength());
     return trail + vec4f(painted + bias, 0.0, 0.0);
 }
 

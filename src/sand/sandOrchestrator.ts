@@ -64,7 +64,8 @@ import {
   isFieldTool,
   usesSwatch,
 } from './tool.ts';
-import type { ShoveState } from '../particleSystem/uniforms.ts';
+import { type ShoveState, NO_CAMERA } from '../particleSystem/uniforms.ts';
+import type { Webcam } from '../webcam/webcam.ts';
 import type { BrushParams } from '../strafeField/strafeUniforms.ts';
 import type { FieldLayer } from '../strafeField/fieldLayer.ts';
 import type { StampData } from '../stamp/stampData.ts';
@@ -117,6 +118,13 @@ export class SandOrchestrator {
   // the field takes its shape from the canvas.
   private field: StrafeField;
   private readonly targets: RenderTargets;
+  /**
+   * The camera, shared with the settings window's Camera tab. One per session,
+   * like the studio's: every world this orchestrator builds binds the same
+   * field texture, so a resize -- which rebuilds the world -- neither stops the
+   * camera nor reallocates anything of its. Null where there is none.
+   */
+  private readonly webcam: Webcam | null;
   // Both hold the entity buffer by reference, so both are replaced when it is.
   private passes: SandPasses;
   /**
@@ -428,8 +436,10 @@ export class SandOrchestrator {
     // await. It became async when the initial conditions became a whole-scene
     // stamp -- see `initialConditions.ts`.
     initial: InitialConditions;
+    webcam: Webcam | null;
   }) {
     this.device = opts.device;
+    this.webcam = opts.webcam;
     this.system = opts.system;
     this.camera = opts.camera;
     this.assembler = opts.assembler;
@@ -447,11 +457,19 @@ export class SandOrchestrator {
     assembler: Assembler;
     field: StrafeField;
     targets: RenderTargets;
+    /** See the field. The caller has already bound it into `system`. */
+    webcam?: Webcam;
   }): Promise<SandOrchestrator> {
     const passes = await SandPasses.create(opts.device, opts.system);
     const compactor = await Compactor.create(opts.device, opts.system);
     const initial = await InitialConditions.create(opts.device, opts.system, opts.field);
-    const orch = new SandOrchestrator({ ...opts, passes, compactor, initial });
+    const orch = new SandOrchestrator({
+      ...opts,
+      passes,
+      compactor,
+      initial,
+      webcam: opts.webcam ?? null,
+    });
     orch.startEmpty();
     return orch;
   }
@@ -805,6 +823,8 @@ export class SandOrchestrator {
     const replacementField = await StrafeFieldClass.create(this.device, canvasSize);
     replacementField.setWrap(false);
     replacement.setStrafeField(replacementField.view(), replacementField.size);
+    // The same texture as before -- a rebind, not a replacement. See `webcam`.
+    if (this.webcam !== null) replacement.setCameraField(this.webcam.fieldView);
     replacement.applyProject(
       this.palette.configsForUpload(fallbackConfig),
       this.palette.master.world ?? fallbackWorld,
@@ -989,6 +1009,14 @@ export class SandOrchestrator {
       this.wallsRestorePending = false;
       this.initial.restoreField(encoder);
     }
+
+    // THE CAMERA, before the physics that samples it. Every frame, paused or
+    // not, compacting or not: the field is not simulation state, and the
+    // Camera tab's preview should stay live while the world is frozen for an
+    // edit. The strengths are pushed each frame because they follow the camera
+    // starting and stopping, which happens outside this orchestrator.
+    this.webcam?.record(encoder, this.system.canvasSize);
+    this.system.setCameraStrengths(this.webcam?.strengths() ?? NO_CAMERA);
 
     // THE AUTOMATIC TRIGGER, consulted before the decision below so a
     // compaction it queues runs on THIS frame rather than idling one.
@@ -1570,6 +1598,7 @@ export class SandOrchestrator {
     // untouched tail read as dead rather than as live config-0 particles.
     replacement.resetLifetimes();
     replacement.setStrafeField(this.field.view(), this.field.size);
+    if (this.webcam !== null) replacement.setCameraField(this.webcam.fieldView);
     replacement.applyProject(
       this.palette.configsForUpload(fallbackConfig),
       this.palette.master.world ?? fallbackWorld,

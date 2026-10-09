@@ -213,3 +213,25 @@ test('packPickUniforms defaults the highlight to the negative sentinel', () => {
   const f32 = new Float32Array(packPickUniforms(WORLD, [0, 0], 0.05));
   assert.ok(f32[WORLD_DATA_SIZE / 4 + 3]! < 0, 'no highlight must pack as negative');
 });
+
+test('the camera strengths land in their own lanes, and default to off', () => {
+  const base = WORLD_DATA_SIZE / 4 + 12;
+  const off = new Float32Array(
+    packEntityUpdateUniforms(WORLD, [1, 1], [1, 1], 0, null, true, STRENGTHS),
+  );
+  assert.equal(off[base], 0);
+  assert.equal(off[base + 1], 0);
+
+  const on = new Float32Array(
+    packEntityUpdateUniforms(WORLD, [1, 1], [1, 1], 0, null, true, STRENGTHS, {
+      walls: 0.25,
+      trails: 0.5,
+    }),
+  );
+  assert.equal(on[base], 0.25);
+  assert.equal(on[base + 1], 0.5);
+  // And the painted strengths beside them are untouched -- the two pairs mean
+  // different things and a shifted lane would compile and run.
+  assert.equal(Math.fround(on[base - 2]!), Math.fround(STRENGTHS.walls));
+  assert.equal(on[base - 1], STRENGTHS.trails);
+});

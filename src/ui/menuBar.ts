@@ -139,6 +139,13 @@ export interface MenuBarOptions {
   /** Whether the Project Link Settings tab is showing, for the checkmark. */
   readonly isLinkSettingsShown: () => boolean;
   /**
+   * Show or hide the Camera Controls tab. A toggle with a checkmark, like the
+   * two above. Toggles the TAB, not the camera -- that is the tab's own button.
+   */
+  readonly onToggleCamera: () => void;
+  /** Whether the Camera Controls tab is showing, for the checkmark. */
+  readonly isCameraShown: () => boolean;
+  /**
    * Build for touch. Defaults to false.
    *
    * Today this only reaches the tooltip, whose affordance is per instance --
@@ -688,6 +695,18 @@ export class MenuBar {
       // name with hover-preview. Stepping blindly through 175 presets two rows
       // at a time was the worse half of that, and it had already lost its arrow
       // keys to the cohort stepper (`hotkeys.ts`).
+
+      // LAST, BELOW A RULE: a tab toggle rather than an action on the
+      // simulation, the same kind of row as Video Export Controls -- checkmark,
+      // no ellipsis -- separated from the commands above it.
+      this.addSeparator(body);
+      this.addItem(
+        body,
+        'Camera Controls',
+        () => this.opts.onToggleCamera(),
+        '',
+        () => this.opts.isCameraShown(),
+      );
     });
 
     // Last, where a Help menu goes. The title is NOT compared anywhere in

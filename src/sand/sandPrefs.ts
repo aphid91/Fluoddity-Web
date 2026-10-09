@@ -66,6 +66,11 @@ import {
   asColorMode,
 } from './colorMode.ts';
 import type { CameraMode } from '../camera/cameraState.ts';
+import type { Webcam } from '../webcam/webcam.ts';
+import {
+  type CameraControlsHandle,
+  buildCameraControls,
+} from '../ui/sections/cameraSection.ts';
 import { BUILTIN_PREFIX, isReservedWorldName } from '../worlds/worldRef.ts';
 import {
   type SwatchColor,
@@ -255,6 +260,13 @@ export class SandPrefs {
   private worldBlades: { dispose(): void }[] = [];
   private worldChoices: WorldChoices;
 
+  /**
+   * The Camera tab's controls, or null where there is no camera. The SAME
+   * builder as the studio's Camera Controls tab (`ui/sections/cameraSection.ts`),
+   * pointed at sand's own `Webcam` and so at sand's own saved setup.
+   */
+  private cameraControls: CameraControlsHandle | null = null;
+
   constructor(
     prefs: Preferences,
     palette: Palette,
@@ -274,6 +286,11 @@ export class SandPrefs {
       colorMode: ColorMode;
       /** Each tool's strength, restored from the session. */
       strengths: Readonly<Record<SandTool, number>>;
+      /**
+       * The camera, for a Camera tab. Null builds none. It belongs to
+       * `main.ts`, not to this window: disposing the window leaves it running.
+       */
+      webcam: Webcam | null;
     },
     callbacks: SandPrefsCallbacks,
   ) {
@@ -316,9 +333,11 @@ export class SandPrefs {
         { title: 'Config' },
         { title: 'Dev' },
         { title: 'UI leftovers' },
+        // LAST, so the four existing tabs keep their places.
+        ...(initial.webcam !== null ? [{ title: 'Camera' }] : []),
       ],
     });
-    const [prefsPage, configPage, devPage, leftoversPage] = tabs.pages;
+    const [prefsPage, configPage, devPage, leftoversPage, cameraPage] = tabs.pages;
     if (
       prefsPage === undefined ||
       configPage === undefined ||
@@ -332,7 +351,29 @@ export class SandPrefs {
     this.buildPrefs(prefsPage);
     this.buildDev(devPage);
     this.buildLeftovers(leftoversPage, initial.strengths);
+    if (cameraPage !== undefined && initial.webcam !== null) {
+      // Sand's help idiom is the native `title` tooltip, as everywhere else in
+      // this window.
+      this.cameraControls = buildCameraControls(
+        cameraPage,
+        initial.webcam,
+        (element, title, body) => {
+          element.title = `${title}
+
+${body}`;
+        },
+      );
+    }
     this.syncConfig();
+  }
+
+  /**
+   * Keep the Camera tab current: the Start/Stop label, the status line, and
+   * the preview's shape. Called once per frame, beside `syncConfig`. Cheap --
+   * it only writes to Tweakpane when a value actually moved.
+   */
+  syncCamera(): void {
+    this.cameraControls?.refresh();
   }
 
   // -------------------------------------------------------------------------
@@ -1151,6 +1192,8 @@ export class SandPrefs {
   }
 
   dispose(): void {
+    // Hands the preview canvas back. Does NOT stop the camera.
+    this.cameraControls?.dispose();
     this.pane.dispose();
   }
 }

@@ -8,6 +8,11 @@
 //   assembler/shaders/bloomDownsample.wgsl  the mip chain, down
 //   assembler/shaders/bloomUpsample.wgsl    the mip chain, up
 //   assembler/shaders/frameAssembly.wgsl    bloom, tone curve, overlays
+//   webcam/shaders/cameraPreview.wgsl       the Camera tab's thumbnail
+//   webcam/shaders/camera{Ingest,Blur,Map}.wgsl -- the VERTEX only. They render
+//                                           into textures the particles sample,
+//                                           so they index by @builtin(position)
+//                                           and ignore `uv`; see cameraIngest.
 //
 // NOT a consumer: `particleSystem/shaders/canvas.wgsl`. It needs the V FLIP
 // (see its header) because it rasterizes into the canvas texture and every

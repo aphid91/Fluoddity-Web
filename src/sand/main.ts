@@ -88,6 +88,8 @@ import {
   slotDocument,
 } from './session.ts';
 import { SandPrefs } from './sandPrefs.ts';
+import { Webcam } from '../webcam/webcam.ts';
+import { SAND_CAMERA_STORAGE_KEY } from '../webcam/webcamSettings.ts';
 import { themeById } from './theme.ts';
 import { readText } from '../ui/clipboard.ts';
 import { decodeShareText } from '../config/shareLink.ts';
@@ -313,6 +315,13 @@ async function main(): Promise<void> {
   field.setWrap(false);
   system.setStrafeField(field.view(), field.size);
 
+  // THE CAMERA, one for the session and bound into every world the orchestrator
+  // builds -- see `Webcam`'s header. Sand keeps its own saved setup, apart from
+  // the studio's, as it keeps its own Preferences. The camera opens only when
+  // the Camera tab's Start is pressed.
+  const webcam = await Webcam.create(device, SAND_CAMERA_STORAGE_KEY);
+  system.setCameraField(webcam.fieldView);
+
   const targets = new RenderTargets(device);
   const camera = await Camera.create(device, new CameraState(), targets);
   const assembler = await Assembler.create(device, targets, surface.format);
@@ -325,6 +334,7 @@ async function main(): Promise<void> {
     assembler,
     field,
     targets,
+    webcam,
   });
   orch.fallbackWorld = defaultWorld;
   ui.attach(orch.palette);
@@ -918,6 +928,7 @@ async function main(): Promise<void> {
       auditAfterSweep,
       colorMode: orch.colorMode,
       strengths: orch.brush.allStrengths(),
+      webcam,
     },
     {
     // The UI leftovers tab. Each tool keeps its own; see `ToolStrengths`.
@@ -1777,6 +1788,8 @@ async function main(): Promise<void> {
     // Rebuilds the Config tab only when the selection or a square's contents
     // actually changed -- see `syncConfig`.
     prefsWindow.syncConfig();
+    // The Camera tab's button label, status line and preview shape.
+    prefsWindow.syncCamera();
     // The pool readouts. Self-guarding: it only touches Tweakpane when a
     // displayed value actually moved, so a static world costs the formatting.
     const poolStats = orch.compactionStats;

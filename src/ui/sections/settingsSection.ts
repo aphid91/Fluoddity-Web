@@ -44,6 +44,8 @@ import {
   buildLinkSection,
 } from './linkSection.ts';
 import type { LinkSettings } from '../../config/urlOptions.ts';
+import { buildCameraSection } from './cameraSection.ts';
+import type { Webcam } from '../../webcam/webcam.ts';
 
 /**
  * The Project tab. **TOUCH ONLY, and first in the strip when it exists.**
@@ -68,12 +70,19 @@ export const RECORDING_TAB = 'recording';
  * not wanted, and holding editor state that never travels with a project.
  */
 export const LINK_TAB = 'link';
+/**
+ * Camera Controls. A third optional tab on the same terms as Video and Link:
+ * toggled from a menu (Simulation > Camera Controls), absent rather than hidden
+ * when unticked, and holding editor state that never travels with a project.
+ */
+export const CAMERA_TAB = 'camera';
 export type SettingsTab =
   | typeof PROJECT_TAB
   | typeof PREFS_TAB
   | typeof DRAWING_TAB
   | typeof RECORDING_TAB
-  | typeof LINK_TAB;
+  | typeof LINK_TAB
+  | typeof CAMERA_TAB;
 
 /**
  * What each tab is FOR, shown on hovering its button.
@@ -99,6 +108,7 @@ const TAB_FULL_NAME: Record<SettingsTab, string> = {
   [DRAWING_TAB]: 'Drawing Controls',
   [RECORDING_TAB]: 'Recording Controls',
   [LINK_TAB]: 'Project Link Settings',
+  [CAMERA_TAB]: 'Camera Controls',
 };
 
 const TAB_HELP: Record<SettingsTab, string> = {
@@ -122,6 +132,10 @@ const TAB_HELP: Record<SettingsTab, string> = {
   [LINK_TAB]:
     'What a copied share link asks the recipient to adopt. Persistent; not ' +
     'saved/loaded with projects or checkpoints.',
+  [CAMERA_TAB]:
+    'Let a webcam or phone camera move the particles. The setup is ' +
+    'persistent; the camera itself always starts off. Not saved/loaded with ' +
+    'projects or checkpoints.',
 };
 
 /** A settings section, plus the tab control the panel drives. */
@@ -163,6 +177,12 @@ export function buildSettingsSection(
    * Undefined builds NO tab, on the same terms as `recording` above.
    */
   link?: LinkSectionOptions,
+  /**
+   * The camera, when Simulation > Camera Controls is ticked. Undefined builds
+   * NO tab, on the same terms as `recording` above. The camera itself is not
+   * this section's: hiding the tab leaves it running.
+   */
+  camera?: Webcam,
 ): SettingsSectionHandle {
   // The host folder's own header goes too: the tab strip sits directly beneath
   // it and names both pages, so a "Settings" bar above them is a third label for
@@ -220,6 +240,16 @@ export function buildSettingsSection(
     linkSection = buildLinkSection(linkFolder, status, ctx, link);
   }
 
+  // The sixth, on the same terms again.
+  let cameraSection: SectionHandle | null = null;
+  let cameraFolder: FolderApi | null = null;
+  if (camera !== undefined) {
+    cameraFolder = folder.addFolder({ title: 'Camera Controls', expanded: true });
+    hideFolderTitle(cameraFolder);
+    (cameraFolder.element as HTMLElement).dataset['section'] = CAMERA_TAB;
+    cameraSection = buildCameraSection(cameraFolder, status, ctx, camera);
+  }
+
   // --- the strip ----------------------------------------------------------
   // Built after the folders (Tweakpane needs to own its own children) and then
   // moved to the front, so it renders above them.
@@ -253,6 +283,9 @@ export function buildSettingsSection(
   // Share menu, and keeping them adjacent means the strip's first buttons never
   // move as either is toggled.
   if (linkFolder !== null) tabs.push([LINK_TAB, 'Link']);
+  // After both, for the same reason: optional tabs go at the end, so the
+  // permanent ones never move.
+  if (cameraFolder !== null) tabs.push([CAMERA_TAB, 'Camera']);
 
   const buttons = new Map<SettingsTab, HTMLButtonElement>();
   for (const [tab, title] of tabs) {
@@ -318,6 +351,10 @@ export function buildSettingsSection(
       (linkFolder.element as HTMLElement).style.display =
         active === LINK_TAB ? '' : 'none';
     }
+    if (cameraFolder !== null) {
+      (cameraFolder.element as HTMLElement).style.display =
+        active === CAMERA_TAB ? '' : 'none';
+    }
     for (const [id, button] of buttons) {
       button.style.cssText = id === active ? TAB_ACTIVE_CSS : TAB_IDLE_CSS;
     }
@@ -365,6 +402,9 @@ export function buildSettingsSection(
       // built rather than mirroring it -- and forwarded anyway, for the reason
       // `dispose` forwards to Project below.
       linkSection?.refresh(s, input);
+      // Keeps the Start/Stop label, the status line and the preview's shape
+      // current, including while another tab is in front.
+      cameraSection?.refresh(s, input);
     },
     // Forwarded so the listeners a tab registers outside its own folder are
     // released when this host is torn down.
@@ -382,6 +422,8 @@ export function buildSettingsSection(
       drawing.dispose?.();
       projectSection?.dispose?.();
       linkSection?.dispose?.();
+      // Hands the preview canvas back to the Webcam. Does NOT stop the camera.
+      cameraSection?.dispose?.();
     },
     setActiveTab,
     activeTab: () => active,

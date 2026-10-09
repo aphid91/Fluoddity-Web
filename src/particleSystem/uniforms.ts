@@ -42,13 +42,15 @@ import { WORLD_DATA_SIZE } from './layout.ts';
 import { PICK_UNIFORM_SIZE } from './pick.ts';
 
 /**
- * `EntityUpdateUniforms` -- 80 bytes.
+ * `EntityUpdateUniforms` -- 96 bytes.
  *
  *   world      : WorldData  (32)  offset 0
  *   canvas_res : vec4f      (16)  offset 32   xy: canvas   zw: strafe field
  *   shove      : vec4f      (16)  offset 48   xy: center   z: strength  w: size
  *   flags      : vec4f      (16)  offset 64   x: frame_count(i)  y: strafe_active(i)
  *                                             z: walls_strength  w: trails_strength
+ *   camera     : vec4f      (16)  offset 80   x: camera walls  y: camera trails
+ *                                             zw: reserved
  *
  * `canvas_res` is THE `textureDimensions` HOIST. The GLSL calls
  * `textureSize(canvas_texture, 0)` at five sites per invocation
@@ -56,7 +58,7 @@ import { PICK_UNIFORM_SIZE } from './pick.ts';
  * via reset/fence, and `:384`); at 600k entities x 30 sub-steps that is not
  * free, and the value is constant for the whole pass anyway.
  */
-export const ENTITY_UPDATE_UNIFORM_SIZE = 80;
+export const ENTITY_UPDATE_UNIFORM_SIZE = 96;
 
 /** `CanvasUniforms` -- 48 bytes. world (32) + flags (16). */
 export const CANVAS_UNIFORM_SIZE = 48;
@@ -89,6 +91,20 @@ export interface FieldStrengths {
  * what keeps the duplication honest.
  */
 export const DEFAULT_FIELD_STRENGTHS: FieldStrengths = { walls: 0.01, trails: 0.001 };
+
+/**
+ * How strongly the camera field acts on each destination, pre-multiplied by its
+ * base gain (`cameraStrengths` in `webcam/webcamSettings.ts`).
+ *
+ * A NAMED PAIR for `FieldStrengths`' reason. Both zero is the off switch: the
+ * shader skips the camera sample entirely, so a stopped camera costs nothing.
+ */
+export interface CameraStrengths {
+  readonly walls: number;
+  readonly trails: number;
+}
+
+export const NO_CAMERA: CameraStrengths = { walls: 0, trails: 0 };
 
 /** The Shove tool's live state, or null while the button is not held. */
 export interface ShoveState {
@@ -141,6 +157,7 @@ export function packEntityUpdateUniforms(
   shove: ShoveState | null,
   strafeFieldActive: boolean,
   strengths: FieldStrengths,
+  camera: CameraStrengths = NO_CAMERA,
 ): ArrayBuffer {
   const { buffer, f32, i32 } = withWorld(world, ENTITY_UPDATE_UNIFORM_SIZE);
 
@@ -168,6 +185,10 @@ export function packEntityUpdateUniforms(
   i32[AFTER_WORLD + 9] = strafeFieldActive ? 1 : 0;
   f32[AFTER_WORLD + 10] = strengths.walls;
   f32[AFTER_WORLD + 11] = strengths.trails;
+
+  // camera: x walls, y trails, zw reserved (left zero)
+  f32[AFTER_WORLD + 12] = camera.walls;
+  f32[AFTER_WORLD + 13] = camera.trails;
 
   return buffer;
 }

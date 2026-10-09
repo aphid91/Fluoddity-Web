@@ -97,6 +97,8 @@ import {
   isFullFrame,
 } from '../recorder/recordingSettings.ts';
 import { StrafeField } from '../strafeField/strafeField.ts';
+import type { Webcam } from '../webcam/webcam.ts';
+import { NO_CAMERA } from '../particleSystem/uniforms.ts';
 import {
   type FieldLayer,
   BRUSH_MODES,
@@ -201,6 +203,15 @@ export interface OrchestratorOptions {
    */
   readonly mobile?: boolean;
   /**
+   * The camera feature, made once by `main.ts` and shared with the panel's
+   * Camera tab. Absent where there is none to make (the tests); the particles
+   * then see no camera field at all.
+   *
+   * INJECTED rather than built here because it must outlive this object's
+   * particle systems -- see `Webcam`'s header.
+   */
+  readonly webcam?: Webcam;
+  /**
    * Open with this project instead of one from the catalog. For the share link.
    *
    * INJECTED HERE RATHER THAN LOADED AFTERWARDS, and the alternative is worse in
@@ -236,6 +247,8 @@ export class Orchestrator implements CommandBus {
    * `rebuildSystem` replaces the two together and destroys the two together.
    */
   private strafeField: StrafeField;
+  /** See `OrchestratorOptions.webcam`. */
+  private readonly webcam: Webcam | null;
 
   /**
    * Where the cursor was on the previous frame of the stroke in progress, in
@@ -551,8 +564,10 @@ export class Orchestrator implements CommandBus {
     presetName: string;
     configOrigin: { readonly category: string; readonly name: string } | null;
     mobile: boolean;
+    webcam: Webcam | null;
   }) {
     this.device = opts.device;
+    this.webcam = opts.webcam;
     this.surface = opts.surface;
     this.targets = opts.targets;
     this.camera = opts.camera;
@@ -663,6 +678,9 @@ export class Orchestrator implements CommandBus {
     // user set in an earlier session applies from the first frame rather than
     // from whenever they next touch a control.
     system.setFieldStrengths(fieldStrengthsFor(prefs));
+    // Build-time, like the strafe field above it -- the view is baked into the
+    // same texture groups.
+    if (opts.webcam !== undefined) system.setCameraField(opts.webcam.fieldView);
 
     const targets = new RenderTargets(opts.device);
     const camera = await Camera.create(opts.device, new CameraState(), targets);
@@ -694,6 +712,7 @@ export class Orchestrator implements CommandBus {
       presetName,
       configOrigin,
       mobile: opts.mobile ?? false,
+      webcam: opts.webcam ?? null,
     });
     // No camera is applied from the startup preset -- the view starts where the
     // camera's own defaults put it. See the note above `adoptPreset`.
@@ -943,6 +962,15 @@ export class Orchestrator implements CommandBus {
       }
       this.pendingStroke = null;
     }
+
+    // THE CAMERA, on the same terms as the field above: once per rendered
+    // frame, above the physics that samples it, and above the paused branch --
+    // the camera is not simulation state, and someone who paused to frame a
+    // shot still wants the Camera tab's preview live. The strengths are pushed
+    // every frame (two floats) because they follow the camera starting and
+    // stopping, which happens outside any command.
+    this.webcam?.record(encoder, this.system.canvasSize);
+    this.system.setCameraStrengths(this.webcam?.strengths() ?? NO_CAMERA);
 
     // Hoisted out of the sub-step loop: a shove is fixed for the whole frame,
     // and `shoveState` is the one place that decides whether there is one
@@ -3238,6 +3266,9 @@ export class Orchestrator implements CommandBus {
     // showing whatever the user had set -- the controls and the simulation
     // disagreeing, with nothing on screen to say so.
     replacement.setFieldStrengths(fieldStrengthsFor(this.prefs));
+    // The camera field is the SAME texture across rebuilds (it does not follow
+    // the canvas's shape), so this is a rebind, not a replacement.
+    if (this.webcam !== null) replacement.setCameraField(this.webcam.fieldView);
 
     const outgoingSystem = this.system;
     const outgoingField = this.strafeField;

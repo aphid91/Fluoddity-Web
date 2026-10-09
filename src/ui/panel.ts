@@ -93,6 +93,7 @@ import { type SectionContext, type SectionHandle } from './sections/section.ts';
 import {
   type SettingsSectionHandle,
   type SettingsTab,
+  CAMERA_TAB,
   DRAWING_TAB,
   LINK_TAB,
   PREFS_TAB,
@@ -122,6 +123,8 @@ import {
   saveLinkSettingsShown,
   withSharedName,
 } from '../config/urlOptions.ts';
+import type { Webcam } from '../webcam/webcam.ts';
+import { loadCameraShown, saveCameraShown } from '../webcam/webcamSettings.ts';
 import type { RgbaImage } from '../share/qrRender.ts';
 import { DOWNSCALE_WARN_PX, QrCapacityError } from '../share/qrStamp.ts';
 import {
@@ -281,6 +284,14 @@ export interface PanelOptions {
     /** Detach the recorder, finalize, and report what became of the file. */
     readonly finish: (recorder: VideoRecorder) => Promise<RecordingResult>;
   };
+  /**
+   * The camera, for the Camera Controls tab. Made by `main.ts`, which also hands
+   * it to the Orchestrator -- the two halves (the GPU passes and the controls)
+   * share one object that outlives every rebuild of this panel. Omitted where
+   * there is no GPU (the DOM tests), and Simulation > Camera Controls then
+   * builds no tab.
+   */
+  readonly webcam?: Webcam;
   /**
    * Write the strong-logging archive to a file.
    *
@@ -616,6 +627,11 @@ export class Panel {
   private exportVideoShown = loadExportVideoShown();
   /** Whether the Project Link Settings tab is up. Its sister -- see the toggle. */
   private linkSettingsShown = loadLinkSettingsShown();
+  /**
+   * Whether the Camera Controls tab is up. A third sister, persisted on the same
+   * terms. Says nothing about whether the CAMERA is on -- that never persists.
+   */
+  private cameraShown = loadCameraShown();
 
   /**
    * The recorder, while an export is in flight.
@@ -641,6 +657,8 @@ export class Panel {
    * use site prove the same thing twice.
    */
   private readonly recording: NonNullable<PanelOptions['recording']> | null;
+  /** See `PanelOptions.webcam`. */
+  private readonly webcam: Webcam | null;
 
   /**
    * See `PanelOptions.downloadArchive`. Null where the host supplies no exporter.
@@ -693,6 +711,7 @@ export class Panel {
     this.runCalibration = opts.runCalibration ?? null;
     this.onHiddenChange = opts.onHiddenChange ?? null;
     this.recording = opts.recording ?? null;
+    this.webcam = opts.webcam ?? null;
     this.downloadArchive = opts.downloadArchive ?? null;
     // BEFORE `new Dialogs(...)` below, whose clear-archive callback reads it.
     this.clearArchive = opts.clearArchive ?? null;
@@ -872,6 +891,10 @@ export class Panel {
         this.setLinkSettingsShown(!this.linkSettingsShown);
       },
       isLinkSettingsShown: () => this.linkSettingsShown,
+      onToggleCamera: () => {
+        this.setCameraShown(!this.cameraShown);
+      },
+      isCameraShown: () => this.cameraShown,
     });
 
     this.left = {
@@ -1030,6 +1053,9 @@ export class Panel {
                 },
               }
             : undefined,
+          // Undefined -- and so NO camera tab -- unless the menu item is ticked
+          // and this build has a camera to control.
+          this.cameraShown && this.webcam !== null ? this.webcam : undefined,
         );
         this.settings = handle;
         side.sections.push(handle);
@@ -2325,6 +2351,27 @@ export class Panel {
 
     if (shown) {
       this.activeTab = LINK_TAB;
+      if (this.hiddenFlag) this.setHidden(false);
+    }
+    this.rebuild();
+  }
+
+  /**
+   * Show or hide the Camera Controls tab.
+   *
+   * `setLinkSettingsShown` again, for the same reasons. Hiding the tab does NOT
+   * stop the camera: it belongs to `main.ts`, and someone who tidies the panel
+   * away mid-performance wants the particles to keep following them.
+   */
+  private setCameraShown(shown: boolean): void {
+    if (this.webcam === null) return;
+    if (shown === this.cameraShown) return;
+
+    this.cameraShown = shown;
+    saveCameraShown(shown);
+
+    if (shown) {
+      this.activeTab = CAMERA_TAB;
       if (this.hiddenFlag) this.setHidden(false);
     }
     this.rebuild();

@@ -33,6 +33,8 @@ import {
 } from './config/urlOptions.ts';
 import { PREFS, settingFor } from './ui/settingsSpec.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
+import { Webcam } from './webcam/webcam.ts';
+import { STUDIO_CAMERA_STORAGE_KEY } from './webcam/webcamSettings.ts';
 import { RECORDING_FPS, driverAction } from './recorder/recordingSettings.ts';
 // Static, and deliberately so: the file picker must run before any await in the
 // export click handler. Both this and `recordingSettings.ts` are leaves that
@@ -211,9 +213,16 @@ async function start(): Promise<void> {
   // `height:100dvh` rule and the selection suppression both target it.
   if (mobile) document.documentElement.classList.add('fluoddity-touch');
 
+  // THE CAMERA, made once for the session and handed to both halves below:
+  // the Orchestrator runs its GPU passes, the panel's Camera tab drives it.
+  // Making it costs four small shader compiles and five 256-square textures --
+  // NOT the camera, which opens only when someone presses Start.
+  const webcam = await Webcam.create(device, STUDIO_CAMERA_STORAGE_KEY);
+
   const orchestrator = await Orchestrator.create({
     device,
     surface,
+    webcam,
     // `?preset=<stem>` still works and is still worth keeping: `browserCheck.mjs`
     // drives the page by URL, so this is how an automated check reaches a
     // preset without synthesizing a click on a panel button.
@@ -444,6 +453,8 @@ async function start(): Promise<void> {
         onHiddenChange: () => {
           orchestrator.panelOpen = panel?.isOpen ?? false;
         },
+        // Simulation > Camera Controls. See `PanelOptions.webcam`.
+        webcam,
         // Video recording. Supplied HERE because this is the one place that
         // holds both halves -- the device to record with and the orchestrator to
         // attach the recorder to -- and because `CommandBus` deliberately admits

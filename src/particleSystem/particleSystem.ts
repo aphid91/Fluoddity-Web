@@ -75,12 +75,14 @@ import { type PoolAudit, auditPool } from './poolAudit.ts';
 import { canDropMarkToZero, markAfterSpawnReach, sortedFreeList } from './compaction.ts';
 import { canvasDimensions, ENTITIES_PER_WORLD_UNIT, ENTITY_COUNT } from './sizing.ts';
 import {
+  type CameraStrengths,
   type FieldStrengths,
   type ShoveState,
   alignTo,
   CANVAS_UNIFORM_SIZE,
   DEFAULT_FIELD_STRENGTHS,
   ENTITY_UPDATE_UNIFORM_SIZE,
+  NO_CAMERA,
   packCanvasUniforms,
   packEntityUpdateUniforms,
   packPickUniforms,
@@ -278,6 +280,24 @@ export class ParticleSystem {
    * `STRAFE_FIELD_GAIN`, and `trails` is the gain a strength of 1.0 gives.
    */
   private fieldStrengths: FieldStrengths = DEFAULT_FIELD_STRENGTHS;
+
+  /**
+   * The camera's vector field, or the 1x1 placeholder.
+   *
+   * SET ONCE, BEFORE THE SYSTEM GOES LIVE, on `strafeFieldView`'s terms -- it is
+   * baked into the same prebuilt texture groups. Unlike the painted field it
+   * does not follow the canvas's shape: `webcam/webcamField.ts` owns one fixed
+   * square texture for the whole session, so every system the app builds binds
+   * the same view and nothing has to be reallocated when the world reshapes.
+   */
+  private cameraFieldView: GPUTextureView;
+  /**
+   * How strongly the camera acts on each destination. Both zero while no camera
+   * is running, which the shader takes as "do not sample". A setter for
+   * `fieldStrengths`' reason, though this one is pushed every rendered frame:
+   * it has to follow the camera starting and stopping, and it is two floats.
+   */
+  private cameraStrengths: CameraStrengths = NO_CAMERA;
 
   // NOT readonly: `physicsSteps` is a live preference, and each of these holds
   // one slice per sub-step. Raising the rate past the allocated slot count
@@ -486,6 +506,10 @@ export class ParticleSystem {
     });
     this.dummyTextureView = this.dummyTexture.createView();
     this.strafeFieldView = this.dummyTextureView;
+    // The same placeholder serves the camera's slot. Its format differs from the
+    // camera field's (rgba16float vs rg16float), which the layout permits: both
+    // are filterable floats, and the shader reads only `.rg`.
+    this.cameraFieldView = this.dummyTextureView;
 
     // One uniform slice per sub-step, so the whole frame's uniforms can be
     // written before the encoder opens. Dynamic offsets must be a multiple of
@@ -612,6 +636,9 @@ export class ParticleSystem {
         { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: {} },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: {} },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: {} },
+        // The camera field. Sampled through binding 3's sampler -- see
+        // `get_camera` in entityUpdate.wgsl.
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: {} },
       ],
     });
 
@@ -773,6 +800,24 @@ export class ParticleSystem {
   }
 
   /**
+   * Bind the camera's field texture. CALL ONCE, BEFORE THE SYSTEM GOES LIVE --
+   * same terms, and same reason, as `setStrafeField`.
+   */
+  setCameraField(view: GPUTextureView): void {
+    this.cameraFieldView = view;
+    this.buildTextureGroups();
+  }
+
+  /**
+   * Set how strongly the camera acts, pre-multiplied by its base gains
+   * (`cameraStrengths` in `webcam/webcamSettings.ts`). Both zero turns the
+   * camera off for the particles. Cheap: a field the next `runFrame` reads.
+   */
+  setCameraStrengths(strengths: CameraStrengths): void {
+    this.cameraStrengths = strengths;
+  }
+
+  /**
    * The three bind groups that reference the per-sub-step uniform buffers.
    *
    * Split out of `reload()` because they must ALSO be rebuilt when the physics
@@ -874,6 +919,7 @@ export class ParticleSystem {
               { binding: 1, resource: sampler },
               { binding: 2, resource: this.strafeFieldView },
               { binding: 3, resource: sampler },
+              { binding: 4, resource: this.cameraFieldView },
             ],
           }),
         ),
@@ -1954,6 +2000,7 @@ export class ParticleSystem {
             shove,
             this.strafeFieldBound,
             this.fieldStrengths,
+            this.cameraStrengths,
           ),
         ),
         i * this.entityUpdateStride,

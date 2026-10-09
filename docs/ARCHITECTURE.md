@@ -1525,6 +1525,52 @@ field's.
   call rather than held by `ParticleSystem`, which must not reference another
   module.
 
+## The Camera field
+
+A webcam or phone camera, turned into a vector field and fed to the same two
+destinations the painted field has: **Walls** (added to position in `get_walls`)
+or **Trails** (added to the sensed trail in `get_can`). One destination at a
+time, one mapping, one gain. Lives in `src/webcam/`; the design follows the
+community fork's field-injection work, minus its layer stack.
+
+| File | Owns |
+|------|------|
+| `webcamSettings.ts` | The setup (mapping, destination, gain, blur, direction, facing, mirror, preview), its storage, and the base gains. Pure. |
+| `webcamSource.ts` | The MediaStream and its `<video>`; one "new frame?" answer per render. No GPU. |
+| `fieldMath.ts` | Cover crop, blur spacing, derivative stencil. Pure. |
+| `webcamField.ts` | The GPU passes: ingest → blur x → blur y → map, plus the preview. |
+| `webcam.ts` | The object both apps hold: wires the three above to an orchestrator and a tab. |
+
+**A texture of its own, rebuilt every camera frame.** Not more channels of the
+painted field: that field persists, so a camera written into it would leave its
+last frame on the world when it stopped. Here nothing accumulates (Motion's
+short decay lives upstream, in the ingest targets), and "off" is both strengths
+at zero, which makes `get_camera` skip the fetch entirely.
+
+**One fixed 256² texture for the whole session.** Bound into every
+`ParticleSystem` via `setCameraField`, so World Size, aspect and sand's
+every-resize rebuilds never reallocate it or interrupt the camera. The price is
+non-square texels; `fieldMath.ts` pays it by cropping to the WORLD's aspect and
+stepping blur and stencil a fixed world distance per axis. `get_camera` passes
+the canvas resolution to `world_to_uv_bc`, which reads only its aspect.
+
+**One v flip, in ingest.** The copied camera image has its top row at row 0;
+field row 0 is the world's bottom. Every other camera pass indexes texels by
+`@builtin(position)` in the field's own v-up space, and the preview samples it
+to the screen with fullscreenQuad's `uv`, so up is up with no further flip.
+`src/webcam/shaders/shaders.test.ts` holds that.
+
+**Editor state, never project state.** The setup persists per app
+(`fluoddity.camera`, `fluoddity.sand.camera`); the camera itself always starts
+off. The studio's tab is toggled from Simulation > Camera Controls like Video
+and Link; sand's is a fifth page of its settings window. Both are
+`ui/sections/cameraSection.ts`. Hiding either tab leaves the camera running.
+
+**Not yet tuned against real cameras.** `CAMERA_WALLS_GAIN`,
+`CAMERA_TRAILS_GAIN` and the motion constants in `cameraIngest.wgsl` /
+`cameraMap.wgsl` were set by arithmetic and checked only against Chrome's fake
+camera (`--use-fake-device-for-media-stream`).
+
 ## Toolbar and the planned side-panel
 
 **Read this before building the side-panel.** The toolbar currently does exactly

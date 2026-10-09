@@ -151,6 +151,9 @@ export const MENU_HELP: Readonly<Record<string, string>> = {
   'Video Export Controls':
     'Open the recording control panel for creating and downloading mp4 videos ' +
     'of your Fluoddities',
+  'Camera Controls':
+    'Open the camera panel, where a webcam or phone camera can push or steer ' +
+    'the particles. The camera only turns on when you press Start there.',
 
   // ONE STRING FOR BOTH ROWS. They are the two ends of one feature, and the
   // help describes the feature rather than the direction.
