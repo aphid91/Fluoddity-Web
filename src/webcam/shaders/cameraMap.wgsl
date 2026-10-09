@@ -32,7 +32,7 @@
 #include "fullscreenQuad.wgsl"
 
 struct MapUniforms {
-    // x: mapping   0 gradient, 1 curl, 2 edges across, 3 edges along, 4 motion
+    // x: mapping   0 edges across, 1 edges along, 2 motion
     // y: sign      +1 toward, -1 away
     // z: aspect    world width / world height
     // w: radius    stencil distance, in field-v units (world-height fractions)
@@ -62,10 +62,15 @@ fn map_fs(in : FsQuadVsOut) -> @location(0) vec4f {
     let mapping = i32(round(u.params.x));
     let dx = vec2f(u.params.w / u.params.z, 0.0);
     let dy = vec2f(0.0, u.params.w);
-    let channel = select(0, 1, mapping == 4);
 
     var v = vec2f(0.0);
-    if (mapping == 2 || mapping == 3) {
+    if (mapping == 2) {
+        // Motion: central differences of the motion scalar across the stencil,
+        // so the vector points toward whatever is moving.
+        let g = vec2f(scalar_at(f + dx, 1) - scalar_at(f - dx, 1),
+                      scalar_at(f + dy, 1) - scalar_at(f - dy, 1));
+        v = g * MOTION_SLOPE_GAIN;
+    } else {
         // Sobel: direction and strength kept apart, so a soft ramp steers as
         // firmly as a hard edge and Gain means the same thing for both.
         let tl = scalar_at(f - dx + dy, 0);
@@ -84,21 +89,9 @@ fn map_fs(in : FsQuadVsOut) -> @location(0) vec4f {
         if (len > 1e-5) { dir = g / len; }
         let mag = clamp(len / SOBEL_FULL, 0.0, 1.0);
         v = dir * mag;
-        if (mapping == 3) { v = vec2f(-v.y, v.x); }
-    } else {
-        // Central differences across the stencil: a full black-to-white step
-        // between the two taps reads as 1.
-        let g = vec2f(scalar_at(f + dx, channel) - scalar_at(f - dx, channel),
-                      scalar_at(f + dy, channel) - scalar_at(f - dy, channel));
-        if (mapping == 1) {
-            // A quarter turn: divergence-free, so particles circle bright
-            // regions instead of piling into them.
-            v = vec2f(-g.y, g.x);
-        } else if (mapping == 4) {
-            v = g * MOTION_SLOPE_GAIN;
-        } else {
-            v = g;
-        }
+        // Along: a quarter turn, so particles trace the outline rather than
+        // crossing it.
+        if (mapping == 1) { v = vec2f(-v.y, v.x); }
     }
 
     v *= u.params.y;

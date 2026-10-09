@@ -146,8 +146,9 @@ export function buildCameraControls(
     'direction',
     { label: 'Direction', options: optionsOf(CAMERA_DIRECTIONS, CAMERA_DIRECTION_LABELS) },
     'Direction',
-    'Toward follows the mapping; Away reverses it -- particles flee bright ' +
-      'regions or motion instead of seeking them, and swirls turn the other way.',
+    'Toward follows the mapping; Away reverses it -- particles flee the bright ' +
+      'side of edges, or motion, instead of seeking it, and run along outlines ' +
+      'the other way.',
     (v: CameraDirection) => webcam.update({ direction: v }),
   );
   bind(
@@ -173,7 +174,7 @@ export function buildCameraControls(
     'blur',
     { label: 'Blur', min: 0, max: 1, step: 0.01 },
     'Blur',
-    'Smooth the picture before reading it. Gradient and Motion want a wide ' +
+    'Smooth the picture before reading it. Motion wants a wide ' +
       'blur, so a hand becomes one region rather than a ridge of noise; Edges ' +
       'want little.',
     (v: number) => webcam.update({ blur: v }),

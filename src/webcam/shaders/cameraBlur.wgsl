@@ -1,11 +1,11 @@
 // ============================================================================
 // cameraBlur.wgsl -- one axis of a separable gaussian over both scalars.
 //
-// Run twice, horizontal then vertical, between ingest and map. For Gradient and
-// Motion the blur is load-bearing rather than cosmetic: the raw derivative of a
+// Run twice, horizontal then vertical, between ingest and map. For Motion the
+// blur is load-bearing rather than cosmetic: the raw derivative of a
 // camera frame is sensor grain, and particles chasing it jitter in place. A
 // blur wide enough turns a hand into one smooth basin with a slope pointing at
-// it, which is what "toward the bright thing" needs.
+// it, which is what "toward the moving thing" needs.
 //
 // FIXED TAP COUNT, VARIABLE SPACING. 25 taps whose spacing grows with sigma, so
 // the cost is the same at every slider position and the kernel always spans

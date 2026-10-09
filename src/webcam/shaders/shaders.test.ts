@@ -74,7 +74,7 @@ test('the passes that feed the particles index by position, not by the quad’s 
 
 test('the map shader handles every mapping the settings offer', () => {
   const body = own('cameraMap.wgsl');
-  // Gradient (0) is the fall-through; every other index is named.
+  // Edges (across), 0, is the fall-through; every other index is named.
   for (let i = 1; i < CAMERA_MAPPINGS.length; i++) {
     assert.match(body, new RegExp(`mapping == ${i}\\b`), `mapping ${i}`);
   }

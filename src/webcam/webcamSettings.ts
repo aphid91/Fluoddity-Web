@@ -30,34 +30,33 @@
  * **THE ORDER IS THE SHADER'S NUMBERING** -- `mappingIndex` hands the position to
  * `cameraMap.wgsl`, and a config never stores it (only the name is persisted),
  * so appending is safe and reordering silently swaps two mappings' meanings.
+ *
+ * GRADIENT AND CURL WERE REMOVED. Over the same stencil, the Sobel edge measure
+ * divided by its weights IS the central-difference gradient, smoothed 3x3, and
+ * both were capped at length 1 -- so Gradient produced Edges (across) and Curl
+ * produced Edges (along), to within a blur. A saved setup naming either is
+ * carried to its twin (`LEGACY_MAPPINGS`) rather than reset.
  */
-export const CAMERA_MAPPINGS = [
-  'gradient',
-  'curl',
-  'edgesAcross',
-  'edgesAlong',
-  'motion',
-] as const;
+export const CAMERA_MAPPINGS = ['edgesAcross', 'edgesAlong', 'motion'] as const;
 export type CameraMapping = (typeof CAMERA_MAPPINGS)[number];
 
+/** Removed mappings, and the one each behaved identically to. */
+const LEGACY_MAPPINGS: Readonly<Record<string, CameraMapping>> = {
+  gradient: 'edgesAcross',
+  curl: 'edgesAlong',
+};
+
 export const CAMERA_MAPPING_LABELS: Record<CameraMapping, string> = {
-  gradient: 'Gradient',
-  curl: 'Curl (swirl)',
   edgesAcross: 'Edges (across)',
   edgesAlong: 'Edges (along)',
   motion: 'Motion',
 };
 
 export const CAMERA_MAPPING_HELP: Record<CameraMapping, string> = {
-  gradient:
-    'Points up the brightness slope, so particles gather on bright regions ' +
-    '(or flee them, with Direction set to Away).',
-  curl:
-    'Points along the brightness contours, so particles circle bright regions ' +
-    'instead of piling into them.',
   edgesAcross:
-    'Pushes across the outlines in the picture, hardest where it changes ' +
-    'fastest and not at all over flat areas.',
+    'Pushes across the outlines in the picture, toward their bright side (or ' +
+    'away, with Direction set to Away) -- hardest where it changes fastest and ' +
+    'not at all over flat areas.',
   edgesAlong:
     'Runs along the outlines in the picture, so particles trace them rather ' +
     'than crossing them.',
@@ -128,7 +127,7 @@ export interface WebcamSettings {
 export const MAX_CAMERA_GAIN = 8;
 
 export const DEFAULT_WEBCAM_SETTINGS: WebcamSettings = Object.freeze({
-  mapping: 'curl',
+  mapping: 'edgesAlong',
   destination: 'trails',
   gain: 1,
   blur: 0.3,
@@ -200,7 +199,7 @@ export function cameraStrengths(
  * The blur slider in FIELD TEXELS of gaussian sigma.
  *
  * Squared so the bottom of the slider is fine-grained: the useful range for
- * Edges is a texel or two, while Gradient and Motion want a blur wide enough to
+ * Edges is a texel or two, while Motion wants a blur wide enough to
  * turn a hand into one basin rather than a ridge of noise, and a linear slider
  * would spend most of its travel on the latter.
  */
@@ -277,7 +276,11 @@ export function sanitizeWebcamSettings(record: Record<string, unknown>): WebcamS
 
   const facing = pick('facing', CAMERA_FACINGS, d.facing);
   return Object.freeze({
-    mapping: pick('mapping', CAMERA_MAPPINGS, d.mapping),
+    mapping: pick(
+      'mapping',
+      CAMERA_MAPPINGS,
+      LEGACY_MAPPINGS[String(record['mapping'])] ?? d.mapping,
+    ),
     destination: pick('destination', CAMERA_DESTINATIONS, d.destination),
     gain: num('gain', 0, MAX_CAMERA_GAIN, d.gain),
     blur: num('blur', 0, 1, d.blur),
