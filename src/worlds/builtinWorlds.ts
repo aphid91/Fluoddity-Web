@@ -76,6 +76,27 @@ export class BuiltinWorlds {
     return icon === null ? null : resolveIcon(icon, this.absoluteBase);
   }
 
+  /**
+   * A world's document ALONE, icons resolved, or null if the pack lacks it or
+   * the fetch fails. For the load menu, which lists a world's swatches and has
+   * no use for its scene -- `read` would fetch and gunzip megabytes of
+   * particles just to show twenty names.
+   */
+  async readDocument(id: string): Promise<unknown> {
+    const world = this.find(id);
+    if (world === null) return null;
+    try {
+      const res = await fetch(this.base + world.document);
+      if (!res.ok) throw new Error(`${world.document}: HTTP ${res.status}`);
+      return await mapWorldIcons(await res.json(), (icon) =>
+        resolveIcon(icon, this.absoluteBase),
+      );
+    } catch (e) {
+      console.error(`Could not fetch the built-in world "${id}": ${String(e)}`);
+      return null;
+    }
+  }
+
   /** A world's document and scene, or null if the pack lacks it or a fetch fails. */
   async read(id: string): Promise<WorldRecord | null> {
     const world = this.find(id);

@@ -74,6 +74,15 @@ import {
   readWorld,
 } from '../worlds/worldFormat.ts';
 import { TOOL_CONFIG, cycleTool } from './tool.ts';
+import {
+  type SourceSwatch,
+  CUSTOM_SOURCE,
+  OPEN_SOURCE,
+  listSwatchSources,
+  swatchesFromStored,
+  swatchesFromWorld,
+  worldRefOfKey,
+} from './swatchSources.ts';
 import { defaultSwatchColor } from './swatchColor.ts';
 import { SWATCH_ICON_PX, WORLD_ICON_PX, readSwatchIcon } from './swatchIcon.ts';
 import { captureCircleIcon, inlineIcon } from './iconCapture.ts';
@@ -213,6 +222,70 @@ async function main(): Promise<void> {
       orch.palette.set(slot, { ...entry, name });
       persist();
       notify(`Renamed swatch ${slot + 1} to "${name}"`);
+    },
+    // THE LOAD MENU'S WORLDS SECTION. See `swatchSources.ts`.
+    swatchSources: () => {
+      const openRef = selectedWorld === CUSTOM_WORLD ? null : effectiveRef(selectedWorld);
+      return listSwatchSources({
+        openLabel: openRef === null ? 'Custom' : worldLabel(openRef),
+        customIsOpen: openRef === null,
+        customAvailable: (customSlots ?? []).some((s) => s.document !== null),
+        worlds: [
+          ...(builtins?.pack.worlds ?? []).map((w) => ({
+            ref: builtinRef(w.id),
+            label: w.name,
+          })),
+          ...worldStore.names().map((name) => ({ ref: name, label: name })),
+        ],
+        openRef,
+      });
+    },
+    readSwatchSource: async (key) => {
+      // The two live palettes are read fresh every time -- they change under
+      // the menu, and are cheap. Only saved worlds are cached.
+      if (key === OPEN_SOURCE) return swatchesFromStored(paletteSlots());
+      if (key === CUSTOM_SOURCE) return swatchesFromStored(customSlots ?? []);
+      const cached = swatchSourceCache.get(key);
+      if (cached !== undefined) return cached;
+      const ref = parseWorldRef(worldRefOfKey(key) ?? '');
+      if (ref === null) return null;
+      let swatches: readonly SourceSwatch[] | null = null;
+      try {
+        // A built-in's document alone; a library record brings its scene with
+        // it, which is the cost the cache is for.
+        const document =
+          ref.kind === 'builtin'
+            ? await (builtins?.readDocument(ref.id) ?? null)
+            : (await worldStore.read(ref.name))?.document;
+        if (document !== null && document !== undefined) {
+          swatches = swatchesFromWorld(readWorld(document, `world "${key}"`));
+        }
+      } catch (e) {
+        console.error(`Could not read the swatches of ${key}: ${String(e)}`);
+      }
+      swatchSourceCache.set(key, swatches);
+      return swatches;
+    },
+    // THE WHOLE SWATCH: material, name, icon and colour. Loading a config
+    // leaves the slot's colour alone; this deliberately does not -- see
+    // `swatchSources.ts`. Otherwise the same steps as `onLoad`.
+    onLoadSwatch: (slot, swatch) => {
+      const saved = readSlotDocument(swatch.document);
+      if (saved === null || saved.configs[0] === undefined) {
+        notify(`Could not read "${swatch.name}"`);
+        return;
+      }
+      orch.palette.set(slot, {
+        tool: TOOL_CONFIG,
+        config: saved.configs[0],
+        world: saved.world,
+        name: swatch.name,
+        ...(swatch.icon === undefined ? {} : { icon: swatch.icon }),
+      });
+      if (swatch.color !== undefined) orch.palette.setColor(slot, swatch.color);
+      orch.applyPalette(fallbackConfig, defaultWorld);
+      selectSwatch(slot);
+      notify(`Loaded "${swatch.name}" into swatch ${slot + 1}`);
     },
     onSelectWorld: (index) => {
       void selectWorld(index);
@@ -513,6 +586,13 @@ async function main(): Promise<void> {
     }));
 
   const worldStore = await WorldStore.open();
+  /**
+   * Saved worlds' swatches, as the load menu's Worlds section read them, by
+   * source key. Null records a world that could not be read, so a broken one
+   * is not re-fetched on every expand. Cleared on any world save or delete --
+   * coarse, but those are rare and a re-read is one world.
+   */
+  const swatchSourceCache = new Map<string, readonly SourceSwatch[] | null>();
 
   /** A world's display name: the pack's for a built-in one, the save's otherwise. */
   const worldLabel = (ref: string): string => {
@@ -1332,6 +1412,8 @@ async function main(): Promise<void> {
       const document = await mapWorldIcons(made, inlineIcon);
       await worldStore.save(name, document, scene);
       libraryIcons.set(name, iconOfDocument(document));
+      // Its swatches as the load menu last read them are now stale.
+      swatchSourceCache.clear();
       prefsWindow.refreshWorlds(worldChoices(), worldRefs);
       notify(
         scene === null
@@ -1642,6 +1724,7 @@ async function main(): Promise<void> {
       void (async () => {
         try {
           await worldStore.remove(name);
+          swatchSourceCache.clear();
           libraryIcons.delete(name);
           // A deleted world may still be assigned to a button. The assignment
           // is LEFT IN PLACE rather than cleared: the panel marks it missing,

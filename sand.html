@@ -861,7 +861,8 @@
       /* "Paste from link" -- an action, not a config, so it is set apart
          from the list the same way "None" is. */
       .entry[data-paste='true'],
-      .entry[data-capture='true'] {
+      .entry[data-capture='true'],
+      .entry[data-rename='true'] {
         color: var(--accent);
         border-bottom: 1px solid var(--edge-soft);
         border-radius: 0;
@@ -872,6 +873,47 @@
          compatibility.ts. Green means "this will look like it should here". */
       .entry[data-compatible='true'] {
         color: #6ee08a;
+      }
+      /* The Worlds section: a palette per row, its swatches beneath when
+         expanded. The arrow is the only cue the row opens rather than loads. */
+      .entry[data-source]::before {
+        content: '\25B8';
+        display: inline-block;
+        width: 1em;
+        color: var(--ink-dim);
+      }
+      .entry[data-source][data-expanded='true']::before {
+        content: '\25BE';
+      }
+      .source-swatches {
+        margin: 0 0 4px 1em;
+        border-left: 1px solid var(--edge-soft);
+        padding-left: 4px;
+      }
+      .source-swatches .entry {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .source-dot {
+        flex: none;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--chrome-2);
+        background-size: cover;
+        background-position: center;
+        border: 1px solid var(--edge);
+      }
+      .source-index {
+        margin-left: auto;
+        color: var(--ink-dim);
+        font-size: 11px;
+      }
+      .source-note {
+        color: var(--ink-dim);
+        font-size: 11px;
+        padding: 3px 6px;
       }
       .loader-hint {
         margin-top: 10px;

@@ -32,7 +32,8 @@ import type { WorldSettings } from '../particleSystem/config.ts';
 import { BRUSH_SIZES } from './brushInput.ts';
 import { isCompatible } from './compatibility.ts';
 import { ASSIGNABLE_WORLDS, MASTER_SLOT, type Palette, keyLabel } from './palette.ts';
-import { CUSTOM_WORLD } from './session.ts';
+import { CUSTOM_WORLD, readSlotDocument } from './session.ts';
+import type { SourceSwatch, SwatchSource } from './swatchSources.ts';
 import {
   type EraseMode,
   type SandTool,
@@ -166,6 +167,16 @@ export interface SandUiCallbacks {
   onCaptureSlotIcon(slot: number): void;
   /** "Rename…" was chosen: ask for a new display name for this swatch. */
   onRenameSlot(slot: number): void;
+  /**
+   * The palettes whose swatches the load menu's Worlds section offers -- the
+   * open one, Custom's, and every saved world. See `swatchSources.ts`.
+   * Synchronous: it lists names, and nothing is read until a row is expanded.
+   */
+  swatchSources(): readonly SwatchSource[];
+  /** One source's swatches, read on expand. Null if it could not be read. */
+  readSwatchSource(key: string): Promise<readonly SourceSwatch[] | null>;
+  /** A swatch from another palette was chosen: copy all of it into `slot`. */
+  onLoadSwatch(slot: number, swatch: SourceSwatch): void;
   /** A brush-size button was pressed. */
   onBrushSize(index: number): void;
   /**
@@ -1089,6 +1100,108 @@ export class SandUi {
           void this.markCompatible(button, entry, master);
         }
       }
+    }
+
+    this.fillWorldSources(slot, master);
+  }
+
+  /**
+   * THE WORLDS SECTION: every palette's swatches, one collapsed row per palette.
+   *
+   * COLLAPSED, AND READ ON EXPAND. A library world is one IndexedDB record with
+   * its scene inside, so reading every world to open this menu would pull
+   * megabytes per world for a list nobody may look at. The host caches what it
+   * reads, so expanding the same world twice costs one read.
+   */
+  private fillWorldSources(slot: number, master: WorldSettings | null): void {
+    const sources = this.callbacks.swatchSources();
+    if (sources.length === 0) return;
+
+    const heading = document.createElement('h3');
+    heading.textContent = 'Worlds';
+    this.loaderListEl.append(heading);
+
+    for (const source of sources) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'entry';
+      row.dataset['source'] = source.key;
+      row.dataset['expanded'] = 'false';
+      row.textContent = source.label;
+      row.title = 'Show this palette’s swatches';
+
+      const group = document.createElement('div');
+      group.className = 'source-swatches';
+      group.hidden = true;
+      let filled = false;
+
+      row.addEventListener('click', () => {
+        const expanding = group.hidden;
+        group.hidden = !expanding;
+        row.dataset['expanded'] = String(expanding);
+        if (!expanding || filled) return;
+        filled = true;
+        group.textContent = 'Loading…';
+        void this.callbacks.readSwatchSource(source.key).then((swatches) => {
+          // The menu may have closed, or reopened on another swatch, while the
+          // read was in flight -- its rows belong to a list that is gone.
+          if (!group.isConnected || this.loadingInto !== slot) return;
+          this.fillSourceSwatches(group, slot, swatches, master);
+        });
+      });
+
+      this.loaderListEl.append(row, group);
+    }
+  }
+
+  private fillSourceSwatches(
+    group: HTMLElement,
+    slot: number,
+    swatches: readonly SourceSwatch[] | null,
+    master: WorldSettings | null,
+  ): void {
+    group.replaceChildren();
+    if (swatches === null || swatches.length === 0) {
+      const note = document.createElement('div');
+      note.className = 'source-note';
+      note.textContent = swatches === null ? 'Could not read this world.' : 'No swatches.';
+      group.append(note);
+      return;
+    }
+    for (const swatch of swatches) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'entry';
+      button.dataset['swatch'] = String(swatch.slot);
+
+      // The swatch as the tray draws it: its icon, else its colour.
+      const dot = document.createElement('span');
+      dot.className = 'source-dot';
+      if (swatch.icon !== undefined) dot.style.backgroundImage = iconToCss(swatch.icon);
+      else if (swatch.color !== undefined) dot.style.background = swatchColorToCss(swatch.color);
+
+      const label = document.createElement('span');
+      label.textContent = swatch.name === '' ? 'Untitled' : swatch.name;
+      const index = document.createElement('span');
+      index.className = 'source-index';
+      index.textContent = `#${swatch.slot + 1}`;
+
+      button.append(dot, label, index);
+      button.addEventListener('click', () => {
+        this.closeLoader();
+        this.callbacks.onLoadSwatch(slot, swatch);
+      });
+
+      // The same green the configs above get. Parsed here rather than by the
+      // host because the document is already in hand, and an unreadable one
+      // is simply left unmarked.
+      if (master !== null) {
+        const saved = readSlotDocument(swatch.document);
+        if (saved !== null) {
+          button.dataset['compatible'] = String(isCompatible(saved.world, master));
+        }
+      }
+      group.append(button);
     }
   }
 
