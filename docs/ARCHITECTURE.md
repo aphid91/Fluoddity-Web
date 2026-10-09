@@ -1566,6 +1566,11 @@ off. The studio's tab is toggled from Simulation > Camera Controls like Video
 and Link; sand's is a fifth page of its settings window. Both are
 `ui/sections/cameraSection.ts`. Hiding either tab leaves the camera running.
 
+**Released while the page is hidden.** Switching tabs, backgrounding the
+browser or locking a phone closes the stream (so the OS's camera indicator goes
+out), and showing the page again reopens a camera that was running when it
+left. A user's own Stop is never undone by this. See `Webcam`'s header.
+
 **Not yet tuned against real cameras.** `CAMERA_WALLS_GAIN`,
 `CAMERA_TRAILS_GAIN` and the motion constants in `cameraIngest.wgsl` /
 `cameraMap.wgsl` were set by arithmetic and checked only against Chrome's fake

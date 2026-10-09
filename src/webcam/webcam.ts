@@ -21,6 +21,16 @@
  * at startup and both the panel and the orchestrator are handed it. The field
  * texture lives here for the same reason: every system the session builds binds
  * the same `fieldView` (see `ParticleSystem.setCameraField`).
+ *
+ * ## The camera is released whenever the page is hidden
+ *
+ * Switching tabs, sending the browser to the background or locking a phone
+ * hides the page, and the camera is CLOSED then -- not merely ignored. A stream
+ * left open keeps the OS's camera-in-use indicator lit while the user is
+ * somewhere else entirely, which reads as the page watching them. When the page
+ * is shown again a camera that was running when it left is reopened, so a
+ * performance survives a glance at another tab. Only HIDDEN counts: a desktop
+ * window that merely loses focus, still visible, keeps its camera.
  */
 
 import { type CameraStrengths, NO_CAMERA } from '../particleSystem/uniforms.ts';
@@ -54,13 +64,38 @@ export class Webcam {
     null;
   /** The preview canvas needs drawing even if the field did not change. */
   private previewStale = false;
+  /**
+   * Closed because the page was hidden, and to be reopened when it is shown.
+   * Cleared by the user's own Stop, so a camera they turned off stays off.
+   */
+  private suspended = false;
 
   private constructor(device: GPUDevice, field: WebcamField, storageKey: string) {
     this.device = device;
     this.field = field;
     this.storageKey = storageKey;
     this._settings = loadWebcamSettings(storageKey);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisibilityChange);
+    }
   }
+
+  /** See the header: release on hide, reopen on show. */
+  private readonly onVisibilityChange = (): void => {
+    if (document.hidden) {
+      // 'starting' counts: a permission prompt or open in flight is cancelled
+      // by the stop, and must come back like a running camera would.
+      if (this.state === 'on' || this.state === 'starting') {
+        this.source?.stop();
+        this.suspended = true;
+        this.clearPending = true;
+        this.previewStale = true;
+      }
+    } else if (this.suspended) {
+      this.suspended = false;
+      void this.start();
+    }
+  };
 
   /**
    * @param storageKey Where this app keeps its camera setup --
@@ -128,6 +163,7 @@ export class Webcam {
   }
 
   stop(): void {
+    this.suspended = false;
     this.source?.stop();
     this.clearPending = true;
     this.previewStale = true;
@@ -230,6 +266,9 @@ export class Webcam {
   }
 
   destroy(): void {
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    }
     this.source?.destroy();
     this.source = null;
     this.field.destroy();
