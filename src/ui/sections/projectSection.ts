@@ -76,7 +76,12 @@ export function buildProjectSection(
   // themselves (`advancedToggle.ts`).
   addAdvancedToggle(folder, 'advancedProject', ctx);
 
-  for (const [group, settings] of grouped(ctx.advanced, [CONFIG, WORLD])) {
+  // THIS PANEL'S TIER BY NAME, not `ctx.advanced`. That member is the tier of
+  // whichever SIDE the section is built on, and on touch Project is a tab in
+  // the RIGHT pane, whose context bakes in `advancedPreferences` -- so the
+  // Advanced box above flipped `advancedProject` while the page went on
+  // showing the Preferences tier, and looked dead.
+  for (const [group, settings] of grouped(ctx.advancedFor('advancedProject'), [CONFIG, WORLD])) {
     // `group` is never empty for these entries -- every CONFIG/WORLD setting
     // declares one -- but the fallback keeps a future ungrouped entry from
     // producing a folder with no title rather than crashing.
