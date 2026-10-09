@@ -164,6 +164,8 @@ export interface SandUiCallbacks {
   onClearSlot(slot: number): void;
   /** "Capture swatch icon…" was chosen: drag a circle to picture this swatch. */
   onCaptureSlotIcon(slot: number): void;
+  /** "Rename…" was chosen: ask for a new display name for this swatch. */
+  onRenameSlot(slot: number): void;
   /** A brush-size button was pressed. */
   onBrushSize(index: number): void;
   /**
@@ -1012,6 +1014,20 @@ export class SandUi {
         this.callbacks.onCaptureSlotIcon(slot);
       });
       this.loaderListEl.append(capture);
+
+      // "RENAME", BESIDE IT -- the other authoring act on the material here,
+      // and offered on the same condition: an empty swatch has no name to change.
+      const rename = document.createElement('button');
+      rename.type = 'button';
+      rename.className = 'entry';
+      rename.dataset['rename'] = 'true';
+      rename.textContent = 'Rename…';
+      rename.title = 'Give this swatch a new name. Its settings are unchanged.';
+      rename.addEventListener('click', () => {
+        this.closeLoader();
+        this.callbacks.onRenameSlot(slot);
+      });
+      this.loaderListEl.append(rename);
     }
 
     // "PASTE FROM LINK", NEXT -- Shift+V aimed at this swatch, and

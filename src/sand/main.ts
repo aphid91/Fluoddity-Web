@@ -200,6 +200,20 @@ async function main(): Promise<void> {
         },
       );
     },
+    // A display name only: the settings, colour and icon stay as they are.
+    // `set` with a spread, the same move Save Config makes when it renames the
+    // square to what it just saved -- so the icon survives (see `PaletteSlot`).
+    onRenameSlot: (slot) => {
+      const entry = orch.palette.at(slot);
+      if (entry.config === null) return;
+      const typed = window.prompt(`Rename swatch ${slot + 1}:`, entry.name);
+      if (typed === null) return;
+      const name = typed.trim();
+      if (name === '' || name === entry.name) return;
+      orch.palette.set(slot, { ...entry, name });
+      persist();
+      notify(`Renamed swatch ${slot + 1} to "${name}"`);
+    },
     onSelectWorld: (index) => {
       void selectWorld(index);
     },
