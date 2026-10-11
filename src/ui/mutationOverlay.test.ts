@@ -66,44 +66,29 @@ function status(over: {
 // The two non-select tools
 // ---------------------------------------------------------------------------
 
-test('shove says which button pushes and which pulls', () => {
-  // Matches `shoveCommands.ts`: leftDragging pushes (positive strength),
-  // rightDragging pulls (negated). Reversing these words would send people
-  // dragging the wrong button at a structure they are trying to save.
-  const hint = hintFor(status({ mouseMode: 'shove' }));
+test('the brush tools say what each button does and how to draw a line', () => {
+  // Matches `drawingCommands.ts` and the Orchestrator's `brushStroke`:
+  // leftDragging applies the tool, rightDragging undoes it, Shift makes a line.
   assert.equal(
-    hint.lead,
-    'Left click to push particles away | Right click to pull them in',
+    hintFor(status({ mouseMode: 'erase' })).lead,
+    'Drag to erase cells | Hold shift for lines',
   );
-  assert.equal(hint.cohort, null, 'no stepper outside select');
-  assert.equal(hint.tail, '');
-});
-
-test('the painting tools say which button adds, which erases, and how to draw a line', () => {
-  // Matches `drawingCommands.ts`: leftDragging draws, rightDragging erases, and
-  // Shift turns either into a line.
+  assert.equal(
+    hintFor(status({ mouseMode: 'paint' })).lead,
+    'Drag to paint cells | Right drag to erase | Hold shift for lines',
+  );
   const walls = hintFor(status({ mouseMode: 'walls' }));
   assert.equal(
     walls.lead,
-    'Left click to add barriers | Right click to erase them | Hold shift for lines',
+    'Left click to add walls | Right click to remove them | Hold shift for lines',
   );
-  assert.equal(walls.cohort, null);
-
-  // **"PERMANENT trails"** -- the word is the whole point of the sentence. The
-  // swarm is already drawing trails that fade, so without it a user reads this as
-  // naming the thing they can already see rather than something that outlasts it.
-  const trails = hintFor(status({ mouseMode: 'trails' }));
-  assert.equal(
-    trails.lead,
-    'Left click to add permanent trails | Right click to erase them | Hold shift for lines',
-  );
-  assert.match(trails.lead, /permanent/);
+  assert.equal(walls.cohort, null, 'no stepper outside select');
 });
 
 test('only the painting tools mention the line modifier', () => {
-  // Shift does nothing for Select or Shove, and a row offering a modifier that
+  // Shift does nothing for Select, and a row offering a modifier that
   // is inert in the tool it is describing is worse than saying nothing.
-  for (const mouseMode of ['select', 'shove'] as const) {
+  for (const mouseMode of ['select'] as const) {
     assert.doesNotMatch(hintFor(status({ mouseMode })).lead, /shift/i);
   }
 });
@@ -116,7 +101,7 @@ test('draw offers the clear-barriers button, and no other tool does', () => {
   // for it to be.
   assert.equal(hintFor(status({ mouseMode: 'walls' })).clearField, true);
 
-  for (const mouseMode of ['select', 'shove'] as const) {
+  for (const mouseMode of ['select'] as const) {
     assert.equal(
       hintFor(status({ mouseMode })).clearField,
       false,
@@ -135,7 +120,7 @@ test('the clear-barriers button never shares the row with the commit button', ()
   // They occupy the same strip of a row that must not wrap (`HINT_CSS` is
   // `nowrap`), and each is the one action its own tool offers -- so a state
   // offering both would be both crowded and confusing about which tool is live.
-  for (const mouseMode of ['select', 'shove', 'walls'] as const) {
+  for (const mouseMode of ['select', 'erase', 'walls'] as const) {
     for (const highlightedCohort of [NO_COHORT, 2]) {
       const hint = hintFor(status({ mouseMode, highlightedCohort }));
       assert.ok(
@@ -150,7 +135,7 @@ test('neither non-select tool offers a stepper, whatever is lit', () => {
   // A highlight cannot exist outside select -- `setMouseMode` clears it -- but
   // the hint must not depend on that holding: a stepper under the Draw tool
   // would offer to change something the tool cannot act on.
-  for (const mouseMode of ['shove', 'walls'] as const) {
+  for (const mouseMode of ['erase', 'walls'] as const) {
     const hint = hintFor(status({ mouseMode, highlightedCohort: 4 }));
     assert.equal(hint.cohort, null, `${mouseMode} must not show the stepper`);
   }
@@ -164,7 +149,7 @@ test('select with nothing lit promises a cohort selection', () => {
   const hint = hintFor(status({ mouseMode: 'select' }));
   // The undo half of this sentence is a BUTTON now, so the lead keeps only the
   // clause that has nowhere else to go.
-  assert.equal(hint.lead, 'Left click a particle to select its cohort');
+  assert.equal(hint.lead, 'Left click a cohort to select it');
   assert.equal(hint.cohort, null, 'nothing to step through yet');
   assert.equal(hint.tail, '');
   assert.equal(hint.undo, 'Reroll behavior', 'and the undo button names the stack top');
@@ -239,7 +224,7 @@ test('the generate-a-child button is the one-click state alone', () => {
   // not wrap. They are mutually exclusive by construction -- one needs
   // highlighting off, the other needs a cohort lit -- but that falls out of two
   // separate branches, which is worth pinning rather than assuming.
-  for (const mouseMode of ['select', 'shove', 'walls'] as const) {
+  for (const mouseMode of ['select', 'erase', 'walls'] as const) {
     for (const highlightEnabled of [true, false]) {
       for (const highlightedCohort of [NO_COHORT, 2]) {
         for (const selectionIsNoOp of [false, true]) {
@@ -283,7 +268,7 @@ test('the undo button is withheld wherever right click means something else', ()
   // Draw erases, Shove pulls, and a lit Select cancels the aim. In all three the
   // button would name a gesture that does something else -- worse than silence,
   // because it is always on screen and looks correct.
-  for (const mouseMode of ['shove', 'walls'] as const) {
+  for (const mouseMode of ['erase', 'walls'] as const) {
     assert.equal(hintFor(status({ mouseMode })).undo, null, mouseMode);
   }
   for (const selectionIsNoOp of [false, true]) {
@@ -312,7 +297,7 @@ test('the undo button never shares the row with the other two reds', () => {
   // All three wear `CLEAR_FIELD_BUTTON_CSS`, and the row must not wrap
   // (`HINT_CSS` is `nowrap`). Two of them side by side would also mean two red
   // controls both naming the right mouse button.
-  for (const mouseMode of ['select', 'shove', 'walls'] as const) {
+  for (const mouseMode of ['select', 'erase', 'walls'] as const) {
     for (const highlightEnabled of [true, false]) {
       for (const highlightedCohort of [NO_COHORT, 2]) {
         const hint = hintFor(
@@ -484,7 +469,7 @@ test('cancelling is offered exactly while a cohort is lit', () => {
     hintFor(status({ mouseMode: 'select', highlightEnabled: false })).cancelSelection,
     false,
   );
-  for (const mouseMode of ['shove', 'walls'] as const) {
+  for (const mouseMode of ['erase', 'walls'] as const) {
     assert.equal(hintFor(status({ mouseMode })).cancelSelection, false, mouseMode);
   }
 });
@@ -494,7 +479,7 @@ test('the cancel button never shares the row with clear-barriers', () => {
   // not wrap (`HINT_CSS` is `nowrap`). They cannot co-occur -- one is Select,
   // the other Draw -- but that is a consequence of two separate branches, so it
   // is worth asserting rather than assuming.
-  for (const mouseMode of ['select', 'shove', 'walls'] as const) {
+  for (const mouseMode of ['select', 'erase', 'walls'] as const) {
     for (const highlightedCohort of [NO_COHORT, 2]) {
       const hint = hintFor(status({ mouseMode, highlightedCohort }));
       assert.ok(
@@ -517,7 +502,7 @@ test('the button is WITHHELD wherever the commit would be refused', () => {
   const nothingLit = hintFor(status({ mouseMode: 'select' }));
   assert.equal(nothingLit.commit, false, 'no button with no cohort lit');
 
-  for (const mouseMode of ['shove', 'walls'] as const) {
+  for (const mouseMode of ['erase', 'walls'] as const) {
     assert.equal(
       hintFor(status({ mouseMode, highlightedCohort: 2 })).commit,
       false,
@@ -543,7 +528,7 @@ test('at scale 0 with nothing lit, the hint is the ORDINARY one', () => {
 test('the no-op state does not change the shove or draw wording', () => {
   // Mutation scale has nothing to do with either tool, and a hint about
   // selection appearing under the Draw tool would be noise.
-  for (const mouseMode of ['shove', 'walls'] as const) {
+  for (const mouseMode of ['erase', 'walls'] as const) {
     const plain = hintFor(status({ mouseMode }));
     const noOp = hintFor(status({ mouseMode, selectionIsNoOp: true }));
     assert.equal(noOp.lead, plain.lead, `${mouseMode} wording must not change`);
@@ -709,7 +694,7 @@ test('highlighting switched off still undoes, because nothing is lit to cancel',
 test('shove and draw toggle the drag button instead', () => {
   // These two tools use BOTH mouse buttons for real work, so there is nothing to
   // back out of -- what a finger lacks is the second button itself.
-  for (const mode of ['shove', 'walls'] as const) {
+  for (const mode of ['erase', 'walls'] as const) {
     assert.equal(
       contextActionFor(status({ mouseMode: mode })),
       'toggleDragButton',
@@ -836,6 +821,6 @@ test('the tool options keep their names and drop only the number on touch', () =
   // the caption ever was.
   assert.equal(toolOptionLabel('select', true), 'Tool: Select');
   assert.equal(toolOptionLabel('walls', true), 'Tool: Walls');
-  assert.equal(toolOptionLabel('trails', true), 'Tool: Trails');
+  assert.equal(toolOptionLabel('paint', true), 'Tool: Paint');
   assert.ok(toolOptionLabel('select', false).startsWith('Tool: Select'));
 });

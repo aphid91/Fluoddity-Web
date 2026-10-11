@@ -20,7 +20,6 @@
  *   |-----------|-----------------------|-------------|
  *   | `C`       | setCheckpoint         | Ctrl+C      |
  *   | `V`       | loadLatestCheckpoint  | Ctrl+V      |
- *   | `M`       | toggleCameraMode      | Tab         |
  *   | `Z`       | undo                  | Ctrl+Z      |
  *   | `Shift+Z` | redo                  | Ctrl+Shift+Z / Ctrl+Y |
  *
@@ -181,8 +180,7 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   // landing on a text field is the more likely thing a user is doing with it.
   { code: 'Enter', command: { kind: 'confirmSelection' } },
 
-  // --- camera. `M` for mode; Tab stays with the DOM ------------------------
-  { code: 'KeyM', command: { kind: 'toggleCameraMode' } },
+  // --- camera. The NCA studio has one view, so `M` (mode) is unbound ------
   { code: 'Home', command: { kind: 'resetCamera' } },
 
   // --- tools ---------------------------------------------------------------

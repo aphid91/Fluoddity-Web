@@ -12,11 +12,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { fromDocument, toDocument } from '../config/persistence.ts';
+import { makeNcaConfig, makeNcaWorld } from '../nca/ncaConfig.ts';
+import { initWeights, toStored } from '../nca/weights.ts';
 import { decodeShareText, encodeShareLink } from '../config/shareLink.ts';
 import type { RgbaImage } from './qrRender.ts';
 import { QrCapacityError } from './qrStamp.ts';
@@ -29,20 +28,18 @@ import {
   stampShareImage,
 } from './shareImage.ts';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.join(here, '..', '..');
 
 /** The first shipped preset as a share link, never one named in the test. */
 function presetLink(copies = 1): string {
-  const dir = path.join(REPO_ROOT, 'configs');
-  const first = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort()[0];
-  assert.ok(first !== undefined, `no presets found in ${dir}`);
-  const saved = fromDocument(
-    JSON.parse(fs.readFileSync(path.join(dir, first), 'utf8')),
-    first,
+  // NCA STUDIO: `copies` distinct 30-parameter networks with concrete weights,
+  // so every copy adds payload (identical copies would compress away). A QR
+  // holds only the smallest networks -- anything Fluoddity-sized or bigger is
+  // shared as a link.
+  const arch = { channels: 3, hidden: 0, perception: 0, learnedKernels: 1, laplacian: false };
+  const configs = Array.from({ length: copies }, (_, i) =>
+    makeNcaConfig({ ...arch, weights: toStored(initWeights(arch, 100 + i)) }),
   );
-  const configs = Array.from({ length: copies }, () => saved.configs[0]!);
-  return encodeShareLink(toDocument(configs, saved.world, ''));
+  return encodeShareLink(toDocument(configs, makeNcaWorld(), ''));
 }
 
 /**

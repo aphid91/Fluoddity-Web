@@ -53,6 +53,7 @@ import {
   SEED,
   SLIDER,
   WORLD,
+  seedSetting,
 } from './settingsSpec.ts';
 import { isGated, position, shown, stored, valueAt } from './gating.ts';
 import { formatSeed, formatValue, parseInput } from './formatValue.ts';
@@ -611,8 +612,13 @@ function addSeed(
   (button.element as HTMLElement).dataset['setting'] = `${settingKey(setting)}.randomize`;
   // No `refreshing` guard: a button's click is always the user's. The guard
   // exists for BINDINGS, whose `change` fires on a programmatic refresh too.
+  // THE MUTATION SEED goes through `randomizeSeed` (Reroll Mutations, with its
+  // toast and no-op rules); any OTHER seed -- the NCA's Run Seed -- is simply
+  // set to a fresh random value, one undo step.
+  const isMutationSeed = setting.field === seedSetting()?.field;
   button.on('click', () => {
-    ctx.send({ kind: 'randomizeSeed' });
+    if (isMutationSeed) ctx.send({ kind: 'randomizeSeed' });
+    else ctx.send({ kind: 'editSetting', setting, value: Math.random() });
   });
 
   return {
@@ -628,8 +634,10 @@ function addSeed(
       if (authoritative !== undefined) readout.value = formatSeed(asNumber(authoritative));
       // `mutationScale` is a CONFIG field and the seed is too, so this reads
       // the same payload the seed does.
-      const scale = asNumber(s.editConfig['mutationScale']);
-      button.disabled = !(scale > 0);
+      if (isMutationSeed) {
+        const scale = asNumber(s.editConfig['mutationScale']);
+        button.disabled = !(scale > 0);
+      }
     },
   };
 }

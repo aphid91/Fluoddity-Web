@@ -51,34 +51,19 @@ import {
   visible,
 } from './settingsSpec.ts';
 import {
-  BC,
+  ACTIVATION,
+  BOUNDARY,
+  DISPLAY,
   IC,
-  TRAIL_WEIGHT_MIN,
-  makeSimulationConfig,
-  makeWorldSettings,
-} from '../particleSystem/config.ts';
+  PERCEPTION,
+  STATE_BOUND,
+  makeNcaConfig,
+  makeNcaWorld,
+} from '../nca/ncaConfig.ts';
 import { DEFAULT_PREFERENCES } from '../prefs/preferences.ts';
 
-/** A fully-populated config, so `in` sees every optional field. */
-const CONFIG_FIELDS = new Set(
-  Object.keys(
-    makeSimulationConfig({
-      cohorts: 1,
-      mutationSeed: 0,
-      sensorGain: 0,
-      sensorAngle: 0,
-      sensorDistance: 0,
-      mutationScale: 0,
-      globalForceMult: 0,
-      drag: 0,
-      strafePower: 0,
-      axialForce: 0,
-      lateralForce: 0,
-      hazardRate: 0,
-    }),
-  ),
-);
-const WORLD_FIELDS = new Set(Object.keys(makeWorldSettings()));
+const CONFIG_FIELDS = new Set(Object.keys(makeNcaConfig()));
+const WORLD_FIELDS = new Set(Object.keys(makeNcaWorld()));
 const PREFS_FIELDS = new Set(Object.keys(DEFAULT_PREFERENCES));
 
 function fieldsFor(setting: Setting): Set<string> {
@@ -104,55 +89,6 @@ test('every setting names a real field on its source', () => {
     assert.ok(
       fieldsFor(setting).has(setting.field),
       `${setting.label} names "${setting.field}", which is not a field on ${setting.source}`,
-    );
-  }
-});
-
-test('the registry has the same 35 entries the desktop does, plus the web-only ones', () => {
-  // A count rather than a list: the point is that porting dropped none of them.
-  //
-  // WEB-ONLY ENTRIES ARE SUBTRACTED RATHER THAN FOLDED INTO THE TOTAL, so this
-  // keeps asserting what it was written to assert -- that the port carried all
-  // 35 desktop settings across. Bumping the literal to 36 instead would have
-  // quietly converted it into "the registry has however many it has", which
-  // catches nothing. A setting with no desktop counterpart goes in the list.
-  const WEB_ONLY = [
-    // No desktop equivalent: the desktop has no cohort highlight and no
-    // click-to-select reset to govern.
-    'resetOnBehaviorChange',
-    'oneClickSelection',
-    // No desktop equivalent: the desktop has no frame-rate counter.
-    'showFpsCounter',
-    // No desktop equivalent either: the desktop has no canvas-side rate widget,
-    // because it has no hidden-panels state for one to exist for.
-    'showPhysicsSlider',
-    // No desktop equivalent: the desktop has one layout and no touch input, so
-    // there is nothing for it to choose between.
-    'mobileMode',
-    // No desktop equivalent: the state archive is a web-only research feature,
-    // and there is no IndexedDB behind the desktop to write it to.
-    'strongLogging',
-    // No desktop equivalent: the third gravity channel was added here. The
-    // desktop has Force and Strafe only, so this is an addition to the port
-    // rather than one of the 35 it carried across.
-    'gravityTrails',
-    // No desktop equivalent: the desktop has Color Sensitivity alone, so a hue
-    // there always fans out from red. The bias half of `A * signal + B` was
-    // added here.
-    'colorOffset',
-    // No desktop equivalent: it only means anything between configs, which
-    // sand runs together and the desktop never did.
-    'trailWeight',
-  ];
-  const ported = SETTINGS.filter((s) => !WEB_ONLY.includes(s.field));
-  assert.equal(ported.length, 35);
-
-  // The names in WEB_ONLY must actually be in the registry, or a rename would
-  // silently subtract nothing and the count above would drift.
-  for (const field of WEB_ONLY) {
-    assert.ok(
-      SETTINGS.some((s) => s.field === field),
-      `${field} is listed as web-only but is not in the registry`,
     );
   }
 });
@@ -186,30 +122,6 @@ test('every gated field is named by a real entry', () => {
 // The enum lockstep
 // ---------------------------------------------------------------------------
 
-test('boundary dropdown order matches the BC_* constants', () => {
-  // Each label's INDEX is the value uploaded to the GPU. A reorder here changes
-  // what every saved config means, with no error anywhere.
-  const modes = DROPDOWN_MODES.boundaryConditions;
-  assert.equal(modes.indexOf('Bounce'), BC.BOUNCE);
-  assert.equal(modes.indexOf('Wrap'), BC.WRAP);
-  assert.equal(modes.indexOf('Reset'), BC.RESET);
-  // The sand modality's mode: a particle leaving the world is destroyed rather
-  // than respawned. Appended, so the three above keep their stored values.
-  assert.equal(modes.indexOf('Kill'), BC.KILL);
-  // Derived from BC rather than hardcoded, so adding a mode to both files stays
-  // a two-line change while a mode added to only ONE still fails here.
-  assert.equal(modes.length, Object.keys(BC).length);
-});
-
-test('initial-conditions dropdown order matches the IC_* constants', () => {
-  const modes = DROPDOWN_MODES.initialConditions;
-  assert.equal(modes.indexOf('Grid'), IC.GRID);
-  assert.equal(modes.indexOf('Random'), IC.RANDOM);
-  assert.equal(modes.indexOf('Center'), IC.CENTER);
-  assert.equal(modes.indexOf('Ring'), IC.RING);
-  assert.equal(modes.length, 4);
-});
-
 test('choice controls declare bounds matching their option count', () => {
   // `hi` is the last valid index. A mismatch would let a control produce a
   // value no BC_*/IC_* mode claims.
@@ -241,28 +153,6 @@ test('gated controls gate at a value inside their range', () => {
   }
 });
 
-test('the two non-default gate bases are the ones the desktop records', () => {
-  // Named explicitly because both are easy to "tidy" to zero, and both would
-  // then gate at a value the slider never reaches.
-  const byLabel = (label: string): Setting => {
-    const found = SETTINGS.find((s) => s.label === label);
-    assert.ok(found !== undefined, `no setting labelled ${label}`);
-    return found;
-  };
-  assert.equal(byLabel('Motion Blur').gateBase, 1.0);
-  assert.equal(byLabel('Trail Stiffness').gateBase, 1.0);
-  assert.equal(byLabel('Trail Stiffness').inverted, true);
-});
-
-test('the curved control is Hazard Rate, cubed', () => {
-  // The only entry with a non-linear slider. Its travel shape is what makes the
-  // bottom few percent usable, and Step 10 needs it to still be here.
-  const curved = SETTINGS.filter((s) => s.curve !== 1.0);
-  assert.equal(curved.length, 1);
-  assert.equal(curved[0]!.label, 'Hazard Rate');
-  assert.equal(curved[0]!.curve, 3.0);
-});
-
 test('disruptive settings are typed inputs, not sliders', () => {
   // A slider would rebuild the simulation on every frame of the drag. This is
   // why `kind` and `disruptive` are not independent in practice.
@@ -285,16 +175,6 @@ test('every entry is currently implemented', () => {
 // ---------------------------------------------------------------------------
 // Selection helpers
 // ---------------------------------------------------------------------------
-
-test('there is exactly one SEED control and it is the mutation seed', () => {
-  // Looked up by KIND rather than by field name, so the field name lives in
-  // exactly one place (`settings_commands.py:114-124`).
-  assert.equal(SETTINGS.filter((s) => s.kind === SEED).length, 1);
-  const seed = seedSetting();
-  assert.ok(seed !== null);
-  assert.equal(seed.field, 'mutationSeed');
-  assert.equal(seed.source, CONFIG);
-});
 
 test('basic is a strict subset of advanced', () => {
   const basic = visible(false);
@@ -330,67 +210,60 @@ test('panel:false entries are real settings that no panel renders', () => {
   assert.equal(settingFor(CONFIG, 'mutationScale')?.label, 'Mutation Scale');
 });
 
-test('grouped preserves declaration order and omits empty groups', () => {
-  // Groups come out in the order their first member appears, and a group whose
-  // members are all Advanced disappears in Basic mode rather than rendering
-  // empty (`settings_spec.py:429-446`).
-  const advanced = grouped(true, [CONFIG, WORLD, PREFS]);
-  // 'Mutation' is absent, and that is the point: both its members are
-  // `panel: false`, so the group empties itself through `visible()` and is
-  // omitted for exactly the same reason an all-Advanced group is in Basic.
-  // 'Behavior' and then 'Archive' come LAST because their members are declared
-  // last, which is how they end up at the bottom of the Preferences panel. Both
-  // placements are the reason each is a group of its own, so the order is pinned
-  // here -- 'Archive' is the research feature, and it must stay below every
-  // setting that changes what the app does.
-  assert.deepEqual(
-    advanced.map(([name]) => name),
-    ['Population', 'Sensors', 'Forces', 'Trails', 'Appearance',
-     'Advanced', 'Simulation', 'Display', 'Behavior', 'Archive'],
-  );
-  // 'Trails' holds one ADVANCED entry, so Basic must not render it.
-  const basic = grouped(false, [CONFIG, WORLD, PREFS]);
-  assert.ok(!basic.map(([name]) => name).includes('Trails'));
-  for (const [, settings] of basic) {
-    assert.ok(settings.length > 0, 'an empty group must be omitted, not rendered');
-  }
-});
-
-test('grouped filters by source', () => {
-  const prefsOnly = grouped(true, [PREFS]);
-  for (const [, settings] of prefsOnly) {
-    assert.ok(settings.every((s) => s.source === PREFS));
-  }
-  assert.equal(bySource(SETTINGS, WORLD).length, 3);
-});
-
 // ---------------------------------------------------------------------------
 // Trail Weight
 // ---------------------------------------------------------------------------
 
-test('Trail Weight is sand-only: the studio panel never renders it', () => {
-  const entry = settingFor(CONFIG, 'trailWeight');
-  assert.ok(entry !== null);
-  assert.equal(entry.studio, false);
-  assert.ok(!visible(true).some((s) => s.field === 'trailWeight'));
+
+// ---------------------------------------------------------------------------
+// The NCA registry
+// ---------------------------------------------------------------------------
+
+test('dropdown order matches the NCA enums', () => {
+  // The stored value is the option's INDEX, so each label must sit at its enum.
+  const at = (list: readonly string[], i: number): string => list[i]!;
+  assert.equal(at(DROPDOWN_MODES.boundary, BOUNDARY.ZERO), 'Zero');
+  assert.equal(at(DROPDOWN_MODES.initialConditions, IC.SPARSE), 'Sparse');
+  assert.equal(at(DROPDOWN_MODES.stateBound, STATE_BOUND.TANH), 'Tanh');
+  assert.equal(at(DROPDOWN_MODES.activation, ACTIVATION.SIN), 'Sin');
+  assert.equal(at(DROPDOWN_MODES.perception, PERCEPTION.LEARNED), 'Learned');
+  assert.equal(at(DROPDOWN_MODES.displayMode, DISPLAY.CHANNEL), 'Channel');
 });
 
-test("Trail Weight's floor matches the one the shader enforces", () => {
-  // This file imports nothing, so the spec states the number itself.
-  assert.equal(settingFor(CONFIG, 'trailWeight')?.minMagnitude, TRAIL_WEIGHT_MIN);
+test('the FIRST SEED control is the mutation seed, which Reroll Mutations moves', () => {
+  const seed = seedSetting();
+  assert.ok(seed !== null);
+  assert.equal(seed.field, 'mutationSeed');
+  assert.equal(seed.source, CONFIG);
+  // The run seed is a SEED too, with its own Randomize button.
+  assert.ok(SETTINGS.some((s) => s.kind === SEED && s.field === 'icSeed'));
 });
 
-test('dragging across zero jumps from +min to -min', () => {
-  const entry = settingFor(CONFIG, 'trailWeight');
-  assert.ok(entry !== null);
-  const min = entry.minMagnitude;
-  assert.equal(outsideMinMagnitude(entry, 0.01), min);
-  assert.equal(outsideMinMagnitude(entry, -0.01), -min);
-  assert.equal(outsideMinMagnitude(entry, 0), min);
-  assert.equal(outsideMinMagnitude(entry, -1), -1);
-  assert.equal(outsideMinMagnitude(entry, min), min);
-  // A setting with no floor passes everything through, zero included.
-  const plain = settingFor(CONFIG, 'gravityTrails');
+test('architecture fields are typed inputs, so a drag cannot truncate the network', () => {
+  for (const field of ['channels', 'hidden', 'learnedKernels']) {
+    assert.equal(settingFor(CONFIG, field)?.kind, INPUT, field);
+  }
+});
+
+test('grouped preserves declaration order, omits empty groups, and filters by source', () => {
+  const advanced = grouped(true, [CONFIG, WORLD]);
+  // 'Mutation' is absent: both its members are `panel: false`.
+  assert.deepEqual(
+    advanced.map(([name]) => name),
+    ['Cohorts', 'Dynamics', 'Architecture', 'Initial Conditions', 'Display'],
+  );
+  for (const [, settings] of grouped(false, [CONFIG, WORLD, PREFS])) {
+    assert.ok(settings.length > 0, 'an empty group must be omitted, not rendered');
+  }
+  for (const [, settings] of grouped(true, [PREFS])) {
+    assert.ok(settings.every((s) => s.source === PREFS));
+  }
+  assert.equal(bySource(SETTINGS, WORLD).length, 5);
+});
+
+test('outsideMinMagnitude passes everything through for a setting with no floor', () => {
+  const plain = settingFor(CONFIG, 'gain');
   assert.ok(plain !== null);
   assert.equal(outsideMinMagnitude(plain, 0), 0);
+  assert.equal(outsideMinMagnitude(plain, -1), -1);
 });

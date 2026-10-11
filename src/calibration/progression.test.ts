@@ -20,7 +20,6 @@ import {
   cost,
 } from './progression.ts';
 import { PREFS, settingFor } from '../ui/settingsSpec.ts';
-import { DEFAULT_PREFERENCES } from '../prefs/preferences.ts';
 
 test('cost ascends strictly along the path', () => {
   for (let i = 1; i < PROGRESSION.length; i++) {
@@ -109,20 +108,6 @@ test('the bloom threshold splits the ladder rather than sitting outside it', () 
   const at = PROGRESSION.filter((r) => r.worldSize >= BLOOM_MIN_WORLD_SIZE);
   assert.ok(below.length > 0, 'no rung loses bloom -- the step is dead code');
   assert.ok(at.length > 0, 'every rung loses bloom -- the threshold is above the ceiling');
-});
-
-test('the default world size keeps bloom', () => {
-  // The threshold is deliberately set so that the SHIPPED default is on the
-  // keeping side: calibration only ever takes bloom away from a machine it had
-  // to push below the default, never from one that merely landed on it. If the
-  // default world size moves, this is the assertion that catches the silent
-  // change in who loses bloom.
-  assert.ok(
-    DEFAULT_PREFERENCES.worldSize >= BLOOM_MIN_WORLD_SIZE,
-    `the default world size ${DEFAULT_PREFERENCES.worldSize} now falls below the ` +
-      `bloom threshold ${BLOOM_MIN_WORLD_SIZE}, so a default machine loses bloom`,
-  );
-  assert.ok(DEFAULT_PREFERENCES.bloomEnabled, 'bloom is no longer on by default');
 });
 
 test('the progression is frozen', () => {

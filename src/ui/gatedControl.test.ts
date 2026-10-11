@@ -84,13 +84,9 @@ test('the session key is the same string the DOM hook uses', () => {
 test('a config carrying a real value opens with the slider showing', () => {
   // The load-bearing property: on/off is derived from the value, so a loaded
   // config speaks for itself with nothing stored and no session open.
-  const hazard = GATED_SETTINGS.find((s) => s.field === 'hazardRate')!;
-  assert.ok(showsSlider(hazard, 0.005, NO_SESSIONS));
-
-  const stiffness = GATED_SETTINGS.find((s) => s.field === 'trailDiffusion')!;
-  // gateBase is 1.0 here, so 0.5 is OFF base and the slider must show.
-  assert.ok(showsSlider(stiffness, 0.5, NO_SESSIONS));
-  assert.ok(!showsSlider(stiffness, 1.0, NO_SESSIONS));
+  const leak = GATED_SETTINGS.find((s) => s.field === 'leak')!;
+  assert.ok(showsSlider(leak, 0.05, NO_SESSIONS));
+  assert.ok(!showsSlider(leak, 0, NO_SESSIONS));
 });
 
 test('Motion Blur folds at 1 sample and opens at 2', () => {

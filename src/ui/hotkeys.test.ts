@@ -86,9 +86,8 @@ test('the moved colliders land on their chosen keys', () => {
   assert.deepEqual(matchHotkey(DEFAULT_HOTKEYS, 'KeyV', false)?.command, {
     kind: 'loadLatestCheckpoint',
   });
-  assert.deepEqual(matchHotkey(DEFAULT_HOTKEYS, 'KeyM', false)?.command, {
-    kind: 'toggleCameraMode',
-  });
+  // `M` (camera mode) is unbound in the NCA studio, which has one view.
+  assert.equal(matchHotkey(DEFAULT_HOTKEYS, 'KeyM', false), null);
 });
 
 test('the checkpoint and the share link are discriminated by shift', () => {

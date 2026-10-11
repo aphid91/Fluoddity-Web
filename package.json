@@ -3,13 +3,13 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "A WebGPU particle simulation. See docs/ARCHITECTURE.md.",
+  "description": "Fluoddity studio on a Neural Cellular Automaton backend (experiments branch). See README.md.",
   "scripts": {
     "dev": "vite",
     "build": "npm run sync:configs:check && tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"tools/**/*.test.ts\" \"src/**/*.test.ts\"",
+    "test": "node tools/runTests.mjs",
     "qr:survival": "node tools/qrSurvival.mjs",
     "sync:configs": "node tools/syncConfigs.ts",
     "sync:configs:check": "node tools/syncConfigs.ts --check"

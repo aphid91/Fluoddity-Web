@@ -20,34 +20,28 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { fromDocument, toDocument } from '../config/persistence.ts';
+import { makeNcaConfig, makeNcaWorld } from '../nca/ncaConfig.ts';
+import { initWeights, toStored } from '../nca/weights.ts';
 import { decodeShareText, encodeShareLink } from '../config/shareLink.ts';
 import { decodeQrFromImage } from './qrDecode.ts';
 import { blankImage, drawQrStamp, stampOrigin } from './qrRender.ts';
 import { DEFAULT_STAMP, QrCapacityError, buildQrMatrix, minimumCropSize } from './qrStamp.ts';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
 // src/share -> src -> repo root, which is where `configs/` lives.
-const REPO_ROOT = path.join(here, '..', '..');
 
 /** The first shipped preset, as a share link. Never one by name -- see below. */
 function presetLink(copies = 1): string {
-  const dir = path.join(REPO_ROOT, 'configs');
-  // WHICHEVER PRESET IS THERE, matching `shareLink.test.ts`: the shipped library
-  // turns over constantly and a test that names one breaks on a library edit for
-  // a reason that has nothing to do with QR codes.
-  const first = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort()[0];
-  assert.ok(first !== undefined, `no presets found in ${dir}`);
-  const saved = fromDocument(
-    JSON.parse(fs.readFileSync(path.join(dir, first), 'utf8')),
-    first,
+  // NCA STUDIO: `copies` distinct 30-parameter networks with concrete weights,
+  // so every copy adds payload (identical copies would compress away). A QR
+  // holds only the smallest networks -- anything Fluoddity-sized or bigger is
+  // shared as a link.
+  const arch = { channels: 3, hidden: 0, perception: 0, learnedKernels: 1, laplacian: false };
+  const configs = Array.from({ length: copies }, (_, i) =>
+    makeNcaConfig({ ...arch, weights: toStored(initWeights(arch, 100 + i)) }),
   );
-  const configs = Array.from({ length: copies }, () => saved.configs[0]!);
-  return encodeShareLink(toDocument(configs, saved.world, ''));
+  return encodeShareLink(toDocument(configs, makeNcaWorld(), ''));
 }
 
 // --- 1. the round trip ------------------------------------------------------

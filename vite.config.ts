@@ -47,10 +47,12 @@ export default defineConfig({
     //
     // `base: './'` above keeps both location-independent, so `/sand` works at a
     // subpath, at a custom domain, and from `npm run preview` with no config.
+    //
+    // NCA EXPERIMENTS BRANCH: only the studio is built. `/sand` is set aside --
+    // it is built on the particle system, which this branch replaced.
     rollupOptions: {
       input: {
         main: path.join(here, 'index.html'),
-        sand: path.join(here, 'sand.html'),
       },
     },
   },

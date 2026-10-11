@@ -88,7 +88,7 @@
 // below goes through the two consts.
 import * as LZStringNS from 'lz-string';
 
-import { ShareCodecError, decodeDocument, encodeDocument } from './shareCodec.ts';
+import { ShareCodecError, decodeDocument } from './shareCodec.ts';
 
 type LZStringApi = {
   compressToEncodedURIComponent(input: string): string;
@@ -105,7 +105,7 @@ const LZString: LZStringApi =
 // writes the old format any more -- `#c=` is a read-only path now -- and leaving
 // the compressor bound here would make it a one-character mistake to start
 // emitting links this app's own decoder treats as legacy.
-const { decompressFromEncodedURIComponent } = LZString;
+const { compressToEncodedURIComponent, decompressFromEncodedURIComponent } = LZString;
 
 /**
  * What a project opened from a link is called.
@@ -193,31 +193,6 @@ export class ShareLinkError extends Error {
   }
 }
 
-/**
- * base64url, hand-rolled over `btoa`/`atob`.
- *
- * NOT PLAIN BASE64: the standard alphabet's `+` and `/` are exactly the two
- * characters trap 1 is about, and `=` padding is a third. Substituting `-`/`_`
- * and dropping the padding leaves an alphabet that is URI-component-safe by
- * construction, which is the same property lz-string's encoded variant has and
- * the reason neither payload is wrapped in `encodeURIComponent`.
- *
- * THE CHUNKING IS NOT DECORATION. `String.fromCharCode(...bytes)` on a whole
- * payload spreads one argument per byte, and a multi-config project is tens of
- * thousands of them -- past the engine's argument limit it throws
- * `RangeError: Maximum call stack size exceeded`. That is a crash that appears
- * only for large projects, which are precisely the ones a share link is most
- * valuable for, so it is avoided rather than discovered.
- */
-function bytesToBase64Url(bytes: Uint8Array): string {
-  let binary = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
 /** The inverse. Throws for anything `atob` will not take. */
 function base64UrlToBytes(text: string): Uint8Array {
   const binary = atob(text.replace(/-/g, '+').replace(/_/g, '/'));
@@ -232,14 +207,16 @@ function base64UrlToBytes(text: string): Uint8Array {
  * The `#` is included so callers concatenate rather than remember to add it;
  * `decodeShareLink` accepts it either way, so nothing has to strip it back off.
  *
- * BINARY SINCE THE CODEC LANDED, and roughly a third the length: the same
- * one-config project that made an ~1800-character link as JSON-then-lz-string
- * makes a ~530-character one as bytes. `shareCodec.ts`'s header has the
- * measurements and the reason compression was not stacked on top.
+ * NCA STUDIO: the JSON document, lz-string compressed (`#c=`). The particle
+ * studio's binary codec (`#b=`, still DECODED below so an old link fails with
+ * a clear message rather than as garbage) is laid out for the 80-float rule and
+ * cannot carry an NCA's weights. A tiny network makes a link of a few hundred
+ * characters; an 8k-parameter one, tens of kilobytes -- fine in a URL bar,
+ * far too large for a QR code.
  */
 export function encodeShareLink(document: unknown): string {
   // No `encodeURIComponent` here. See trap 1 in the file header.
-  return `#${PREFIX_BINARY}${bytesToBase64Url(encodeDocument(document))}`;
+  return `#${PREFIX}${compressToEncodedURIComponent(JSON.stringify(document))}`;
 }
 
 /**

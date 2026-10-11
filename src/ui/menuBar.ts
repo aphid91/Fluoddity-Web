@@ -600,12 +600,6 @@ export class MenuBar {
       // "Toggle Trail-Map View", not "Toggle Camera Mode". The old name
       // described the IMPLEMENTATION -- the camera has two modes -- and said
       // nothing about what the user would see. The command is unchanged.
-      this.addItem(
-        body,
-        'Toggle Trail-Map View',
-        () => this.opts.send({ kind: 'toggleCameraMode' }),
-        'M',
-      );
       this.addItem(body, 'Reset View', () => this.opts.send({ kind: 'resetCamera' }), 'Home');
       // Under Reset View because both discard editor state you did not save --
       // and SEPARATED from it, because Reset View is a keystroke you can take
@@ -699,14 +693,6 @@ export class MenuBar {
       // LAST, BELOW A RULE: a tab toggle rather than an action on the
       // simulation, the same kind of row as Video Export Controls -- checkmark,
       // no ellipsis -- separated from the commands above it.
-      this.addSeparator(body);
-      this.addItem(
-        body,
-        'Camera Controls',
-        () => this.opts.onToggleCamera(),
-        '',
-        () => this.opts.isCameraShown(),
-      );
     });
 
     // Last, where a Help menu goes. The title is NOT compared anywhere in

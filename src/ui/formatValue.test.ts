@@ -19,7 +19,7 @@ import { INPUT, SETTINGS, type Setting } from './settingsSpec.ts';
 import { decimalsFor, formatSeed, formatValue, parseInput } from './formatValue.ts';
 
 const worldSize = SETTINGS.find((s) => s.field === 'worldSize')!;
-const hazardRate = SETTINGS.find((s) => s.field === 'hazardRate')!;
+const icDensity = SETTINGS.find((s) => s.field === 'icDensity')!;
 
 test('decimalsFor matches the desktop formula', () => {
   // max(3, min(8, round(-log10(span)) + 4))
@@ -43,12 +43,10 @@ test('a degenerate span does not produce NaN decimals', () => {
 });
 
 /** The reason `decimalsFor` exists at all. */
-test("Hazard Rate's useful range does not render as 0.000", () => {
-  // A rate of 0.001 already resets most of the population within a second, so
-  // it has to be legible. At three decimals it would read "0.001" -- and 0.0001
-  // would read "0.000", which is the failure.
-  assert.notEqual(formatValue(hazardRate, 0.0001), '0.000');
-  assert.ok(formatValue(hazardRate, 0.0001).includes('1'));
+test("Seed Density's useful range does not render as 0.000", () => {
+  // A small-range setting must get enough decimals to be legible.
+  assert.notEqual(formatValue(icDensity, 0.0005), '0.000');
+  assert.ok(formatValue(icDensity, 0.0005).includes('5'));
 });
 
 test('formatValue uses the setting range, not the value', () => {
@@ -97,6 +95,10 @@ test('every INPUT setting has usable bounds to clamp against', () => {
   for (const setting of inputs) {
     assert.ok(setting.hi > setting.lo, setting.label);
     assert.equal(parseInput(setting, String(setting.hi * 10)), setting.hi);
-    assert.ok(setting.disruptive, `${setting.label} should be disruptive`);
+    // Preference inputs are the disruptive ones (they rebuild the system);
+    // config inputs are the architecture, typed so a drag cannot truncate it.
+    if (setting.source === 'prefs') {
+      assert.ok(setting.disruptive, `${setting.label} should be disruptive`);
+    }
   }
 });

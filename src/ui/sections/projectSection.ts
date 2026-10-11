@@ -76,6 +76,21 @@ export function buildProjectSection(
   // themselves (`advancedToggle.ts`).
   addAdvancedToggle(folder, 'advancedProject', ctx);
 
+  // THE NETWORK AT A GLANCE: what one cohort's network costs, how many there
+  // are, and on what grid. Read-only; it follows every architecture edit.
+  const network = { value: networkSummary(status) };
+  const networkBlade = folder.addBinding(network, 'value', {
+    label: 'Network',
+    readonly: true,
+  });
+  ctx.tooltip.attach(networkBlade.element as HTMLElement, {
+    title: 'Network',
+    body:
+      'Parameters in ONE cohort\'s network. "random": every cohort is a fresh ' +
+      'random network (Reroll All Behavior). "selected": the cohorts are ' +
+      'mutations of a base you picked.',
+  });
+
   // THIS PANEL'S TIER BY NAME, not `ctx.advanced`. That member is the tier of
   // whichever SIDE the section is built on, and on touch Project is a tab in
   // the RIGHT pane, whose context bakes in `advancedPreferences` -- so the
@@ -108,7 +123,20 @@ export function buildProjectSection(
         shown = title;
         folder.title = title;
       }
+      const summary = networkSummary(s);
+      if (summary !== network.value) network.value = summary;
       base.refresh(s, input);
     },
   };
+}
+
+/**
+ * `1,064 params · random` -- one cohort's parameter count, and whether the
+ * cohorts are fresh random networks or mutations of a selected base.
+ */
+export function networkSummary(status: Status): string {
+  return (
+    `${status.paramCount.toLocaleString('en-US')} params · ` +
+    (status.ruleIsGenerated ? 'random' : 'selected')
+  );
 }

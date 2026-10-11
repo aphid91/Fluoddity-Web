@@ -26,6 +26,7 @@ export function initWeights(arch: NcaArch, seed: number): Float32Array<ArrayBuff
   const layout = paramLayout(arch);
   const out = new Float32Array(layout.count);
   layout.tensors.forEach((t, ti) => {
+    if (t.initStd === 0) return; // stays +0 (a scaled draw would give -0 half the time)
     for (let i = 0; i < t.size; i++) {
       out[t.offset + i] = t.initStd * gaussian(seed >>> 0, ti ^ SALT.init, i);
     }

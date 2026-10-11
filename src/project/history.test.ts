@@ -30,37 +30,17 @@ import assert from 'node:assert/strict';
 
 import { COALESCE_WINDOW_MS, History } from './history.ts';
 import { type Project, editSelected, makeProject } from './project.ts';
-import { makeSimulationConfig } from '../particleSystem/config.ts';
+import { makeNcaConfig } from '../nca/ncaConfig.ts';
 
-const base = makeProject({
-  configs: [
-    makeSimulationConfig(
-      {
-        cohorts: 1,
-        mutationSeed: 0.5,
-        sensorGain: 0,
-        sensorAngle: 0,
-        sensorDistance: 1,
-        mutationScale: 0,
-        globalForceMult: 1,
-        drag: 0.5,
-        strafePower: 0,
-        axialForce: 1,
-        lateralForce: 1,
-        hazardRate: 0,
-      },
-      { rule: new Array<number>(80).fill(0) },
-    ),
-  ],
-});
+const base = makeProject({ configs: [makeNcaConfig({ cohorts: 1, mutationScale: 0, gain: 0 })] });
 
-/** A project distinguishable by `sensorGain`, so assertions can name a state. */
+/** A project distinguishable by `gain`, so assertions can name a state. */
 function at(gain: number): Project {
-  return editSelected(base, 'sensorGain', gain);
+  return editSelected(base, 'gain', gain);
 }
 
 function gainOf(project: Project | null): number | null {
-  return project === null ? null : project.configs[0]!.sensorGain;
+  return project === null ? null : project.configs[0]!.gain;
 }
 
 // ---------------------------------------------------------------------------

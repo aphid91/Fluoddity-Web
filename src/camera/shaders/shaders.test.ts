@@ -29,14 +29,6 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveIncludes } from '../../../tools/wgslInclude.ts';
-import {
-  COLOR_BY_BEHAVIOR,
-  COLOR_BY_COHORT,
-  COLOR_BY_SWATCH,
-  colorModeIndex,
-} from '../../sand/colorMode.ts';
-import { SLOT_COUNT } from '../../sand/palette.ts';
-import { CAM_BRUSH_SWATCH_COUNT } from '../cameraUniforms.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SHARED_DIR = path.join(here, '..', '..', 'shaders');
@@ -56,9 +48,9 @@ function stripComments(source: string): string {
     .join('\n');
 }
 
-const SHADERS = ['camera.wgsl', 'camBrush.wgsl'] as const;
+const SHADERS = ['camera.wgsl'] as const;
 
-/** Shaders that include the shared fullscreen quad. camBrush has its own verts. */
+/** Shaders that include the shared fullscreen quad. */
 const QUAD_SHADERS = ['camera.wgsl'] as const;
 
 test('every camera shader expands with common.wgsl included', () => {
@@ -125,104 +117,6 @@ test('camera.wgsl samples through textureSampleLevel, never textureSample', () =
   assert.match(source, /textureSampleLevel\s*\(/, 'camera.wgsl should sample the canvas');
 });
 
-test('camera.wgsl divides the canvas by CANVAS_VALUE_SCALE', () => {
-  // Every canvas reader does. Forgetting it is a 512x too-bright image, which
-  // looks like a brightness bug rather than a missing divide -- and would send
-  // someone tuning the Brightness preference to compensate.
-  assert.match(
-    stripComments(expand('camera.wgsl')),
-    /\/\s*CANVAS_VALUE_SCALE/,
-    'camera.wgsl must divide out the fp16 storage scale',
-  );
-});
-
-test('camera.wgsl keeps camera.frag\'s 3.1415 literal rather than PI', () => {
-  // A ~2e-5 hue rotation, invisible either way -- but the port is verified by
-  // eye against the desktop, so gratuitous divergences are worth not having.
-  // If this ever intentionally changes, change camera.frag too.
-  const source = stripComments(expand('camera.wgsl'));
-  assert.match(source, /atan2\([^)]*\)\s*\/\s*3\.1415\s*\//, 'expected the 3.1415 literal');
-});
-
-test('camBrush.wgsl builds its quad from strip_corner, offset and uv together', () => {
-  // The fragment kernel is `gaussian(uv - 0.5)` gated by
-  // `length(uv - 0.5) > 0.5` -- RADIALLY SYMMETRIC about the quad centre. A
-  // uv that named a different corner than the offset would render a
-  // PIXEL-IDENTICAL sprite and cannot be caught by looking at it, so the
-  // pairing is asserted: both come from one strip_corner value. (The strip
-  // order itself is asserted where strip_corner is, in particleSystem's tests.)
-  //
-  // And no local lookup table: one indexed by vertex_id spills to scratch
-  // memory, and this runs four times per particle per frame.
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.ok(!/array<vec2f,\s*4>\(/.test(source), 'camBrush.wgsl builds a local vec2f table');
-  assert.match(source, /let\s+corner\s*=\s*strip_corner\(vertex_id\);/);
-  assert.match(source, /let\s+offset\s*=\s*\(corner\s*\*\s*2\.0\s*-\s*1\.0\)\s*\*\s*size;/);
-  assert.match(source, /out\.uv\s*=\s*corner;/);
-});
-
-test('camBrush.wgsl does NOT flip Y', () => {
-  // THE most dangerous line in Step 5. The trail splat used to be a sibling
-  // pass that rasterized points into the CANVAS, read back through y-up
-  // world_to_uv, and so had to negate ndc.y. `camBrush.wgsl` rasterizes into the
-  // HDR SCREEN target, whose only correctness partner is camera.wgsl walking the
-  // same transform backwards from an unflipped quad -- so the two modes agree
-  // only when neither flips.
-  //
-  // This test exists to catch someone "fixing" camBrush to match a canvas
-  // writer.
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.ok(
-    !/-\s*ndc\.y/.test(source),
-    'camBrush.wgsl must NOT negate ndc.y -- that correction is for passes that ' +
-      'rasterize into the canvas, not to the screen',
-  );
-  assert.match(
-    source,
-    /world_to_screen_ndc\s*\(/,
-    'camBrush.wgsl must transform through world_to_screen_ndc',
-  );
-});
-
-test('camBrush.wgsl keeps @interpolate(flat) on col_params', () => {
-  // Every vertex of a sprite reads the same entity, so the value is constant
-  // across the quad. Dropping the attribute does not error -- the hue simply
-  // interpolates across each sprite, which reads as a rendering style choice
-  // rather than as a bug, and costs three extra interpolations per fragment.
-  assert.match(
-    stripComments(expand('camBrush.wgsl')),
-    /@interpolate\(flat\)\s+col_params/,
-    'col_params must be flat-interpolated (cam_brush.vert:24-28)',
-  );
-});
-
-test('camBrush.wgsl guards the velocity frame with an if, not select()', () => {
-  // `select()` evaluates BOTH arms, and the discarded arm here is
-  // `normalize(vec2f(0.0))` -- a divide by zero. The same decision the engine's
-  // singularity guards made (web/README.md).
-  const source = stripComments(expand('camBrush.wgsl'));
-  const fn = /fn\s+to_velocity_frame[\s\S]*?\n\}/.exec(source);
-  assert.ok(fn !== null, 'to_velocity_frame should exist');
-  assert.ok(
-    !/select\s*\(/.test(fn[0]),
-    'to_velocity_frame must branch with `if` -- select() would evaluate ' +
-      'normalize(vec2f(0.0)) on the zero-velocity path',
-  );
-  assert.match(fn[0], /if\s*\(\s*dot\(vel,\s*vel\)\s*==\s*0\.0\s*\)/);
-});
-
-test('camBrush.wgsl binds entities read-only in the vertex stage', () => {
-  // A vertex stage cannot write storage at all, so `read` is not a style
-  // choice. The binding numbers must match what camera.ts builds.
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.match(source, /@group\(0\)\s*@binding\(0\)\s*var<uniform>/, 'uniform at 0,0');
-  assert.match(
-    source,
-    /@group\(0\)\s*@binding\(1\)\s*var<storage,\s*read>\s+entities/,
-    'entities must be group 0 binding 1, read-only',
-  );
-});
-
 test('camera.wgsl reads the canvas from the SWAPPING bind group', () => {
   // Group 0 is the uniform (bound once); group 1 is the canvas texture, which
   // changes identity every sub-step. Collapsing them into one group would mean
@@ -242,121 +136,12 @@ test('camera.wgsl reads the canvas from the SWAPPING bind group', () => {
   );
 });
 
-test('camBrush.wgsl dims by cohort against a FLOORED value', () => {
-  // THE COMPARISON THAT MAKES THE HIGHLIGHT WORK. `col_params.y` is
-  // floor(cohort) (entityUpdate.wgsl) and the highlighted cohort arrives
-  // already floored by entityPick.wgsl's derive pass, so `==` between them is
-  // exact. If either side ever stopped being floored, `get_cohort`'s continuous
-  // ramp would make the comparison match nothing and the shader would dim
-  // EVERY particle -- a uniformly darker screen, which reads as a brightness
-  // bug rather than as a broken highlight.
-  const source = stripComments(expand('camBrush.wgsl'));
-
-  assert.match(
-    source,
-    /const\s+COHORT_DIM\s*:\s*f32\s*=/,
-    'the dim factor must stay a single named constant, tweakable in one place',
-  );
-  assert.match(
-    source,
-    /const\s+COHORT_WASH\s*:\s*f32\s*=/,
-    'the saturation wash must stay a named constant beside the dim',
-  );
-  assert.match(
-    source,
-    /highlighted_cohort\(\)\s*>=\s*0\.0/,
-    'a negative highlighted cohort is the "no highlight" sentinel',
-  );
-  assert.match(
-    source,
-    /col_params\.y\s*!=\s*highlighted_cohort\(\)/,
-    'the dim must apply to particles OUTSIDE the highlighted cohort',
-  );
-});
-
-test('camBrush.wgsl reads the highlighted cohort from a float lane', () => {
-  // Not `bitcast<i32>` like the colour mode: cohorts are non-negative floats and
-  // the sentinel is a negative one, so the lane carries both facts without a
-  // second lane that could disagree with it. cameraUniforms.ts writes f32[13].
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.match(
-    source,
-    /fn\s+highlighted_cohort\(\)\s*->\s*f32\s*\{\s*return\s+u\.flags\.y;/,
-    'highlighted_cohort must read flags.y as a plain f32',
-  );
-});
-
 // ---------------------------------------------------------------------------
 // The three colour modes -- the protocol between colorMode.ts and the shader
 // ---------------------------------------------------------------------------
 
-test('camBrush.wgsl agrees with colorMode.ts about the mode integers', () => {
-  // A DRIFT HERE IS SILENT AND TOTAL: the host would ask for Swatch and the
-  // shader would render Cohort, which looks like a colour bug rather than like
-  // a protocol mismatch. The values are declared in two languages and this is
-  // the only thing holding them together.
-  const source = stripComments(expand('camBrush.wgsl'));
-
-  const declared = (name: string): number => {
-    const match = new RegExp(`const\\s+${name}\\s*:\\s*i32\\s*=\\s*(-?\\d+)`).exec(source);
-    assert.ok(match !== null, `${name} must be declared as an i32 constant`);
-    return Number(match[1]);
-  };
-
-  assert.equal(declared('MODE_BEHAVIOR'), colorModeIndex(COLOR_BY_BEHAVIOR));
-  assert.equal(declared('MODE_COHORT'), colorModeIndex(COLOR_BY_COHORT));
-  assert.equal(declared('MODE_SWATCH'), colorModeIndex(COLOR_BY_SWATCH));
-});
-
 // Zero is the mode an unwritten uniform buffer reads as, so it must be the one
 // that is harmless -- the original look rather than an unrecognised state.
-test('the zero mode is Behavior, so an unwritten uniform is harmless', () => {
-  assert.equal(colorModeIndex(COLOR_BY_BEHAVIOR), 0);
-});
-
-test('camBrush.wgsl sizes its swatch table to the palette', () => {
-  // The table is indexed by `config_index`, whose range is SLOT_COUNT. A
-  // shorter one reads past the array for every material above the cut.
-  const source = stripComments(expand('camBrush.wgsl'));
-  const match = /const\s+SWATCH_COLOR_COUNT\s*:\s*i32\s*=\s*(\d+)/.exec(source);
-  assert.ok(match !== null, 'SWATCH_COLOR_COUNT must be a named i32 constant');
-  assert.equal(Number(match[1]), SLOT_COUNT, 'the shader and the palette disagree');
-  assert.equal(
-    Number(match[1]),
-    CAM_BRUSH_SWATCH_COUNT,
-    'the shader and the uniform packer disagree',
-  );
-
-  // The declared array must be that long too -- the constant alone is only used
-  // for the clamp, so a shorter array would clamp into bounds it does not have.
-  assert.match(
-    source,
-    new RegExp(`swatches\\s*:\\s*array<vec4f,\\s*${SLOT_COUNT}>`),
-    `the swatch array must be declared array<vec4f, ${SLOT_COUNT}>`,
-  );
-});
-
-test('camBrush.wgsl clamps the swatch lookup rather than trusting the index', () => {
-  // An unclamped index would be an out-of-bounds uniform read. The dead-particle
-  // cull means it is never reached with a negative index, but the clamp is what
-  // makes the read safe on its own terms rather than by the caller's good manners.
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.match(
-    source,
-    /u\.swatches\[clamp\(index,\s*0,\s*SWATCH_COLOR_COUNT\s*-\s*1\)\]/,
-    'swatch_entry must clamp its index into the table',
-  );
-
-  // THROUGH ONE ACCESSOR, so the colour and the coefficients cannot end up
-  // describing different slots -- which would be a clamp written twice and
-  // drifting, not a missing clamp, and far harder to see.
-  assert.equal(
-    (source.match(/u\.swatches\[/g) ?? []).length,
-    1,
-    'the table must be indexed in exactly one place',
-  );
-});
-
 // ---------------------------------------------------------------------------
 // Per-config hue: A * signal + B
 // ---------------------------------------------------------------------------
@@ -366,125 +151,17 @@ test('camBrush.wgsl clamps the swatch lookup rather than trusting the index', ()
 // scales the signal's swing, B decides where on the wheel that swing sits.
 // Multiplying the bias in instead would make the two knobs fight -- at A = 0
 // every material would collapse to hue 0 no matter where B was set.
-test('camBrush.wgsl computes hue as sensitivity * signal + offset', () => {
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.match(
-    source,
-    /hue\s*=\s*ab\.x\s*\*\s*signal\s*\+\s*ab\.y\s*;/,
-    'the signal modes must read as A * signal + B',
-  );
-});
-
 // BOTH COEFFICIENTS MUST COME FROM THE PARTICLE'S OWN SLOT. This is the whole
 // point of the change: a single frame-wide sensitivity meant the master square
 // coloured every material on screen, and every other square's copy was saved
 // and silently ignored.
-test('camBrush.wgsl reads both hue coefficients per config_index', () => {
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.match(
-    source,
-    /fn\s+hue_coefficients\(index:\s*i32\)\s*->\s*vec2f\s*\{[^}]*swatch_entry\(index\)\.zw/,
-    'hue_coefficients must read the zw lanes of the indexed table entry',
-  );
-  assert.match(
-    source,
-    /hue_coefficients\(in\.config_index\)/,
-    'the coefficients must be looked up by the particle’s own config index',
-  );
-});
-
 // THE LANE THAT USED TO HOLD THE FRAME-WIDE SENSITIVITY. Nothing may read it
 // again: the packer leaves it at zero, so a reader would silently get a
 // sensitivity of 0 and render every material at a flat hue.
-test('camBrush.wgsl no longer reads a frame-wide colour sensitivity', () => {
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.doesNotMatch(
-    source,
-    /u\.sprite\.z/,
-    'sprite.z held the old per-frame sensitivity and must stay unread',
-  );
-});
-
 // Swatch mode's colour was CHOSEN by the author. Applying a gain would rotate
 // every material off that colour, and a bias would do it a second time.
-test('camBrush.wgsl leaves the swatch colour exactly as it was picked', () => {
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.match(
-    source,
-    /hue\s*=\s*picked\.x\s*;/,
-    'Swatch mode must use the chosen hue unmodified',
-  );
-});
-
 // The cohort's spacing is a fixed constant scaled by the config's own A, so the
 // populations spread apart as sensitivity rises rather than jumbling.
-test('camBrush.wgsl derives the cohort signal from a fixed spacing', () => {
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.match(
-    source,
-    /in\.col_params\.y\s*\*\s*COHORT_COLOR_CONSTANT/,
-    'the cohort signal must be the cohort index times the fixed spacing',
-  );
-});
-
-test('camBrush.wgsl carries config_index flat, not interpolated', () => {
-  // A config index is an identity, not a quantity. Interpolated across the quad
-  // it would produce indices belonging to no material at all, so the sprite
-  // would be painted in a smear of the wrong swatches' colours.
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.match(
-    source,
-    /@interpolate\(flat\)\s*config_index\s*:\s*i32/,
-    'config_index must be a flat i32 varying',
-  );
-});
-
 // Swatch mode is the only one that carries a saturation; the other two pin it.
 // If the fragment stage went back to a literal, a swatch colour's saturation
 // would be silently discarded and the picker's second axis would do nothing.
-test('camBrush.wgsl feeds a variable saturation to hsv2rgb', () => {
-  const source = stripComments(expand('camBrush.wgsl'));
-  assert.match(
-    source,
-    /hsv2rgb\(vec3f\(hue,\s*saturation\s*\*\s*wash,\s*1\.0\)\)/,
-    'the fragment must use the mode-supplied saturation, not a literal',
-  );
-});
-
-test('camBrush.wgsl washes saturation on the SAME particles it dims', () => {
-  // Two knobs, one condition. Brightness alone reads as "further away"; pulling
-  // the colour toward grey as well reads as "not the thing you are looking at".
-  // They must be driven by one branch -- a second, independently written
-  // condition could drift and desaturate a different set than it darkens, which
-  // looks like a palette bug rather than like a broken highlight.
-  const source = stripComments(expand('camBrush.wgsl'));
-
-  // Both assignments inside one if-body, in the order the fragment writes them.
-  assert.match(
-    source,
-    /dim\s*=\s*COHORT_DIM\s*;\s*wash\s*=\s*COHORT_WASH\s*;/,
-    'the dim and the wash must be set together, under one condition',
-  );
-  // MULTIPLIED INTO THE SATURATION, not replacing it: a COHORT_WASH of 1.0 has
-  // to leave the colour untouched -- the same "1.0 means off" contract
-  // COHORT_DIM has. Assigning saturation outright would make 1.0 a
-  // full-saturation BOOST on the unhighlighted particles, which is the opposite
-  // of what the constant says it does.
-  //
-  // THE BASE IS NOW A VARIABLE, not the literal 0.8 this used to pin. The two
-  // signal modes still set it to exactly 0.8, but Swatch mode carries the
-  // saturation its author picked -- so pinning the literal here would forbid
-  // the one mode whose second colour axis is the point. What must not change is
-  // that the wash SCALES whatever the mode supplied.
-  assert.match(
-    source,
-    /hsv2rgb\(vec3f\(hue,\s*saturation\s*\*\s*wash,/,
-    'the wash must scale the mode-supplied saturation rather than replace it',
-  );
-  // The two signal modes' base, which keeps their output identical to before.
-  assert.match(
-    source,
-    /var\s+saturation\s*=\s*0\.8\s*;/,
-    'Behavior and Cohort must keep the 0.8 base they have always had',
-  );
-});

@@ -189,14 +189,14 @@ test('a row carries the label and both values', () => {
   // 1.0 rather than 0.5, because 0.5 IS the default -- proposing it would
   // correctly produce no row at all, and the assertion would be testing the
   // omission rule by accident instead of the formatting.
-  const rows = describeChanges({ worldSize: 1.0 }, DEFAULT_PREFERENCES, 'particles');
+  const rows = describeChanges({ worldSize: 4.0 }, DEFAULT_PREFERENCES, 'particles');
   const row = rows[0];
 
   // The label comes from `settingsSpec.ts` rather than being typed here, so a
   // relabelled control moves this with it.
-  assert.equal(row?.label, 'World Size');
-  assert.equal(row?.from, '0.5');
-  assert.equal(row?.to, '1');
+  assert.equal(row?.label, 'Grid Size');
+  assert.equal(row?.from, '1');
+  assert.equal(row?.to, '4');
 });
 
 test('the trail map is named for what the user sees, not for the mode', () => {

@@ -25,7 +25,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { makeSimulationConfig, makeWorldSettings } from '../particleSystem/config.ts';
+import { makeNcaConfig, makeNcaWorld } from '../nca/ncaConfig.ts';
 import { toDocument } from './persistence.ts';
 import { describeImport, exportFiles, planImport } from './saveTransfer.ts';
 
@@ -40,21 +40,7 @@ import { describeImport, exportFiles, planImport } from './saveTransfer.ts';
  * reader, so these tests fail if the document shape drifts.
  */
 function document(): unknown {
-  const config = makeSimulationConfig({
-    cohorts: 4,
-    mutationSeed: 0.5,
-    sensorGain: 1,
-    sensorAngle: 0.4,
-    sensorDistance: 8,
-    mutationScale: 0.1,
-    globalForceMult: 1,
-    drag: 0.9,
-    strafePower: 0.2,
-    axialForce: 0.3,
-    lateralForce: 0.1,
-    hazardRate: 0,
-  });
-  return toDocument([config], makeWorldSettings());
+  return toDocument([makeNcaConfig({ cohorts: 4, mutationSeed: 0.5, dt: 0.3 })], makeNcaWorld());
 }
 
 const text = (): string => `${JSON.stringify(document(), null, 2)}\n`;
@@ -88,7 +74,7 @@ test('export does not rewrite the stored document', () => {
 
 test('export pretty-prints, so the files are readable in configs/', () => {
   const [file] = exportFiles([{ name: 'Krill', document: document() }]);
-  assert.match(file!.text, /\n {2}"version": 9/);
+  assert.match(file!.text, /\n {2}"version": 1/);
   assert.ok(file!.text.endsWith('\n'), 'files end with a newline');
 });
 
@@ -161,7 +147,7 @@ test('import rejects a file that is not JSON, naming it', () => {
  * later, at the click, with an error naming a category rather than a file.
  */
 test('import rejects a valid-looking config of the wrong version', () => {
-  const plan = planImport([{ filename: 'Old.json', text: '{"version":7}' }], []);
+  const plan = planImport([{ filename: 'Old.json', text: '{"format":"nca","version":7}' }], []);
   assert.equal(plan.skipped[0]!.reason, 'unreadable');
   assert.match(plan.skipped[0]!.detail, /version/i);
 });
