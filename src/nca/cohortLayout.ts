@@ -59,7 +59,7 @@ export function cohortAt(n: number, W: number, H: number, x: number, y: number):
 }
 
 /** Per-cell cohort index, row-major. What the shaders read. */
-export function cohortIndexMap(n: number, W: number, H: number): Uint32Array {
+export function cohortIndexMap(n: number, W: number, H: number): Uint32Array<ArrayBuffer> {
   const map = new Uint32Array(W * H);
   cohortRects(n, W, H).forEach((r, k) => {
     for (let y = r.y0; y < r.y0 + r.h; y++) map.fill(k, y * W + r.x0, y * W + r.x0 + r.w);

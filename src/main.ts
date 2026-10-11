@@ -33,28 +33,14 @@ import {
 } from './config/urlOptions.ts';
 import { PREFS, settingFor } from './ui/settingsSpec.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
-import { Webcam } from './webcam/webcam.ts';
-import { STUDIO_CAMERA_STORAGE_KEY } from './webcam/webcamSettings.ts';
 import { RECORDING_FPS, driverAction } from './recorder/recordingSettings.ts';
 // Static, and deliberately so: the file picker must run before any await in the
 // export click handler. Both this and `recordingSettings.ts` are leaves that
 // pull in neither mediabunny nor the GPU. See `recorder/saveFile.ts`.
-import { chooseRecordingFile, downloadRecording } from './recorder/saveFile.ts';
-// The archive export. Pure data plus a Blob -- no GPU and no mediabunny, so a
-// static import costs the main bundle nothing the lazy loading protects.
-import { archiveBlob, archiveFilename } from './archive/export.ts';
-import { calibrate } from './calibration/calibrate.ts';
-// The ladder's result type, needed now that `rung` is declared before the
-// `try` that assigns it rather than inferred from the call. `BLOOM_MIN_WORLD_SIZE`
-// is the threshold the step between the two phases reads it against.
-import { BLOOM_MIN_WORLD_SIZE, type Rung } from './calibration/progression.ts';
-// The tuning phase's worst-case probe count, so the splash's single progress
-// counter can cover both phases. See the `runCalibration` callback.
-import { MAX_PROBES as AUTO_PROBES } from './perf/rateSearch.ts';
-import { ALWAYS_CALIBRATE } from './orchestrator/featureFlags.ts';
+import { chooseRecordingFile } from './recorder/saveFile.ts';
 import { bindInput } from './ui/inputBinding.ts';
 import { LEFT_BUTTON } from './ui/inputTracker.ts';
-import { isCalibrated, loadPreferences } from './prefs/preferences.ts';
+import { loadPreferences } from './prefs/preferences.ts';
 import { detectMobile, mobileModeFromValue, resolveMobile } from './ui/mobile.ts';
 import { bindTouch } from './ui/touchBinding.ts';
 import { Panel } from './ui/panel.ts';
@@ -213,16 +199,9 @@ async function start(): Promise<void> {
   // `height:100dvh` rule and the selection suppression both target it.
   if (mobile) document.documentElement.classList.add('fluoddity-touch');
 
-  // THE CAMERA, made once for the session and handed to both halves below:
-  // the Orchestrator runs its GPU passes, the panel's Camera tab drives it.
-  // Making it costs four small shader compiles and five 256-square textures --
-  // NOT the camera, which opens only when someone presses Start.
-  const webcam = await Webcam.create(device, STUDIO_CAMERA_STORAGE_KEY);
-
   const orchestrator = await Orchestrator.create({
     device,
     surface,
-    webcam,
     // `?preset=<stem>` still works and is still worth keeping: `browserCheck.mjs`
     // drives the page by URL, so this is how an automated check reaches a
     // preset without synthesizing a click on a panel button.
@@ -318,7 +297,11 @@ async function start(): Promise<void> {
   // `ALWAYS_CALIBRATE` is a development flag that forces every load to behave
   // like a first one, for tuning the ladder without clearing `localStorage`
   // between runs. Off in anything shipped -- see `orchestrator/featureFlags.ts`.
-  const firstVisit = ALWAYS_CALIBRATE || !isCalibrated(orchestrator.preferences);
+  //
+  // NCA STUDIO: the calibration ladder was tuned for particle counts, so it is
+  // switched off and the splash never opens on its own. Steps / Frame is
+  // still tunable from the Physics Rate widget's Auto button.
+  const firstVisit = false;
 
   // --- the URL settings prompt ----------------------------------------------
   //
@@ -453,8 +436,6 @@ async function start(): Promise<void> {
         onHiddenChange: () => {
           orchestrator.panelOpen = panel?.isOpen ?? false;
         },
-        // Simulation > Camera Controls. See `PanelOptions.webcam`.
-        webcam,
         // Video recording. Supplied HERE because this is the one place that
         // holds both halves -- the device to record with and the orchestrator to
         // attach the recorder to -- and because `CommandBus` deliberately admits
@@ -492,21 +473,6 @@ async function start(): Promise<void> {
             return recorder.finish();
           },
         },
-        // Strong logging's export. Supplied HERE for `recording`'s reason: it
-        // needs the Orchestrator's archive database AND an `<a download>`, and
-        // `CommandBus` deliberately admits no DOM. `downloadRecording` is the
-        // same anchor-and-revoke this file already uses for a finished video --
-        // it is named for its first caller, not limited to it.
-        downloadArchive: async () => {
-          const doc = await orchestrator.exportArchive();
-          // No database, or none yet created because logging was never on.
-          // Nothing to say: the button simply produces no file.
-          if (doc === null) return;
-          downloadRecording(archiveBlob(doc), archiveFilename());
-        },
-        // The other half. Runs only after `Dialogs` has confirmed -- the panel
-        // wires the button to the confirmation, not to this.
-        clearArchive: () => orchestrator.clearArchive(),
         // The centred brush reticle, shown while Brush Size is being dragged.
         // Supplied here for `setCropPreview`'s reason: it is editor chrome
         // landing on the Orchestrator, so it takes a plain callback rather than
@@ -514,146 +480,6 @@ async function start(): Promise<void> {
         setBrushSizePreview: (previewing) => {
           orchestrator.setBrushSizePreview(previewing);
         },
-        // Omitted under `?nocalibrate`, which leaves `Panel.calibrate()` inert
-        // and so also disables the re-run on Reset Editor Preferences.
-        ...(params.has('nocalibrate')
-          ? {}
-          : {
-              runCalibration: async (): Promise<void> => {
-                // Held across the two callbacks so resuming can restore the
-                // progress line rather than blanking it -- `onProgress` does
-                // not fire again until the NEXT rung starts.
-                let progress = '';
-                // ONE CONTINUOUS COUNTER ACROSS BOTH PHASES. The ladder's rungs
-                // and the rate tuning's probes are different kinds of step, but
-                // to someone reading a progress line they are one wait -- so the
-                // total is the sum and the second phase carries on where the
-                // first left off. `AUTO_PROBES` is the tuning's WORST case
-                // (`MAX_PROBES`), so the counter never exceeds its own total;
-                // a run that converges early simply skips to the end.
-                let rungs = 0;
-                // **THE LOOP STOPS SUBMITTING FOR THE LADDER'S DURATION.** See
-                // `ladderProbing`, which carries the full reasoning: without
-                // this the probes time their own work plus whatever this loop
-                // had in flight, and the first rung fails on a machine that
-                // could hold the top one.
-                //
-                // `try/finally` rather than clearing after the await: `calibrate`
-                // is documented never to throw, but a frame loop permanently
-                // stuck not submitting is a black app -- too severe a failure to
-                // leave resting on another module's promise.
-                ladderProbing = true;
-                let rung: Rung;
-                try {
-                  rung = await calibrate(orchestrator, {
-                    onProgress: (done, total) => {
-                      // The ladder reports its own total; the tuning's probes
-                      // are added to it so the denominator covers both phases.
-                      rungs = total;
-                      progress =
-                        `Calibrating for your display… ` +
-                        `(${String(done)}/${String(total + AUTO_PROBES)})`;
-                      panel?.setSplashStatus(progress);
-                    },
-                    // A hidden tab is throttled hard enough that measuring it
-                    // would misjudge the GPU badly, so the walk waits. Say so:
-                    // the splash is locked shut meanwhile, and a frozen counter
-                    // with no explanation reads as a hang.
-                    onWaiting: (waiting) => {
-                      // **THE HIDDEN-TAB WAIT MUST NOT HOLD THE LOOP OFF.**
-                      // That wait ends only when the user comes back, which may
-                      // be minutes -- and nothing is being measured meanwhile,
-                      // so there is no queue to keep clear. The loop resumes for
-                      // its duration and yields again before the next rung is
-                      // probed. Without this, backgrounding the tab mid-walk
-                      // would leave the app not submitting until the user
-                      // returned: a frozen picture rather than a paused one.
-                      //
-                      // Safe against the `finally` below, which clears the flag
-                      // unconditionally however the walk ends.
-                      ladderProbing = !waiting;
-                      panel?.setSplashStatus(
-                        waiting
-                          ? 'Paused while this tab is in the background — ' +
-                              'calibration resumes when you come back.'
-                          : progress,
-                      );
-                    },
-                  });
-                } finally {
-                  // The loop submits again from here: the ladder has committed
-                  // its rung, and everything below measures live frames.
-                  ladderProbing = false;
-                }
-                // --- between the phases: bloom off on a weak machine ---------
-                //
-                // The ladder has just said how much machine there is, and on
-                // the low rungs there is not enough of it for bloom. See
-                // `BLOOM_MIN_WORLD_SIZE` for why the answer is read off the
-                // world size and why the threshold sits where it does.
-                //
-                // **BEFORE THE RATE TUNING, NOT AFTER.** That phase measures
-                // REAL frames -- camera, motion blur and bloom included, which
-                // is the whole reason it exists -- so bloom's cost is either in
-                // its measurement or it is not. Setting this first means a
-                // machine that just lost bloom gets its rate chosen against the
-                // frames it will actually render, and so keeps the headroom
-                // rather than spending it twice. Doing it afterwards would
-                // leave the rate tuned for a frame that no longer happens.
-                //
-                // ONE-DIRECTIONAL: it only ever turns bloom off. At or above
-                // the threshold nothing is written at all, so the default (or
-                // anything a share link brought in) stands untouched.
-                if (rung.worldSize < BLOOM_MIN_WORLD_SIZE) {
-                  orchestrator.setBloomEnabled(false);
-                }
-
-                // --- the final step: tune the rate against REAL frames -------
-                //
-                // The ladder has committed a world size, and with it a physics
-                // rate measured by `probeFrame` -- which renders PHYSICS ONLY,
-                // with no camera, no bloom and no motion blur. That is the right
-                // instrument for comparing rungs (it isolates the two knobs the
-                // ladder varies) and a poor one for choosing a final rate, since
-                // the user's frames pay for all three of those too. `HEADROOM`
-                // exists precisely to guess at what it leaves out.
-                //
-                // So the rate is now re-derived by the same search the
-                // Auto-calibrate button drives, against the same live rAF
-                // frames, starting from the rung the ladder chose. A first-time
-                // visitor gets the measurement a returning one would get by
-                // pressing the button.
-                //
-                // **THIS WORKS BECAUSE THE FRAME LOOP IS ALREADY RUNNING.**
-                // `main.ts` starts rAF immediately and deliberately does not
-                // await calibration -- see the note at the `firstVisit` call
-                // below. The splash pauses the simulation, and `Panel.tuneRate`
-                // unpauses for the duration exactly as the button does.
-                //
-                // AWAITED, so the splash stays locked until the rate settles:
-                // releasing it mid-search would show the user a physics rate
-                // visibly jumping around for no stated reason.
-                await panel?.tuneRate((probe) => {
-                  panel?.setSplashStatus(
-                    `Calibrating for your display… ` +
-                      `(${String(rungs + probe)}/${String(rungs + AUTO_PROBES)})`,
-                  );
-                });
-
-                console.info(
-                  `Calibrated to world size ${rung.worldSize}, physics rate ` +
-                    `${orchestrator.status().physicsSteps} (ladder suggested ` +
-                    `${rung.physicsSteps}). Change either in Preferences > Simulation.` +
-                    // Only mentioned when calibration actually moved it: saying
-                    // "bloom left alone" on every fast machine would be noise
-                    // about a step that did nothing.
-                    (rung.worldSize < BLOOM_MIN_WORLD_SIZE
-                      ? ` Bloom turned off for this world size; re-enable it in ` +
-                        `Preferences > Display.`
-                      : ''),
-                );
-              },
-            }),
       });
   // FROM `isOpen`, not from `panel !== null`: the panels now start hidden, so
   // "a panel exists" and "a panel is visible" are different facts and only the
@@ -1107,13 +933,13 @@ async function start(): Promise<void> {
         `camera       ${d.camMode}`,
         `tool         ${d.mouseMode}${d.paused ? '   PAUSED' : ''}`,
         `frameCount   ${d.frameCount}`,
-        `entities     ${d.entityCount}`,
+        `cells        ${d.entityCount}`,
         `canvas       ${d.canvasSize.join(' x ')}`,
         `window       ${surface.size().join(' x ')}`,
         `physicsSteps ${d.physicsSteps}`,
         `blur         ${schedule.samples} samples, stride ${schedule.stride} ` +
           `(requested ${d.motionBlurSamples})`,
-        `selected     ${describeSelected(d.selected)}${d.pickPending ? '  (pick in flight)' : ''}`,
+        `selected     ${describeSelected(d.selected)}`,
         `bloom        ${d.bloomEnabled ? 'on' : 'off'}`,
         `frame        ${frameMs.toFixed(2)} ms  (${(1000 / frameMs).toFixed(0)} fps)`,
         `orchestrator ${orchestratorMs.toFixed(2)} ms`,
@@ -1264,14 +1090,11 @@ async function start(): Promise<void> {
 
 /** `#index (x, y) d=distance`, or `-`/`miss`. As `ui.py:385-391` renders it. */
 function describeSelected(
-  result: { index: number; pos: readonly [number, number]; distance: number } | null,
+  result: { index: number; cohort: number; cell: readonly [number, number] | null } | null,
 ): string {
   if (result === null) return '-';
-  if (result.index < 0) return 'miss';
-  return (
-    `#${result.index}  (${result.pos[0].toFixed(3)}, ${result.pos[1].toFixed(3)})  ` +
-    `d=${result.distance.toFixed(4)}`
-  );
+  if (result.cell === null) return 'miss';
+  return `cohort ${result.cohort}  cell (${result.cell[0]}, ${result.cell[1]})`;
 }
 
 start().catch((err: unknown) => {

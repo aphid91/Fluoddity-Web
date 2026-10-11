@@ -1,0 +1,48 @@
+{
+  "format": "nca",
+  "version": 1,
+  "world": {
+    "boundary": "wrap",
+    "display_mode": "signed",
+    "display_channel": 0,
+    "display_gain": 1,
+    "show_cohort_borders": true
+  },
+  "configs": [
+    {
+      "architecture": {
+        "channels": 6,
+        "hidden": 16,
+        "perception": "fixed",
+        "learned_kernels": 2,
+        "laplacian": false
+      },
+      "activation": "sin",
+      "dynamics": {
+        "dt": 0.5,
+        "fire_rate": 0.5,
+        "gain": 1,
+        "state_bound": "tanh",
+        "leak": 0,
+        "noise": 0,
+        "alive_mask": false,
+        "alive_threshold": 0.1
+      },
+      "mutation": {
+        "scale": 0.2,
+        "seed": 0.9,
+        "cohorts": 4,
+        "cohort_fences": false
+      },
+      "initial_conditions": {
+        "mode": "noise",
+        "seed_radius": 2,
+        "amplitude": 0.5,
+        "density": 0.002,
+        "seed": 0.25
+      },
+      "weights": null
+    }
+  ],
+  "notes": "Noise initial conditions, no fences: the cohorts compete for the whole torus."
+}

@@ -52,11 +52,18 @@ export interface Tensor {
   readonly shape: readonly number[];
   readonly size: number;
   /**
-   * The tensor's characteristic scale: the std it is initialised with, and
-   * the unit mutation noise is measured in. Scaling noise per tensor is what
+   * The unit mutation noise is measured in. Scaling noise per tensor is what
    * makes one Mutation Scale mean the same thing at 70 params and at 8000.
    */
   readonly std: number;
+  /**
+   * The std a fresh network is drawn with. Equal to `std` for weights; ZERO for
+   * biases, so a fresh network maps an all-zero neighbourhood to a zero update
+   * -- the quiescent background every seed-growing NCA relies on. With random
+   * biases every empty cell drifts, and each cohort saturates to a flat colour
+   * before any seed can matter.
+   */
+  readonly initStd: number;
 }
 
 export interface ParamLayout {
@@ -73,8 +80,8 @@ export interface ParamLayout {
 
 /** Std of the learned perception kernels (Sobel/8 taps are <= 0.25). */
 export const KERNEL_STD = 0.25;
-/** Std biases are initialised and mutated with. */
-export const BIAS_STD = 0.1;
+/** The unit biases are mutated in. They are initialised at zero. */
+export const BIAS_STD = 0.02;
 
 export function paramLayout(arch: NcaArch): ParamLayout {
   const a = archOf(arch);
@@ -85,21 +92,21 @@ export function paramLayout(arch: NcaArch): ParamLayout {
 
   const tensors: Tensor[] = [];
   let offset = 0;
-  const add = (name: Tensor['name'], shape: number[], std: number): void => {
+  const add = (name: Tensor['name'], shape: number[], std: number, initStd = std): void => {
     const size = shape.reduce((x, y) => x * y, 1);
-    tensors.push({ name, offset, shape, size, std });
+    tensors.push({ name, offset, shape, size, std, initStd });
     offset += size;
   };
 
   if (a.perception === PERCEPTION.LEARNED) add('perc', [a.learnedKernels, C, 9], KERNEL_STD);
   if (H > 0) {
     add('fc0.w', [H, P], 1 / Math.sqrt(P));
-    add('fc0.b', [H], BIAS_STD);
+    add('fc0.b', [H], BIAS_STD, 0);
     add('fc1.w', [C, H], 1 / Math.sqrt(H));
-    add('fc1.b', [C], BIAS_STD);
+    add('fc1.b', [C], BIAS_STD, 0);
   } else {
     add('fc.w', [C, P], 1 / Math.sqrt(P));
-    add('fc.b', [C], BIAS_STD);
+    add('fc.b', [C], BIAS_STD, 0);
   }
 
   return { arch: a, channels: C, hidden: H, kinds, features: P, tensors, count: offset };

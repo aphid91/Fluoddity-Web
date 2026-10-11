@@ -1,0 +1,48 @@
+{
+  "format": "nca",
+  "version": 1,
+  "world": {
+    "boundary": "wrap",
+    "display_mode": "signed",
+    "display_channel": 0,
+    "display_gain": 1,
+    "show_cohort_borders": true
+  },
+  "configs": [
+    {
+      "architecture": {
+        "channels": 4,
+        "hidden": 0,
+        "perception": "learned",
+        "learned_kernels": 2,
+        "laplacian": false
+      },
+      "activation": "tanh",
+      "dynamics": {
+        "dt": 0.5,
+        "fire_rate": 0.5,
+        "gain": 1,
+        "state_bound": "clip",
+        "leak": 0,
+        "noise": 0,
+        "alive_mask": false,
+        "alive_threshold": 0.1
+      },
+      "mutation": {
+        "scale": 0.2,
+        "seed": 0.62,
+        "cohorts": 9,
+        "cohort_fences": true
+      },
+      "initial_conditions": {
+        "mode": "seed",
+        "seed_radius": 2,
+        "amplitude": 1,
+        "density": 0.002,
+        "seed": 0.25
+      },
+      "weights": null
+    }
+  ],
+  "notes": "A single-layer NCA with two learned 3x3 kernels per channel: the perception itself is under selection."
+}

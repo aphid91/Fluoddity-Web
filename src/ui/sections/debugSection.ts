@@ -142,15 +142,12 @@ function flags(entries: readonly (readonly [string, boolean])[]): string {
 }
 
 /**
- * The `selected` row, formatted as `ui.py:385-391` does: `#index (x, y) d=dist`,
- * `-` for nothing selected, `miss` for a click that found nothing in range.
+ * The `selected` row: `cohort k (x, y)`, `-` for nothing selected, `miss` for a
+ * click outside the grid.
  */
 export function describeSelected(status: Status): string {
   const result = status.selected;
   if (result === null) return '-';
-  if (result.index < 0) return 'miss';
-  return (
-    `#${result.index} (${result.pos[0].toFixed(3)}, ${result.pos[1].toFixed(3)}) ` +
-    `d=${result.distance.toFixed(4)}`
-  );
+  if (result.cell === null) return 'miss';
+  return `cohort ${result.cohort} (${result.cell[0]}, ${result.cell[1]})`;
 }

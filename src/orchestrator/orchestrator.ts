@@ -2,13 +2,13 @@
  * Orchestrator: the sole broker of commands and data between modules.
  * The port of `orchestrator/orchestrator.py` and its six command mixins.
  *
- * Owns one instance each of Surface, Camera, Assembler and ParticleSystem, plus
+ * Owns one instance each of Surface, Camera, Assembler and NcaSystem, plus
  * the project, history and preferences. Modules hold no references to one
  * another; all inter-module communication flows through here. Two examples of
  * the pattern, both preserved verbatim from the desktop:
  *
- *   - Data: each frame the Orchestrator pulls the current canvas texture from
- *     ParticleSystem (via a narrow accessor) and hands it to Camera. Camera
+ *   - Data: each frame the Orchestrator pulls the display texture from
+ *     NcaSystem (via a narrow accessor) and hands it to Camera. Camera
  *     never holds a persistent reference to it.
  *   - Commands: the UI reports named intents which the Orchestrator translates
  *     into method calls on the right module.
@@ -56,10 +56,6 @@ import {
 } from '../assembler/assemblerUniforms.ts';
 import { Camera } from '../camera/camera.ts';
 import {
-  CAM_BRUSH_SWATCH_COUNT,
-  type SwatchAppearance,
-} from '../camera/cameraUniforms.ts';
-import {
   CameraState,
   PAN_PER_SECOND,
   ZOOM_PER_SECOND,
@@ -78,11 +74,9 @@ import {
   describeHistoryStep,
   historyLabelFor,
 } from './notices.ts';
-import { ProjectArchive, openArchiveStore } from '../archive/archive.ts';
-import { clearArchive, openArchiveDb } from '../archive/archiveDb.ts';
-import { type ArchiveDocument, buildArchiveDocument } from '../archive/export.ts';
-import type { ArchiveTag } from '../archive/delta.ts';
-import { ParticleSystem } from '../particleSystem/particleSystem.ts';
+import { BRUSH, type NcaPick, NcaSystem, isHit } from '../nca/ncaSystem.ts';
+import { cohortWeights, toStored } from '../nca/weights.ts';
+import { gridDimensions } from '../nca/gridSize.ts';
 import { afterTimedSubmit, beginTimedFrame, resolveTimedFrame } from '../gpu/passTimer.ts';
 // TYPE-ONLY. `recorder.ts` reaches mediabunny through a dynamic `import()`, and
 // a value import here would pull the whole encoder into the main bundle for
@@ -96,24 +90,8 @@ import {
   clampResolution,
   isFullFrame,
 } from '../recorder/recordingSettings.ts';
-import { StrafeField } from '../strafeField/strafeField.ts';
-import type { Webcam } from '../webcam/webcam.ts';
-import { NO_CAMERA } from '../particleSystem/uniforms.ts';
-import {
-  type FieldLayer,
-  BRUSH_MODES,
-  LINE_STROKE_GAIN,
-} from '../strafeField/fieldLayer.ts';
-import type { BrushParams } from '../strafeField/strafeUniforms.ts';
+import type { FieldLayer } from '../strafeField/fieldLayer.ts';
 import { screenToWorld, worldToUv } from '../particleSystem/coords.ts';
-import {
-  type PickResult,
-  DEFAULT_PICK_RADIUS_PX,
-  isHit,
-  radiusPxToWorld,
-} from '../particleSystem/pick.ts';
-import { BC, type SimulationConfig } from '../particleSystem/config.ts';
-import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
 import {
   type ConfigEntry,
   ConfigStore,
@@ -125,16 +103,14 @@ import {
   type Preferences,
   CALIBRATION_VERSION,
   DEFAULT_PREFERENCES,
-  PREFERENCE_KEYS,
   loadPreferences,
-  fieldStrengthsFor,
   requiresRestart,
   savePreferences,
   withValue,
 } from '../prefs/preferences.ts';
 import {
   type Project,
-  adoptRule,
+  adoptWeights,
   configCount,
   layoutChanged,
   makeProject,
@@ -151,7 +127,6 @@ import {
   type CommandBus,
   type MouseMode,
   isPaintingTool,
-  layerForMouseMode,
   reticlePlacement,
   type PreviewSurface,
   type Status,
@@ -159,17 +134,15 @@ import {
 import { type Checkpoint, CheckpointStore } from './clipboardCommands.ts';
 import { RESET_ON_CONFIG_LOAD, RESET_ON_CONFIG_UNDO_REDO } from './featureFlags.ts';
 import { type LineAnchor, type PendingStroke, strokeFor } from './drawingCommands.ts';
-import { shoveState } from './shoveCommands.ts';
+import type { BrushStroke } from '../nca/ncaUniforms.ts';
 import {
   applySettingEdit,
   randomizeBehavior,
   randomizeSeed,
   rerollIsNoOp,
-  ruleIsSentinel,
   selectionIsNoOp,
   setPopulationLayout,
-  applyCameraSetup,
-  hasCameraSetup,
+  weightsAreGenerated,
 } from './settingsCommands.ts';
 import { type PresetCatalog, loadSavedInto, switchPreset } from './projectCommands.ts';
 
@@ -205,15 +178,6 @@ export interface OrchestratorOptions {
    */
   readonly mobile?: boolean;
   /**
-   * The camera feature, made once by `main.ts` and shared with the panel's
-   * Camera tab. Absent where there is none to make (the tests); the particles
-   * then see no camera field at all.
-   *
-   * INJECTED rather than built here because it must outlive this object's
-   * particle systems -- see `Webcam`'s header.
-   */
-  readonly webcam?: Webcam;
-  /**
    * Open with this project instead of one from the catalog. For the share link.
    *
    * INJECTED HERE RATHER THAN LOADED AFTERWARDS, and the alternative is worse in
@@ -243,14 +207,7 @@ export class Orchestrator implements CommandBus {
   private readonly targets: RenderTargets;
   private readonly camera: Camera;
   private readonly assembler: Assembler;
-  private system: ParticleSystem;
-  /**
-   * The painted field. Paired with `system`: both are sized from the canvas, so
-   * `rebuildSystem` replaces the two together and destroys the two together.
-   */
-  private strafeField: StrafeField;
-  /** See `OrchestratorOptions.webcam`. */
-  private readonly webcam: Webcam | null;
+  private system: NcaSystem;
 
   /**
    * Where the cursor was on the previous frame of the stroke in progress, in
@@ -323,8 +280,8 @@ export class Orchestrator implements CommandBus {
    */
   private readonly previewOrigins = new Map<PreviewSurface, Project>();
 
-  /** The last clicked entity. `null` until the user selects something. */
-  private selected: PickResult | null = null;
+  /** The last clicked cell. `null` until the user selects something. */
+  private selected: NcaPick | null = null;
 
   /**
    * The active tool. SELECT by default -- it is the only tool whose effect is a
@@ -420,7 +377,7 @@ export class Orchestrator implements CommandBus {
    */
   private configGeneration = 0;
 
-  private readonly selection: SelectionController<Project, PickResult>;
+  private readonly selection: SelectionController<Project, NcaPick>;
 
   // --- the cohort highlight -------------------------------------------------
   //
@@ -440,23 +397,6 @@ export class Orchestrator implements CommandBus {
    * rule and resets the simulation. See `CohortHighlight.canCommit`.
    */
   private readonly highlight: CohortHighlight;
-
-  /**
-   * The appearance table handed to the camera, rebuilt only when it changes.
-   *
-   * The studio has ONE config, so all forty entries are identical and the table
-   * is a function of two numbers -- see where it is used in `frame()`. Rebuilt
-   * on a mismatch rather than allocated per frame: this sits in the render path
-   * and the values change when a slider moves, which is thousands of times less
-   * often than the camera asks for them.
-   *
-   * `null` until the first frame builds it, which is also what makes the two
-   * remembered values below unambiguous -- there is no config whose settings
-   * they could be mistaken for.
-   */
-  private appearanceTable: readonly SwatchAppearance[] | null = null;
-  private appearanceSensitivity = 0;
-  private appearanceOffset = 0;
 
   /**
    * Whether the pick being resolved RIGHT NOW is a commit.
@@ -497,7 +437,7 @@ export class Orchestrator implements CommandBus {
    * `retrievePick` replays it. Null at every other moment, which is what makes
    * "still in flight" and "already consumed this frame" stay distinguishable.
    */
-  private landedPick: PickResult | null = null;
+  private landedPick: NcaPick | null = null;
 
   /** This frame's input. Replaced once per frame by `frame()`. */
   private input: InputState = EMPTY_INPUT;
@@ -530,24 +470,13 @@ export class Orchestrator implements CommandBus {
   private recorder: VideoRecorder | null = null;
 
   /**
-   * The permanent state archive. Constructed INERT and does nothing until the
-   * `strongLogging` preference turns it on -- see `archive/archive.ts`.
-   *
-   * Always present rather than nullable, so the one call site in `recordHistory`
-   * has no branch to forget. A disabled archive costs a null check per undo
-   * entry, which is once per deliberate act.
-   */
-  private readonly archive = new ProjectArchive();
-
-  /**
    * Whether a settings panel is open, so `settingsSources()` can skip building
    * the three payloads when nothing reads them.
    *
    * The desktop reads `ui.show_settings || ui.show_preferences ||
    * ui.show_drawing` (`orchestrator.py:597`); the port has one panel, so this
-   * is one flag. It matters for the same reason it matters there: building
-   * `editConfig` copies the 80-float rule EVERY FRAME, and doing that for a
-   * closed panel is pure garbage.
+   * is one flag: building the three payloads every frame for a closed panel is
+   * pure garbage.
    */
   panelOpen = true;
 
@@ -557,8 +486,7 @@ export class Orchestrator implements CommandBus {
     targets: RenderTargets;
     camera: Camera;
     assembler: Assembler;
-    system: ParticleSystem;
-    strafeField: StrafeField;
+    system: NcaSystem;
     prefs: Preferences;
     project: Project;
     store: ConfigStore;
@@ -566,16 +494,13 @@ export class Orchestrator implements CommandBus {
     presetName: string;
     configOrigin: { readonly category: string; readonly name: string } | null;
     mobile: boolean;
-    webcam: Webcam | null;
   }) {
     this.device = opts.device;
-    this.webcam = opts.webcam;
     this.surface = opts.surface;
     this.targets = opts.targets;
     this.camera = opts.camera;
     this.assembler = opts.assembler;
     this.system = opts.system;
-    this.strafeField = opts.strafeField;
     this.prefs = opts.prefs;
     this.project = opts.project;
     this.store = opts.store;
@@ -591,12 +516,6 @@ export class Orchestrator implements CommandBus {
 
     this.history.seed(this.project);
     this.selection = new SelectionController(this.selectionHost());
-
-    // The preference PERSISTS, so a session that starts with it on begins
-    // recording immediately -- otherwise strong logging would silently need
-    // re-ticking every reload. The startup state becomes a root only if it is
-    // unseen, which for a returning user's usual preset it will not be.
-    if (this.prefs.strongLogging) this.startArchiving();
   }
 
   /**
@@ -660,34 +579,17 @@ export class Orchestrator implements CommandBus {
     const configOrigin =
       opts.openWith === undefined ? { category: entry.category, name: entry.name } : null;
 
-    const [entityCount, dim] = sizingFor(prefs.worldSize);
-    const system = await ParticleSystem.create({
+    const system = await NcaSystem.create({
       device: opts.device,
       config: loaded.configs[0]!,
       world: loaded.world,
-      canvasSize: canvasDimensions(prefs.canvasAspect, dim),
-      entityCount,
+      gridSize: gridDimensions(prefs.worldSize, prefs.canvasAspect),
       physicsSteps: prefs.physicsSteps,
     });
-
-    // The field is sized from the canvas, and bound into the system BEFORE it
-    // goes live -- `setStrafeField` rebuilds the compute texture groups, which
-    // is only safe while nothing has been recorded against them.
-    const strafeField = await StrafeField.create(opts.device, system.canvasSize);
-    strafeField.setWrap(loaded.world.boundaryConditions === BC.WRAP);
-    system.setStrafeField(strafeField.view(), strafeField.size);
-    // Preferences are loaded from `localStorage` before this, so a strength the
-    // user set in an earlier session applies from the first frame rather than
-    // from whenever they next touch a control.
-    system.setFieldStrengths(fieldStrengthsFor(prefs));
-    // Build-time, like the strafe field above it -- the view is baked into the
-    // same texture groups.
-    if (opts.webcam !== undefined) system.setCameraField(opts.webcam.fieldView);
 
     const targets = new RenderTargets(opts.device);
     const camera = await Camera.create(opts.device, new CameraState(), targets);
     const assembler = await Assembler.create(opts.device, targets, opts.surface.format);
-    assembler.setStrafeField(strafeField.view());
 
     const project = makeProject({
       // Every config in the file, not just slot 0: a save can hold several.
@@ -706,7 +608,6 @@ export class Orchestrator implements CommandBus {
       camera,
       assembler,
       system,
-      strafeField,
       prefs,
       project,
       store,
@@ -714,7 +615,6 @@ export class Orchestrator implements CommandBus {
       presetName,
       configOrigin,
       mobile: opts.mobile ?? false,
-      webcam: opts.webcam ?? null,
     });
     // No camera is applied from the startup preset -- the view starts where the
     // camera's own defaults put it. See the note above `adoptPreset`.
@@ -834,43 +734,15 @@ export class Orchestrator implements CommandBus {
     this.system.physicsSteps = steps;
     const at = sampleAt(schedule);
 
-    const config = selectedConfig(this.project);
+    // THE HIGHLIGHT DIMS THE OTHER COHORTS in the display pass. Gated on the
+    // same predicate the clicks are, so the picture never shows a highlight
+    // the clicks would not honour.
+    this.system.setHighlight(this.highlightEnabled ? this.highlight.cohort : NO_COHORT);
+
     const frameState = {
       canvas: this.system.currentCanvasTexture(),
       canvasSize: this.system.canvasSize,
       windowSize,
-      entities: this.system.entityBufferForRendering(),
-      entityCount: this.system.entityCount,
-      // THE APPEARANCE TABLE, every entry the same -- see `appearanceTable`.
-      //
-      // The camera reads it per particle by `config_index`, which is what makes
-      // Color Sensitivity and Color Offset per-material in the sand modality.
-      // The STUDIO edits one config at a time and has no palette, so "the
-      // selected config sets the palette for all" (`orchestrator.py:334-339`)
-      // is expressed by filling the table with its values rather than by the
-      // camera having a second, frame-wide code path -- one shader, one
-      // lookup, and no mode where the table is ignored.
-      swatchColors: this.appearanceFor(config),
-      // THE STUDIO HAS TWO MODES, NOT THREE. Color By Swatch describes a sand
-      // palette slot and the studio has no palette, so its checkbox maps onto
-      // the two signal modes and the third is simply unreachable from here --
-      // 1 is Cohort and 0 is Behavior, matching `sand/colorMode.ts`.
-      //
-      // Left as the config's own boolean rather than promoted to a shared enum:
-      // `colorByCohort` is a per-config SETTING the studio saves, shares and
-      // diffs, and widening it to a three-valued mode would change the config
-      // format for a value the third state cannot apply to.
-      colorMode: config.colorByCohort ? 1 : 0,
-      // PARTICLES mode only -- TRAIL renders the canvas texture, which holds
-      // velocity rather than cohort and cannot express a per-cohort dim at all.
-      // See `CameraFrame.highlightedCohort`.
-      //
-      // GATED ON THE SAME PREDICATE THE CLICKS ARE, so the picture can never
-      // show a highlight the clicks would not honour. Both exemptions can turn
-      // on while a cohort is lit -- ticking `oneClickSelection`, or loading a
-      // config with one cohort -- and reading the lit value regardless would
-      // leave most of the screen dimmed for a stage that no longer exists.
-      highlightedCohort: this.highlightEnabled ? this.highlight.cohort : NO_COHORT,
     };
 
     // WHETHER THE SETTLED STILL SURVIVES THIS FRAME.
@@ -928,66 +800,23 @@ export class Orchestrator implements CommandBus {
     const encoder = this.device.createCommandEncoder({ label: 'frame' });
     if (!holdingSettled) this.camera.clearAccumulator(encoder);
 
-    // 3. THE FIELD, ONCE PER RENDERED FRAME, ABOVE THE PHYSICS LOOP.
+    // 3. THE BRUSH AND ANY RESET, ONCE PER RENDERED FRAME, ABOVE THE PHYSICS.
     //
-    // Both of these sit above the paused branch on purpose. Clearing must work
-    // while paused -- it is the only reset the field has, and a user who paused
-    // to look at a mess should be able to remove it. And painting must too: the
-    // field is not simulation state, so freezing the simulation is not a reason
-    // to stop being able to paint into it.
-    //
-    // Painting HERE rather than inside `runFrame` is the whole cadence argument:
-    // one stroke segment per rendered frame, so brush weight never tracks the
-    // physics rate (`drawing_commands.py:14-19`).
+    // Above the paused branch on purpose: painting and clearing walls work
+    // while paused. One stroke segment per rendered frame, so brush weight
+    // never tracks the physics rate.
     if (this.clearFieldPending.size > 0) {
-      for (const layer of this.clearFieldPending) {
-        this.strafeField.clear(encoder, layer);
-      }
+      if (this.clearFieldPending.has('walls')) this.system.clearWalls();
       this.clearFieldPending.clear();
-      // A cleared field ends the stroke in progress: the next press should start
-      // fresh rather than draw a segment from wherever the cursor was.
       this.strokePrevUv = null;
     }
     if (this.pendingStroke !== null) {
-      const { uv, prevUv, erasing, isLine } = this.pendingStroke;
-      // The layer comes from the ACTIVE TOOL, resolved here rather than captured
-      // when the stroke was recorded: both are the same frame, and asking once at
-      // the point of use means there is no second copy to fall out of step.
-      const layer = layerForMouseMode(this.mouseMode);
-      if (layer !== null) {
-        const brush = this.brushParams(layer, isLine);
-        if (erasing) {
-          this.strafeField.erase(encoder, uv, prevUv, brush);
-        } else {
-          this.strafeField.draw(encoder, uv, prevUv, brush);
-        }
-      }
+      const stroke = this.brushStroke(this.pendingStroke);
+      if (stroke !== null) this.system.queueBrush(stroke);
       this.pendingStroke = null;
     }
-
-    // THE CAMERA, on the same terms as the field above: once per rendered
-    // frame, above the physics that samples it, and above the paused branch --
-    // the camera is not simulation state, and someone who paused to frame a
-    // shot still wants the Camera tab's preview live. The strengths are pushed
-    // every frame (two floats) because they follow the camera starting and
-    // stopping, which happens outside any command.
-    this.webcam?.record(encoder, this.system.canvasSize);
-    this.system.setCameraStrengths(this.webcam?.strengths() ?? NO_CAMERA);
-
-    // Hoisted out of the sub-step loop: a shove is fixed for the whole frame,
-    // and `shoveState` is the one place that decides whether there is one
-    // (`orchestrator.py:294`).
-    const shove = shoveState(input, {
-      mouseMode: this.mouseMode,
-      paused: this.paused,
-      windowSize,
-      canvasSize: this.system.canvasSize,
-      pan: this.camera.state.pan,
-      zoom: this.camera.state.zoom,
-      physicsSteps: this.system.physicsSteps,
-      drawPower: this.prefs.drawPower,
-      drawSize: this.prefs.drawSize,
-    });
+    const running = !holdingSettled && !(this.paused && !settling);
+    this.system.prepareFrame(encoder, running ? steps : 0);
 
     if (holdingSettled) {
       // NOTHING IS RECORDED AT ALL -- no clear, no render. The accumulator
@@ -997,19 +826,17 @@ export class Orchestrator implements CommandBus {
       // texture itself. Leaving the accumulator untouched IS the hold.
     } else if (this.paused && !settling) {
       // STILL ONE RENDER when paused: the camera has to draw the frozen state,
-      // or the screen would go black. `runFrame` is what is skipped, not the
+      // or the screen would go black. The steps are what is skipped, not the
       // render (`orchestrator.py:318-322`).
+      this.system.renderDisplay(encoder);
       this.camera.render(encoder, frameState);
     } else {
-      this.system.runFrame(encoder, shove, (enc, step) => {
+      this.system.runSteps(encoder, (enc, step) => {
         if (step % schedule.stride !== at) return;
-        this.camera.render(enc, {
-          ...frameState,
-          // Re-pulled PER SAMPLE, not hoisted: the canvas double-buffer swaps
-          // inside advance(), so a view captured before the loop is stale after
-          // the first sub-step (`orchestrator.py:325-327`).
-          canvas: this.system.currentCanvasTexture(),
-        });
+        // The display texture is rewritten from the current state before
+        // every sample: the state ping-pongs every step.
+        this.system.renderDisplay(enc);
+        this.camera.render(enc, frameState);
       });
       // CONSUMED HERE, not in the command handler: the flag has to survive from
       // the dispatch until the frame that spends it, and it is spent by the
@@ -1023,21 +850,6 @@ export class Orchestrator implements CommandBus {
       // that picture is still of the right place.
       this.settledView = settling ? currentView : null;
     }
-
-    // 4. THE PICK PASSES, IN BOTH BRANCHES.
-    //
-    // Outside the paused branch for the same reason `selection.resolve()` is at
-    // the top of this method: `runFrame` is what a paused frame skips, and
-    // clicking to select must keep working when it is -- which is precisely when
-    // a user wants to inspect a particle. This call lived at the end of
-    // `runFrame`, so while paused nothing was ever recorded, yet the readback
-    // below still ran and decoded whatever stale bytes the staging buffer held.
-    //
-    // AFTER the branch, so it keeps the ordering `runFrame` gave it: the pick
-    // sees the positions the frame ended on, which are the entities the user is
-    // looking at when they click. While paused those are the frozen ones, which
-    // is the same guarantee.
-    this.system.recordPick(encoder);
 
     // AFTER the loop, not before: the camera binds its own targets for every
     // sample above, so binding the swap chain any earlier would be undone.
@@ -1148,8 +960,8 @@ export class Orchestrator implements CommandBus {
           // preview and the crop box are all absent here by way of NO_OVERLAYS --
           // those are annotations about what the mouse is doing, and burning them
           // into the video would record the tool rather than the work.
-          showField: this.prefs.fieldAlwaysShow || this.mouseMode === 'walls',
-          showTrails: this.prefs.trailsAlwaysShow || this.mouseMode === 'trails',
+          showField: false,
+          showTrails: false,
           capture: {
             scale,
             offset: [(1 - scale[0]) / 2, (1 - scale[1]) / 2],
@@ -1161,11 +973,6 @@ export class Orchestrator implements CommandBus {
     resolveTimedFrame(encoder);
     this.device.queue.submit([encoder.finish()]);
     afterTimedSubmit();
-
-    // AFTER submit, and it has to be: `mapAsync` may not be called while the
-    // encoder that writes the buffer is still open. It resolves on a later
-    // frame, which is what makes the whole path two-phase.
-    this.system.beginPickReadback();
   }
 
   /**
@@ -1208,35 +1015,6 @@ export class Orchestrator implements CommandBus {
   /** The attached recorder, for the driver loop and the UI's progress readout. */
   get activeRecorder(): VideoRecorder | null {
     return this.recorder;
-  }
-
-  /**
-   * The camera's appearance table for a single-config project.
-   *
-   * FORTY IDENTICAL ENTRIES. The studio has no palette, so every particle --
-   * whatever `config_index` it carries -- must find the same colour settings.
-   * See the call site on why this is a filled table rather than a special case
-   * in the camera.
-   *
-   * Hue and saturation are zero and never read: Color By Swatch is unreachable
-   * from the studio, whose checkbox maps onto the two signal modes only.
-   */
-  private appearanceFor(config: SimulationConfig): readonly SwatchAppearance[] {
-    if (
-      this.appearanceTable === null ||
-      this.appearanceSensitivity !== config.colorSensitivity ||
-      this.appearanceOffset !== config.colorOffset
-    ) {
-      this.appearanceSensitivity = config.colorSensitivity;
-      this.appearanceOffset = config.colorOffset;
-      this.appearanceTable = Array.from({ length: CAM_BRUSH_SWATCH_COUNT }, () => ({
-        hue: 0,
-        saturation: 0,
-        colorSensitivity: config.colorSensitivity,
-        colorOffset: config.colorOffset,
-      }));
-    }
-    return this.appearanceTable;
   }
 
   /**
@@ -1371,16 +1149,6 @@ export class Orchestrator implements CommandBus {
       // for.
       this.lineAnchor = null;
     }
-    // SHOVE HAS NO BRANCH HERE, and that asymmetry with the painting tools is
-    // than an omission. A shove is not an event to record: `shoveState` reads
-    // the same `InputState` directly in the frame loop, because its answer is a
-    // uniform the physics loop needs, not a pass to encode. The desktop splits
-    // them the same way (`_apply_draw_input` vs `shove_state`).
-    //
-    // There is also no fall-through to guard against here, unlike the desktop,
-    // where a bare `pass` exists so the branch below cannot pan the view out
-    // from under a shove. Zoom below is navigation and runs in every tool.
-
     // Zoom works in every tool: it is navigation, not a tool.
     if (state.scroll !== 0) {
       this.camera.state.zoomAtPixel(state.scroll, state.mousePos, windowSize, canvasSize);
@@ -1443,25 +1211,10 @@ export class Orchestrator implements CommandBus {
    * before the field exists.
    */
   private overlayState(): OverlayState {
-    const painting = layerForMouseMode(this.mouseMode);
-    const shoving = this.mouseMode === 'shove';
-
-    // **THE ACTIVE PAINTING TOOL FORCES ITS OWN LAYER ON. It does not force the
-    // other one off.**
-    //
-    // The floor is what the tool needs: you are always looking at what you are
-    // painting, because painting blind is not a preference worth offering. Above
-    // that floor the two `alwaysShow` checkboxes mean exactly what they say, in
-    // EVERY tool -- including the other painting tool. Drawing trails while
-    // watching the walls you are threading them around is a real thing to want,
-    // and an earlier rule that switched the other layer off in the painting tools
-    // made those checkboxes silently inert in the two modes where you are most
-    // likely to be looking at them.
-    const showField = this.prefs.fieldAlwaysShow || painting === 'walls';
-    const showTrails = this.prefs.trailsAlwaysShow || painting === 'trails';
-    // The crop box, whenever one has been asked for and is smaller than the
-    // window. Independent of the tool and of the reticle: it says what will be
-    // recorded, which is true regardless of what the mouse is currently doing.
+    // The NCA draws its own walls into the display texture, so the assembler's
+    // field overlays stay off.
+    const showField = false;
+    const showTrails = false;
     const crop = this.cropOverlay;
 
     // **THE RETICLE IS UNCONDITIONAL WHILE BRUSHING.** `prefs.showReticle` used
@@ -1505,11 +1258,7 @@ export class Orchestrator implements CommandBus {
       reticleRadius: radius,
       // The bare ring outside the brush tools -- see `reticlePlacement`, which
       // owns that call. Inside them the style is the live one it always was.
-      reticleStyle: placement.decorated
-        ? shoving
-          ? 'dashed'
-          : this.brushReticleStyle()
-        : 'plain',
+      reticleStyle: placement.decorated ? this.brushReticleStyle() : 'plain',
       reticleAngle: this.prefs.drawAngle,
       // The preview exists exactly while a line is armed. `lineAnchor` is
       // cleared by every path that abandons one -- releasing Shift, switching
@@ -1531,17 +1280,9 @@ export class Orchestrator implements CommandBus {
    * ring, since its direction is the cursor's own travel and the moving cursor
    * already shows it.
    */
+  /** Dashed for the erasing tools, solid for painting. */
   private brushReticleStyle(): ReticleStyle {
-    switch (BRUSH_MODES[this.prefs.brushMode] ?? 'diverge') {
-      case 'converge':
-        return 'in';
-      case 'stroke':
-        return 'plain';
-      case 'fixed':
-        return 'fixed';
-      default:
-        return 'out';
-    }
+    return this.mouseMode === 'paint' ? 'plain' : 'dashed';
   }
 
   /**
@@ -1637,30 +1378,38 @@ export class Orchestrator implements CommandBus {
       cam.pan,
       cam.zoom,
     );
-    return worldToUv(world, this.strafeField.size);
+    return worldToUv(world, this.system.canvasSize);
   }
 
   /**
-   * The brush settings a stroke is painted with.
+   * The NCA brush stroke for this frame's pending stroke, or null.
    *
-   * **BUILT AT THE POINT OF USE, from live preferences.** The brush has no cached
-   * state of its own, so changing a slider takes effect on the next stroke with
-   * nothing to invalidate.
-   *
-   * `brushModeFor` is what makes a stored index safe: `brushMode` is persisted to
-   * `localStorage` as an int, so a downgrade -- or a hand-edited entry -- can
-   * present an index past the end of `BRUSH_MODES`, and the default is a better
-   * answer than an undefined lookup reaching the uniform packer.
+   * The radius is the reticle's (`2 * drawSize` in the aspect-corrected uv
+   * metric), so the brush lands exactly inside the ring. Right-drag (`erasing`)
+   * undoes the tool: Paint erases, Walls removes walls.
    */
-  private brushParams(layer: FieldLayer, isLine: boolean): BrushParams {
+  private brushStroke(pending: PendingStroke): BrushStroke | null {
+    const { uv, prevUv, erasing } = pending;
+    let mode: number;
+    switch (this.mouseMode) {
+      case 'erase':
+        mode = BRUSH.ERASE;
+        break;
+      case 'paint':
+        mode = erasing ? BRUSH.ERASE : BRUSH.PAINT;
+        break;
+      case 'walls':
+        mode = erasing ? BRUSH.UNWALL : BRUSH.WALL;
+        break;
+      default:
+        return null;
+    }
     return {
-      drawSize: this.prefs.drawSize,
-      drawPower: this.prefs.drawPower,
-      mode: BRUSH_MODES[this.prefs.brushMode] ?? 'diverge',
-      layer,
-      drawAngle: this.prefs.drawAngle,
-      // Freehand deposits every frame; a line deposits once. See the constant.
-      lineGain: isLine ? LINE_STROKE_GAIN : 1.0,
+      a: prevUv ?? uv,
+      b: uv,
+      radius: 2.0 * this.prefs.drawSize,
+      value: this.prefs.drawPower,
+      mode,
     };
   }
 
@@ -1721,7 +1470,7 @@ export class Orchestrator implements CommandBus {
    * cohort -- it is only the commit that has nothing to do. `selectionIsNoOp`
    * says why this asks the shader's generate-test rather than `ruleIsSentinel`.
    */
-  private applyPickToHighlight(result: PickResult): boolean {
+  private applyPickToHighlight(result: NcaPick): boolean {
     const noOp = selectionIsNoOp(this.project);
 
     if (!this.highlightEnabled) return isHit(result) && !noOp;
@@ -1786,46 +1535,24 @@ export class Orchestrator implements CommandBus {
    * `frame()` says WHEN. `selection.ts` enforces neither -- both are properties
    * of where the caller puts `resolve()` and `select()`.
    */
-  private selectionHost(): SelectionHost<Project, PickResult> {
+  private selectionHost(): SelectionHost<Project, NcaPick> {
     return {
       requestPick: (pixel, wide = false) => {
+        // **A PICK IS ARITHMETIC.** A cohort is a rectangle of the grid, so the
+        // cell under the cursor names it directly -- no GPU pass, no readback.
+        // The result is still delivered on the next frame, through the same
+        // two-phase path the particle pick used, so the highlight state machine
+        // and `SelectionController` are unchanged.
+        //
+        // CONFIRM MODE (Enter / the gold button) picks the lit cohort itself.
+        if (wide && this.highlightEnabled && this.highlight.isHighlighted) {
+          this.system.requestCohortPick(this.highlight.cohort);
+          return;
+        }
         const cam = this.camera.state;
-        const windowSize = this.surface.size();
         const canvasSize = this.system.canvasSize;
-        // The one place the pick inputs are built, so a dispatch and anything
-        // reasoning about the same pick cannot disagree about where it was
-        // aimed or how wide it searched (`selection_commands.py:76-95`).
-        const target = screenToWorld(pixel, windowSize, canvasSize, cam.pan, cam.zoom);
-        // Through the transform, not a fudge factor, so the tolerance is
-        // exactly 40 screen pixels at any zoom.
-        //
-        // **CONFIRM MODE IS HOW ENTER COMMITS WITHOUT A CURSOR.** The negative
-        // radius is a sentinel: `entityPick.wgsl` reads the sign as "restrict to
-        // the highlighted cohort, ignore distance as a filter" and still breaks
-        // ties on nearness to `target`, so the adopted rule comes from a member
-        // near the middle of the view. See `CONFIRM_PICK_RADIUS`.
-        const radius = wide
-          ? CONFIRM_PICK_RADIUS
-          : radiusPxToWorld(
-              DEFAULT_PICK_RADIUS_PX,
-              windowSize,
-              canvasSize,
-              cam.pan,
-              cam.zoom,
-            );
-        // THE HIGHLIGHT GOES WITH THE PICK, so the reduce pass can give the lit
-        // cohort priority within a small radius of the cursor -- otherwise a
-        // click meant to CONFIRM a cohort gets handed to whatever unrelated
-        // particle happens to be a few pixels nearer, and the confirmation
-        // silently re-aims instead. See `CONFIRM_SNAP_FRACTION`.
-        //
-        // Through the same `highlightEnabled` gate everything else uses, so a
-        // stale cohort cannot bias picks after highlighting is switched off.
-        this.system.requestPick(
-          target,
-          radius,
-          this.highlightEnabled ? this.highlight.cohort : NO_COHORT,
-        );
+        const world = screenToWorld(pixel, this.surface.size(), canvasSize, cam.pan, cam.zoom);
+        this.system.requestPick(worldToUv(world, canvasSize));
       },
       // THE REPLAY, not a fresh read. `frame()` has already consumed this
       // frame's result from the phase machine so the highlight could classify it
@@ -1854,42 +1581,21 @@ export class Orchestrator implements CommandBus {
        * in -- see `applyPickToHighlight`.
        */
       adoptRule: (p, result) =>
-        result.rule === null || !this.pickCommits ? p : adoptRule(p, result.rule),
+        !isHit(result) || !this.pickCommits
+          ? p
+          : adoptWeights(p, toStored(cohortWeights(selectedConfig(p), result.cohort))),
       setProject: (p) => {
         this.setProject(p);
       },
       recordHistory: (before, label) => {
-        // THE COHORT IS TAGGED, and this is the only call site that needs to.
-        // An adopted rule is a pure function of the parent state and the cohort
-        // (`rule.wgsl`), so the archive stores the number and recomputes the 80
-        // floats offline -- but the number cannot be recovered from the rule,
-        // and this is the only place that knows it.
-        //
-        // `this.selected` is the pick that produced this very commit:
-        // `SelectionController.resolve` calls `setSelected` immediately before
-        // `recordHistory`, so it is the winner and not a stale one. Null only
-        // if that ordering changes, and the archive would rather record a
-        // rule-bearing delta than a wrong cohort -- hence no fallback guess.
-        const picked = this.selected;
-        this.recordHistory(
-          before,
-          label,
-          null,
-          picked === null ? null : { kind: 'commitSelection', cohort: picked.cohort },
-        );
+        this.recordHistory(before, label);
       },
       setSelected: (result) => {
         this.selected = result;
       },
       /**
-       * BY COHORT, not by particle index.
-       *
-       * A commit adopts the picked particle's RULE, and every particle in its
-       * cohort obeys that rule -- so "cohort 7" names what actually changed
-       * where "particle #48213" names an individual the user cannot pick out
-       * again. The index was what this said before the toast existed, when the
-       * label only ever appeared in the undo menu; now that it is shown at the
-       * moment of the act, it has to describe the act.
+       * BY COHORT: a commit adopts the cohort's network, so "cohort 7" names
+       * what actually changed.
        *
        * The toast for the SAME event is raised in `frame()` rather than here:
        * this runs inside `resolve()`, which the host may call without a commit
@@ -1947,20 +1653,8 @@ export class Orchestrator implements CommandBus {
     this.system.applyProject(project.configs, project.world);
 
     if (selectedConfig(project).cohorts !== cohortsBefore) this.clearHighlight();
-    // The field samples the world the same way the canvas does, so its wrap mode
-    // follows the boundary condition -- and it belongs in THIS method because
-    // this being the single place project state changes is exactly what stops a
-    // load or an undo leaving the two disagreeing (`orchestrator.py:381-385`
-    // makes the same call for the same reason). Invariant 9: four things must
-    // agree on the boundary mode, and the field is one of them.
-    //
-    // See `StrafeField.setWrap` for why this currently issues no GPU work: the
-    // field's readers already take their address mode from the canvas's
-    // sampler, so the two cannot disagree. The call stays because the ACCOUNTING
-    // belongs here, and because the day the field grows its own sampler this is
-    // where it would have had to go anyway.
-    this.strafeField.setWrap(project.world.boundaryConditions === BC.WRAP);
   }
+
 
   /**
    * Record an undoable step from `before` to the current project.
@@ -2030,29 +1724,13 @@ export class Orchestrator implements CommandBus {
     this.recordHistory(before, historyLabelFor(event));
   }
 
-  /**
-   * `tag` carries what a state diff cannot recover. Today that is exactly one
-   * thing -- a selection's cohort number -- and it is optional so the other call
-   * sites are unchanged. See `archive/delta.ts`'s `ArchiveTag`.
-   */
   private recordHistory(
     before: Project,
     label: string,
     coalesceKey: string | null = null,
-    tag: ArchiveTag | null = null,
   ): void {
     if (before !== this.project) {
-      // THE OUTCOME IS PASSED ON, and it is what keeps the archive exactly as
-      // strict as the timeline. A drag calls this once per frame; only `record`
-      // knows the fortieth call is still the first act, so without its answer
-      // the archive filed a node per frame while the undo menu showed the single
-      // entry it always did. See `RecordOutcome`.
-      const outcome = this.history.record(before, this.project, label, coalesceKey);
-      // AFTER the history record and inside the same identity guard, so the
-      // archive sees exactly the steps the timeline does -- previews and
-      // undo/redo excluded. Never throws into a frame: `recordVisit` is
-      // synchronous bookkeeping plus a detached write.
-      this.archive.recordVisit(before, this.project, label, tag, outcome);
+      this.history.record(before, this.project, label, coalesceKey);
     }
   }
 
@@ -2248,22 +1926,10 @@ export class Orchestrator implements CommandBus {
   dispatch(command: Command): void {
     switch (command.kind) {
       case 'reset':
-        // TIER 2 OF THE VISIT LOG: a discrete act that moves no project state.
-        // There is no before/after to diff -- a reset returns the simulation to
-        // its initial conditions without touching the config -- so it is
-        // recorded as an EVENT rather than as a state. See `CommandVisit`.
-        this.archive.recordCommand('reset', 'reset simulation');
         this.system.reset();
         return;
 
       case 'togglePause':
-        // The RESULTING state, not the verb, so a reader does not have to
-        // replay every toggle from the start of the session to know whether the
-        // simulation was running. `this.paused` has not flipped yet.
-        this.archive.recordCommand(
-          'togglePause',
-          this.paused ? 'resume' : 'pause',
-        );
         this.paused = !this.paused;
         // PAUSING queues the settle frame; RESUMING cancels one that never got
         // to run. A pause-then-resume inside a single frame must not leave the
@@ -2276,17 +1942,11 @@ export class Orchestrator implements CommandBus {
         this.settledView = null;
         return;
 
-      // THE TWO DISCRETE CAMERA ACTS, and the only two recorded. Camera
-      // MOVEMENT is a continuous per-frame value governed by a blur schedule
-      // with no act to name, and is deliberately absent from the log
-      // (`CommandVisit` says why). These two are button presses like any other.
       case 'toggleCameraMode':
-        this.archive.recordCommand('toggleCameraMode', 'toggle camera mode');
         this.camera.state.toggleMode();
         return;
 
       case 'resetCamera':
-        this.archive.recordCommand('resetCamera', 'reset camera');
         this.camera.state.reset();
         return;
 
@@ -2399,11 +2059,6 @@ export class Orchestrator implements CommandBus {
       }
 
       case 'setMouseMode':
-        // WHICH TOOL, not what it did. The strokes themselves are absent from
-        // the log -- they write into GPU textures no hash covers -- but knowing
-        // the user switched to the brush at this point in the session is both
-        // cheap and exactly the context those missing strokes would have given.
-        this.archive.recordCommand('setMouseMode', `tool: ${command.mode}`);
         // Switching tools abandons any stroke in progress (Step 9), so
         // releasing the button over a different tool cannot resume painting.
         this.mouseMode = command.mode;
@@ -2434,18 +2089,6 @@ export class Orchestrator implements CommandBus {
         if (previous !== null) {
           this.notify(describeHistoryStep('undo', undone));
           this.setProject(previous);
-          // THE ARCHIVE CURSOR FOLLOWS, and nothing is recorded. An undo reaches
-          // a state already on the map, so there is no discovery -- but the next
-          // act's parent is read from the cursor, and that is what makes undoing
-          // and then working forward record a BRANCH rather than a straight
-          // line. See `archive/archive.ts`.
-          //
-          // THE DIRECTION IS PASSED so the visit log can say a step BACK was
-          // taken. No node is written either way -- an undo reaches mapped
-          // territory -- but "the user backed up three steps and then went a
-          // different way" is invisible in the node tree, which shows the fork
-          // with no hint of how it was reached.
-          this.archive.moveCursor(previous, 'undo');
           this.resetForUndoRedo();
           // Undoing a rule adoption or a reroll gives the particles a target
           // rule they were not obeying a moment ago, which is a behavior change
@@ -2475,9 +2118,6 @@ export class Orchestrator implements CommandBus {
         if (next !== null) {
           this.notify(describeHistoryStep('redo', redone));
           this.setProject(next);
-          // Follows without adding a node, exactly as undo does above, and logs
-          // the direction for the same reason.
-          this.archive.moveCursor(next, 'redo');
           this.resetForUndoRedo();
           // Redo re-applies the rule change undo just took away, so it is a
           // behavior change by the same argument. See the undo case above.
@@ -2734,16 +2374,9 @@ export class Orchestrator implements CommandBus {
         return;
       }
 
-      case 'applyCameraSetup': {
-        // Nothing to record when it is already in place -- the panel still
-        // flashes the controls, but an undo step that changes nothing would be
-        // a dead entry in History.
-        if (hasCameraSetup(this.project)) return;
-        const before = this.project;
-        this.setProject(applyCameraSetup(this.project));
-        this.recordHistory(before, 'camera setup');
+      case 'applyCameraSetup':
+        // The webcam feature is not part of the NCA studio.
         return;
-      }
 
       case 'editDrawPref':
         // Drawing controls are PREFS: editor state, saved but never recorded in
@@ -2798,7 +2431,6 @@ export class Orchestrator implements CommandBus {
         // cannot have it; the visit log holds ACTS, and clearing a field is as
         // deliberate as any button on screen. This is the clearest case of the
         // log recording something History structurally cannot.
-        this.archive.recordCommand('clearStrafeField', `clear field: ${command.layer}`);
         this.clearFieldPending.add(command.layer);
         return;
 
@@ -2832,68 +2464,6 @@ export class Orchestrator implements CommandBus {
   //     app down.
   // =========================================================================
 
-  /**
-   * Open the archive and begin recording from the current state.
-   *
-   * FIRE-AND-FORGET, like every other storage handler here, and silent on
-   * failure: an unavailable database means strong logging simply does not
-   * happen. It is a research feature, and nothing about the app's real work
-   * depends on it -- reporting through `saveError` would put an archive problem
-   * in the same place a lost save appears, which overstates it.
-   *
-   * The current project becomes a ROOT only if it is genuinely unseen; someone
-   * who enables logging while sitting on a preset they have visited before adds
-   * no root. `ProjectArchive.enable` does that dedup.
-   */
-  private startArchiving(): void {
-    void openArchiveStore().then((store) => {
-      if (store === null) return;
-      // Re-read the preference rather than trusting the call: the open is async,
-      // and a user who ticked the box and immediately unticked it must not end
-      // up with a live archive.
-      if (!this.prefs.strongLogging) return;
-      return this.archive.enable(store, this.project);
-    });
-  }
-
-  /**
-   * The archive as a document, or null when there is nothing to export.
-   *
-   * PUBLIC, because the Preferences panel's download button needs it and the UI
-   * holds only the `Status`/`dispatch` boundary otherwise. Returning the document
-   * rather than triggering the download keeps the DOM out of the Orchestrator --
-   * `preferencesSection.ts` owns the blob and the anchor, as `saveFile.ts` does
-   * for recordings.
-   */
-  async exportArchive(): Promise<ArchiveDocument | null> {
-    const db = await openArchiveDb();
-    if (db === null) return null;
-    return await buildArchiveDocument(db);
-  }
-
-  /**
-   * Discard every archived state.
-   *
-   * **THE IN-MEMORY DEDUP SET IS CLEARED TOO**, and forgetting that would be the
-   * subtle half of this: `ProjectArchive` mirrors the stored hashes in memory to
-   * keep `recordVisit` synchronous, so a session that emptied the database while
-   * still holding the old set would skip every state it had already seen -- the
-   * user clears the archive, keeps working, and records almost nothing, with no
-   * error anywhere. See `forgetAll`.
-   *
-   * Re-roots afterwards when logging is still on, so the state on screen is
-   * carried into the fresh archive rather than the next act being parented on a
-   * hash that no longer exists.
-   */
-  async clearArchive(): Promise<void> {
-    const db = await openArchiveDb();
-    if (db === null) return;
-    await clearArchive(db);
-    this.archive.forgetAll();
-    if (this.prefs.strongLogging) this.archive.enterState(this.project, 'session');
-  }
-
-  /** Look an entry up, reporting through `saveError` rather than throwing. */
   private resolveEntry(category: string, name: string): ConfigEntry | null {
     const entry = this.store.entry(category, name);
     if (entry === null) {
@@ -3165,152 +2735,27 @@ export class Orchestrator implements CommandBus {
     if (updated.oneClickSelection && !this.prefs.oneClickSelection) {
       this.clearHighlight();
     }
-    // STRONG LOGGING FLIPPING IS A SIDE EFFECT OF THE PREFERENCE, so it belongs
-    // here for the reason `oneClickSelection`'s clear does: this is the one place
-    // preferences change, and a second route would be a second thing to forget.
-    //
-    // Enabling opens the database and seeds the dedup set, which is async -- and
-    // deliberately NOT awaited: `adoptPreferences` is called from synchronous
-    // command handlers, and a checkbox must not block a frame on IndexedDB. The
-    // archive records nothing until it settles, which costs at most the first act
-    // after ticking the box.
-    if (updated.strongLogging !== this.prefs.strongLogging) {
-      if (updated.strongLogging) this.startArchiving();
-      else this.archive.disable();
-    }
-    // **THE ONE PLACE PREFERENCE CHANGES REACH THE VISIT LOG**, and it is here
-    // for the same reason the two side effects above are: this is the single
-    // funnel every preference write in the app passes through, so `editSetting`,
-    // `editDrawPref`, `editViewPref`, `resetPreferences` and the world-size and
-    // calibration paths are all covered without a line at any of them.
-    //
-    // AFTER the strong-logging flip above and BEFORE `this.prefs` moves, so the
-    // diff still has the old values to compare against. A user who just enabled
-    // logging records nothing here -- `startArchiving` is async and the archive
-    // is still inert -- which is the correct outcome and not a lost event: the
-    // preference it would record is `strongLogging` itself, which is excluded.
-    this.logPreferenceChanges(this.prefs, updated);
     this.prefs = updated;
-    // THE ONE PLACE THE FIELD STRENGTHS REACH THE SIMULATION, because this is the
-    // one place preferences change. Pushed rather than read per frame: the value
-    // moves when a slider does, and `runFrame` would rebuild it 30 times a frame
-    // for something the user touches once a session (see `setFieldStrengths`).
-    this.system.setFieldStrengths(fieldStrengthsFor(this.prefs));
     savePreferences(this.prefs);
     return needsRebuild ? this.rebuildSystem() : Promise.resolve();
   }
 
-  /**
-   * Record every preference that moved, one visit-log entry per field.
-   *
-   * ITERATES `PREFERENCE_KEYS` RATHER THAN THE OBJECT, so a preference added
-   * later is covered the moment it joins the registry -- there is no second list
-   * here to forget to update. The registry is already the single source of truth
-   * for which preferences exist (`PREFERENCE_KINDS` is `satisfies`-tied to the
-   * interface, so a missing entry is a compile error), and this borrows that
-   * guarantee rather than restating it.
-   *
-   * **`strongLogging` IS SKIPPED, and the asymmetry is the reason.** Enabling it
-   * could be recorded, but disabling it never can -- recording has already
-   * stopped by the time the value changes -- so the pair would appear in the data
-   * as a series of enables with no matching disables, which reads as a bug in the
-   * recorder rather than as the truth. An absent field is honest; a
-   * half-recorded one is not. `visits.ts` says the same from the other side.
-   *
-   * One entry per FIELD rather than one per call: a `resetPreferences` that moves
-   * nine settings is nine entries. See `PreferenceVisit` for why the fine grain
-   * is the cheaper choice in both directions.
-   */
-  private logPreferenceChanges(before: Preferences, after: Preferences): void {
-    if (before === after) return;
-    for (const key of PREFERENCE_KEYS) {
-      if (key === 'strongLogging') continue;
-      const previous = before[key];
-      const value = after[key];
-      if (previous === value) continue;
-      this.archive.recordPreference(key, value, previous, `set ${key}`);
-    }
-  }
-
-  /**
-   * Rebuild after a disruptive preference change, preserving the project.
-   *
-   * The simulation restarts -- inherent to reallocating the entity buffer --
-   * but the live project carries over, so a world-size change does not discard
-   * edits. Deliberately does not reload from the preset: the in-memory configs
-   * may contain unsaved edits (`project_commands.py:45-69`).
-   *
-   * Async where the desktop's is synchronous, because pipeline compilation is.
-   * The replacement is built BEFORE the old one is dropped, so a failed compile
-   * leaves the app running on what it had rather than on nothing -- the
-   * desktop's `_rebuild_system` can assign directly because its
-   * `ParticleSystem(...)` either returns or raises.
-   *
-   * THE SYSTEM AND THE FIELD ARE REPLACED TOGETHER, because the field is sized
-   * from the canvas: a new canvas needs a new field, or its uv mapping would
-   * silently skew against the new shape. That pairing is also what lets
-   * `setStrafeField` be a build-time call rather than a live-swap -- the field a
-   * system was built with is the only one it ever sees.
-   *
-   * Nothing is reassigned or destroyed until BOTH replacements exist, so a
-   * failed compile anywhere above leaves the app running on what it had.
-   */
   private async rebuildSystem(): Promise<void> {
-    const [entityCount, dim] = sizingFor(this.prefs.worldSize);
-    const config = selectedConfig(this.project);
-    const replacement = await ParticleSystem.create({
+    const replacement = await NcaSystem.create({
       device: this.device,
-      config,
+      config: selectedConfig(this.project),
       world: this.project.world,
-      canvasSize: canvasDimensions(this.prefs.canvasAspect, dim),
-      entityCount,
+      gridSize: gridDimensions(this.prefs.worldSize, this.prefs.canvasAspect),
       physicsSteps: this.prefs.physicsSteps,
     });
-    const replacementField = await StrafeField.create(
-      this.device,
-      replacement.canvasSize,
-    );
-    replacementField.setWrap(this.project.world.boundaryConditions === BC.WRAP);
-    replacement.setStrafeField(replacementField.view(), replacementField.size);
     replacement.applyProject(this.project.configs, this.project.world);
-    // CARRIED ACROSS, like the project above it. A fresh system starts on
-    // `DEFAULT_FIELD_STRENGTHS`, so without this a World Size change would
-    // silently snap both sliders back to 1.0 in effect while the UI went on
-    // showing whatever the user had set -- the controls and the simulation
-    // disagreeing, with nothing on screen to say so.
-    replacement.setFieldStrengths(fieldStrengthsFor(this.prefs));
-    // The camera field is the SAME texture across rebuilds (it does not follow
-    // the canvas's shape), so this is a rebind, not a replacement.
-    if (this.webcam !== null) replacement.setCameraField(this.webcam.fieldView);
-
-    const outgoingSystem = this.system;
-    const outgoingField = this.strafeField;
+    const outgoing = this.system;
     this.system = replacement;
-    this.strafeField = replacementField;
-    this.assembler.setStrafeField(replacementField.view());
-
-    // End the stroke in progress: `strokePrevUv` holds a uv in the OLD field's
-    // space, and the first segment after a rebuild would streak from a stale
-    // coordinate (`project_commands.py:69` calls `_end_stroke()` for this).
     this.strokePrevUv = null;
     this.pendingStroke = null;
-
-    // AND THE HIGHLIGHT. The entity count changed, so `get_cohort` divides by a
-    // different number -- the cohort index that was lit does not name the same
-    // particles any more, and a confirming click against it would commit
-    // something the user never aimed at.
     this.clearHighlight();
-
-    // DROPPING THE REFERENCES IS NOT ENOUGH -- GPU memory is not GC'd. ~19 MB of
-    // entity buffer per rebuild at 600k entities, plus the field's texture.
-    // Destroyed last, so nothing above can throw between the swap and the free.
-    outgoingSystem.destroy();
-    outgoingField.destroy();
+    outgoing.destroy();
   }
-
-  // =========================================================================
-  // Status
-  // =========================================================================
 
   /**
    * Push read-only status to the UI (invariant 10).
@@ -3344,13 +2789,12 @@ export class Orchestrator implements CommandBus {
       mouseMode: this.mouseMode,
       paused: this.paused,
       preset: this.presetName,
-      entityCount: this.system.entityCount,
+      entityCount: canvasSize[0] * canvasSize[1],
+      paramCount: this.system.paramCount,
       frameCount: this.system.frameCount,
       // NOT inside `settingsSources()`: the mutation overlay reads this and
-      // refreshes while the panel is shut, where that payload is empty. An
-      // `.every()` over 80 floats is nothing next to the deep copy the
-      // closed-panel early-out exists to avoid.
-      ruleIsGenerated: ruleIsSentinel(this.project),
+      // refreshes while the panel is shut, where that payload is empty.
+      ruleIsGenerated: weightsAreGenerated(this.project),
       // NOT inside `settingsSources()`, for the reason `ruleIsGenerated` is not:
       // the FPS counter reads this and stays on screen while the panels are
       // hidden, where that payload is empty. A bare boolean read costs nothing
@@ -3518,7 +2962,7 @@ export class Orchestrator implements CommandBus {
       return {
         // The overlay's slice, and only it. `editWorld` and `editPrefs` have no
         // reader outside the panel, so they stay empty.
-        editConfig: asRecord(config, ['rule']),
+        editConfig: asRecord(config, ['weights']),
         editWorld: NO_SETTINGS.editWorld,
         editPrefs: NO_SETTINGS.editPrefs,
       };
@@ -3526,7 +2970,7 @@ export class Orchestrator implements CommandBus {
     return {
       // `rule` is excluded: it is 80 floats no control reads, and it is the
       // whole reason the closed-panel early-out above exists.
-      editConfig: asRecord(config, ['rule']),
+      editConfig: asRecord(config, ['weights']),
       editWorld: asRecord(this.project.world),
       editPrefs: asRecord(this.prefs),
     };
@@ -3547,8 +2991,7 @@ export class Orchestrator implements CommandBus {
     readonly motionBlurSamples: number;
     readonly paused: boolean;
     readonly bloomEnabled: boolean;
-    readonly selected: PickResult | null;
-    readonly pickPending: boolean;
+    readonly selected: NcaPick | null;
     readonly mouseMode: MouseMode;
     /**
      * Whether the recording crop box is being drawn.
@@ -3567,14 +3010,13 @@ export class Orchestrator implements CommandBus {
       preset: this.presetName,
       camMode: this.camera.state.mode,
       frameCount: this.system.frameCount,
-      entityCount: this.system.entityCount,
+      entityCount: this.system.canvasSize[0] * this.system.canvasSize[1],
       canvasSize: this.system.canvasSize,
       physicsSteps: this.system.physicsSteps,
       motionBlurSamples: this.prefs.motionBlurSamples,
       paused: this.paused,
       bloomEnabled: this.prefs.bloomEnabled,
       selected: this.selected,
-      pickPending: this.system.pickPending,
       mouseMode: this.mouseMode,
       // The same getter the frame path uses, so this reports what is actually
       // drawn rather than a second opinion about it.
@@ -3598,7 +3040,6 @@ export class Orchestrator implements CommandBus {
   pipelineStatus(): Readonly<Record<string, boolean>> {
     return {
       ...this.system.pipelineStatus(),
-      ...this.strafeField.pipelineStatus(),
       ...this.camera.pipelineStatus(),
       ...this.assembler.pipelineStatus(),
     };
@@ -3749,7 +3190,8 @@ export class Orchestrator implements CommandBus {
     const encoder = this.device.createCommandEncoder({ label: 'calibration probe' });
     // No shove: `shoveState` needs an InputState, and a probe has no user input
     // to translate. `null` is the same thing a frame with no drag on it passes.
-    this.system.runFrame(encoder, null);
+    this.system.prepareFrame(encoder, this.system.physicsSteps);
+    this.system.runSteps(encoder);
     this.device.queue.submit([encoder.finish()]);
     await this.device.queue.onSubmittedWorkDone();
   }
@@ -3837,24 +3279,6 @@ export class Orchestrator implements CommandBus {
  * `settingsSources`, which still skips the two payloads that genuinely have no
  * reader outside the panel.
  */
-/**
- * The radius that means CONFIRM MODE: search the highlighted cohort, worldwide.
- *
- * Negative is a SENTINEL, not a distance. `entityPick.wgsl` takes `abs()` for
- * the magnitude and reads the sign as "filter by cohort and ignore the radius"
- * -- see its `confirm_only`. One lane carries both facts, so there is no second
- * flag that could disagree with it.
- *
- * **THIS REPLACES A LARGE POSITIVE RADIUS, WHICH WAS SUBTLY WRONG.** Passing
- * 100 world units did reach every particle, and then quantized them all into
- * distance bucket 0 -- `dist_norm` is `distance / limit`. The key collapsed to
- * the raw index, `atomicMin` returned the lowest index in the world, and
- * `get_cohort` is monotonic in index, so the winner was always in a low-numbered
- * cohort: confirming cohort 20 silently re-aimed to cohort 12. Filtering is what
- * was wanted; distance was the wrong instrument.
- */
-const CONFIRM_PICK_RADIUS = -1.0;
-
 const NO_SETTINGS: Pick<Status, 'editWorld' | 'editPrefs'> = Object.freeze({
   editWorld: Object.freeze({}),
   editPrefs: Object.freeze({}),

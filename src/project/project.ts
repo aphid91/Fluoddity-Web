@@ -7,8 +7,8 @@
  * A project is what a save file contains, and its parts must always move
  * together:
  *
- *     configs   the ConfigBuffer contents
- *     world     settings shared by every particle (trail decay, boundary mode)
+ *     configs   the NCA configs (the studio simulates configs[0])
+ *     world     settings shared by the whole grid (edge mode, display)
  *     name      what the file is called
  *     selected  which config the Project panel is editing
  *
@@ -34,16 +34,12 @@
  *
  * ## What is NOT here
  *
- *   - GPU state. A Project is plain data; `ParticleSystem` uploads it.
+ *   - GPU state. A Project is plain data; `NcaSystem` uploads it.
  *   - Preferences. Editor state is deliberately separate (see `prefs/`).
  *   - Camera. Saved alongside a project, but not part of one.
  */
 
-import {
-  type SimulationConfig,
-  type WorldSettings,
-  makeWorldSettings,
-} from '../particleSystem/config.ts';
+import { type NcaConfig, type NcaWorld, makeNcaWorld } from '../nca/ncaConfig.ts';
 
 /** Name used before anything has been saved or loaded. */
 export const UNTITLED = 'Untitled';
@@ -58,8 +54,8 @@ export const UNTITLED = 'Untitled';
  * `__post_init__` enforces them on the desktop.
  */
 export interface Project {
-  readonly configs: readonly SimulationConfig[];
-  readonly world: WorldSettings;
+  readonly configs: readonly NcaConfig[];
+  readonly world: NcaWorld;
   readonly name: string;
   readonly selected: number;
 }
@@ -76,8 +72,8 @@ export interface Project {
  * project with none is a bug upstream.
  */
 export function makeProject(init: {
-  readonly configs: readonly SimulationConfig[];
-  readonly world?: WorldSettings;
+  readonly configs: readonly NcaConfig[];
+  readonly world?: NcaWorld;
   readonly name?: string;
   readonly selected?: number;
 }): Project {
@@ -90,7 +86,7 @@ export function makeProject(init: {
   );
   return Object.freeze({
     configs: init.configs,
-    world: init.world ?? makeWorldSettings(),
+    world: init.world ?? makeNcaWorld(),
     name: init.name ?? UNTITLED,
     selected,
   });
@@ -107,12 +103,12 @@ export function makeProject(init: {
  * class -- which is what lets `makeProject` hand back a frozen plain object
  * that structural-equality tests and JSON round-trips both understand.
  */
-export function selectedConfig(project: Project): SimulationConfig {
+export function selectedConfig(project: Project): NcaConfig {
   const config = project.configs[project.selected];
   if (config === undefined) {
     // Unreachable while makeProject is the only constructor; asserted rather
     // than non-null-asserted so a hand-built literal fails loudly here instead
-    // of as `undefined.rule` inside the packer.
+    // of as `undefined.weights` inside the upload.
     throw new Error(
       `Project.selected is ${project.selected} with ${project.configs.length} configs`,
     );
@@ -137,8 +133,8 @@ export function configCount(project: Project): number {
  */
 export function withConfigs(
   project: Project,
-  configs: readonly SimulationConfig[],
-  opts: { readonly name?: string; readonly world?: WorldSettings } = {},
+  configs: readonly NcaConfig[],
+  opts: { readonly name?: string; readonly world?: NcaWorld } = {},
 ): Project {
   return makeProject({
     configs,
@@ -160,11 +156,11 @@ export function renamed(project: Project, name: string): Project {
  * what keeps reference identity meaningful, since `_recordHistory` reads
  * `before !== after` as "a real edit happened".
  */
-export function edited<K extends keyof SimulationConfig>(
+export function edited<K extends keyof NcaConfig>(
   project: Project,
   index: number,
   field: K,
-  value: SimulationConfig[K],
+  value: NcaConfig[K],
 ): Project {
   const target = project.configs[index];
   if (target === undefined) return project;
@@ -174,54 +170,39 @@ export function edited<K extends keyof SimulationConfig>(
   return makeProject({ ...project, configs });
 }
 
-export function editSelected<K extends keyof SimulationConfig>(
+export function editSelected<K extends keyof NcaConfig>(
   project: Project,
   field: K,
-  value: SimulationConfig[K],
+  value: NcaConfig[K],
 ): Project {
   return edited(project, project.selected, field, value);
 }
 
 /**
- * Make `rule` the selected config's base rule.
+ * Make `weights` the selected config's base weights.
  *
- * What particle selection does: the picked particle's mutated rule becomes the
- * rule the whole population now varies around.
+ * What cohort selection does: the picked cohort's weights become the network
+ * every cohort now varies around.
  *
- * ONLY THE RULE CHANGES. `mutationScale` is deliberately left alone, so the
- * population re-mutates around the adopted rule rather than locking to it --
+ * ONLY THE WEIGHTS CHANGE. `mutationScale` and the seed are left alone, so
+ * the cohorts re-mutate around the adopted network rather than locking to it --
  * and undo has exactly one field to restore.
  */
-export function adoptRule(project: Project, rule: readonly number[]): Project {
-  return editSelected(project, 'rule', rule.slice());
+export function adoptWeights(project: Project, weights: readonly number[]): Project {
+  return editSelected(project, 'weights', weights.slice());
 }
 
 /**
- * Whether moving between these two projects changes what particles are TRYING
- * TO DO -- any config's rule or mutation seed.
+ * Whether moving between these two projects changes what the cells are DOING:
+ * any config's base weights or mutation seed.
  *
- * Exists for undo/redo. Every other behavior-change path knows what it did, but
- * undo is one code path replaying steps of every kind, so the only way to tell a
- * rule adoption from a brightness tweak is to look. See
- * `Orchestrator.resetIfRuleChanged`, its only caller.
+ * Exists for undo/redo, which replays steps of every kind -- the only way to
+ * tell a weights adoption from a brightness tweak is to look. THE SEED COUNTS
+ * AS MUCH AS THE WEIGHTS: Reroll Mutations moves only `mutationSeed`, and every
+ * cohort's network is derived from both (`weights.ts`'s `cohortWeights`).
  *
- * **THE SEED COUNTS AS MUCH AS THE RULE.** Reroll Mutations moves ONLY
- * `mutationSeed` (`randomizeSeed`), and the GPU derives every particle's actual
- * rule from `rule` and the seed together (`rule.wgsl`'s `derive_entity_rule`).
- * A rule-only comparison would report "nothing changed" for a reroll, which is
- * one of the three cases this was built for.
- *
- * **EVERY CONFIG, NOT THE SELECTED ONE.** An undo can move `selected` as well as
- * edit a config, so comparing `selectedConfig(before)` against
- * `selectedConfig(after)` compares two DIFFERENT slots and reports a change
- * whenever the selection moved -- resetting on an undo that merely switched
- * which config was on screen. Comparing slot for slot asks the question actually
- * meant: did any behaviour in this project change?
- *
- * A LENGTH CHANGE COUNTS. Nothing in the app adds or removes a slot today (see
- * the note at the bottom of this file), but a project of a different shape is
- * not one whose behaviours can be said to be unchanged, and answering `false`
- * there would be a claim this function cannot support.
+ * Slot for slot rather than selected-vs-selected, so an undo that only moved
+ * `selected` is not mistaken for a behaviour change.
  */
 export function ruleChanged(before: Project, after: Project): boolean {
   if (before === after) return false;
@@ -231,44 +212,22 @@ export function ruleChanged(before: Project, after: Project): boolean {
     const b = after.configs[i]!;
     if (a === b) return false; // the common case: untouched slots share identity
     if (a.mutationSeed !== b.mutationSeed) return true;
-    if (a.rule.length !== b.rule.length) return true;
-    return a.rule.some((v, j) => v !== b.rule[j]);
+    if (a.weights === b.weights) return false;
+    if (a.weights === null || b.weights === null) return true;
+    if (a.weights.length !== b.weights.length) return true;
+    return a.weights.some((v, j) => v !== b.weights![j]);
   });
 }
 
 /**
- * Whether moving between these two projects changes HOW THE PARTICLES ARE LAID
- * OUT -- any config's cohort count or initial conditions.
+ * Whether moving between these two projects changes what only a RESTART can
+ * show: the cohort count, the initial conditions, or the channel count (which
+ * reallocates the state).
  *
- * **THE SIBLING OF `ruleChanged`, AND IT EXISTS FOR THE SAME REASON.** Undo and
- * redo are one code path replaying steps of every kind, so the only way to tell
- * a layout change from a brightness tweak is to look at the two states.
- *
- * **WHY THESE TWO FIELDS NEED A RESET AND `ruleChanged`'S DO NOT.** These decide
- * WHERE PARTICLES ARE PUT, and particles are only ever put anywhere by
- * `reset()` in `entityUpdate.wgsl` -- `initial_position` has exactly two
- * callers, that one and the cohort-fence check. So an undo that restores
- * `initialConditions: RANDOM` moves nothing already on screen: the population
- * keeps the arrangement it was given at its last restart, and the layout the
- * user just stepped back to never appears. `setPopulationLayout`'s forward path
- * resets for exactly this reason; undo and redo of it are the same act reversed.
- *
- * (The fence path DOES read `initialConditions` every frame, so with cohort
- * fences on an undo would visibly retarget the fences while leaving the
- * particles where they were -- a half-applied layout, which is worse than the
- * fully-unapplied one and an equally good argument for resetting.)
- *
- * The cohort count travels with it because `setPopulationLayout` moves both as
- * one act, and because the count decides how the grid is divided -- restoring
- * one without the other would show a grid cut for a population that is no longer
- * there.
- *
- * SEPARATE FROM `ruleChanged` RATHER THAN FOLDED INTO IT, because the two ask
- * genuinely different questions and one of them is about to get a third caller:
- * `ruleChanged` means "the particles are chasing something new" and also drives
- * the highlight clear (a lit cohort names a stale behaviour). A layout change
- * does not invalidate a highlight's MEANING, so merging them would put out the
- * highlight on a step that did not change any behaviour.
+ * The sibling of `ruleChanged`, separate because it asks a different question:
+ * a layout change does not invalidate a lit cohort's MEANING the way a new
+ * network does, but its restart is not optional -- without one the layout the
+ * undo restored would never appear.
  */
 export function layoutChanged(before: Project, after: Project): boolean {
   if (before === after) return false;
@@ -277,20 +236,24 @@ export function layoutChanged(before: Project, after: Project): boolean {
   return before.configs.some((a, i) => {
     const b = after.configs[i]!;
     if (a === b) return false; // the common case: untouched slots share identity
-    return a.cohorts !== b.cohorts || a.initialConditions !== b.initialConditions;
+    return (
+      a.cohorts !== b.cohorts ||
+      a.initialConditions !== b.initialConditions ||
+      a.channels !== b.channels
+    );
   });
 }
 
 /**
  * Change one world setting.
  *
- * A real edit of the project's single `WorldSettings` -- not, as it once was on
+ * A real edit of the project's single `NcaWorld` -- not, as it once was on
  * the desktop, a disguised edit of config 0.
  */
-export function editWorld<K extends keyof WorldSettings>(
+export function editWorld<K extends keyof NcaWorld>(
   project: Project,
   field: K,
-  value: WorldSettings[K],
+  value: NcaWorld[K],
 ): Project {
   if (!(field in project.world)) return project;
   return makeProject({ ...project, world: { ...project.world, [field]: value } });

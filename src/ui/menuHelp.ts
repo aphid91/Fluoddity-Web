@@ -53,11 +53,11 @@ const PROJECT_SCOPE =
  */
 export const TOOL_HELP: Readonly<Record<MouseMode, string>> = {
   select:
-    'Click to select a cohort, allowing you to generate children with similar ' +
-    'behavior and conduct artificial selection',
-  shove: 'Left mouse to push particles away. Right mouse to attract them',
-  walls: 'Draw barriers that repel particles',
-  trails: 'Draw trails like the ones particles leave behind, but permanent',
+    'Click a cohort to highlight it, click it again to make its network the ' +
+    'new base: artificial selection',
+  erase: 'Drag to zero the cells under the brush -- damage the pattern and watch it heal (or not)',
+  paint: 'Drag to write Paint Value into every channel under the brush. Right mouse erases',
+  walls: 'Draw walls: cells held at zero that neighbours read as empty. Right mouse removes them',
 };
 
 /**
@@ -176,14 +176,10 @@ export const MENU_HELP: Readonly<Record<string, string>> = {
   // Shared with the toolbar's Tool dropdown through `TOOL_HELP` below, so the
   // two surfaces that select a tool cannot describe it differently.
   Select: TOOL_HELP.select,
-  Shove: TOOL_HELP.shove,
+  Erase: TOOL_HELP.erase,
+  Paint: TOOL_HELP.paint,
   Walls: TOOL_HELP.walls,
-  Trails: TOOL_HELP.trails,
 
-  'Toggle Trail-Map View':
-    'View the trails left behind by particles instead of the particles ' +
-    'themselves. Hue indicates trail direction: Yellow-Green is up, Red is ' +
-    'right, Purple is down, and Cyan is left',
   'Reset View': 'Return the camera to the default location/zoom',
   'Reset Editor Preferences...':
     'Restore Fluoddity to factory settings. Equivalent to visiting the website ' +

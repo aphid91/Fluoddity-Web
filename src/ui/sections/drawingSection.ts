@@ -61,111 +61,15 @@ const CONTROLS: readonly DrawControl[] = [
     field: 'drawSize',
     label: 'Brush Size',
     params: { min: 0.001, max: .25 },
-    help: 'Determines the radius of the brush reticle',
-    // **CURVED, for the reason Hazard Rate is** (`settingsSpec.ts`): the useful
-    // range is crammed against the bottom of the bounds. Most drawing happens
-    // between 0.001 and 0.02, which is the first 7.6% of a LINEAR slider -- three
-    // or four pixels of travel, where a one-pixel slip is a doubling.
-    //
-    // At 2.5 that band spans ~36% of the handle instead, so the sizes actually
-    // used get about a third of the slider and the large end stays reachable.
-    // Tuned against the bounds above: `min` and `max` are what the curve is taken
-    // over, so re-check where 0.02 lands if either moves.
+    help: 'The radius of the brush reticle. Every tool acts inside the ring.',
     curve: 2.5,
   },
   {
     field: 'drawPower',
-    label: 'Brush Power',
-    params: { min: 0.1, max: 5.0 },
-    help:
-      'Determines the strength of the position offsets applied by shoving and ' +
-      'drawn barriers',
+    label: 'Paint Value',
+    params: { min: -2.0, max: 2.0 },
+    help: 'What the Paint tool writes into every channel of the cells it covers.',
   },
-  {
-    field: 'brushMode',
-    label: 'Brush Mode',
-    // A tweakpane `options` binding over the INDEX, matching how `brushMode` is
-    // stored -- see the preference. The labels are the user's vocabulary; the
-    // values are `BRUSH_MODES`' order.
-    params: {
-      options: {
-        'Out / Diverge': 0,
-        'In / Converge': 1,
-        Stroke: 2,
-        Fixed: 3,
-      },
-    },
-    help:
-      'Which way a stroke pushes. Out/Diverge and In/Converge push away from ' +
-      'and toward the stroke; Stroke pushes along the direction you drag; ' +
-      'Fixed pushes one way everywhere, set by Draw Angle',
-    advanced: true,
-  },
-  {
-    field: 'drawAngle',
-    label: 'Draw Angle',
-    // -PI..PI, so the two ends meet at straight down and the centre is up.
-    params: { min: -Math.PI, max: Math.PI, step: 0.01 },
-    help:
-      'The direction the Fixed brush pushes. 0 is up. The arrow on the brush ' +
-      'reticle turns with it',
-    advanced: true,
-  },
-  {
-    field: 'wallsStrength',
-    label: 'Walls Field Strength',
-    params: { min: 0.0, max: 4.0 },
-    help:
-      'Scales how hard the painted walls push, applied as they are read rather ' +
-      'than as they are drawn -- so it retunes walls you painted earlier, and 0 ' +
-      'mutes them without erasing them',
-    advanced: true,
-  },
-  {
-    field: 'trailsStrength',
-    label: 'Trails Field Strength',
-    params: { min: 0.0, max: 4.0 },
-    help:
-      'Scales how strongly the painted trails register on particle sensors. ' +
-      'Like Walls Field Strength, it applies at read time, so a drawn pattern ' +
-      'can be tuned or muted without redrawing it',
-    advanced: true,
-  },
-  {
-    field: 'fieldOpacity',
-    label: 'Field Opacity',
-    params: { min: 0.0, max: 1.0 },
-    help: 'How strongly the painted walls and trails are drawn on screen',
-    advanced: true,
-  },
-  {
-    field: 'fieldAlwaysShow',
-    label: 'Always Show Walls',
-    params: {},
-    help:
-      'Keep the painted walls visible in every tool, including Trails. The ' +
-      'Walls tool shows them either way',
-    advanced: true,
-  },
-  {
-    field: 'trailsAlwaysShow',
-    label: 'Always Show Trails',
-    params: {},
-    help:
-      'Keep the painted trails visible in every tool, including Walls. The ' +
-      'Trails tool shows them either way',
-    advanced: true,
-  },
-  // **BRUSH RETICLE WAS REMOVED FROM THIS TABLE**, and the `showReticle`
-  // preference no longer has a control anywhere. In practice the reticle is
-  // wanted in every session -- it is the only thing that shows where the brush
-  // will land and how big it is -- so the checkbox was a way to break the brush
-  // tools and nothing else.
-  //
-  // The FIELD survives in `Preferences` rather than being deleted, because a
-  // stored `false` in someone's `localStorage` must not become a parse error on
-  // their next visit (`prefs/preferences.ts` validates against its schema). The
-  // Orchestrator now ignores it -- see `applyCanvasInput`'s reticle branch.
 ];
 
 export function buildDrawingSection(
@@ -233,8 +137,7 @@ export function buildDrawingSection(
   // Trails tool is selected is a reasonable thing to want, and switching tools
   // just to reach a button would not be.
   for (const [layer, title, body] of [
-    ['walls', 'Clear Walls (not undoable)', 'Remove all currently painted barriers'],
-    ['trails', 'Clear Trails (not undoable)', 'Remove all currently painted trails'],
+    ['walls', 'Clear Walls (not undoable)', 'Remove every painted wall'],
   ] as const) {
     const clear = folder.addButton({ title });
     clear.on('click', () => {

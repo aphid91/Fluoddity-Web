@@ -225,8 +225,12 @@ function setting(init: SettingInit): Setting {
  * the comment.
  */
 export const DROPDOWN_MODES = {
-  boundaryConditions: ['Bounce', 'Wrap', 'Reset', 'Kill'],
-  initialConditions: ['Grid', 'Random', 'Center', 'Ring'],
+  boundary: ['Wrap', 'Zero'],
+  initialConditions: ['Seed', 'Noise', 'Sparse', 'Zero'],
+  stateBound: ['None', 'Clip [-1,1]', 'Clip [0,1]', 'Tanh'],
+  activation: ['ReLU', 'Tanh', 'Sin'],
+  perception: ['Fixed', 'Learned'],
+  displayMode: ['RGB', 'RGBA', 'Signed', 'Channel'],
   // THE LABELS ONLY. `ui/mobile.ts` derives its `MobileMode` union from this
   // tuple rather than declaring its own, so the stored index and the dropdown
   // cannot drift -- the same lockstep the two above keep with `common.wgsl`,
@@ -245,17 +249,9 @@ export const DROPDOWN_MODES = {
 export const SETTINGS: readonly Setting[] = [
   // ================= PROJECT: Mutation =================
   //
-  // **NOT IN THE PANEL, deliberately.** Mutation Scale is the single most
-  // consequential control in the app, and it used to be the first entry here for
-  // exactly that reason -- which still buried it in a folder in a 320px column.
-  // It now lives in `ui/mutationOverlay.ts`, as a wide slider centred above the
-  // canvas with the Reroll Mutations button beside it.
-  //
-  // The ENTRY stays, because the overlay reads its bounds, label and help text
-  // from here rather than restating them -- `mutationSetting()` is the lookup.
-  // `panel: false` is what keeps it out of `grouped()`, and therefore out of the
-  // Project section, without making the registry lie about the field existing.
-  //
+  // **NOT IN THE PANEL, deliberately.** Mutation Scale lives in
+  // `ui/mutationOverlay.ts`, as a wide slider above the canvas with Reroll
+  // Mutations beside it; the overlay reads its bounds, label and help from here.
   setting({
     field: 'mutationScale',
     label: 'Mutation Scale',
@@ -263,23 +259,15 @@ export const SETTINGS: readonly Setting[] = [
     source: CONFIG,
     kind: SLIDER,
     lo: 0.0,
-    hi: 0.6,
+    hi: 1.0,
     help:
-      "How much each cohort's rule is randomly varied from the base rule. The " +
-      'most consequential control here: 0 makes every particle obey the same ' +
-      'rule, higher values fan the population out into distinct behaviours.',
+      "How far each cohort's weights are pushed from the base network, in units " +
+      "of each layer's own initial spread. 0 runs the base network in every " +
+      'cohort; higher values fan the cohorts out into distinct behaviours.',
     group: 'Mutation',
     panel: false,
   }),
-  // The SEED entry STAYS, and it is not vestigial: `randomizeSeed`
-  // (`settingsCommands.ts:118-127`) finds the field to randomize by looking up
-  // `kind === SEED` here, precisely so the field name lives in one place. Delete
-  // this and Reroll Mutations silently stops doing anything.
-  //
-  // What went away is only its WIDGET -- a read-only readout beside a Randomize
-  // button. The readout was never worth a row (an opaque selector is only ever
-  // worth reading, never typing), and the button now lives in the overlay
-  // sending that same command.
+  // The FIRST SEED entry is what `randomizeSeed` rerolls (`seedSetting()`).
   setting({
     field: 'mutationSeed',
     label: 'Mutation Seed',
@@ -289,14 +277,13 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0.0,
     hi: 1.0,
     help:
-      'Which random variation the mutation uses. Only has an effect when ' +
-      'Mutation Scale is above zero. Reroll to explore alternatives at the ' +
-      'same mutation strength.',
+      'Which random variation the mutation uses. Reroll to explore alternatives ' +
+      'at the same mutation strength.',
     group: 'Mutation',
     panel: false,
   }),
 
-  // ================= PROJECT: Population =================
+  // ================= PROJECT: Cohorts =================
   setting({
     field: 'cohorts',
     label: 'Cohorts',
@@ -306,25 +293,219 @@ export const SETTINGS: readonly Setting[] = [
     lo: 1,
     hi: 64,
     help:
-      'How many groups the population is divided into. When mutation Scale > ' +
-      '0, each cohort gets its own mutation of the parent behavior.',
-    group: 'Population',
+      'How many rectangles the grid is divided into. Each runs its own mutation ' +
+      'of the base network; click one to make it the new base.',
+    group: 'Cohorts',
   }),
   setting({
-    field: 'boundaryConditions',
-    label: 'Boundary Conditions',
+    field: 'cohortFences',
+    label: 'Cohort Fences',
+    tier: BASIC,
+    source: CONFIG,
+    kind: BOOL,
+    help:
+      'Wrap each cohort around on itself, so every cohort is its own torus and ' +
+      'nothing crosses between them. Off: cells read their neighbours across ' +
+      'cohort edges and the cohorts can invade one another.',
+    group: 'Cohorts',
+  }),
+  setting({
+    field: 'boundary',
+    label: 'World Edge',
     tier: ADVANCED,
     source: WORLD,
     kind: CHOICE,
     lo: 0,
+    hi: 1,
+    help:
+      'What a cell sees past the edge of the grid when fences are off: Wrap ' +
+      'makes the grid a torus, Zero reads empty cells.',
+    group: 'Cohorts',
+    options: DROPDOWN_MODES.boundary,
+  }),
+
+  // ================= PROJECT: Dynamics =================
+  setting({
+    field: 'dt',
+    label: 'Step Size',
+    tier: BASIC,
+    source: CONFIG,
+    kind: SLIDER,
+    lo: 0.0,
+    hi: 2.0,
+    help: "How much of the network's output is added to a cell's state each update.",
+    group: 'Dynamics',
+  }),
+  setting({
+    field: 'fireRate',
+    label: 'Fire Rate',
+    tier: BASIC,
+    source: CONFIG,
+    kind: SLIDER,
+    lo: 0.0,
+    hi: 1.0,
+    help:
+      'The chance a cell updates on a given step. Below 1 the update is ' +
+      'asynchronous, which breaks the grid-locked symmetry of a synchronous CA.',
+    group: 'Dynamics',
+  }),
+  setting({
+    field: 'gain',
+    label: 'Gain',
+    tier: BASIC,
+    source: CONFIG,
+    kind: SLIDER,
+    lo: 0.0,
+    hi: 6.0,
+    help:
+      "Multiplies every hidden unit's input. Low gain is calm and near-linear; " +
+      'high gain saturates the nonlinearity -- the knob for finding the edge of chaos.',
+    group: 'Dynamics',
+  }),
+  setting({
+    field: 'stateBound',
+    label: 'State Bound',
+    tier: BASIC,
+    source: CONFIG,
+    kind: CHOICE,
+    lo: 0,
     hi: 3,
     help:
-      'What happens when a particle reaches the edge of the world: Bounce ' +
-      'reflects it, reset returns it to starting position, wrap carries it ' +
-      'around to the opposite edge, and kill destroys it.',
-    group: 'Population',
-    options: DROPDOWN_MODES.boundaryConditions,
+      'What keeps cell values finite: None (only a far safety clamp), Clip to ' +
+      '[-1, 1], Clip to [0, 1], or a smooth tanh squash.',
+    group: 'Dynamics',
+    options: DROPDOWN_MODES.stateBound,
   }),
+  setting({
+    field: 'activation',
+    label: 'Activation',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: CHOICE,
+    lo: 0,
+    hi: 2,
+    help: 'The hidden layer nonlinearity.',
+    group: 'Dynamics',
+    options: DROPDOWN_MODES.activation,
+  }),
+  setting({
+    field: 'leak',
+    label: 'Leak',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: GATED,
+    lo: 0.0,
+    hi: 0.2,
+    curve: 2.0,
+    help: 'Per-step decay of every channel toward zero.',
+    group: 'Dynamics',
+  }),
+  setting({
+    field: 'noise',
+    label: 'Noise',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: GATED,
+    lo: 0.0,
+    hi: 0.2,
+    curve: 2.0,
+    help: 'Uniform noise added to every channel on every step.',
+    group: 'Dynamics',
+  }),
+  setting({
+    field: 'aliveMask',
+    label: 'Alive Mask',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: BOOL,
+    help:
+      "Growing-NCA alive masking: a cell whose 3x3 neighbourhood has no value of " +
+      'channel 3 (or the last channel) above the threshold is zeroed.',
+    group: 'Dynamics',
+  }),
+  setting({
+    field: 'aliveThreshold',
+    label: 'Alive Threshold',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: SLIDER,
+    lo: 0.0,
+    hi: 1.0,
+    help: 'The alive channel value a neighbourhood must exceed to stay alive.',
+    group: 'Dynamics',
+    revealsOn: 'aliveMask',
+  }),
+
+  // ================= PROJECT: Architecture =================
+  //
+  // TYPED INPUTS, committed on Enter: every commit re-embeds the weights into
+  // the new layout and recompiles the step kernel, so a slider dragged down and
+  // back up would truncate the network on the way down.
+  setting({
+    field: 'channels',
+    label: 'Channels',
+    tier: BASIC,
+    source: CONFIG,
+    kind: INPUT,
+    lo: 1,
+    hi: 32,
+    help:
+      'State values per cell. Growing it keeps the current behaviour (new ' +
+      'channels start disconnected); changing it restarts the simulation.',
+    group: 'Architecture',
+  }),
+  setting({
+    field: 'hidden',
+    label: 'Hidden Units',
+    tier: BASIC,
+    source: CONFIG,
+    kind: INPUT,
+    lo: 0,
+    hi: 256,
+    help:
+      'Width of the hidden layer. 0 is a single layer straight from perception ' +
+      'to update. Growing it keeps the current behaviour.',
+    group: 'Architecture',
+  }),
+  setting({
+    field: 'perception',
+    label: 'Perception',
+    tier: BASIC,
+    source: CONFIG,
+    kind: CHOICE,
+    lo: 0,
+    hi: 1,
+    help:
+      'Fixed: identity plus Sobel x/y (and optionally a Laplacian) per channel. ' +
+      'Learned: identity plus learned 3x3 kernels per channel, mutated with the ' +
+      'rest of the network. Switching to Learned starts the kernels AS the fixed filters.',
+    group: 'Architecture',
+    options: DROPDOWN_MODES.perception,
+  }),
+  setting({
+    field: 'laplacian',
+    label: 'Laplacian',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: BOOL,
+    help: 'Add a Laplacian filter to the fixed perception.',
+    group: 'Architecture',
+    requires: ['perception', 0],
+  }),
+  setting({
+    field: 'learnedKernels',
+    label: 'Learned Kernels',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: INPUT,
+    lo: 1,
+    hi: 8,
+    help: 'Learned 3x3 kernels per channel.',
+    group: 'Architecture',
+    requires: ['perception', 1],
+  }),
+
+  // ================= PROJECT: Initial Conditions =================
   setting({
     field: 'initialConditions',
     label: 'Initial Conditions',
@@ -334,403 +515,119 @@ export const SETTINGS: readonly Setting[] = [
     lo: 0,
     hi: 3,
     help:
-      'How particles are arranged when the simulation starts: Grid and ring lay ' +
-      'the cohorts out in a regular pattern, Random spreads them evenly, and ' +
-      'Center starts them all in a dense clump in the middle.',
-    group: 'Population',
+      'Seed: a disc at the centre of every cohort. Noise: every cell random. ' +
+      'Sparse: scattered seeds. Zero: empty (paint or noise must start it). ' +
+      'Takes effect on reset.',
+    group: 'Initial Conditions',
     options: DROPDOWN_MODES.initialConditions,
   }),
   setting({
-    field: 'cohortFences',
-    label: 'Cohort Fences',
+    field: 'seedRadius',
+    label: 'Seed Radius',
     tier: BASIC,
     source: CONFIG,
-    kind: BOOL,
+    kind: INT,
     lo: 0,
-    hi: 1,
-    // THE SAME SENTENCE THE BAR BUTTON SHOWS. The two controls edit one field
-    // and the bar's own tooltip states the Grid requirement in a second
-    // paragraph when it applies; here the requirement is already visible as the
-    // greyed-out row, and `requires` below is what greys it.
-    help:
-      'Cohort fences: When enabled, particles are forced to stay close to their ' +
-      'initial locations (Grid only).',
-    group: 'Population',
-    // Grid is IC_GRID, i.e. index 0 of `DROPDOWN_MODES.initialConditions` --
-    // spelled as the index because this file imports nothing (see the note on
-    // DROPDOWN_MODES). `settingsSpec.test.ts` pins that tuple against the real
-    // `IC` constants, so this cannot drift without a test failing.
-    requires: ['initialConditions', 0],
+    hi: 16,
+    help: 'Radius of each seed disc, in cells.',
+    group: 'Initial Conditions',
   }),
   setting({
-    field: 'hazardRate',
-    label: 'Hazard Rate',
+    field: 'icAmplitude',
+    label: 'Amplitude',
     tier: ADVANCED,
     source: CONFIG,
-    kind: GATED,
+    kind: SLIDER,
     lo: 0.0,
-    hi: 0.01,
-    help:
-      'Applies a small probability each tick for a particle to "die" and be ' +
-      '"reincarnated" at its initial conditions',
-    group: 'Population',
-    curve: 3.0,
+    hi: 2.0,
+    help: 'The value a seed writes into every channel, or the noise amplitude.',
+    group: 'Initial Conditions',
+  }),
+  setting({
+    field: 'icDensity',
+    label: 'Seed Density',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: SLIDER,
+    lo: 0.0,
+    hi: 0.05,
+    curve: 2.0,
+    help: 'Sparse mode: the chance any cell is a seed centre.',
+    group: 'Initial Conditions',
+  }),
+  setting({
+    field: 'icSeed',
+    label: 'Run Seed',
+    tier: ADVANCED,
+    source: CONFIG,
+    kind: SEED,
+    lo: 0.0,
+    hi: 1.0,
+    help: 'Seeds the initial noise, the sparse seeds, the fire mask and the step noise.',
+    group: 'Initial Conditions',
   }),
 
-  // ================= PROJECT: Sensors =================
+  // ================= PROJECT: Display =================
   setting({
-    field: 'sensorAngle',
-    label: 'Sensor Angle',
+    field: 'displayMode',
+    label: 'Display',
     tier: BASIC,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: -1.0,
-    hi: 1.0,
+    source: WORLD,
+    kind: CHOICE,
+    lo: 0,
+    hi: 3,
     help:
-      "Defines how wide the angle is between a particle's two sensor locations. " +
-      'Values near 0.0 are looking straight ahead, values near 0.5 look to the ' +
-      'left and right, while values near 1.0 look behind.',
-    group: 'Sensors',
+      'RGB: three channels as colour. RGBA: the classic Growing-NCA look, ' +
+      'premultiplied on white. Signed: three channels with grey at zero. ' +
+      'Channel: one channel, warm positive and cool negative.',
+    group: 'Display',
+    options: DROPDOWN_MODES.displayMode,
   }),
   setting({
-    field: 'sensorAngleJitter',
-    label: 'Sensor Angle Jitter',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: GATED,
-    lo: 0.0,
-    hi: 1.0,
-    help: "Adds random, per-tick variation to each particle's sensor angle",
-    group: 'Sensors',
-  }),
-  // NOTE: the 5.0 upper bound is mirrored in common.wgsl as
-  // SENSOR_DISTANCE_SPAN, which is what a Sensor Distance Jitter of 1.0 spans.
-  // The shader cannot read these bounds, so widening this one means widening
-  // that constant too.
-  setting({
-    field: 'sensorDistance',
-    label: 'Sensor Distance',
+    field: 'displayChannel',
+    label: 'First Channel',
     tier: BASIC,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: 0.0,
-    hi: 5.0,
-    help:
-      "Defines how far away from a particle's center it reads the trail. Higher " +
-      'values tend to result in larger, more global patterns',
-    group: 'Sensors',
+    source: WORLD,
+    kind: INT,
+    lo: 0,
+    hi: 31,
+    help: 'The first channel shown.',
+    group: 'Display',
   }),
   setting({
-    field: 'sensorDistanceJitter',
-    label: 'Sensor Distance Jitter',
+    field: 'displayGain',
+    label: 'Display Gain',
     tier: ADVANCED,
-    source: CONFIG,
-    kind: GATED,
-    lo: 0.0,
-    hi: 1.0,
-    help:
-      "Adds random, per-tick variation to each particle's sensor distance. " +
-      'Distance jitter often produces softer edges and less noticeable ' +
-      'grid-aligned aliasing',
-    group: 'Sensors',
-  }),
-  setting({
-    field: 'sensorGain',
-    label: 'Sensor Gain',
-    tier: ADVANCED,
-    source: CONFIG,
+    source: WORLD,
     kind: SLIDER,
-    lo: 0.0,
+    lo: 0.1,
     hi: 8.0,
-    help:
-      'Determines how sensitive each particle is to trail conditions. Set it too ' +
-      'low and particles will travel ~straight, ignoring the trails. Set it too ' +
-      'high and their behavior will become noisy and chaotic',
-    group: 'Sensors',
+    curve: 2.0,
+    help: 'Multiplies channel values before they become colour.',
+    group: 'Display',
   }),
-
-  // ================= PROJECT: Forces =================
   setting({
-    field: 'globalForceMult',
-    label: 'Global Force',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: 0.0,
-    hi: 1.0,
-    help:
-      'Determines the strength with which particles turn quickly, accelerate, ' +
-      'and strafe',
-    group: 'Forces',
-  }),
-  // Stored as `drag`, shown as Momentum: the field is how much velocity CARRIES
-  // OVER, which is momentum, not how much is lost. Renaming the label rather
-  // than the field keeps every saved config readable.
-  setting({
-    field: 'drag',
-    label: 'Momentum',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: 0.0,
-    hi: 1.0,
-    help:
-      'How much velocity carries over between ticks. At high values, particles ' +
-      'will be able to build up momentum',
-    group: 'Forces',
-  }),
-
-  // Not GATED: the sliders are bipolar, so passing through zero is a normal
-  // thing to drag past rather than an "off" to snap to.
-  setting({
-    field: '',
-    label: 'Gravity',
+    field: 'showCohortBorders',
+    label: 'Cohort Borders',
     tier: BASIC,
-    source: CONFIG,
-    kind: BOOL,
-    help: 'Enables vertical/radial gravity controls',
-    group: 'Forces',
-    gates: ['gravityStrafe', 'gravityTrails', 'gravityForce'],
-  }),
-  setting({
-    field: 'gravityStrafe',
-    label: 'Gravity (Strafe)',
-    tier: BASIC,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: -1.0,
-    hi: 1.0,
-    help:
-      'Applies a fixed offset to particles each frame, shifting them downward',
-    group: 'Forces',
-    revealsOn: 'Gravity',
-  }),
-  setting({
-    field: 'gravityTrails',
-    label: 'Gravity (Trails)',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: -1.0,
-    hi: 1.0,
-    help:
-      'Biases what every particle senses, as though a trail lay downhill. ' +
-      'Nothing is pushed -- each rule decides whether to follow that trail or ' +
-      'flee it, so this can make a population fall or rise, and does nothing at ' +
-      'all to one that ignores its sensors',
-    group: 'Forces',
-    revealsOn: 'Gravity',
-  }),
-  setting({
-    field: 'gravityForce',
-    label: 'Gravity (Force)',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: -1.0,
-    hi: 1.0,
-    help:
-      'Applies a fixed force to particles each frame, accelerating them downward',
-    group: 'Forces',
-    revealsOn: 'Gravity',
-  }),
-  // Hangs off the same gate as the sliders it redirects: on its own it does
-  // nothing, so leaving it on screen with both gravities at zero would be a
-  // checkbox with no observable effect.
-  setting({
-    field: 'radialGravity',
-    label: 'Radial Gravity',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: BOOL,
-    help:
-      'Makes gravity push particles towards the center of the simulation instead ' +
-      'of straight down',
-    group: 'Forces',
-    revealsOn: 'Gravity',
-  }),
-
-  // ================= PROJECT: Trails =================
-  setting({
-    field: 'trailPersistence',
-    label: 'Trail Persistence',
-    tier: ADVANCED,
     source: WORLD,
-    kind: SLIDER,
-    lo: 0.5,
-    hi: 0.999,
-    help:
-      'Determines how long particle trails remain detectable. At high values, ' +
-      'trails will spread widely and decay slowly.',
-    group: 'Trails',
-  }),
-  // PER CONFIG, though it sits beside a WORLD setting: it is how this config's
-  // trails weigh against other configs', so each square has its own.
-  //
-  // Not in the studio, which only ever runs one config -- the weight cancels
-  // there, so the control would do nothing. `configSlots` forces it to 1 on
-  // upload as well, so a sand config's weight costs the studio no precision.
-  setting({
-    field: 'trailWeight',
-    label: 'Trail Weight',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: -2.0,
-    hi: 2.0,
-    help:
-      "How much this config's trails count against other configs'. Heavier " +
-      'configs lay stronger trails and are swayed less by lighter ones; a ' +
-      'negative weight lays trails that point backwards to everyone else. Has ' +
-      'no effect on a config on its own.',
-    group: 'Trails',
-    studio: false,
-    // Mirrors TRAIL_WEIGHT_MIN in particleSystem/config.ts, pinned by a test.
-    minMagnitude: 0.02,
-  }),
-
-  // ================= PROJECT: Appearance =================
-  // Rendering, not physics -- these change how particles are DRAWN in the
-  // particle view and never touch the simulation. Saved with the config
-  // nonetheless: a config's colours are part of how it looks.
-  setting({
-    field: 'colorSensitivity',
-    label: 'Color Sensitivity',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: -1.0,
-    hi: 1.0,
-    help:
-      'Determines how sensitive the hue of a particle is to its brain outputs. ' +
-      'At high values particle hue becomes chaotic and regions will become a ' +
-      'random mix of hues: appearing pale/white. Pairs with Color Offset, ' +
-      'which decides where on the wheel that response starts',
-    group: 'Appearance',
-  }),
-  // THE BIAS TO THE COEFFICIENT ABOVE: hue = Sensitivity * signal + Offset.
-  // Declared immediately after it so the two land adjacent in the panel --
-  // within a group, order here is order on screen.
-  //
-  // 0..1 SPANS THE WHEEL ONCE. Hue is periodic, so that is every colour there
-  // is; a signed range would only offer each one twice over.
-  setting({
-    field: 'colorOffset',
-    label: 'Color Offset',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: 0.0,
-    hi: 1.0,
-    help:
-      'Shifts this config’s hue around the colour wheel, before Color ' +
-      'Sensitivity swings it. Lets each config sit in its own colour instead ' +
-      'of every one fanning out from red',
-    group: 'Appearance',
-  }),
-  setting({
-    field: 'colorByCohort',
-    label: 'Color By Cohort',
-    tier: BASIC,
-    source: CONFIG,
     kind: BOOL,
-    help:
-      'Assign each cohort a unique color instead of basing hue on brain outputs',
-    group: 'Appearance',
-  }),
-
-  // ================= PROJECT: Advanced =================
-  // Last group, on purpose: the knobs you reach for once the rest is dialled in.
-  // Declared here rather than beside their relatives so the group lands at the
-  // bottom -- groups come out in the order their first member appears.
-  setting({
-    field: 'axialForce',
-    label: 'Axial Force',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: -2.0,
-    hi: 2.0,
-    help:
-      'Determines the relative strength of acceleration/braking forces and ' +
-      'forward/backward strafing',
-    group: 'Advanced',
-  }),
-  setting({
-    field: 'lateralForce',
-    label: 'Lateral Force',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: -2.0,
-    hi: 2.0,
-    help:
-      'Determines the relative strength of turning forces and left-right strafing',
-    group: 'Advanced',
-  }),
-  setting({
-    field: 'strafePower',
-    label: 'Strafe Power',
-    tier: ADVANCED,
-    source: CONFIG,
-    kind: SLIDER,
-    lo: 0.0,
-    hi: 0.5,
-    help:
-      'Determines the relative strength of particle strafe, which directly ' +
-      'shifts particle positions, bypassing momentum',
-    group: 'Advanced',
-  }),
-  // Stored as `trailDiffusion` but shown INVERTED, as stiffness: 0.0 is full
-  // diffusion, 1.0 is none. The stored field, the shader and the save format all
-  // still speak diffusion -- see `inverted`. gateBase is the STORED value: full
-  // diffusion (1.0) is "no stiffness", so the slider reads 0.0 the moment it
-  // appears, like every other gated one.
-  setting({
-    field: 'trailDiffusion',
-    label: 'Trail Stiffness',
-    tier: ADVANCED,
-    source: WORLD,
-    kind: GATED,
-    lo: 0.0,
-    hi: 1.0,
-    help:
-      'Allows you to slow or stop the pace at which particle trails spread ' +
-      'through the environment. At stiffness 1.0, trails do not diffuse at all, ' +
-      'and simply decay over time.',
-    group: 'Advanced',
-    inverted: true,
-    gateBase: 1.0,
+    help: 'Draw the edges between cohorts.',
+    group: 'Display',
   }),
 
   // ================= PREFERENCES: Simulation =================
   setting({
     field: 'worldSize',
-    label: 'World Size',
+    label: 'Grid Size',
     tier: BASIC,
     source: PREFS,
     kind: INPUT,
-    lo: 0.05,
-    // 27 is a HARD architectural ceiling, not a budget choice. Above it the
-    // entity dispatch needs more than 65535 workgroups in one dimension
-    // (dispatch.test.ts), and `maxComputeWorkgroupsPerDimension` is the one
-    // limit here that raising cannot buy: 65535 is what essentially all
-    // hardware reports, so `gpu/device.ts` has nothing larger to ask for.
-    // Passing it needs a second dispatch dimension -- see dispatch.ts, which
-    // deliberately refuses to clamp because clamping would silently stop
-    // updating the tail of the population.
-    //
-    // The limits that ARE raisable (storage binding, buffer size, texture dim)
-    // no longer bind below this on any normal GPU; before that fix the real
-    // ceiling was 6.99 and anything above it was a permanent black screen.
-    //
-    // Whether a given machine can carry 27 (38.4M particles, a 5322px trail
-    // canvas) is the user's call, per the decision to trust their input. This
-    // bound only keeps them inside what the dispatch can address at all.
-    hi: 27.0,
+    lo: 0.01,
+    hi: 16.0,
     help:
-      '(Expensive) Determines the particle count and resolution of the trail ' +
-      'map. Overall density -- Particles/Trail pixel -- is kept constant.',
+      '(Expensive) The grid is 256 x 256 cells times the square root of this, ' +
+      'shaped by Canvas Aspect: 0.25 is 128 x 128, 4 is 512 x 512.',
     disruptive: true,
     group: 'Simulation',
   }),
@@ -748,15 +645,15 @@ export const SETTINGS: readonly Setting[] = [
   }),
   setting({
     field: 'physicsSteps',
-    label: 'Physics Rate',
+    label: 'Steps / Frame',
     tier: BASIC,
     source: PREFS,
     kind: INT,
     lo: 1,
-    hi: 60,
+    hi: 240,
     help:
-      '(Expensive) Determines how many physics substeps are performed per ' +
-      'frame. Higher values run the simulation faster.',
+      '(Expensive) NCA steps per rendered frame. Higher values run the ' +
+      'simulation faster.',
     group: 'Simulation',
   }),
 
@@ -940,30 +837,6 @@ export const SETTINGS: readonly Setting[] = [
       'for your device -- it takes effect after you reload the page.',
     group: 'Behavior',
     options: DROPDOWN_MODES.mobileMode,
-  }),
-
-  // ================= PREFERENCES: Archive =================
-  // **DECLARED LAST, AFTER Behavior, AND THAT IS THE WHOLE POINT.** `grouped()`
-  // emits groups in the order their first member is declared, so this one lands
-  // at the very bottom of the Preferences panel -- below every setting that
-  // changes what the app does.
-  //
-  // ITS OWN GROUP RATHER THAN A ROW IN Behavior, which is where it started. Two
-  // things forced the move. It is the only control in the panel that writes a
-  // DATABASE, and it now carries two buttons of its own, so it is no longer one
-  // checkbox that could sit quietly among neighbours. And a group is what draws
-  // the separator: the folder header is the divider, so the research feature is
-  // visibly not part of the working settings above it.
-  setting({
-    field: 'strongLogging',
-    label: 'Strong Logging',
-    tier: ADVANCED,
-    source: PREFS,
-    kind: BOOL,
-    help:
-      'Record every project state you visit to a local archive, so the ' +
-      'exploration can be studied later. Changes nothing on screen',
-    group: 'Archive',
   }),
 ];
 

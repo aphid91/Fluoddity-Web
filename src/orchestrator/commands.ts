@@ -44,7 +44,7 @@
  */
 
 import type { SavedConfig } from '../config/persistence.ts';
-import type { PickResult } from '../particleSystem/pick.ts';
+import type { NcaPick as PickResult } from '../nca/ncaSystem.ts';
 import type { Setting } from '../ui/settingsSpec.ts';
 import type { Preferences } from '../prefs/preferences.ts';
 import type { FieldLayer } from '../strafeField/fieldLayer.ts';
@@ -57,36 +57,20 @@ import type { FieldLayer } from '../strafeField/fieldLayer.ts';
  * across.
  *
  *   SELECT  click adopts a particle's rule, right-click undoes.
- *   SHOVE   drag pushes particles away from the cursor, right-drag pulls in.
- *   WALLS   drag paints the walls layer, right-drag erases it.
- *   TRAILS  drag paints the trails layer, right-drag erases it.
+ *   ERASE   drag zeroes the cells under the brush.
+ *   PAINT   drag writes Paint Value into every channel under the brush; right-drag erases.
+ *   WALLS   drag paints walls (cells held at zero, read as zero), right-drag removes them.
  *
- * SHOVE and the two painting tools are easy to confuse and worth stating apart:
- * Shove acts on the PARTICLES, directly and only while the button is held. The
- * others paint a FIELD, which then keeps acting on whatever crosses it until it
- * is erased.
- *
- * **WALLS AND TRAILS DIFFER ONLY IN WHICH CHANNELS THEY WRITE.** Every mechanic
- * -- brush size, power, mode, erase, the line tool -- is identical between them
- * (`FieldLayer` is the whole difference). What differs is what the simulation
- * then does with the result: walls displace a particle's position, trails change
- * what its sensors report. See `fieldLayer.ts`.
- *
- * **`'draw'` WAS RENAMED TO `'walls'`** when trails made "draw" ambiguous. Safe
- * to rename because this value is runtime-only: it is not persisted, not in a
- * share link, not in a save file, and it resets to `'select'` every session -- so
- * no stored string can carry the old name. `mouseModeFromValue` returns null on
- * anything unrecognized regardless.
+ * All three act on the NCA directly, once per rendered frame, through
+ * `NcaSystem.queueBrush`. The brush size is the reticle's.
  *
  * THERE IS NO PAN TOOL. Navigation is on the keyboard (WASD/QE) and the scroll
  * wheel, which frees the mouse for tools entirely.
  *
  * **MEMBER ORDER IS THE TOOLBAR ORDER** and the 1/2/3/4 key order -- the toolbar
- * builds itself from this array, so adding a tool here adds a button. An
- * ordered array rather than an object for the same reason `CAMERA_MODES` is one:
- * the order is the semantics.
+ * builds itself from this array, so adding a tool here adds a button.
  */
-export const MOUSE_MODES = ['select', 'shove', 'walls', 'trails'] as const;
+export const MOUSE_MODES = ['select', 'erase', 'paint', 'walls'] as const;
 export type MouseMode = (typeof MOUSE_MODES)[number];
 
 /** Look up a mode by its string value, or `null` if unknown. */
@@ -107,24 +91,17 @@ export function mouseModeFromValue(value: string): MouseMode | null {
  */
 export function layerForMouseMode(mode: MouseMode): FieldLayer | null {
   if (mode === 'walls') return 'walls';
-  if (mode === 'trails') return 'trails';
   return null;
 }
 
-/** True for the tools that paint a field, i.e. the ones the brush serves. */
+/** True for the tools that paint, i.e. the ones the brush serves. */
 export function isPaintingTool(mode: MouseMode): boolean {
-  return layerForMouseMode(mode) !== null;
+  return mode !== 'select';
 }
 
-/**
- * True for every tool the brush RETICLE is drawn for.
- *
- * Wider than `isPaintingTool` by exactly one: Shove borrows `drawSize` for its
- * radius, so the ring means something there too -- "the reach of what the button
- * is about to do". It is drawn dashed in that tool to say which is armed.
- */
+/** True for every tool the brush RETICLE is drawn for: every painting tool. */
 export function usesBrushReticle(mode: MouseMode): boolean {
-  return isPaintingTool(mode) || mode === 'shove';
+  return isPaintingTool(mode);
 }
 
 /** Where the brush reticle goes this frame, or null for no reticle. */
@@ -523,6 +500,8 @@ export interface Status {
   readonly paused: boolean;
   readonly preset: string;
   readonly entityCount: number;
+  /** Parameters in one cohort's network. */
+  readonly paramCount: number;
   readonly frameCount: number;
   /**
    * Whether the selected config's rule is the all-zero sentinel -- i.e. its

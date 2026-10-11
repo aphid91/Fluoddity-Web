@@ -40,7 +40,6 @@ import {
   mouseModeFromValue,
   usesBrushReticle,
 } from '../orchestrator/commands.ts';
-import { IC } from '../particleSystem/config.ts';
 import type { FieldLayer } from '../strafeField/fieldLayer.ts';
 import { NO_COHORT } from '../selection/cohortHighlight.ts';
 import { bindFocusRelease } from './focusRelease.ts';
@@ -90,9 +89,9 @@ export interface MutationOverlayOptions {
 /** Human-readable tool names. Keyed so a new MOUSE_MODES member fails to compile. */
 const TOOL_LABELS: Record<MouseMode, string> = {
   select: 'Select',
-  shove: 'Shove',
+  erase: 'Erase',
+  paint: 'Paint',
   walls: 'Walls',
-  trails: 'Trails',
 };
 
 /**
@@ -633,21 +632,12 @@ export class MutationOverlay {
     // A LIVE SOURCE: the Grid requirement only applies in some layouts, and the
     // button is greyed rather than rebuilt when it stops applying. Resolved on
     // hover, so `refreshPopulationGroup` no longer pushes text per state.
-    this.tooltip.attach(this.fences, () => {
-      const layout = this.lastStatus?.editConfig['initialConditions'];
-      const body =
-        'Cohort fences: When enabled, particles are forced to stay close to ' +
-        'their initial locations (Grid only).';
-      // The greyed case says so, for the reason `rerollHelp` gives: a disabled
-      // control that does not explain itself is a dead end, and the way out is
-      // a dropdown a few rows away in the Project panel.
-      return {
-        title: 'Cohort Fences',
-        body:
-          layout === IC.GRID || layout === undefined
-            ? body
-            : `${body}\n\nRequires Initial Conditions: Grid.`,
-      };
+    this.tooltip.attach(this.fences, {
+      title: 'Cohort Fences',
+      body:
+        'Cohort fences: when on, every cohort wraps around on itself -- its own ' +
+        'torus -- so nothing crosses between cohorts. Off, cells see across ' +
+        'cohort edges and neighbours can invade.',
     });
     this.fences.addEventListener('click', () => {
       const setting = settingFor(CONFIG, 'cohortFences');
@@ -1764,8 +1754,8 @@ export class MutationOverlay {
    * already crossing the boundary.
    */
   private refreshPopulationGroup(status: Status): void {
-    const layout = status.editConfig['initialConditions'];
-    const onGrid = layout === IC.GRID;
+    // Every cohort count is a grid of rectangles now, and fences always apply.
+    const onGrid = true;
     const cohorts = status.cohortCount;
 
     this.fencesOn = status.editConfig['cohortFences'] === true;
@@ -1919,9 +1909,7 @@ export class MutationOverlay {
     // actually produces is a single cohort in the middle of the world. The
     // other counts really are laid out on a grid, so they keep that wording.
     const description =
-      count === 1
-        ? 'Single cohort, centered'
-        : `${String(count)} cohorts, grid layout`;
+      count === 1 ? 'A single cohort over the whole grid' : `${String(count)} cohorts`;
     // Not decorative: the icon is the only content, so without this the button
     // is unnamed to a screen reader. The tooltip below is a hover affordance
     // and reaches neither screen readers nor keyboard users, so this stays.
@@ -2197,8 +2185,11 @@ export function hintFor(status: Status): {
     undo: null,
   });
 
-  if (status.mouseMode === 'shove') {
-    return none('Left click to push particles away | Right click to pull them in');
+  if (status.mouseMode === 'erase') {
+    return none('Drag to erase cells | Hold shift for lines');
+  }
+  if (status.mouseMode === 'paint') {
+    return none('Drag to paint cells | Right drag to erase | Hold shift for lines');
   }
   const layer = layerForMouseMode(status.mouseMode);
   if (layer !== null) {
@@ -2212,15 +2203,8 @@ export function hintFor(status: Status): {
     // whose meaning follows the tool, rather than two buttons here -- the hint
     // bar is a single row about what the mouse does right now, and the Drawing
     // Controls panel is where both layers are addressable at once.
-    // "PERMANENT trails", because the word is what distinguishes them from the
-    // ones the swarm lays down and decays away -- which is the thing a user
-    // seeing coloured trails already on screen would otherwise assume these are.
-    // Walls need no such qualifier; nothing else in the app draws a barrier.
-    const noun = layer === 'walls' ? 'barriers' : 'permanent trails';
     return {
-      ...none(
-        `Left click to add ${noun} | Right click to erase them | Hold shift for lines`,
-      ),
+      ...none('Left click to add walls | Right click to remove them | Hold shift for lines'),
       clearField: true,
     };
   }
@@ -2325,7 +2309,7 @@ export function hintFor(status: Status): {
   }
 
   return {
-    ...none('Left click a particle to select its cohort'),
+    ...none('Left click a cohort to select it'),
     // The "| Right click to undo any action" clause is a BUTTON now, so it comes
     // off the sentence -- and the button says WHAT would be undone, which the
     // clause never could.
@@ -2534,7 +2518,7 @@ export function barKeySuffix(keys: readonly string[], mobile: boolean): string {
  * Cohort counts the preset buttons offer. Each must be a perfect square, since
  * `dotsIcon` lays it out as one -- 1, 4 and 16 read as die faces at this size.
  */
-const LAYOUT_PRESETS: readonly number[] = [1, 4, 16];
+const LAYOUT_PRESETS: readonly number[] = [1, 4, 9, 16];
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 

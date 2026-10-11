@@ -46,15 +46,20 @@ export type { BrushStroke };
 /** Uniform slot stride; covers `minUniformBufferOffsetAlignment` (<= 256). */
 const SLOT = 256;
 
-/** A landed pick: which cohort, and which cell. A miss has `cell` null. */
+/**
+ * A landed pick: which cohort, and which cell. A miss has `index` -1 (the
+ * shape `CohortHighlight`'s `PickSample` reads) and `cell` null.
+ */
 export interface NcaPick {
   readonly key: number;
+  /** Row-major cell index, or -1 for a miss. */
+  readonly index: number;
   readonly cohort: number;
   readonly cell: readonly [number, number] | null;
 }
 
-export function isHit(pick: NcaPick | null): pick is NcaPick & { cell: readonly [number, number] } {
-  return pick !== null && pick.cell !== null;
+export function isHit(pick: NcaPick | null): boolean {
+  return pick !== null && pick.index >= 0;
 }
 
 export interface NcaSystemOptions {
@@ -617,15 +622,29 @@ export class NcaSystem {
     const key = ++this.pickKey;
     const inside = uv[0] >= 0 && uv[0] <= 1 && uv[1] >= 0 && uv[1] <= 1;
     if (!inside) {
-      this.pendingPick = { key, cohort: -1, cell: null };
+      this.pendingPick = { key, index: -1, cohort: -1, cell: null };
       return;
     }
     const cell = uvToCell(uv, W, H);
     this.pendingPick = {
       key,
+      index: cell[1] * W + cell[0],
       cohort: cohortAt(this.config.cohorts, W, H, cell[0], cell[1]),
       cell,
     };
+  }
+
+  /** A pick that lands on `cohort` itself (its centre cell): Enter's confirm. */
+  requestCohortPick(cohort: number): void {
+    const [W, H] = this.canvasSize;
+    const rect = cohortRects(this.config.cohorts, W, H)[cohort];
+    const key = ++this.pickKey;
+    if (rect === undefined) {
+      this.pendingPick = { key, index: -1, cohort: -1, cell: null };
+      return;
+    }
+    const cell: [number, number] = [rect.x0 + (rect.w >> 1), rect.y0 + (rect.h >> 1)];
+    this.pendingPick = { key, index: cell[1] * W + cell[0], cohort, cell };
   }
 
   /** Destructive read of the last pick, mirroring the particle API. */
@@ -671,7 +690,7 @@ export class NcaSystem {
   }
 
   /** Overwrite the current state. For the parity check. */
-  writeState(data: Float32Array): void {
+  writeState(data: Float32Array<ArrayBuffer>): void {
     const dst = this.currentIsA ? this.stateA : this.stateB;
     if (dst === null) return;
     this.device.queue.writeBuffer(dst, 0, data);
@@ -679,7 +698,7 @@ export class NcaSystem {
   }
 
   /** Overwrite the walls mask (one u32 per cell). For the parity check. */
-  writeWalls(data: Uint32Array): void {
+  writeWalls(data: Uint32Array<ArrayBuffer>): void {
     this.device.queue.writeBuffer(this.wallsBuffer, 0, data);
   }
 

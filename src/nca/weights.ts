@@ -22,12 +22,12 @@ import {
 import { SALT, gaussian, hash3, seedToU32 } from './rng.ts';
 
 /** A fresh random network for `arch`, keyed by a u32 seed. */
-export function initWeights(arch: NcaArch, seed: number): Float32Array {
+export function initWeights(arch: NcaArch, seed: number): Float32Array<ArrayBuffer> {
   const layout = paramLayout(arch);
   const out = new Float32Array(layout.count);
   layout.tensors.forEach((t, ti) => {
     for (let i = 0; i < t.size; i++) {
-      out[t.offset + i] = t.std * gaussian(seed >>> 0, ti ^ SALT.init, i);
+      out[t.offset + i] = t.initStd * gaussian(seed >>> 0, ti ^ SALT.init, i);
     }
   });
   return out;
@@ -47,7 +47,7 @@ export function weightsFit(weights: readonly number[] | null, arch: NcaArch): bo
  *    parameter. EVERY cohort is mutated, cohort 0 included, matching the
  *    particle studio: with scale 0 they are all the base exactly.
  */
-export function cohortWeights(config: NcaConfig, k: number): Float32Array {
+export function cohortWeights(config: NcaConfig, k: number): Float32Array<ArrayBuffer> {
   const arch = archOf(config);
   const seed = seedToU32(config.mutationSeed);
   if (!weightsFit(config.weights, arch)) {
@@ -69,7 +69,7 @@ export function cohortWeights(config: NcaConfig, k: number): Float32Array {
 }
 
 /** Every cohort's weights back to back, `cohorts * paramCount` floats. */
-export function allCohortWeights(config: NcaConfig): Float32Array {
+export function allCohortWeights(config: NcaConfig): Float32Array<ArrayBuffer> {
   const count = paramLayout(config).count;
   const n = Math.max(1, Math.round(config.cohorts));
   const out = new Float32Array(n * count);

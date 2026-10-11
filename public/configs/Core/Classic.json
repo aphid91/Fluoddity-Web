@@ -1,0 +1,48 @@
+{
+  "format": "nca",
+  "version": 1,
+  "world": {
+    "boundary": "wrap",
+    "display_mode": "rgba",
+    "display_channel": 0,
+    "display_gain": 1,
+    "show_cohort_borders": true
+  },
+  "configs": [
+    {
+      "architecture": {
+        "channels": 16,
+        "hidden": 128,
+        "perception": "fixed",
+        "learned_kernels": 2,
+        "laplacian": false
+      },
+      "activation": "relu",
+      "dynamics": {
+        "dt": 1,
+        "fire_rate": 0.5,
+        "gain": 1,
+        "state_bound": "clip",
+        "leak": 0,
+        "noise": 0,
+        "alive_mask": true,
+        "alive_threshold": 0.1
+      },
+      "mutation": {
+        "scale": 0.2,
+        "seed": 0.31,
+        "cohorts": 9,
+        "cohort_fences": true
+      },
+      "initial_conditions": {
+        "mode": "seed",
+        "seed_radius": 1,
+        "amplitude": 1,
+        "density": 0.002,
+        "seed": 0.25
+      },
+      "weights": null
+    }
+  ],
+  "notes": "The Growing-NCA architecture (16 channels, 128 hidden, Sobel perception, alive masking, 50% fire rate) -- untrained. About 8k parameters."
+}

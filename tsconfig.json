@@ -19,5 +19,18 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "tools", "vite.config.ts"]
+  "include": ["src", "tools", "vite.config.ts"],
+  // SET ASIDE on the NCA experiments branch: these modules are built on the
+  // particle system and are neither compiled nor tested here. See README.
+  "exclude": [
+    "src/sand",
+    "src/stamp",
+    "src/worlds",
+    "src/archive",
+    "src/particleSystem/particleSystem.ts",
+    "src/particleSystem/*.test.ts",
+    "src/particleSystem/shaders",
+    "tools/migrateMutationV9.ts",
+    "tools/validateMigrated.ts"
+  ]
 }

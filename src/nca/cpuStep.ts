@@ -214,9 +214,9 @@ export function cpuStep(
           let acc = weights[b0 + h]!;
           for (let f = 0; f < P; f++) acc += weights[w0 + h * P + f]! * feats[f]!;
           const a = activate(config.activation, config.gain * acc);
-          for (let c = 0; c < C; c++) delta[c] += weights[w1 + c * Hn + h]! * a;
+          for (let c = 0; c < C; c++) delta[c] = delta[c]! + weights[w1 + c * Hn + h]! * a;
         }
-        for (let c = 0; c < C; c++) delta[c] += weights[b1 + c]!;
+        for (let c = 0; c < C; c++) delta[c] = delta[c]! + weights[b1 + c]!;
       } else {
         const wf = w + off('fc.w');
         const bf = w + off('fc.b');

@@ -380,11 +380,15 @@ export function isCalibrated(prefs: Preferences): boolean {
   return prefs.calibrationVersion >= CALIBRATION_VERSION;
 }
 
-/** `preferences.py:35-92`'s dataclass defaults, verbatim. */
+/**
+ * Defaults, retuned for the NCA studio: the display pass already produces
+ * display-range colour, so brightness is the identity and the tone curve only
+ * rounds off the very top; bloom is off.
+ */
 export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
-  brightness: 2.0,
-  physicsSteps: 5,
-  tonemapSoftness: 2.5,
+  brightness: 1.0,
+  physicsSteps: 2,
+  tonemapSoftness: 0.1,
   motionBlurSamples: 1,
   // ON by default. The counter is how someone learns their machine has room to
   // spare -- or has none -- and neither is discoverable from a checkbox that
@@ -398,12 +402,13 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   // panels start hidden. Folding it to a button, or hiding it outright, are
   // both things they can then choose. See the interface.
   showPhysicsSlider: true,
-  bloomEnabled: true,
+  bloomEnabled: false,
   bloomThreshold: 0.2,
   bloomIntensity: 0.1,
   bloomRadius: 1.0,
   drawSize: 0.01,
-  drawPower: 2.5,
+  // The PAINT tool's value: what it writes into every channel.
+  drawPower: 1.0,
   // Out/Diverge -- index 0 in BRUSH_MODES. THE DEFAULT IN EVERY TOOL, and the
   // only behaviour this brush had before the other three existed, so a session
   // that never opens the dropdown draws exactly as it always did.
@@ -424,7 +429,8 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   // OFF. A research feature that writes a database; nobody gets one without
   // asking. See the interface.
   strongLogging: false,
-  worldSize: .50,
+  // 1 is a 256 x 256 grid. See `nca/gridSize.ts`.
+  worldSize: 1.0,
   canvasAspect: 1.0,
   // Basic for a first-run user. Persisted thereafter -- see the interface.
   advancedProject: false,
@@ -525,7 +531,9 @@ export function coerce(key: PreferenceKey, value: unknown): number | boolean | n
 }
 
 /** Where preferences live. Namespaced so it cannot collide on a shared origin. */
-export const STORAGE_KEY = 'fluoddity.preferences';
+// Its own key, not the particle studio's: the two can share an origin, and
+// their World Size and Physics Rate mean different things.
+export const STORAGE_KEY = 'fluoddity-nca.preferences';
 
 /**
  * The `localStorage`-shaped slice this module needs.

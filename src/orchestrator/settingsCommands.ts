@@ -1,319 +1,156 @@
 /**
- * Settings commands: routing an edit to whichever source owns the field.
- * The port of `orchestrator/settings_commands.py` (131 lines).
+ * Setting edits and the behaviour commands, as pure functions over a Project.
  *
- * Three sources with different semantics (see `ui/settingsSpec.ts`):
+ * Each takes the state it needs and returns the new state; the Orchestrator
+ * owns applying it (`setProject`), recording it (`recordHistory`) and any
+ * restart. Nothing here touches the GPU.
  *
- *   CONFIG  per-particle, in the project. Saved.
- *   WORLD   global simulation state, in the project. Saved.
- *   PREFS   editor state. NOT saved with a project.
+ * ## Architecture edits carry the weights across
  *
- * ## Pure functions, and why that shape
- *
- * The desktop's mixin mutates `self.project` and `self.prefs` directly. These
- * take the current values and RETURN the new ones, which does two things: the
- * Orchestrator keeps its "one place project state changes" property (nothing
- * here calls `setProject`), and the routing becomes testable under
- * `node --test` with no GPU, no device and no Orchestrator -- which is where
- * `settingsCommands.test.ts` checks that a WORLD setting does not land on a
- * config, the failure that would otherwise look like a physics quirk.
- *
- * ## Preference edits are NOT recorded in history
- *
- * They are editor state, outside the project entirely, so there is nothing for
- * undo to restore. That is why `applySettingEdit` returns a tagged union rather
- * than one project: the caller has to know which source it hit, because only
- * two of the three record.
+ * Editing `channels`, `hidden`, `perception`, `learnedKernels` or `laplacian`
+ * changes the weight vector's LAYOUT, so a plain field write would leave
+ * `weights` the wrong length (which `cohortWeights` would then treat as
+ * generated -- a new random network). `applySettingEdit` routes those fields
+ * through `withArchEdit`, which zero-pads the old network into the new shape:
+ * growing keeps the behaviour, and mutation fills the new capacity in.
  */
 
-import {
-  type Preferences,
-  withValue,
-} from '../prefs/preferences.ts';
+import { type Preferences, withValue } from '../prefs/preferences.ts';
 import {
   type Project,
   editSelected,
   editWorld,
   selectedConfig,
+  withConfigs,
 } from '../project/project.ts';
-import { type SimulationConfig, type WorldSettings, IC } from '../particleSystem/config.ts';
+import {
+  ARCH_FIELDS,
+  ARCH_LIMITS,
+  type NcaArch,
+  type NcaConfig,
+  type NcaWorld,
+} from '../nca/ncaConfig.ts';
+import { withArchEdit } from '../nca/weights.ts';
 import { type Setting, CONFIG, PREFS, WORLD, seedSetting, settingFor } from '../ui/settingsSpec.ts';
 
-/** The two things an edit can produce. */
 export type SettingEditResult =
   | { readonly kind: 'project'; readonly project: Project }
   | { readonly kind: 'prefs'; readonly prefs: Preferences };
 
-/** What an edit reads. Passed in rather than reached for. */
 export interface SettingEditSources {
   readonly project: Project;
   readonly prefs: Preferences;
 }
 
-/**
- * Route an edit to whichever of the three sources owns the field.
- *
- * **Returns the sources UNCHANGED when the field is unknown.** `editSelected`
- * and `editWorld` both return their receiver for a field the target does not
- * have, and `withValue` does the same -- which is what keeps the caller's
- * `before !== after` history guard meaningful. A registry entry naming a field
- * that no longer exists therefore does nothing rather than recording an empty
- * undo step every frame the slider moves.
- *
- * The value is cast to the field's type at the boundary. The registry is
- * string-keyed by nature (it is a data table), so this is the one place where
- * "a `Setting` names a real field" stops being checkable and starts being
- * asserted -- `settingsSpec.test.ts` asserts it for all 35 entries against the
- * real interfaces, which is where that check belongs.
- */
+function isArchField(field: string): field is keyof NcaArch {
+  return (ARCH_FIELDS as readonly string[]).includes(field);
+}
+
+/** An architecture value as the layout will read it. */
+function archValue(field: keyof NcaArch, value: number | boolean): number | boolean {
+  if (field === 'laplacian') return !!value;
+  const n = Math.round(Number(value));
+  const limits = (ARCH_LIMITS as Record<string, readonly [number, number]>)[field];
+  return limits === undefined ? n : Math.max(limits[0], Math.min(limits[1], n));
+}
+
+/** Route one registry edit to the project or the preferences. */
 export function applySettingEdit(
   sources: SettingEditSources,
   setting: Setting,
   value: number | boolean,
 ): SettingEditResult {
   if (setting.source === CONFIG) {
-    const field = setting.field as keyof SimulationConfig;
+    const project = sources.project;
+    if (isArchField(setting.field)) {
+      const config = selectedConfig(project);
+      const v = archValue(setting.field, value);
+      if (config[setting.field] === v) return { kind: 'project', project };
+      const next = withArchEdit(config, { ...config, [setting.field]: v });
+      const configs = project.configs.slice();
+      configs[project.selected] = next;
+      return { kind: 'project', project: withConfigs(project, configs) };
+    }
+    const field = setting.field as keyof NcaConfig;
     return {
       kind: 'project',
-      project: editSelected(
-        sources.project,
-        field,
-        value as SimulationConfig[typeof field],
-      ),
+      project: editSelected(project, field, value as NcaConfig[typeof field]),
     };
   }
-
   if (setting.source === WORLD) {
-    const field = setting.field as keyof WorldSettings;
+    const field = setting.field as keyof NcaWorld;
     return {
       kind: 'project',
-      project: editWorld(sources.project, field, value as WorldSettings[typeof field]),
+      project: editWorld(sources.project, field, value as NcaWorld[typeof field]),
     };
   }
-
   if (setting.source === PREFS) {
     return { kind: 'prefs', prefs: withValue(sources.prefs, setting.field, value) };
   }
-
-  // An unknown source. Unreachable while `Source` is a closed union, and
-  // returning the project untouched is the honest answer if it ever is not.
   return { kind: 'project', project: sources.project };
 }
 
 /**
- * New mutation seed. Only meaningful while Mutation Scale > 0.
- *
- * Drawn from [0,1) to match the convention the configs use -- the value is fed
- * straight into the hash, so any float in range is valid.
- *
- * Returns `null` when the registry has no SEED control, which is the port of
- * the desktop's silent `return` (`settings_commands.py:76-77`). Looking the
- * setting up by KIND rather than by field name is deliberate: SEED means "a
- * randomizable opaque selector" and there is exactly one, so naming the field
- * here would put a second copy of that name outside the registry.
- *
- * `rng` is injectable so the test can assert the seed actually MOVED without
- * depending on `Math.random` -- and, more usefully, that it lands in [0,1).
+ * Reroll Mutations: a new mutation seed, so every cohort gets a new child of
+ * the same base. Looked up by KIND through the registry so the field name
+ * lives in one place. Null when the registry has no config SEED.
  */
 export function randomizeSeed(
   project: Project,
   rng: () => number = Math.random,
 ): Project | null {
   const setting = seedSetting();
-  if (setting === null) return null;
-  if (setting.source !== CONFIG) return null;
-  const field = setting.field as keyof SimulationConfig;
-  return editSelected(project, field, rng() as SimulationConfig[typeof field]);
+  if (setting === null || setting.source !== CONFIG) return null;
+  const field = setting.field as keyof NcaConfig;
+  return editSelected(project, field, rng() as NcaConfig[typeof field]);
 }
 
 /**
- * The "no target rule" sentinel. 80 floats = 10 FourierCenters x (freq + amp).
- *
- * **AN ALL-ZERO RULE IS A SENTINEL, not a rule**: `entityUpdate.wgsl` reads it
- * as "no target given" and generates random centers from the mutation seed
- * instead. So zeroing is how the host asks for a new behaviour without having
- * to reproduce the shader's generator in TypeScript.
- */
-export const ZERO_RULE: readonly number[] = Object.freeze(new Array<number>(80).fill(0));
-
-/**
- * Throw away the selected config's rule and grow a fresh one.
- *
- * **THE SEED MOVES TOO, and it has to.** The fallback is seeded by
- * `mutationSeed`, so zeroing the rule alone would regenerate the SAME behaviour
- * every time -- the command would appear to do nothing on the second press.
- * Both fields change together as one undoable step, because together they are
- * one act (`settings_commands.py:82-105`).
+ * Randomize Behavior: drop the base network so every cohort gets a fresh
+ * random one (`weights: null`), under a new seed.
  */
 export function randomizeBehavior(
   project: Project,
   rng: () => number = Math.random,
 ): Project {
-  const zeroed = editSelected(project, 'rule', ZERO_RULE.slice());
-  return editSelected(zeroed, 'mutationSeed', rng());
+  const generated = editSelected(project, 'weights', null);
+  return editSelected(generated, 'mutationSeed', rng());
 }
 
-/**
- * Set the cohort count and lay those cohorts out on a grid, as one act.
- *
- * The two fields move together because the gesture is one intent -- see the
- * `setPopulationLayout` command comment. The caller resets the simulation
- * afterwards; that is not state, so it is not this function's business.
- *
- * **The count is clamped HERE, against the registry**, rather than trusted from
- * the caller. The bounds live in exactly one place (`settingsSpec.ts`), and a
- * button that hardcodes 16 must not be able to write a config the Cohorts
- * slider could never produce. Falls back to the raw value only if the registry
- * has no Cohorts entry, which is the same degradation `settingFor`'s other
- * callers take.
- */
+/** Set the cohort count from the overlay's layout buttons. */
 export function setPopulationLayout(project: Project, cohorts: number): Project {
   const setting = settingFor(CONFIG, 'cohorts');
   const clamped =
     setting === null
       ? cohorts
       : Math.min(Math.max(Math.round(cohorts), setting.lo), setting.hi);
-  const sized = editSelected(project, 'cohorts', clamped);
-  return editSelected(sized, 'initialConditions', IC.GRID);
+  return editSelected(project, 'cohorts', clamped);
 }
 
 /**
- * The Hazard Rate the camera setup asks for: ~67% of the slider's travel on its
- * cubed curve (`0.01 * 0.67**3`). High enough that the swarm keeps renewing
- * itself across the whole world, which is what lets a camera field sculpt it
- * rather than push one settled shape around.
+ * Whether every cohort is currently a fresh random network rather than a
+ * mutation of a base -- the state Randomize Behavior leaves.
  */
-export const CAMERA_HAZARD_RATE = 0.003;
-
-/**
- * The Camera tab's "works best with" setup, on the SELECTED config: Random
- * initial conditions and a high Hazard Rate. Random spreads the particles over
- * the whole picture, and the hazard keeps respawning them there -- so the
- * camera has material everywhere rather than only where the swarm happened to
- * settle.
- *
- * NO RESET. Initial conditions are where hazard respawns land, so the swarm
- * redistributes on its own within seconds; restarting would throw away what the
- * user is looking at for the sake of getting there one moment sooner.
- */
-export function applyCameraSetup(project: Project): Project {
-  const random = editSelected(project, 'initialConditions', IC.RANDOM);
-  return editSelected(random, 'hazardRate', CAMERA_HAZARD_RATE);
-}
-
-/** Whether the selected config already has the camera setup. */
-export function hasCameraSetup(project: Project): boolean {
-  const config = selectedConfig(project);
-  return config.initialConditions === IC.RANDOM && config.hazardRate === CAMERA_HAZARD_RATE;
+export function weightsAreGenerated(project: Project): boolean {
+  return selectedConfig(project).weights === null;
 }
 
 /**
- * Whether the selected config's rule is the all-zero sentinel.
- *
- * Not used by the commands above -- it is what a UI needs to say "this config's
- * behaviour is generated" rather than showing 80 zeros. `entityUpdate.wgsl`
- * tests only TWO lanes for exactly zero, so a rule that is zero in those lanes
- * and non-zero elsewhere would ALSO trigger generation on the GPU while
- * reading as authored here. Checking every lane is the conservative direction:
- * this can say "authored" about a rule the GPU generates, but never the reverse.
- */
-export function ruleIsSentinel(project: Project): boolean {
-  return selectedConfig(project).rule.every((v) => v === 0);
-}
-
-/**
- * The two float ranges `derive_entity_rule` tests for exactly zero.
- *
- * A `Rule` is 10 `FourierCenter`s of 8 floats each -- `frequency` at 0..3 of the
- * center, `amplitude` at 4..7 (`common.wgsl`). So `centers[0].frequency` is
- * floats 0..3 and `centers[5].amplitude` is floats 44..47. Mirrored from
- * `rule.wgsl:173-174`; `settingsCommands.test.ts` pins the arithmetic.
- */
-const GENERATE_TEST_LANES: readonly (readonly [number, number])[] = [
-  [0, 4], // centers[0].frequency
-  [44, 48], // centers[5].amplitude
-];
-
-/**
- * Whether the GPU will GENERATE the rule rather than mutate the authored one.
- *
- * **THE SHADER'S OWN CONDITION, not the conservative one.** `ruleIsSentinel`
- * above tests all 80 floats and is deliberately cautious in the safe direction
- * for a UI label; this has to be EXACT, because it gates whether a selection
- * does anything at all. A rule that is zero in these two lanes and non-zero
- * elsewhere is generated by the GPU -- each cohort really does obey a different
- * rule, and selecting one is a real act -- while `ruleIsSentinel` would call it
- * authored and, at mutation scale 0, wrongly suppress the selection.
- *
- * Nothing in the UI can produce such a rule, so this is a corner case rather
- * than a live bug. It costs one function to be right about it instead of
- * approximately right. See `selectionIsNoOp`.
- */
-export function ruleIsGeneratedOnGpu(project: Project): boolean {
-  const rule = selectedConfig(project).rule;
-  return GENERATE_TEST_LANES.every(([from, to]) => {
-    for (let i = from; i < to; i++) {
-      if (rule[i] !== 0) return false;
-    }
-    return true;
-  });
-}
-
-/**
- * Whether adopting a picked rule would change nothing.
- *
- * **AT MUTATION SCALE ZERO, EVERY COHORT OBEYS THE SAME RULE.** `mutate_rule`
- * scales both of its terms by `amount`, so at 0 the amplitude delta is 0 and the
- * frequency multiplier is exactly 1.0 -- the rule comes back byte-identical to
- * the one it went in as, for every cohort. Adopting it therefore installs the
- * rule the config already has: the simulation resets, an undo entry is pushed,
- * and the picture is unchanged. That reads as the app doing something arbitrary,
- * and the undo stack fills with steps that undo to where they started.
- *
- * NOT WHEN THE RULE IS GENERATED, because then `mutate_rule` never runs: the
- * GPU takes the generate branch, each cohort gets a genuinely different rule
- * from `rule_seed = mutationSeed + floor(cohort)`, and adopting one is the only
- * way to capture it. Mutation scale is irrelevant on that path -- which is
- * exactly why this asks the shader's question rather than the cautious one.
+ * Whether committing a cohort would change nothing: every cohort runs the
+ * base network exactly (mutation scale 0 on a concrete base). Generated
+ * cohorts always differ, so selecting one always does something.
  */
 export function selectionIsNoOp(project: Project): boolean {
-  if (ruleIsGeneratedOnGpu(project)) return false;
+  if (weightsAreGenerated(project)) return false;
   return selectedConfig(project).mutationScale === 0;
 }
 
 /**
- * Whether rerolling the mutation seed would change nothing.
- *
- * **THE SAME TWO CONDITIONS AS `selectionIsNoOp`, AND NOT BY COINCIDENCE.**
- * Both ask "does `mutate_rule` have any room to act": at mutation scale 0 it
- * scales both terms to nothing, so the seed picks a variation that is
- * multiplied away and every cohort obeys the base rule regardless. The
- * difference between the two commands is what they then do with that fact --
- * adopting installs a rule identical to the one already there, rerolling moves
- * `mutationSeed` and marks the document dirty (`project.ts` counts a seed move
- * as a change) -- but the emptiness is one condition, so it is written once.
- *
- * **TRUE WHEN THE RULE IS GENERATED, WHICH REVERSES WHAT THIS USED TO SAY.**
- * The GPU seeds its generator from `mutationSeed`, so a reroll there really
- * does regenerate the behaviour -- and on that basis this returned false and
- * the Orchestrator redirected `F` to Randomize Behavior. The redirect is gone.
- * `B` is now the only key for Randomize Behavior and `F` only ever rerolls
- * mutations, so in the one state that has no mutations to reroll `F` must do
- * NOTHING rather than quietly perform the other command.
- *
- * That makes the predicate agree with the UI it drives: the bar's Reroll button
- * and the Simulation menu row are both greyed on exactly this function, and a
- * key that fired while its on-screen twin was greyed was the inconsistency
- * being removed. `Reroll All Behavior` is on screen in this state and is the
- * action it supports.
- *
- * NO LONGER a call to `selectionIsNoOp`: the two now differ. Adopting a picked
- * rule under a generated one is a real act (each cohort obeys a different
- * generated rule, so there is something to pick), which is why that function
- * still returns false there. Rerolling is not. Writing the sentinel test here
- * rather than widening `selectionIsNoOp` is what keeps selection working.
+ * Whether Reroll Mutations would do nothing visible. Under generated weights a
+ * new seed IS a new random population, but that act is Randomize Behavior's,
+ * and `F` deliberately only ever rerolls mutations -- see the Orchestrator.
  */
 export function rerollIsNoOp(project: Project): boolean {
-  if (ruleIsGeneratedOnGpu(project)) return true;
+  if (weightsAreGenerated(project)) return true;
   return selectedConfig(project).mutationScale === 0;
 }
