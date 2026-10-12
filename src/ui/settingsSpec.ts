@@ -615,6 +615,34 @@ export const SETTINGS: readonly Setting[] = [
     help: 'Draw the edges between cohorts.',
     group: 'Display',
   }),
+  // ROLLING TORI. Per STEP, so changing Steps / Frame needs no retuning.
+  setting({
+    field: 'scrollX',
+    label: 'Scroll X',
+    tier: BASIC,
+    source: WORLD,
+    kind: SLIDER,
+    lo: -1.0,
+    hi: 1.0,
+    help:
+      'Rolling tori: scroll the view of every cohort sideways by this many cells ' +
+      'per step (+ is right). Match a soliton\'s velocity and it stands still. ' +
+      'View only -- the simulation is untouched. Reset returns the view home.',
+    group: 'Display',
+  }),
+  setting({
+    field: 'scrollY',
+    label: 'Scroll Y',
+    tier: BASIC,
+    source: WORLD,
+    kind: SLIDER,
+    lo: -1.0,
+    hi: 1.0,
+    help:
+      'Rolling tori: scroll the view of every cohort vertically by this many ' +
+      'cells per step (+ is up). See Scroll X.',
+    group: 'Display',
+  }),
 
   // ================= PREFERENCES: Simulation =================
   setting({

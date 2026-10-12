@@ -258,7 +258,7 @@ test('grouped preserves declaration order, omits empty groups, and filters by so
   for (const [, settings] of grouped(true, [PREFS])) {
     assert.ok(settings.every((s) => s.source === PREFS));
   }
-  assert.equal(bySource(SETTINGS, WORLD).length, 5);
+  assert.equal(bySource(SETTINGS, WORLD).length, 7);
 });
 
 test('outsideMinMagnitude passes everything through for a setting with no floor', () => {

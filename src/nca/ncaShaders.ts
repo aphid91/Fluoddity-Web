@@ -28,11 +28,11 @@ import { SALT } from './rng.ts';
 export const WORKGROUP = 8;
 
 /**
- * The one uniform struct every NCA pass reads. 8 x vec4 = 128 bytes, written
+ * The one uniform struct every NCA pass reads. 9 x vec4 = 144 bytes, written
  * into 256-byte slots selected by dynamic offset (slot 0: the frame's init /
- * brush / display; slot 1 + i: step i).
+ * display; then one per brush stroke; then one per step).
  */
-export const PARAMS_SIZE = 128;
+export const PARAMS_SIZE = 144;
 
 export const PARAMS_STRUCT = /* wgsl */ `
 struct Params {
@@ -44,6 +44,28 @@ struct Params {
     disp  : vec4f,  // x seed radius   y display gain   z display mode   w display channel
     brushA: vec4f,  // xy segment start (uv)   zw segment end (uv)
     brushB: vec4f,  // x radius (aspect-corrected uv)   y paint value   z brush mode   w show borders
+    scroll: vec4f,  // xy view scroll, grid cells per step (grid y down)   z steps since the frame's base offset
+}
+`;
+
+/**
+ * ROLLING TORI: the view of each cohort rectangle scrolls at a constant
+ * velocity, so a soliton moving at that velocity stands still on screen. A
+ * VIEW transform only -- the simulation never moves.
+ *
+ * `scroll_base[k]` is cohort k's accumulated offset at the start of the frame,
+ * already wrapped to its rectangle on the host (exact, however long the run);
+ * `u.scroll.xy * u.scroll.z` adds the sub-steps taken since, so motion-blur
+ * samples between steps see their own step's offset. Rounded to whole cells:
+ * the picture shifts by cells, it is never resampled.
+ *
+ * Display cell `d` (local to the rectangle) shows state cell
+ * `wrap(d + shift)`; the brush inverts it.
+ */
+const SCROLL = /* wgsl */ `
+fn wrapi2(a: vec2i, m: vec2i) -> vec2i { return ((a % m) + m) % m; }
+fn scroll_shift(k: u32) -> vec2i {
+    return vec2i(floor(scroll_base[k] + u.scroll.xy * u.scroll.z + 0.5));
 }
 `;
 
@@ -315,6 +337,10 @@ ${PARAMS_STRUCT}
 @group(0) @binding(0) var<uniform> u : Params;
 @group(0) @binding(1) var<storage, read_write> state : array<f32>;
 @group(0) @binding(2) var<storage, read_write> walls : array<u32>;
+@group(0) @binding(3) var<storage, read> cmap : array<u32>;
+@group(0) @binding(4) var<storage, read> rects : array<vec4u>;
+@group(0) @binding(5) var<storage, read> scroll_base : array<vec2f>;
+${SCROLL}
 
 // Distance from p to segment ab, in the ASPECT-CORRECTED uv metric the reticle
 // is drawn in (uv delta * world half extent), so the brush matches the ring.
@@ -332,7 +358,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let H = u.grid.y;
     if (gid.x >= W || gid.y >= H) { return; }
     let idx = gid.y * W + gid.x;
-    let uv = vec2f((f32(gid.x) + 0.5) / f32(W), 1.0 - (f32(gid.y) + 0.5) / f32(H));
+    // Where this cell is DRAWN under the rolling-tori scroll, so the brush
+    // lands on the cell under the cursor.
+    let k = cmap[idx];
+    let rect = vec4i(rects[k]);
+    let shown = rect.xy + wrapi2(vec2i(gid.xy) - rect.xy - scroll_shift(k), rect.zw);
+    let uv = vec2f((f32(shown.x) + 0.5) / f32(W), 1.0 - (f32(shown.y) + 0.5) / f32(H));
     let s = sqrt(f32(W) / f32(H));
     let ext = vec2f(s, 1.0 / s);
     if (seg_dist(uv, u.brushA.xy, u.brushA.zw, ext) > u.brushB.x) { return; }
@@ -368,6 +399,8 @@ ${PARAMS_STRUCT}
 @group(0) @binding(3) var<storage, read> rects : array<vec4u>;
 @group(0) @binding(4) var<storage, read> walls : array<u32>;
 @group(0) @binding(5) var out_tex : texture_storage_2d<rgba16float, write>;
+@group(0) @binding(6) var<storage, read> scroll_base : array<vec2f>;
+${SCROLL}
 
 fn ch(idx: u32, c: u32) -> f32 {
     if (c >= C) { return 0.0; }
@@ -379,7 +412,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let W = u.grid.x;
     let H = u.grid.y;
     if (gid.x >= W || gid.y >= H) { return; }
-    let idx = gid.y * W + gid.x;
+    // The rectangle is the DISPLAY position's; the state shown comes from the
+    // scrolled cell inside it (rolling tori).
+    let k = cmap[gid.y * W + gid.x];
+    let rect = vec4i(rects[k]);
+    let src = rect.xy + wrapi2(vec2i(gid.xy) - rect.xy + scroll_shift(k), rect.zw);
+    let idx = u32(src.y) * W + u32(src.x);
     let c0 = u32(u.disp.w);
     let gain = u.disp.y;
     let v = vec4f(ch(idx, c0), ch(idx, c0 + 1u), ch(idx, c0 + 2u), ch(idx, c0 + 3u));
@@ -405,12 +443,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     if (walls[idx] != 0u) { col = vec3f(0.32, 0.27, 0.22); }
 
-    let k = cmap[idx];
     if (u.modes.w != 0u && k + 1u != u.modes.w) { col *= 0.3; }
 
     if (u.brushB.w != 0.0 && u.grid.z > 1u) {
-        let rect = rects[k];
-        let edge = (gid.x == rect.x && rect.x > 0u) || (gid.y == rect.y && rect.y > 0u);
+        let g = vec2i(gid.xy);
+        let edge = (g.x == rect.x && rect.x > 0) || (g.y == rect.y && rect.y > 0);
         if (edge) { col = col * 0.35 + vec3f(0.08); }
     }
 

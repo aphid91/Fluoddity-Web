@@ -71,6 +71,13 @@ new one is ready.
   right-drag erases), **Walls** (cells held at zero; right-drag removes).
 - **Camera**: one passthrough mode with nearest magnification. The NCA display
   pass does the colouring (RGB / RGBA-on-white / Signed / Channel).
+- **Rolling tori** (Display > Scroll X / Scroll Y, saved with the project): the
+  view of every cohort rectangle scrolls at a constant velocity in cells per
+  STEP, wrapping inside the rectangle, so a soliton moving at that velocity
+  stands still -- and changing Steps / Frame needs no retuning. View only: the
+  offset accumulates per step on the host (no jump when the slider moves),
+  resets with Reset, is exact for motion-blur sub-samples, and the brush maps
+  through it so painting lands under the cursor.
 - **Save format**: `{ "format": "nca", "version": 1, ... }` (`config/persistence.ts`),
   enums as names, weights inline or as base64 f32. Particle-era files are
   rejected with a clear message. Share links carry the same document as

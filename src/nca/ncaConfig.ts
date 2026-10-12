@@ -118,6 +118,14 @@ export interface NcaWorld {
   readonly displayChannel: number;
   readonly displayGain: number;
   readonly showCohortBorders: boolean;
+  /**
+   * ROLLING TORI: the view of every cohort scrolls by this many cells per
+   * simulation STEP (+x right, +y up on screen), so a soliton moving at this
+   * velocity holds still. A view transform only; per step, so it survives a
+   * change of Steps / Frame.
+   */
+  readonly scrollX: number;
+  readonly scrollY: number;
 }
 
 export const NCA_CONFIG_DEFAULTS: NcaConfig = Object.freeze({
@@ -153,6 +161,8 @@ export const NCA_WORLD_DEFAULTS: NcaWorld = Object.freeze({
   displayChannel: 0,
   displayGain: 1.0,
   showCohortBorders: true,
+  scrollX: 0,
+  scrollY: 0,
 });
 
 export function makeNcaConfig(overrides: Partial<NcaConfig> = {}): NcaConfig {

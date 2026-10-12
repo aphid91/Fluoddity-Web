@@ -30,6 +30,8 @@ export interface ParamsInput {
   /** -1 for none. */
   readonly highlighted: number;
   readonly brush?: BrushStroke | null;
+  /** Steps taken since the frame's base scroll offset (rolling tori). */
+  readonly substeps?: number;
 }
 
 export function packParams(p: ParamsInput): ArrayBuffer {
@@ -64,6 +66,8 @@ export function packParams(p: ParamsInput): ArrayBuffer {
     f.set([0, 0, 0], 28);
   }
   f[31] = w.showCohortBorders ? 1 : 0;
+  const [vx, vy] = scrollVelocity(w);
+  f.set([vx, vy, p.substeps ?? 0, 0], 32);
   return buf;
 }
 
@@ -77,4 +81,12 @@ export function uvToCell(uv: readonly [number, number], W: number, H: number): [
 /** The centre of cell (x, y) in canvas uv. Inverse of `uvToCell`. */
 export function cellToUv(x: number, y: number, W: number, H: number): [number, number] {
   return [(x + 0.5) / W, 1 - (y + 0.5) / H];
+}
+
+/**
+ * The rolling-tori scroll velocity in GRID cells per step. Grid y runs DOWN
+ * the screen, so the world's +y (up) is grid -y.
+ */
+export function scrollVelocity(world: NcaWorld): [number, number] {
+  return [world.scrollX || 0, -(world.scrollY || 0)];
 }

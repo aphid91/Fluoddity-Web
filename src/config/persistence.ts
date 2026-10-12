@@ -217,6 +217,8 @@ function worldFromDocument(raw: unknown): NcaWorld {
     displayChannel: Math.max(0, Math.round(num(w['display_channel'], d.displayChannel))),
     displayGain: num(w['display_gain'], d.displayGain),
     showCohortBorders: bool(w['show_cohort_borders'], d.showCohortBorders),
+    scrollX: num(w['scroll_x'], d.scrollX),
+    scrollY: num(w['scroll_y'], d.scrollY),
   };
 }
 
@@ -304,6 +306,8 @@ export function toDocument(
       display_channel: world.displayChannel,
       display_gain: world.displayGain,
       show_cohort_borders: world.showCohortBorders,
+      scroll_x: world.scrollX,
+      scroll_y: world.scrollY,
     },
     configs: configs.map(configToDocument),
   };

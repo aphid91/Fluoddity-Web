@@ -36,7 +36,7 @@ import {
   initShader,
   stepShader,
 } from './ncaShaders.ts';
-import { type BrushStroke, packParams, uvToCell } from './ncaUniforms.ts';
+import { type BrushStroke, packParams, scrollVelocity, uvToCell } from './ncaUniforms.ts';
 import { paramCount } from './paramLayout.ts';
 import { allCohortWeights } from './weights.ts';
 
@@ -142,6 +142,17 @@ export class NcaSystem {
 
   /** Next free uniform slot this frame. Slot 0 is the frame's own. */
   private slotCursor = 1;
+  /** The slot the next `renderDisplay` reads: 0, or the last step's. */
+  private displaySlot = 0;
+
+  /**
+   * ROLLING TORI: the accumulated view offset in grid cells (y down), as an
+   * f64 on the host. Added to step by step, so changing the velocity never
+   * makes the view jump, and zeroed by a reset. Uploaded per frame, wrapped to
+   * each cohort's rectangle, into `scrollBuffer` (one vec2f per cohort).
+   */
+  private scrollOffset: [number, number] = [0, 0];
+  private scrollBuffer: GPUBuffer | null = null;
 
   private needsInit = true;
   private pendingBrush: BrushStroke[] = [];
@@ -210,7 +221,7 @@ export class NcaSystem {
       }),
       brush: device.createBindGroupLayout({
         label: 'nca-brush',
-        entries: [uniform, rw(1), rw(2)],
+        entries: [uniform, rw(1), rw(2), ro(3), ro(4), ro(5)],
       }),
       display: device.createBindGroupLayout({
         label: 'nca-display',
@@ -225,6 +236,7 @@ export class NcaSystem {
             visibility: C,
             storageTexture: { access: 'write-only', format: 'rgba16float' },
           },
+          ro(6),
         ],
       }),
     };
@@ -333,6 +345,31 @@ export class NcaSystem {
       this.groups = null;
     }
     this.device.queue.writeBuffer(this.rectsBuffer, 0, data);
+    const scrollBytes = Math.max(16, n * 8);
+    if (this.scrollBuffer === null || this.scrollBuffer.size < scrollBytes) {
+      this.scrollBuffer?.destroy();
+      this.scrollBuffer = this.device.createBuffer({
+        label: 'nca-scroll',
+        size: scrollBytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      this.groups = null;
+    }
+  }
+
+  /** Each cohort's frame-start scroll offset, wrapped to its rectangle. */
+  private uploadScroll(): void {
+    if (this.scrollBuffer === null) return;
+    const [W, H] = this.canvasSize;
+    const rects = cohortRects(this.layoutCohorts, W, H);
+    const [ox, oy] = this.scrollOffset;
+    const data = new Float32Array(rects.length * 2);
+    const wrap = (a: number, m: number): number => ((a % m) + m) % m;
+    rects.forEach((r, k) => {
+      data[k * 2] = wrap(ox, Math.max(1, r.w));
+      data[k * 2 + 1] = wrap(oy, Math.max(1, r.h));
+    });
+    this.device.queue.writeBuffer(this.scrollBuffer, 0, data);
   }
 
   /** Rebuild every cohort's weights if anything they derive from moved. */
@@ -380,6 +417,8 @@ export class NcaSystem {
     const p = this.pipelines;
     if (p === null || this.stateA === null || this.stateB === null) return;
     if (this.weightsBuffer === null || this.rectsBuffer === null) return;
+    if (this.scrollBuffer === null) return;
+    const scroll = this.scrollBuffer;
     const device = this.device;
     const L = this.layouts;
     const uniform = { buffer: this.uniforms, size: PARAMS_SIZE };
@@ -405,6 +444,9 @@ export class NcaSystem {
           { binding: 0, resource: uniform },
           { binding: 1, resource: { buffer: state } },
           { binding: 2, resource: { buffer: this.wallsBuffer } },
+          { binding: 3, resource: { buffer: this.cmapBuffer } },
+          { binding: 4, resource: { buffer: this.rectsBuffer! } },
+          { binding: 5, resource: { buffer: scroll } },
         ],
       });
     const display = (state: GPUBuffer, label: string): GPUBindGroup =>
@@ -418,6 +460,7 @@ export class NcaSystem {
           { binding: 3, resource: { buffer: this.rectsBuffer! } },
           { binding: 4, resource: { buffer: this.wallsBuffer } },
           { binding: 5, resource: this.displayView },
+          { binding: 6, resource: { buffer: scroll } },
         ],
       });
     this.groups = {
@@ -496,7 +539,7 @@ export class NcaSystem {
     this.groups = null;
   }
 
-  private params(step: number, brush: BrushStroke | null = null): ArrayBuffer {
+  private params(step: number, brush: BrushStroke | null = null, substeps = 0): ArrayBuffer {
     const [W, H] = this.canvasSize;
     return packParams({
       W,
@@ -506,6 +549,7 @@ export class NcaSystem {
       step,
       highlighted: this.highlighted,
       brush,
+      substeps,
     });
   }
 
@@ -536,6 +580,7 @@ export class NcaSystem {
   prepareFrame(encoder: GPUCommandEncoder, steps: number): void {
     this.ensureUniformCapacity(1 + this.pendingBrush.length + Math.max(0, steps));
     this.slotCursor = 1;
+    this.displaySlot = 0;
     const p = this.pipelines;
     if (p === null || !this.ensureBound()) return;
     const g = this.groups!;
@@ -552,8 +597,11 @@ export class NcaSystem {
       // Init writes `dst`: into A is the B->A group, into B the A->B one.
       this.dispatch(encoder, p.init, this.currentIsA ? g.stepBtoA : g.stepAtoB, 0, 'nca-init');
       this._frameCount = 0;
+      this.scrollOffset = [0, 0];
       this.needsInit = false;
     }
+    // AFTER the reset, which zeroes it. Read by this frame's brush and display.
+    this.uploadScroll();
 
     for (const stroke of this.pendingBrush) {
       const slot = this.slotCursor++;
@@ -586,15 +634,24 @@ export class NcaSystem {
     this.slotCursor += steps;
     const queue = this.device.queue;
     for (let i = 0; i < steps; i++) {
-      queue.writeBuffer(this.uniforms, (base + i) * SLOT, this.params(this._frameCount + i));
+      // `substeps` = i + 1: a display rendered after step i reads THIS slot,
+      // and so sees the scroll offset of the step it shows.
+      queue.writeBuffer(
+        this.uniforms,
+        (base + i) * SLOT,
+        this.params(this._frameCount + i, null, i + 1),
+      );
     }
     const g = this.groups;
     for (let i = 0; i < steps; i++) {
       this.dispatch(encoder, p.step, this.currentIsA ? g.stepAtoB : g.stepBtoA, base + i, 'nca-step');
       this.currentIsA = !this.currentIsA;
+      this.displaySlot = base + i;
       onSubStep?.(encoder, i);
     }
     this._frameCount += steps;
+    const [vx, vy] = scrollVelocity(this.world);
+    this.scrollOffset = [this.scrollOffset[0] + vx * steps, this.scrollOffset[1] + vy * steps];
   }
 
   /** Write the display texture from the current state; returns its view. */
@@ -602,7 +659,13 @@ export class NcaSystem {
     const p = this.pipelines;
     if (p !== null && this.ensureBound()) {
       const g = this.groups!;
-      this.dispatch(encoder, p.display, this.currentIsA ? g.displayA : g.displayB, 0, 'nca-display');
+      this.dispatch(
+        encoder,
+        p.display,
+        this.currentIsA ? g.displayA : g.displayB,
+        this.displaySlot,
+        'nca-display',
+      );
     }
     return this.displayView;
   }
@@ -714,6 +777,7 @@ export class NcaSystem {
     this.stateB?.destroy();
     this.weightsBuffer?.destroy();
     this.rectsBuffer?.destroy();
+    this.scrollBuffer?.destroy();
     this.cmapBuffer.destroy();
     this.wallsBuffer.destroy();
     this.uniforms.destroy();
