@@ -599,7 +599,7 @@
     flex-direction: column;
     gap: calc(var(--btn-gap) * var(--us));
     box-sizing: border-box;
-    padding: calc(var(--sec-pad) * var(--us));
+    padding: calc(var(--sec-pad-y) * var(--us)) calc(var(--sec-pad) * var(--us));
     background: var(--m-chrome);
     border: var(--m-bw) solid var(--m-edge);
     border-radius: var(--rs);
@@ -630,7 +630,9 @@
   .sizesec .sizes {
     grid-template-columns: repeat(var(--cols), calc(var(--size-w) * var(--us)));
   }
-  .app[data-sizesvert="on"] .sizesec .sizes { --cols: 1; }
+  /* One column of sizes, set separately for the sidebar and the band. */
+  .app[data-bandsizesvert="on"] .sizesec .sizes { --cols: 1; }
+  .app[data-sidesizesvert="on"]:not([data-plan="band"]) .tools .sizes { --cols: 1; }
 
   /* THE TOOL BOX: under Simulation, sidebar plan only, when it fits. */
   .sec.ctxbox { display: none; }
@@ -685,6 +687,15 @@
     background: currentColor;
     width: calc(var(--dot) * var(--us));
     height: calc(var(--dot) * var(--us));
+  }
+  /* PROPOSAL: compressed brush sizes. Half-height buttons holding a
+     horizontal line per size, MacPaint's line-width picker; two rows of
+     them stand about as tall as one row of tools. */
+  .app[data-sizelines="on"] .size { height: calc(var(--size-h) * 0.5 * var(--us)); }
+  .app[data-sizelines="on"] .size i {
+    width: 62%;
+    height: calc(var(--ln) * var(--us));
+    border-radius: 0;
   }
   .simrow {
     display: flex;
@@ -996,7 +1007,7 @@
   <aside class="controls" id="controls">
     <header class="ctl-head">
       <h1>Sand Layout Bench</h1>
-      <p>A mock of the sand UI on different screens. Nothing is wired up. Sizes are CSS pixels at UI scale 1. The defaults are the app as shipped with the v1 proposal on; untick the proposal to see the app as it is. A blue label • marks a value you have changed from the defaults.</p>
+      <p>A mock of the sand UI on different screens. Nothing is wired up. Sizes are CSS pixels at UI scale 1. The defaults are the app as shipped with the v1 proposal on; “App as shipped” in the proposal group shows the app as it is. A blue label • marks a value you have changed from the defaults.</p>
       <div id="live-readout" class="chips"></div>
     </header>
     <div id="groups"></div>
@@ -1059,6 +1070,13 @@
   // The brush-size dots, as sandUi.buildSizes draws them: 4 + 12·sqrt(r / largest)
   // over BRUSH_SIZES' radii 0.01, 0.025, 0.05, 0.1.
   const SIZES = [0.01, 0.025, 0.05, 0.1].map((r) => +(4 + 12 * Math.sqrt(r / 0.1)).toFixed(2));
+  // The compressed sizes' line thicknesses: Thinnest to Thickest, spaced on a
+  // log scale of the radii, so each step looks like the same proportional jump.
+  const RADII = [0.01, 0.025, 0.05, 0.1];
+  function lineWidths() {
+    const span = Math.log(RADII[RADII.length - 1] / RADII[0]);
+    return RADII.map((r) => +(S.lnMin * (S.lnMax / S.lnMin) ** (Math.log(r / RADII[0]) / span)).toFixed(2));
+  }
   // Swatch names: the shipped configs. Colours as the app's defaults:
   // hue = slot × golden-ratio conjugate, saturation 0.8, value 1.
   const SWATCH_NAMES = [
@@ -1108,7 +1126,7 @@
     // sand.html :root
     ui: 1.15, pad: 5, corner: 5,
     swD: 44, swGap: 5, swNameFs: 9, barPad: 0,
-    sideW: 150, secPad: 10, btnGap: 4, labelFs: 9,
+    sideW: 150, secPad: 10, secPadY: 10, btnGap: 4, labelFs: 9,
     toolH: 44, toolCols: 2, sizeH: 44, simD: 44, resetH: 44, boxH: 170,
     bandToolCols: 3, sizeW: 37,
     wbtnH: 30, wswD: 56, wswGap: 9, wswFs: 10, wlBg: 0.5,
@@ -1117,12 +1135,13 @@
     // sandDefaults.json (session.visibleCount)
     swCount: 30,
     // behaviour, as built
-    portraitPlan: 'band', overflow: 'scroll', swJustify: 'center', toolBox: true, sizesVert: false,
+    portraitPlan: 'band', overflow: 'scroll', swJustify: 'center', toolBox: true,
+    sideSizesVert: false, bandSizesVert: false,
     skin: 'darkroom',
   };
   // The bench's own: what to show, and how. Not part of the app.
   const BENCH = {
-    view: 'gallery', zoomMode: 'fit', previewH: 300, focus: 'iphone',
+    view: 'live', zoomMode: 'fit', previewH: 300, focus: 'iphone',
     drawerOpen: false, drawerW: 230,
     showStatus: true, icState: 'off', showConfirm: false, showSafe: true,
     flagTargets: true, minTarget: 44,
@@ -1139,6 +1158,13 @@
     simToggle: true,      // one Play/Pause toggle, Reset beside it
     resetStyle: 'round',  // ...as a circle, or a pill with its label
     bandTsm: true,        // the band reads Tools, Sizes, Simulation
+    sizeLines: true,      // brush sizes as half-height line buttons
+    lnMin: 1.5,           // ...from this thick
+    lnMax: 10,            // ...to this
+    sideSizesVert: true,  // the sidebar's sizes in one column
+    labelFs: 8,           // smaller section labels
+    secPad: 5,            // less padding beside the panels' contents
+    secPadY: 3,           // ...and above the label and below the buttons
     swScroll: true,       // the swatch bar scrolls, with arrows
     swArrowW: 28,
   };
@@ -1146,7 +1172,22 @@
   const BASELINE = { ...APP, ...PROPOSAL };
   const DEFAULTS = { ...APP, ...PROPOSAL, ...BENCH };
 
-  const KEY = 'fluoddity-sand-layout-bench-v3';
+  const KEY = 'fluoddity-sand-layout-bench-v5';
+
+  /**
+   * The app as shipped: every proposal value back to the app's, and every
+   * proposal switch off. Values the app does not have (arrow width, line
+   * thicknesses, Reset's style) stay, so turning a switch back on finds them.
+   */
+  function proposalOff() {
+    for (const [k, v] of Object.entries(PROPOSAL)) {
+      if (k in APP) S[k] = APP[k];
+      else if (typeof v === 'boolean') S[k] = false;
+    }
+  }
+  function proposalOn() {
+    Object.assign(S, PROPOSAL);
+  }
   const clone = (o) => JSON.parse(JSON.stringify(o));
   function load() {
     try {
@@ -1172,7 +1213,7 @@
   const VARS = {
     pad: '--pad', corner: '--corner',
     swD: '--sw-d', swGap: '--sw-gap', swNameFs: '--sw-name-fs', barPad: '--bar-pad',
-    sideW: '--side-w', secPad: '--sec-pad', btnGap: '--btn-gap', labelFs: '--label-fs',
+    sideW: '--side-w', secPad: '--sec-pad', secPadY: '--sec-pad-y', btnGap: '--btn-gap', labelFs: '--label-fs',
     toolH: '--tool-h', toolCols: '--tool-cols', sizeH: '--size-h',
     simD: '--sim-d', resetH: '--reset-h', boxH: '--box-h',
     bandToolCols: '--band-tool-cols', sizeW: '--size-w',
@@ -1190,11 +1231,16 @@
 
   const GROUPS = [
     { title: 'v1 proposal', items: [
+      { type: 'buttons', buttons: [['proposal-off', 'App as shipped'], ['proposal-on', 'Proposal on']] },
       CHK('hideStamp', 'Hide the Stamp tool'),
       CHK('wallsSwatch', 'Walls is a swatch (leftmost), not a tool'),
       CHK('simToggle', 'One Play/Pause toggle, Reset beside it'),
       SEG('resetStyle', 'Reset', [['round', 'Circle'], ['pill', 'Pill with label']]),
       CHK('bandTsm', 'Band order: Tools, Sizes, Simulation'),
+      CHK('sizeLines', 'Compressed brush sizes (lines, half height)'),
+      R('lnMin', 'Thinnest line', 0.5, 6, 0.25),
+      R('lnMax', 'Thickest line', 4, 20, 0.5),
+      NOTE('Also in the proposal: smaller section labels (Label size 8), less panel padding (sides 5, top/bottom 3), and the sidebar’s brush sizes in one column.'),
       CHK('swScroll', 'Swatch bar scrolls (arrows, drag)'),
       R('swArrowW', 'Arrow width', 12, 56),
       NOTE('With Walls a swatch, its bar buttons (Clear all walls, Restore initial walls) go. Scrolling: drag the bar (with the mouse here, a finger on the phone) or press an arrow; there is one on each side with more to see.'),
@@ -1246,12 +1292,14 @@
     ] },
     { title: 'Sidebar', items: [
       R('sideW', 'Width', 90, 280),
-      R('secPad', 'Panel padding', 2, 24),
+      R('secPad', 'Panel padding, sides', 0, 24),
+      R('secPadY', 'Panel padding, top/bottom', 0, 24),
       R('btnGap', 'Button gap', 0, 16),
       R('labelFs', 'Label size', 7, 14),
       R('toolH', 'Tool height', 32, 96),
       R('toolCols', 'Tool columns', 1, 3),
       R('sizeH', 'Size height', 20, 64),
+      CHK('sideSizesVert', 'Brush sizes in one column'),
       R('simD', 'Play/Pause size', 28, 88),
       R('resetH', 'Reset height', 20, 64),
       CHK('toolBox', 'Tool box under Simulation when there is room'),
@@ -1260,8 +1308,8 @@
     ] },
     { title: 'Band (portrait)', open: false, items: [
       R('bandToolCols', 'Tool columns', 2, 5),
-      NOTE('In the band the sizes are their own section:'),
-      CHK('sizesVert', 'Sizes in one column'),
+      NOTE('In the band the brush sizes are their own section:'),
+      CHK('bandSizesVert', 'Brush sizes in one column'),
       R('sizeW', 'Size width', 24, 80),
     ] },
     { title: 'Touch and overlays', open: false, items: [
@@ -1282,7 +1330,7 @@
   ];
 
   const STRUCTURAL = new Set(['view', 'focus', 'customW', 'customH', 'customTouch', 'swCount', 'swLoaded',
-    'worldsAssigned', 'wallsSwatch']);
+    'worldsAssigned', 'wallsSwatch', 'lnMin', 'lnMax']);
   const groupsEl = document.getElementById('groups');
 
   function fmt(k, v) {
@@ -1306,6 +1354,9 @@
     }
     if (it.type === 'check') {
       return `<label class="row chk" for="c-${it.k}" data-row="${it.k}"><input type="checkbox" id="c-${it.k}" data-k="${it.k}"><span class="rl">${it.label}</span></label>`;
+    }
+    if (it.type === 'buttons') {
+      return `<div class="btn-row">${it.buttons.map(([id, l]) => `<button class="btn" type="button" id="${id}">${l}</button>`).join('')}</div>`;
     }
     if (it.type === 'device') {
       return `<label class="row chk" for="d-${it.id}"><input type="checkbox" id="d-${it.id}" data-dev="${it.id}"><span>${it.label}</span></label>`;
@@ -1374,6 +1425,11 @@
       try { navigator.clipboard.writeText(ta.value).then(done, fallback); } catch (err) { fallback(); }
       return;
     }
+    if (e.target.id === 'proposal-off' || e.target.id === 'proposal-on') {
+      if (e.target.id === 'proposal-off') proposalOff(); else proposalOn();
+      save(); syncControls(); rebuild();
+      return;
+    }
     if (e.target.id === 'reset-all') {
       if (resetArmed) {
         clearTimeout(resetArmed); resetArmed = null;
@@ -1397,6 +1453,7 @@
     const a = document.createElement('div');
     a.className = 'app';
     const count = Math.min(S.swCount, MAX_SWATCHES);
+    const lines = lineWidths();
     const worlds = [...WORLDS.slice(0, S.worldsAssigned).map((w, i) => ({ ...w, i })),
       { name: 'Custom…', g: CUSTOM_ART, i: CUSTOM_WORLD }];
     a.innerHTML =
@@ -1417,13 +1474,13 @@
         `</div>` +
       `</div>` +
       `<aside class="side">` +
-        `<section class="sec sizesec"><div class="lbl">Size</div><div class="grid sizes">` +
-          SIZES.map((d, i) => `<button class="b size tgt" type="button" data-act="size" data-i="${i}" aria-label="Size ${i + 1}"><i style="--dot:${d}"></i></button>`).join('') +
+        `<section class="sec sizesec"><div class="lbl">Brush Size</div><div class="grid sizes">` +
+          SIZES.map((d, i) => `<button class="b size tgt" type="button" data-act="size" data-i="${i}" aria-label="Size ${i + 1}"><i style="--dot:${d};--ln:${lines[i]}"></i></button>`).join('') +
         `</div></section>` +
         `<section class="sec tools"><div class="lbl">Tools</div><div class="grid t">` +
           TOOLS.map((t, i) => `<button class="b tool tgt" type="button" data-act="tool" data-i="${i}">${ICON[t]}<span>${t}</span></button>`).join('') +
-          `</div><div class="lbl sub">Size</div><div class="grid sizes">` +
-          SIZES.map((d, i) => `<button class="b size tgt" type="button" data-act="size" data-i="${i}" aria-label="Size ${i + 1}"><i style="--dot:${d}"></i></button>`).join('') +
+          `</div><div class="lbl sub">Brush Size</div><div class="grid sizes">` +
+          SIZES.map((d, i) => `<button class="b size tgt" type="button" data-act="size" data-i="${i}" aria-label="Size ${i + 1}"><i style="--dot:${d};--ln:${lines[i]}"></i></button>`).join('') +
         `</div></section>` +
         `<section class="sec sim"><div class="lbl">Simulation</div>` +
           `<div class="simrow"><button class="b round tgt" type="button" data-act="play" aria-label="Play">${ICON.play}</button>` +
@@ -1611,12 +1668,14 @@
     ds.status = S.showStatus ? 'on' : 'off';
     ds.safe = S.showSafe ? 'on' : 'off';
     ds.wmenu = S.wmenuOpen ? 'open' : 'closed';
-    ds.sizesvert = S.sizesVert ? 'on' : 'off';
+    ds.sidesizesvert = S.sideSizesVert ? 'on' : 'off';
+    ds.bandsizesvert = S.bandSizesVert ? 'on' : 'off';
     ds.nostamp = S.hideStamp ? 'on' : 'off';
     ds.wallsw = S.wallsSwatch ? 'on' : 'off';
     ds.simtoggle = S.simToggle ? 'on' : 'off';
     ds.resetstyle = S.resetStyle;
     ds.bandtsm = S.bandTsm ? 'on' : 'off';
+    ds.sizelines = S.sizeLines ? 'on' : 'off';
     ds.swscroll = S.swScroll ? 'on' : 'off';
     applySelection(app);
 
@@ -1887,7 +1946,7 @@
   const TOKEN_ORDER = [
     ['ui', '--ui-base'], ['pad', '--pad'], ['corner', '--corner'],
     ['swD', '--sw-d'], ['swGap', '--sw-gap'], ['swNameFs', '--sw-name-fs'], ['barPad', '--bar-pad'],
-    ['sideW', '--side-w'], ['secPad', '--sec-pad'], ['btnGap', '--btn-gap'], ['labelFs', '--label-fs'],
+    ['sideW', '--side-w'], ['secPad', '--sec-pad'], ['secPadY', '--sec-pad-y'], ['btnGap', '--btn-gap'], ['labelFs', '--label-fs'],
     ['toolH', '--tool-h'], ['toolCols', '--tool-cols'], ['sizeH', '--size-h'],
     ['simD', '--sim-d'], ['resetH', '--reset-h'], ['boxH', '--box-h'],
     ['bandToolCols', '--band-tool-cols'], ['sizeW', '--size-w'],
@@ -1904,7 +1963,8 @@
       `swatches: ${S.swJustify}`,
       S.toolBox ? 'sidebar tool box when it fits' : 'no sidebar tool box',
       S.keepSidebar ? 'scale-up keeps the sidebar whole' : 'scale-up ignores the sidebar',
-      S.sizesVert ? 'band sizes in one column' : 'band sizes in two columns',
+      S.sideSizesVert ? 'sidebar brush sizes in one column' : 'sidebar brush sizes in two columns',
+      S.bandSizesVert ? 'band brush sizes in one column' : 'band brush sizes in two columns',
       `look: ${S.skin}`,
     ];
     if (S.portraitPlan === 'drawer') behaviour.push(`drawer width ${S.drawerW}`);
@@ -1913,6 +1973,11 @@
       S.wallsSwatch && 'Walls is the leftmost swatch, not a tool',
       S.simToggle && `one Play/Pause toggle, Reset beside it as a ${S.resetStyle === 'pill' ? 'pill with its label' : 'circle'}`,
       S.bandTsm && 'band order Tools, Sizes, Simulation',
+      S.sizeLines && `compressed brush sizes: half-height buttons with lines ${lineWidths().join(', ')}`,
+      S.sideSizesVert !== APP.sideSizesVert && 'sidebar brush sizes in one column',
+      S.labelFs !== APP.labelFs && `labels ${S.labelFs}`,
+      S.secPad !== APP.secPad && `panel padding sides ${S.secPad}`,
+      S.secPadY !== APP.secPadY && `panel padding top/bottom ${S.secPadY} (new token --sec-pad-y)`,
       S.swScroll && `swatch bar scrolls, arrows ${S.swArrowW} wide`,
     ].filter(Boolean);
 
