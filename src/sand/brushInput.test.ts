@@ -38,16 +38,30 @@ test('setSize ignores out-of-range indices', () => {
 
 test('each tool keeps its own size', () => {
   const b = new BrushInput();
-  b.tool = 'walls';
+  b.tool = 'erase';
   b.setSize(0);
   b.tool = 'shove';
   b.setSize(3);
-  b.tool = 'walls';
+  b.tool = 'erase';
   assert.equal(b.sizeSlot, 0);
   assert.equal(b.radius, BRUSH_SIZES[0]);
   b.tool = 'shove';
   assert.equal(b.radius, BRUSH_SIZES[3]);
   assert.equal(b.allSizes().brush, DEFAULT_BRUSH_SIZE, 'untouched tools keep the default');
+});
+
+// Walls is a swatch on the Brush's bar, so changing swatches must not change
+// the size the Brush button shows.
+test('Walls shares the Brush size, both ways', () => {
+  const b = new BrushInput();
+  b.tool = 'brush';
+  b.setSize(1);
+  b.tool = 'walls';
+  assert.equal(b.sizeSlot, 1, 'Walls paints at the Brush size');
+  assert.equal(b.radius, BRUSH_SIZES[1]);
+  b.setSize(3);
+  b.tool = 'brush';
+  assert.equal(b.sizeSlot, 3, 'a size picked over Walls is the Brush size');
 });
 
 test('stamp has no size, and setSize under it changes nothing', () => {

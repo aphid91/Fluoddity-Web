@@ -100,11 +100,26 @@ export function isSizedTool(tool: SandTool): tool is SizedTool {
 }
 
 /**
+ * Whose size a tool paints at, or null for Stamp, which has none.
+ *
+ * WALLS SHARES THE BRUSH'S. It is reached as a swatch on the Brush's bar now
+ * (`toolFor`), and a size that changed when the user changed swatches -- the
+ * same Brush button lit throughout -- would read as the size buttons being
+ * broken. Its own `walls` entry stays in `ToolSizes` so stored sessions and
+ * the defaults file keep their shape, but nothing reads it.
+ */
+export function sizeOwner(tool: SandTool): SizedTool | null {
+  if (tool === 'walls') return 'brush';
+  return isSizedTool(tool) ? tool : null;
+}
+
+/**
  * Brush size per tool, as indices into `BRUSH_SIZES`.
  *
  * PER TOOL for the reason `ToolStrengths` is: the useful size depends on the
- * job. Walls want a fine line and Shove a broad sweep, and one shared size had
- * to be re-picked on every tool change.
+ * job -- Erase a broad sweep, the Brush whatever it is placing -- and one shared
+ * size had to be re-picked on every tool change. Except Walls, which shares the
+ * Brush's: see `sizeOwner`.
  */
 export type ToolSizes = Readonly<Record<SizedTool, number>>;
 
@@ -294,15 +309,17 @@ export class BrushInput {
     return uvRadiusToWorld(this.reticleRadius);
   }
 
-  /** The armed tool's size, or null under Stamp, which has none. */
+  /** The armed tool's size -- Walls shares Brush's -- or null under Stamp. */
   get sizeSlot(): number | null {
-    return isSizedTool(this.tool) ? this.sizes[this.tool] : null;
+    const owner = sizeOwner(this.tool);
+    return owner === null ? null : this.sizes[owner];
   }
 
-  /** Set the ARMED tool's size. Out-of-range indices, and Stamp, are ignored. */
+  /** Set the ARMED tool's size (`sizeOwner`'s). Bad indices, and Stamp, are ignored. */
   setSize(index: number): void {
-    if (!isSizedTool(this.tool) || !isBrushSizeIndex(index)) return;
-    this.sizes[this.tool] = index;
+    const owner = sizeOwner(this.tool);
+    if (owner === null || !isBrushSizeIndex(index)) return;
+    this.sizes[owner] = index;
   }
 
   /** Every tool's size, for the session snapshot. */

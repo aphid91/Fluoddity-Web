@@ -53,7 +53,6 @@ import {
 import { type SandTheme, THEMES, themeById } from './theme.ts';
 import {
   type SandTool,
-  TOOLS,
   TOOL_LABELS,
   isImplemented,
   usesStrength,
@@ -79,6 +78,9 @@ import {
 } from './swatchColor.ts';
 
 /** Fields a sand world has no use for, and why. */
+/** The tools sand can arm, rail or not, for the strength rows. */
+const STRENGTH_TOOLS: readonly SandTool[] = ['brush', 'erase', 'shove', 'walls'];
+
 const HIDDEN_PREFS: ReadonlySet<string> = new Set([
   // Studio interactions this modality does not have: there is no selection
   // tool, so neither of these has anything to act on.
@@ -432,7 +434,9 @@ ${body}`;
     confirmBlade.on('change', () => this.callbacks.onConfirmReset(confirm.confirmReset));
 
     const values: Record<string, number> = {};
-    for (const tool of TOOLS) {
+    // NOT `TOOLS`: that is the rail, and Walls -- reached through its swatch
+    // now -- still has a strength of its own.
+    for (const tool of STRENGTH_TOOLS) {
       if (!usesStrength(tool) || !isImplemented(tool)) continue;
       values[tool] = strengths[tool];
       const blade = page.addBinding(values, tool, {

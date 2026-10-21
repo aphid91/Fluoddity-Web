@@ -94,8 +94,17 @@ export interface SandSession {
   readonly selected: number;
   /** Brush size per tool -- see `ToolSizes`. Stamp has none. */
   readonly brushSizes: ToolSizes;
-  /** Which tool the left rail has armed. */
+  /**
+   * The tool the engine runs -- `walls` when Brush is over the Walls swatch
+   * (see `toolFor`), so a session saved there comes back painting walls.
+   */
   readonly tool: SandTool;
+  /**
+   * Whether the Walls swatch is the selected swatch rather than `selected`.
+   * Kept apart from `tool` because it outlives it: switch to Erase and back
+   * to Brush, and Brush is still over the Walls swatch.
+   */
+  readonly wallsSelected: boolean;
   /** Strength per tool -- see `ToolStrengths`. */
   readonly strengths: ToolStrengths;
   /** What the eraser takes -- see `EraseMode`. */
@@ -190,6 +199,7 @@ export const EMPTY_SESSION: SandSession = {
   selected: 0,
   brushSizes: defaultSizes(),
   tool: DEFAULT_TOOL,
+  wallsSelected: false,
   strengths: defaultStrengths(),
   eraseMode: DEFAULT_ERASE_MODE,
   visibleCount: DEFAULT_VISIBLE_COUNT,
@@ -384,6 +394,9 @@ export function parseSession(raw: string): SandSession {
     selected: Math.max(0, Math.min(SLOT_COUNT - 1, Math.trunc(num('selected', 0)))),
     brushSizes: asSizes(o['brushSizes'], o['brushSize']),
     tool: asTool(o['tool']),
+    // A session from before the Walls swatch armed Walls from the rail; it
+    // comes back with the swatch selected, which is where that tool now lives.
+    wallsSelected: asBool(o['wallsSelected'], o['tool'] === 'walls'),
     strengths: asStrengths(o['strengths'], legacyWeight),
     eraseMode: asEraseMode(o['eraseMode']),
     visibleCount: clampVisibleCount(num('visibleCount', DEFAULT_VISIBLE_COUNT)),

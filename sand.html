@@ -33,14 +33,14 @@
         --sw-name-fs: 9;
         --bar-pad: 0;
         --side-w: 150;
-        --sec-pad: 10;
+        --sec-pad: 5;
+        --sec-pad-y: 3;
         --btn-gap: 4;
-        --label-fs: 9;
+        --label-fs: 8;
         --tool-h: 44;
         --tool-cols: 2;
         --size-h: 44;
         --sim-d: 44;
-        --reset-h: 44;
         --box-h: 170;
         --band-tool-cols: 3;
         --size-w: 37;
@@ -49,6 +49,7 @@
         --wsw-gap: 9;
         --wsw-fs: 10;
         --wl-bg: 0.5;
+        --sw-arrow-w: 28;
       }
 
       /* ==================================================================
@@ -442,6 +443,9 @@
       }
       #shell[data-plan='band'] #toolsec {
         flex-grow: 1.4;
+        /* The band reads Tools, Brush Size, Simulation; the markup has the
+           size section first for the sidebar's sake. */
+        order: -1;
       }
 
       .sec {
@@ -450,7 +454,7 @@
         flex-direction: column;
         gap: calc(var(--btn-gap) * var(--u));
         box-sizing: border-box;
-        padding: calc(var(--sec-pad) * var(--u));
+        padding: calc(var(--sec-pad-y) * var(--u)) calc(var(--sec-pad) * var(--u));
         background: var(--chrome);
         border: var(--border) solid var(--edge);
         border-radius: var(--r);
@@ -479,6 +483,11 @@
       }
       .sizes {
         --cols: 2;
+      }
+      /* The sidebar's sizes stack in one column; the band's stay two wide
+         (#sizesec), since a column of four would make the band too tall. */
+      #toolsec .sizes {
+        --cols: 1;
       }
 
       /* THE BAND'S SIZE SECTION: in the band, the brush sizes take the
@@ -559,15 +568,17 @@
         width: calc(20 * var(--u));
         height: calc(20 * var(--u));
       }
+      /* COMPRESSED BRUSH SIZES: half of --size-h, each holding a horizontal
+         line as thick as its size -- MacPaint's line-width picker. Two rows
+         of them stand about as tall as one row of tools. */
       .size {
-        height: calc(var(--size-h) * var(--u));
+        height: calc(var(--size-h) * 0.5 * var(--u));
       }
       .size span {
         display: block;
-        border-radius: 50%;
         background: currentColor;
-        width: calc(var(--dot) * var(--u));
-        height: calc(var(--dot) * var(--u));
+        width: 62%;
+        height: calc(var(--ln) * var(--u));
         pointer-events: none;
       }
       .simrow {
@@ -595,14 +606,10 @@
         height: auto;
         aspect-ratio: 1;
       }
-      .reset {
-        height: calc(var(--reset-h) * var(--u));
-        gap: calc(6 * var(--u));
-        font-size: calc(11 * var(--u));
-      }
-      .reset svg {
-        width: calc(16 * var(--u));
-        height: calc(16 * var(--u));
+      /* Reset beside the Play/Pause toggle: a circle like it, a smaller glyph. */
+      .round.reset svg {
+        width: 40%;
+        height: 40%;
       }
 
       /* --- tool actions: in the bar, or in the tool box ---------------- */
@@ -636,11 +643,6 @@
         background: var(--sel-bg);
         color: var(--sel-ink);
       }
-      /* Built but not done yet: the button is there so the layout is final,
-         and says so when pressed. */
-      .act[data-todo='true'] {
-        opacity: 0.6;
-      }
       .boxacts {
         display: none;
         flex: 1 1 auto;
@@ -652,8 +654,7 @@
         font-size: calc(11 * var(--u));
       }
       #toolbox[data-for='erase'] .boxacts[data-for='erase'],
-      #toolbox[data-for='shove'] .boxacts[data-for='shove'],
-      #toolbox[data-for='walls'] .boxacts[data-for='walls'] {
+      #toolbox[data-for='shove'] .boxacts[data-for='shove'] {
         display: flex;
       }
 
@@ -676,20 +677,72 @@
         border: var(--border) solid var(--edge);
         border-radius: var(--r);
       }
+      #swrow {
+        position: relative;
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+      }
+      #bar:not([data-show='none']) #swrow {
+        visibility: hidden;
+      }
+      /* THE ROW SCROLLS rather than trimming to what fits: drag it, or press
+         an arrow. Overflowing, it starts at the left -- centring an
+         overflowing row would put its start out of reach. */
       #swatches {
         flex: 1 1 auto;
         min-width: 0;
         display: flex;
         align-items: flex-end;
         justify-content: center;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+        touch-action: pan-x;
       }
-      #bar:not([data-show='none']) #swatches {
-        visibility: hidden;
-      }
-      /* Past what fits (`sandUi.layoutSwatches`). Stated because `.sw`'s own
-         display would otherwise beat the UA's [hidden] rule. */
-      .sw[hidden] {
+      #swatches::-webkit-scrollbar {
         display: none;
+      }
+      #bar[data-overflowing='true'] #swatches {
+        justify-content: flex-start;
+      }
+      /* One on each side with more to see (`sandUi.updateArrows`). */
+      .swarrow {
+        appearance: none;
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        z-index: 2;
+        width: calc(var(--sw-arrow-w) * var(--u));
+        display: none;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        padding: 0;
+        margin: 0;
+        cursor: pointer;
+        color: var(--ink);
+      }
+      #sw-left {
+        left: 0;
+        background: linear-gradient(to right, var(--chrome) 60%, transparent);
+      }
+      #sw-right {
+        right: 0;
+        background: linear-gradient(to left, var(--chrome) 60%, transparent);
+      }
+      #swrow[data-left='true'] #sw-left,
+      #swrow[data-right='true'] #sw-right {
+        display: flex;
+      }
+      .swarrow svg {
+        width: 70%;
+        max-height: calc(24 * var(--u));
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2.4;
+        stroke-linecap: round;
+        stroke-linejoin: round;
       }
       .sw {
         flex: 0 0 auto;
@@ -745,6 +798,25 @@
           0 0 0 calc(2 * var(--u)) var(--chrome),
           0 0 0 calc(4 * var(--u)) var(--accent);
       }
+      /* THE WALLS SWATCH, leftmost: a grey circle with the wall glyph, since
+         walls draw greyscale on the canvas. */
+      .wallsw .swb {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #8b9099;
+        color: #16181d;
+      }
+      .wallsw .swb svg {
+        width: 52%;
+        height: 52%;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        pointer-events: none;
+      }
 
       .acts {
         display: none;
@@ -753,44 +825,10 @@
         gap: calc(max(var(--btn-gap), 4) * var(--u));
       }
       #bar[data-show='erase'] .acts[data-for='erase'],
-      #bar[data-show='shove'] .acts[data-for='shove'],
-      #bar[data-show='walls'] .acts[data-for='walls'],
-      #bar[data-show='stamp'] .acts[data-for='stamp'] {
+      #bar[data-show='shove'] .acts[data-for='shove'] {
         display: flex;
       }
 
-      /* Stamp: New stamp beside the leftmost stored stamp, the group centred.
-         Stamps use the swatch circles and spacing, without names. */
-      .acts[data-for='stamp'] {
-        inset: calc(var(--bar-pad) * var(--u));
-      }
-      .stamps {
-        flex: 1 1 auto;
-        min-width: 0;
-        display: flex;
-        align-items: stretch;
-        justify-content: center;
-        overflow: hidden;
-      }
-      .sgroup {
-        display: flex;
-        align-items: flex-end;
-      }
-      .newstamp {
-        flex: 0 0 auto;
-        align-self: stretch;
-        margin: calc(4 * var(--u)) calc(4 * var(--u)) calc(4 * var(--u)) 0;
-        padding: 0 calc(14 * var(--u));
-        white-space: nowrap;
-        background: var(--chrome-2);
-        border-color: var(--edge);
-      }
-      .st .sw-name {
-        visibility: hidden;
-      }
-      .st .swb {
-        background: var(--p);
-      }
 
       /* ------------------------------------------------------------------
          THE LOAD MENU -- right-click (or long-press) a swatch. A dev
@@ -1067,19 +1105,18 @@
 
       <aside id="side">
         <section class="sec" id="sizesec">
-          <div class="lbl">Size</div>
+          <div class="lbl">Brush Size</div>
           <div class="grid sizes" id="sizes-band"></div>
         </section>
         <section class="sec" id="toolsec">
           <div class="lbl">Tools</div>
           <div class="grid" id="tools"></div>
-          <div class="lbl sub" id="size-lbl">Size</div>
+          <div class="lbl sub" id="size-lbl">Brush Size</div>
           <div class="grid sizes" id="sizes"></div>
         </section>
         <section class="sec" id="simsec">
           <div class="lbl">Simulation</div>
           <div class="simrow" id="simrow"></div>
-          <div id="reset-slot"></div>
         </section>
         <section class="sec" id="toolbox">
           <div class="lbl" id="toolbox-label"></div>
@@ -1087,7 +1124,11 @@
       </aside>
 
       <footer id="bar" data-show="none">
-        <div id="swatches"></div>
+        <div id="swrow">
+          <button type="button" class="swarrow" id="sw-left" aria-label="More swatches to the left"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg></button>
+          <div id="swatches"></div>
+          <button type="button" class="swarrow" id="sw-right" aria-label="More swatches to the right"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" /></svg></button>
+        </div>
       </footer>
     </div>
 

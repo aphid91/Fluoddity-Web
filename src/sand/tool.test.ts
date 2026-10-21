@@ -8,6 +8,7 @@ import {
   ERASE_MODES,
   type SandTool,
   TOOLS,
+  TOOL_LABELS,
   actionFor,
   asEraseMode,
   cycleTool,
@@ -15,10 +16,15 @@ import {
   erasesWalls,
   nextEraseMode,
   isFieldTool,
+  railToolFor,
+  toolFor,
   supportsLineTool,
   usesStrength,
   usesSwatch,
 } from './tool.ts';
+
+/** Every tool, buttoned or not -- the rail is no longer all of them. */
+const ALL_TOOLS = Object.keys(TOOL_LABELS) as SandTool[];
 
 // ---------------------------------------------------------------------------
 // Shift-scroll cycling along the rail
@@ -39,10 +45,7 @@ test('cycleTool wraps at both ends', () => {
   assert.equal(cycleTool(first, -1), last, 'back past the first');
 });
 
-// STAMP IS IN THE CYCLE although `isImplemented` says it does nothing. The
-// button is visible and clickable, so a scroll that jumped over it would be the
-// odd one out -- see `cycleTool`.
-test('cycleTool includes every tool the rail shows, Stamp included', () => {
+test('cycleTool includes every tool the rail shows', () => {
   const seen = new Set<string>();
   // Annotated, not inferred: `TOOLS[0]` narrows to the literal `'brush'`, and
   // the loop reassigns it to every other tool in the rail.
@@ -53,7 +56,6 @@ test('cycleTool includes every tool the rail shows, Stamp included', () => {
     tool = cycleTool(tool, 1);
   }
   assert.equal(seen.size, TOOLS.length, 'every tool reached');
-  assert.ok(seen.has('stamp'), 'Stamp is not skipped');
 });
 
 // A full lap returns to where it started, which is what makes the cycle a cycle.
@@ -64,11 +66,38 @@ test('cycleTool returns to the start after a full lap', () => {
   }
 });
 
-// A stored session from a build whose rail listed something else must rejoin
-// the cycle rather than freezing the scroll.
-test('cycleTool rejoins the rail from a tool it does not list', () => {
-  // `trails` is a real SandTool but is not in TOOLS -- exactly the case.
-  assert.equal(cycleTool('trails', 1), TOOLS[0]);
+// A tool without a button steps on from the button it lights -- Brush.
+test('cycleTool steps on from Brush for a tool without a button', () => {
+  assert.equal(cycleTool('walls', 1), 'erase', 'Walls is Brush on the rail');
+  assert.equal(cycleTool('trails', 1), 'erase');
+  assert.equal(cycleTool('stamp', -1), TOOLS[TOOLS.length - 1]);
+});
+
+// ---------------------------------------------------------------------------
+// The Walls swatch: Brush over it is the Walls tool
+// ---------------------------------------------------------------------------
+
+test('Brush over the Walls swatch runs the Walls tool; nothing else changes', () => {
+  assert.equal(toolFor('brush', true), 'walls');
+  assert.equal(toolFor('brush', false), 'brush');
+  assert.equal(toolFor('erase', true), 'erase', 'the swatch is a noun only Brush reads');
+  assert.equal(toolFor('shove', true), 'shove');
+});
+
+test('the rail lights Brush for Walls, and for anything without a button', () => {
+  assert.equal(railToolFor('walls'), 'brush');
+  assert.equal(railToolFor('stamp'), 'brush');
+  assert.equal(railToolFor('trails'), 'brush');
+  for (const tool of TOOLS) assert.equal(railToolFor(tool), tool, tool);
+});
+
+// THE REQUIREMENT: right-click with the Walls swatch erases walls ONLY. The
+// walls tool has no particle command on either button -- `paintField` does its
+// erasing, on the wall layer alone.
+test('right-click over the Walls swatch erases no particles', () => {
+  const tool = toolFor('brush', true);
+  assert.equal(actionFor(tool, BRUSH_ERASE), null);
+  assert.equal(actionFor(tool, BRUSH_SPAWN), null);
 });
 
 // ---------------------------------------------------------------------------
@@ -83,7 +112,7 @@ test('cycleTool rejoins the rail from a tool it does not list', () => {
 // ---------------------------------------------------------------------------
 
 test('no tool but Brush and Erase produces a particle command', () => {
-  for (const tool of TOOLS) {
+  for (const tool of ALL_TOOLS) {
     if (tool === 'brush' || tool === 'erase') continue;
     assert.equal(actionFor(tool, BRUSH_SPAWN), null, `${tool} on left`);
     assert.equal(actionFor(tool, BRUSH_ERASE), null, `${tool} on right`);
@@ -104,7 +133,7 @@ test('Erase erases on BOTH buttons', () => {
 });
 
 test('no button pressed is no command, whatever is armed', () => {
-  for (const tool of TOOLS) assert.equal(actionFor(tool, null), null, tool);
+  for (const tool of ALL_TOOLS) assert.equal(actionFor(tool, null), null, tool);
 });
 
 // ---------------------------------------------------------------------------
@@ -126,7 +155,7 @@ test('the line tool covers the field tools and Erase', () => {
 // so nothing may quietly read it.
 test('Erase has no Strength', () => {
   assert.equal(usesStrength('erase'), false);
-  for (const tool of TOOLS) {
+  for (const tool of ALL_TOOLS) {
     if (tool === 'erase') continue;
     assert.equal(usesStrength(tool), true, tool);
   }
@@ -134,7 +163,7 @@ test('Erase has no Strength', () => {
 
 test('only Brush reads the swatch', () => {
   assert.equal(usesSwatch('brush'), true);
-  for (const tool of TOOLS) {
+  for (const tool of ALL_TOOLS) {
     if (tool === 'brush') continue;
     assert.equal(usesSwatch(tool), false, tool);
   }

@@ -73,13 +73,38 @@ export type SandTool =
   | Extract<MouseMode, 'shove' | 'walls' | 'trails'>;
 
 /**
- * The rail, top to bottom.
+ * The rail, top to bottom: the tools that have a button.
  *
- * Order is the UI's: the two painting verbs, then the field tools, then Stamp,
- * which is a placeholder -- see `isImplemented`.
+ * NOT EVERY TOOL. Walls is a SWATCH now -- the leftmost in the bar -- so it is
+ * reached through Brush: Brush over the Walls swatch arms the `walls` tool (see
+ * `toolFor`). Stamp is not in v1 and has no button.
  */
-export const TOOLS = ['brush', 'erase', 'shove', 'walls', 'stamp'] as const satisfies
-  readonly SandTool[];
+export const TOOLS = ['brush', 'erase', 'shove'] as const satisfies readonly SandTool[];
+
+/**
+ * The tool the engine runs for a rail button and a swatch selection.
+ *
+ * Brush over the Walls swatch IS the Walls tool, not a Brush that happens to
+ * paint walls. Reusing it is what keeps everything Walls already does: its own
+ * strength, the Shift line tool, and a right button that erases WALLS ONLY --
+ * `actionFor('walls', ...)` is null, so no particle is touched. Its SIZE is the
+ * Brush's, since it sits on the Brush's bar (`sizeOwner`). Every other rail
+ * button is its own tool.
+ */
+export function toolFor(rail: SandTool, wallsSelected: boolean): SandTool {
+  return rail === 'brush' && wallsSelected ? 'walls' : rail;
+}
+
+/**
+ * The rail button that lights for an engine tool: the inverse of `toolFor`.
+ *
+ * Walls is Brush on the rail, because that is how it was reached. Anything else
+ * without a button (Stamp, Trails -- from a stored session, say) also lights
+ * Brush, the rail's default, rather than nothing.
+ */
+export function railToolFor(tool: SandTool): SandTool {
+  return (TOOLS as readonly SandTool[]).includes(tool) ? tool : 'brush';
+}
 
 /** The tool a fresh session arms. */
 export const DEFAULT_TOOL: SandTool = 'brush';
@@ -94,14 +119,7 @@ export const TOOL_LABELS: Readonly<Record<SandTool, string>> = {
   stamp: 'Stamp',
 };
 
-/**
- * Declared but not built.
- *
- * Stamp is in the rail because the layout is being designed around it; it does
- * nothing yet. Selectable-but-inert is deliberate over hidden-until-ready: a
- * gap that appears later would move every button below it, and this is the
- * cheaper lie.
- */
+/** Declared but not built: Stamp, which v1 does not show. */
 export function isImplemented(tool: SandTool): boolean {
   return tool !== 'stamp';
 }
@@ -109,25 +127,18 @@ export function isImplemented(tool: SandTool): boolean {
 /**
  * The tool `steps` places along the rail from `from`, wrapping at both ends.
  *
- * ## Wraps, and INCLUDES Stamp
+ * ## Wraps
  *
  * Wrapping for the reason `cycleSlot` wraps: a scroll gesture has no natural
  * stop, so a clamp at either end reads as the wheel having broken.
  *
- * Stamp is in the cycle although `isImplemented` says it does nothing. Skipping
- * it would make the rail and the scroll disagree about how many tools there are
- * -- the button is visible and clickable, so a scroll that jumps over it is the
- * odd one out. It is being built shortly, and a cycle that changes shape when it
- * lands would be the surprise, not this.
- *
- * A tool the rail does not list returns the first step from the start of the
- * rail rather than throwing: `TOOLS` is the authority on what the cycle
- * contains, and an unlisted tool (a stored session from an older build) should
- * rejoin it rather than freeze the scroll.
+ * A tool without a button starts from the one it lights (`railToolFor`), so
+ * Walls -- Brush over the Walls swatch -- steps on from Brush. The result is a
+ * RAIL button; `toolFor` turns it back into the engine's tool.
  */
 export function cycleTool(from: SandTool, steps: number): SandTool {
   const count = TOOLS.length;
-  const at = TOOLS.indexOf(from as (typeof TOOLS)[number]);
+  const at = TOOLS.indexOf(railToolFor(from) as (typeof TOOLS)[number]);
   // `% count` twice -- JS `%` keeps the dividend's sign, so scrolling back past
   // the first tool would land negative without the second pass.
   const next = (((at + steps) % count) + count) % count;

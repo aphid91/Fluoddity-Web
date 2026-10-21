@@ -74,7 +74,7 @@ import {
   mapWorldIcons,
   readWorld,
 } from '../worlds/worldFormat.ts';
-import { TOOL_CONFIG, cycleTool } from './tool.ts';
+import { TOOL_CONFIG, cycleTool, railToolFor, toolFor } from './tool.ts';
 import {
   type SourceSwatch,
   CUSTOM_SOURCE,
@@ -165,6 +165,11 @@ async function main(): Promise<void> {
           worldIcon: builtins.pack.customIcon,
         }
       : stored;
+  /**
+   * Whether the Walls swatch is the selected swatch. The palette's own
+   * selection is kept underneath it, so picking a palette swatch returns there.
+   */
+  let wallsSelected = session.wallsSelected;
 
   const store = await ConfigStore.open();
 
@@ -181,12 +186,15 @@ async function main(): Promise<void> {
     onSelect: (slot) => {
       selectSwatch(slot);
     },
+    onSelectWalls: () => selectWalls(),
     onBrushSize: (index) => {
       orch.brush.setSize(index);
       persist();
     },
+    // A RAIL button. Brush comes back over whichever swatch was selected --
+    // the Walls swatch included, which makes it the Walls tool (`toolFor`).
     onTool: (tool) => {
-      orch.brush.tool = tool;
+      orch.brush.tool = toolFor(tool, wallsSelected);
       persist();
     },
     // "None". The palette refuses this for the master, so the menu hiding the
@@ -325,14 +333,6 @@ async function main(): Promise<void> {
       orch.clearField('walls');
       notify('Cleared all walls');
     },
-    onRestoreWalls: () => {
-      arrangementTouched = true;
-      notify(
-        orch.restoreWalls()
-          ? 'Restored the initial walls'
-          : 'No initial conditions yet — they are set when you first press Play',
-      );
-    },
     onShoveDirection: (pull) => {
       orch.shovePull = pull;
     },
@@ -341,7 +341,6 @@ async function main(): Promise<void> {
       persist();
     },
     onSetInitialConditions: () => setInitialConditions(),
-    onNotBuilt: (what) => notify(`${what} is not built yet`),
   });
 
   // ---------------------------------------------------------------------
@@ -465,7 +464,9 @@ async function main(): Promise<void> {
   orch.palette.setVisibleCount(session.visibleCount);
   orch.palette.select(session.selected);
   orch.brush.restoreSizes(session.brushSizes);
-  orch.brush.tool = session.tool;
+  // Through the rail, so a tool without a button (Stamp, from an older
+  // session) comes back as Brush -- over the Walls swatch if that was selected.
+  orch.brush.tool = toolFor(railToolFor(session.tool), wallsSelected);
   orch.brush.restoreStrengths(session.strengths);
   orch.eraseMode = session.eraseMode;
   // So a later World Size change rebuilds at the capped count rather than
@@ -655,6 +656,7 @@ async function main(): Promise<void> {
     selected: orch.palette.selected,
     brushSizes: orch.brush.allSizes(),
     tool: orch.brush.tool,
+    wallsSelected,
     strengths: orch.brush.allStrengths(),
     eraseMode: orch.eraseMode,
     // CUSTOM'S COUNT, not the live one -- see `customVisibleCount`. Storing
@@ -720,7 +722,19 @@ async function main(): Promise<void> {
    */
   const selectSwatch = (slot: number): void => {
     orch.palette.select(slot);
+    wallsSelected = false;
     orch.brush.tool = 'brush';
+    persist();
+  };
+  /**
+   * The Walls swatch: Brush over the wall layer, which is the Walls tool --
+   * its own strength (the Brush's size), the Shift line tool, and a right
+   * button that erases walls only (`toolFor`). The palette's selection is left alone, so
+   * picking a palette swatch again finds it where it was.
+   */
+  const selectWalls = (): void => {
+    wallsSelected = true;
+    orch.brush.tool = toolFor('brush', true);
     persist();
   };
 
@@ -1361,19 +1375,20 @@ async function main(): Promise<void> {
 
       const steps = e.deltaY > 0 ? 1 : -1;
       if (e.shiftKey) {
-        // SHIFT CYCLES THE RAIL, including Stamp -- see `cycleTool`.
-        orch.brush.tool = cycleTool(orch.brush.tool, steps);
+        // SHIFT CYCLES THE RAIL -- see `cycleTool`.
+        orch.brush.tool = toolFor(cycleTool(orch.brush.tool, steps), wallsSelected);
         persist();
         return;
       }
-      // Over the swatches the BAR shows -- in a world, its empty slots are not
-      // there to land on. Arms the Brush as well, like every other selection
-      // path.
+      // Over the swatches the BAR shows, Walls first -- in a world, its empty
+      // slots are not there to land on. Arms the Brush as well, like every
+      // other selection path.
       const shown = ui.displayedSlots();
-      if (shown.length === 0) return;
-      const at = Math.max(0, shown.indexOf(orch.palette.selected));
-      const next = shown[cycleSlot(at, steps, shown.length)];
-      if (next !== undefined) selectSwatch(next);
+      const at = wallsSelected ? 0 : Math.max(0, shown.indexOf(orch.palette.selected)) + 1;
+      const next = cycleSlot(at, steps, shown.length + 1);
+      const slot = shown[next - 1];
+      if (next === 0) selectWalls();
+      else if (slot !== undefined) selectSwatch(slot);
     },
     { passive: false },
   );
@@ -1991,7 +2006,8 @@ async function main(): Promise<void> {
       })().catch((e: unknown) => console.error(`Audit failed: ${String(e)}`));
     }
     ui.refresh({
-      tool: orch.brush.tool,
+      tool: railToolFor(orch.brush.tool),
+      wallsSelected,
       brushSize: orch.brush.sizeSlot,
       paused: orch.paused,
       editingInitialConditions: orch.editingInitialConditions,

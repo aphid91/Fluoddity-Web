@@ -18,8 +18,8 @@
  *     `CANVAS_MAX_SHARE` of the window;
  *   - the TOOL BOX: Erase/Shove/Walls buttons under Simulation, when the
  *     sidebar has room for it;
- *   - the SWATCHES: as many as fit, with their spacing widened when they fill
- *     too little of the bar.
+ *   - the SWATCHES: a scrolling row, with an arrow on each side that has more
+ *     to see, and their spacing widened when they fill too little of the bar.
  *
  * ## The canvas fills its cell
  *
@@ -56,6 +56,15 @@ const CANVAS_MAX_SHARE = 0.75;
 const SWATCH_FILL = 0.5;
 /** ...but never more than this, in the same units as `--sw-gap`. */
 const SWATCH_GAP_MAX = 45;
+/**
+ * The compressed brush sizes' line thicknesses, in the same units as the
+ * layout tokens: the smallest size's line and the largest's, with the two
+ * between spaced on a log scale of the radii -- see `buildSizes`.
+ */
+const SIZE_LINE_THIN = 1.5;
+const SIZE_LINE_THICK = 10;
+/** A mouse drag on the swatch bar past this many px scrolls it, not clicks. */
+const DRAG_SLOP = 4;
 /** How long a touch must hold still on a swatch to open its menu. */
 const LONG_PRESS_MS = 500;
 /** How far a touch may wander and still count as holding still, in px. */
@@ -67,15 +76,14 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 function hintFor(tool: SandTool): string {
   switch (tool) {
     case 'brush':
-      return 'Paint the selected swatch  ·  right-drag erases';
+      return 'Paint the selected swatch  ·  right-drag erases (over Walls, walls only)';
     case 'erase':
       return 'Rub out particles and walls  ·  right-drag also pulls them in  ·  Shift for line tool';
-    case 'stamp':
-      return 'Stamp is not built yet';
     case 'shove':
       return `${TOOL_HELP.shove}  ·  right-drag does the opposite of Push/Pull`;
     default:
-      return `${TOOL_HELP[tool]}  ·  right to erase  ·  Shift for line tool`;
+      // Not on the rail, so never shown; named rather than left blank.
+      return TOOL_LABELS[tool];
   }
 }
 
@@ -108,28 +116,14 @@ const WORLD_ART = [
 ];
 const CUSTOM_ART = 'conic-gradient(from 45deg, #3a3f4a, #6b7280, #3a3f4a, #6b7280, #3a3f4a)';
 
-/** Stand-ins for stored stamps, until Stamp is built. */
-const STAMP_ART = [
-  'radial-gradient(circle at 30% 35%, #e8a33d 0 18%, transparent 19%), radial-gradient(circle at 65% 60%, #5fb0e8 0 22%, transparent 23%), #1d2027',
-  'repeating-linear-gradient(45deg, #7cc27a 0 5px, #1d2027 5px 11px)',
-];
-
 /** The tools whose buttons live in the bar, or in the tool box. */
-type ActionTool = 'erase' | 'shove' | 'walls';
-type ActionId =
-  | 'clear-particles'
-  | 'erase-mode'
-  | 'clear-walls'
-  | 'restore-walls'
-  | 'push'
-  | 'pull';
+type ActionTool = 'erase' | 'shove';
+type ActionId = 'clear-particles' | 'erase-mode' | 'clear-walls' | 'push' | 'pull';
 
 interface ActionSpec {
   readonly id: ActionId;
   readonly label: string;
   readonly tint: 'red' | 'yellow' | 'white';
-  /** Not built yet: pressing it says so. */
-  readonly todo?: boolean;
 }
 
 const ACTIONS: Readonly<Record<ActionTool, readonly ActionSpec[]>> = {
@@ -143,19 +137,17 @@ const ACTIONS: Readonly<Record<ActionTool, readonly ActionSpec[]>> = {
     { id: 'push', label: 'Push', tint: 'red' },
     { id: 'pull', label: 'Pull', tint: 'white' },
   ],
-  walls: [
-    { id: 'clear-walls', label: 'Clear all walls', tint: 'red' },
-    { id: 'restore-walls', label: 'Restore initial walls', tint: 'white' },
-  ],
 };
 
 function isActionTool(tool: SandTool): tool is ActionTool {
-  return tool === 'erase' || tool === 'shove' || tool === 'walls';
+  return tool === 'erase' || tool === 'shove';
 }
 
 export interface SandUiCallbacks {
   /** A swatch was clicked. */
   onSelect(slot: number): void;
+  /** The Walls swatch was clicked. */
+  onSelectWalls(): void;
   /** A tool was chosen. */
   onTool(tool: SandTool): void;
   /** A config was chosen for a swatch in the load menu. */
@@ -193,15 +185,12 @@ export interface SandUiCallbacks {
   onReset(): void;
   onClearParticles(): void;
   onClearWalls(): void;
-  onRestoreWalls(): void;
   /** Shove's Push (false) or Pull (true). */
   onShoveDirection(pull: boolean): void;
   /** Erase's Mode button: what the eraser takes from now on. */
   onEraseMode(mode: EraseMode): void;
   /** "Set as initial conditions": the paused scene becomes the one R restores. */
   onSetInitialConditions(): void;
-  /** A button for something not built yet. `what` names it for the status line. */
-  onNotBuilt(what: string): void;
 }
 
 /** What the World menu needs to draw one assigned world. */
@@ -215,7 +204,10 @@ export interface WorldButtonState {
 }
 
 export interface SandUiState {
+  /** The RAIL's tool -- Brush while the engine runs Walls (`railToolFor`). */
   tool: SandTool;
+  /** Whether the Walls swatch, rather than a palette swatch, is selected. */
+  wallsSelected: boolean;
   /** The armed tool's size, or null for a tool without one (Stamp). */
   brushSize: number | null;
   paused: boolean;
@@ -243,6 +235,8 @@ export class SandUi {
   private readonly toolbox: HTMLElement;
   private readonly toolboxLabel: HTMLElement;
   private readonly bar: HTMLElement;
+  /** The swatch row and its arrows. */
+  private readonly swRow: HTMLElement;
   private readonly swatchesEl: HTMLElement;
   private readonly statusEl: HTMLElement;
   private readonly bannerEl: HTMLElement;
@@ -260,19 +254,24 @@ export class SandUi {
   private readonly eraseModeButtons: HTMLButtonElement[] = [];
   /** The mode those buttons were last told, for `runAction` to step from. */
   private eraseMode: EraseMode | null = null;
-  private playButton!: HTMLButtonElement;
-  private pauseButton!: HTMLButtonElement;
+  /** Play/Pause, one button showing what a press does. */
+  private playPause!: HTMLButtonElement;
+  /** What `refresh` last drew it as, so the icon is swapped only on a change. */
+  private shownPaused: boolean | null = null;
 
   /** Which swatch the open menu is filling, or null when it is closed. */
   private loadingInto: number | null = null;
   private worldMenuOpen = false;
 
-  /** The slots the bar shows, in order, before trimming to what fits. */
+  /** The palette slots the bar shows, in order, after the Walls swatch. */
   private displayed: number[] = [];
   /** `displayed` as built, so `refresh` rebuilds only on a change. */
   private builtSignature = '';
-  /** How many of `displayed` fit on screen; set by `layoutSwatches`. */
-  private fitting = 0;
+  /**
+   * The selection last scrolled into view, so `refresh` reveals a NEW
+   * selection without fighting a user who has scrolled the bar elsewhere.
+   */
+  private revealed = '';
   /** The UI scale `relayout` settled on. */
   private uiScale = 1;
 
@@ -301,6 +300,7 @@ export class SandUi {
     this.toolbox = byId('toolbox');
     this.toolboxLabel = byId('toolbox-label');
     this.bar = byId('bar');
+    this.swRow = byId('swrow');
     this.swatchesEl = byId('swatches');
     this.statusEl = byId('sand-status');
     this.bannerEl = byId('ic-banner');
@@ -315,10 +315,10 @@ export class SandUi {
     this.buildTools(byId('tools'));
     this.buildSizes(byId('sizes'));
     this.buildSizes(byId('sizes-band'));
-    this.buildSim(byId('simrow'), byId('reset-slot'));
+    this.buildSim(byId('simrow'));
     this.buildActions();
-    this.buildStamps();
     this.buildWorlds([]);
+    this.wireSwatchScroll(byId('sw-left'), byId('sw-right'));
 
     byId('wtrig').addEventListener('click', () => this.setWorldMenu(!this.worldMenuOpen));
 
@@ -500,9 +500,9 @@ export class SandUi {
   }
 
   /**
-   * Show as many swatches as fit, and widen their spacing when they fill less
-   * than `SWATCH_FILL` of the bar. Stamps share the spacing (`--sw-gap` is set
-   * on the bar).
+   * The swatch row: every swatch, in a row that scrolls when they do not all
+   * fit. When they do, and fill less than `SWATCH_FILL` of the bar, their
+   * spacing widens (`--sw-gap` is set on the bar).
    */
   private layoutSwatches(): void {
     const ui = this.uiScale;
@@ -511,21 +511,82 @@ export class SandUi {
     const avail = this.swatchesEl.clientWidth;
     if (avail <= 0) return;
 
-    const items = [...this.swatchesEl.children] as HTMLElement[];
+    const count = Math.max(1, this.swatchesEl.children.length);
     const fits = Math.max(1, Math.floor((avail + 0.5) / ((diameter + baseGap) * ui)));
-    this.fitting = Math.min(items.length, fits);
-    items.forEach((el, i) => {
-      el.hidden = i >= this.fitting;
-    });
+    const overflowing = count > fits;
+    this.bar.dataset['overflowing'] = String(overflowing);
 
-    // Only ever widens, so it cannot change how many fit.
+    // Only when they all fit: an overflowing row has no spare width to share.
     let gap = baseGap;
     const target = avail * SWATCH_FILL;
-    const shown = Math.max(1, this.fitting);
-    if (shown * (diameter + gap) * ui < target && SWATCH_GAP_MAX > gap) {
-      gap = Math.min(SWATCH_GAP_MAX, Math.max(gap, target / (shown * ui) - diameter));
+    if (!overflowing && count * (diameter + gap) * ui < target && SWATCH_GAP_MAX > gap) {
+      gap = Math.min(SWATCH_GAP_MAX, Math.max(gap, target / (count * ui) - diameter));
     }
     this.bar.style.setProperty('--sw-gap', String(gap));
+    this.updateArrows();
+  }
+
+  /** An arrow on each side of the row that has more to scroll to. */
+  private updateArrows(): void {
+    const row = this.swatchesEl;
+    const max = row.scrollWidth - row.clientWidth;
+    this.swRow.dataset['left'] = String(row.scrollLeft > 1);
+    this.swRow.dataset['right'] = String(row.scrollLeft < max - 1);
+  }
+
+  /** One swatch's width at the current scale and spacing, in px. */
+  private swatchPitch(): number {
+    const gap = parseFloat(this.bar.style.getPropertyValue('--sw-gap'));
+    const spacing = Number.isFinite(gap) ? gap : this.token('--sw-gap', 5);
+    return (this.token('--sw-d', 44) + spacing) * this.uiScale;
+  }
+
+  /**
+   * The row's scrolling. A finger scrolls it natively (`touch-action: pan-x`);
+   * these add the arrows, and a mouse drag so a desktop can do what a phone
+   * does. An arrow pages by the row's width less one swatch, so the swatch at
+   * the edge stays in view as a landmark.
+   */
+  private wireSwatchScroll(left: HTMLElement, right: HTMLElement): void {
+    const row = this.swatchesEl;
+    row.addEventListener('scroll', () => this.updateArrows(), { passive: true });
+    const page = (dir: number): void => {
+      const pitch = this.swatchPitch();
+      row.scrollBy({ left: dir * Math.max(row.clientWidth - pitch, pitch), behavior: 'smooth' });
+    };
+    left.addEventListener('click', () => page(-1));
+    right.addEventListener('click', () => page(1));
+
+    let drag: { id: number; x: number; scroll: number; moved: boolean } | null = null;
+    row.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'mouse' || e.button !== 0) return;
+      drag = { id: e.pointerId, x: e.clientX, scroll: row.scrollLeft, moved: false };
+    });
+    window.addEventListener('pointermove', (e) => {
+      if (drag === null || e.pointerId !== drag.id) return;
+      const dx = e.clientX - drag.x;
+      if (Math.abs(dx) > DRAG_SLOP) drag.moved = true;
+      if (drag.moved) row.scrollLeft = drag.scroll - dx;
+    });
+    const end = (e: PointerEvent): void => {
+      if (drag === null || e.pointerId !== drag.id) return;
+      // The release that ends a drag is not a swatch click.
+      if (drag.moved) this.suppressClickUntil = performance.now() + 250;
+      drag = null;
+    };
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+  }
+
+  /** Scroll the row just far enough to show `el` clear of the arrows. */
+  private revealSwatch(el: HTMLElement): void {
+    const row = this.swatchesEl.getBoundingClientRect();
+    const box = el.getBoundingClientRect();
+    const inset = this.token('--sw-arrow-w', 28) * this.uiScale;
+    let delta = 0;
+    if (box.left < row.left + inset) delta = box.left - (row.left + inset);
+    else if (box.right > row.right - inset) delta = box.right - (row.right - inset);
+    if (delta !== 0) this.swatchesEl.scrollBy({ left: delta, behavior: 'smooth' });
   }
 
   // -------------------------------------------------------------------------
@@ -565,53 +626,53 @@ export class SandUi {
    * The four size buttons. Built twice -- once under the tools for the
    * sidebar, once as the band's own section -- and both stay in step.
    *
-   * The dots are sqrt-scaled: the radii span a factor of ten, so a linear map
-   * would put the smallest at a single pixel against the largest.
+   * Each holds a LINE as thick as its size, MacPaint style, spaced on a log
+   * scale of the radii: they span a factor of ten, and equal ratios reading as
+   * equal steps is what makes four sizes look like a progression.
    */
   private buildSizes(container: HTMLElement): void {
+    const smallest = BRUSH_SIZES[0] ?? 1;
     const largest = BRUSH_SIZES[BRUSH_SIZES.length - 1] ?? 1;
+    const span = Math.log(largest / smallest) || 1;
     BRUSH_SIZES.forEach((radius, index) => {
       const button = this.button('b size', `Brush size ${index + 1}`, () =>
         this.callbacks.onBrushSize(index),
       );
       button.dataset['size'] = String(index);
-      const dot = document.createElement('span');
-      dot.style.setProperty('--dot', (4 + 12 * Math.sqrt(radius / largest)).toFixed(2));
-      button.append(dot);
+      const line = document.createElement('span');
+      const t = Math.log(radius / smallest) / span;
+      line.style.setProperty(
+        '--ln',
+        (SIZE_LINE_THIN * (SIZE_LINE_THICK / SIZE_LINE_THIN) ** t).toFixed(2),
+      );
+      button.append(line);
       container.append(button);
       this.sizeButtons.push(button);
     });
   }
 
-  private buildSim(row: HTMLElement, resetSlot: HTMLElement): void {
-    this.playButton = this.button('b round', 'Play  ·  Space', () => this.callbacks.onPlay());
-    this.playButton.setAttribute('aria-label', 'Play');
-    this.playButton.append(this.icon(PLAY_ICON));
+  /**
+   * Play/Pause as ONE button, showing what a press does -- Pause while
+   * running -- and Reset beside it, the same size. `refresh` swaps the icon.
+   */
+  private buildSim(row: HTMLElement): void {
+    this.playPause = this.button('b round', 'Play / Pause  ·  Space', () => {
+      if (this.shownPaused === false) this.callbacks.onPause();
+      else this.callbacks.onPlay();
+    });
 
-    this.pauseButton = this.button('b round', 'Pause  ·  Space', () => this.callbacks.onPause());
-    this.pauseButton.setAttribute('aria-label', 'Pause');
-    this.pauseButton.append(this.icon(PAUSE_ICON));
-    row.append(this.playButton, this.pauseButton);
-
-    const reset = this.button(
-      'b reset',
-      'Restore the initial conditions  ·  R',
-      () => this.callbacks.onReset(),
+    const reset = this.button('b round reset', 'Reset: restore the initial conditions  ·  R', () =>
+      this.callbacks.onReset(),
     );
-    const label = document.createElement('span');
-    label.textContent = 'Reset';
-    reset.append(this.icon(RESET_ICON), label);
-    resetSlot.replaceWith(reset);
+    reset.setAttribute('aria-label', 'Reset');
+    reset.append(this.icon(RESET_ICON));
+    row.append(this.playPause, reset);
   }
 
   private actionButton(spec: ActionSpec): HTMLButtonElement {
     const button = this.button(`b act ${spec.tint}`, spec.label, () => this.runAction(spec));
     button.textContent = spec.label;
     button.dataset['action'] = spec.id;
-    if (spec.todo === true) {
-      button.dataset['todo'] = 'true';
-      button.title = `${spec.label} — not built yet`;
-    }
     if (spec.id === 'push' || spec.id === 'pull') {
       button.classList.add('pp');
       this.pushPull.push(button);
@@ -631,9 +692,6 @@ export class SandUi {
       case 'clear-walls':
         this.callbacks.onClearWalls();
         break;
-      case 'restore-walls':
-        this.callbacks.onRestoreWalls();
-        break;
       case 'push':
         this.callbacks.onShoveDirection(false);
         break;
@@ -648,7 +706,7 @@ export class SandUi {
 
   /** Each action tool's buttons, once in the bar and once in the tool box. */
   private buildActions(): void {
-    for (const tool of ['erase', 'shove', 'walls'] as const) {
+    for (const tool of ['erase', 'shove'] as const) {
       const inBar = document.createElement('div');
       inBar.className = 'acts';
       inBar.dataset['for'] = tool;
@@ -662,42 +720,6 @@ export class SandUi {
       this.bar.append(inBar);
       this.toolbox.append(inBox);
     }
-  }
-
-  /** Stamp's bar: New stamp, then the stored stamps. Placeholders. */
-  private buildStamps(): void {
-    const acts = document.createElement('div');
-    acts.className = 'acts';
-    acts.dataset['for'] = 'stamp';
-    const stamps = document.createElement('div');
-    stamps.className = 'stamps';
-    const group = document.createElement('div');
-    group.className = 'sgroup';
-
-    const create = this.button('b act newstamp', 'New stamp — not built yet', () =>
-      this.callbacks.onNotBuilt('New stamp'),
-    );
-    create.textContent = 'New stamp';
-    create.dataset['todo'] = 'true';
-    group.append(create);
-
-    STAMP_ART.forEach((art, i) => {
-      const item = document.createElement('div');
-      item.className = 'sw st';
-      const name = document.createElement('span');
-      name.className = 'sw-name';
-      name.textContent = ' ';
-      const circle = this.button('swb', `Stamp ${i + 1} — not built yet`, () =>
-        this.callbacks.onNotBuilt('Stamps'),
-      );
-      circle.style.setProperty('--p', art);
-      item.append(name, circle);
-      group.append(item);
-    });
-
-    stamps.append(group);
-    acts.append(stamps);
-    this.bar.append(acts);
   }
 
   /**
@@ -822,7 +844,8 @@ export class SandUi {
   }
 
   private renderSwatches(slots: readonly number[]): void {
-    this.swatchesEl.replaceChildren();
+    this.swatchesEl.replaceChildren(this.wallsSwatch());
+    this.revealed = '';
     for (const slot of slots) {
       const item = document.createElement('div');
       item.className = 'sw';
@@ -837,6 +860,33 @@ export class SandUi {
       this.wireSwatch(circle, slot);
       this.swatchesEl.append(item);
     }
+  }
+
+  /**
+   * The Walls swatch, leftmost in every palette. Selecting it arms Brush over
+   * the wall layer (`toolFor`); it is not a palette slot, so it has no load
+   * menu, no number key and no name to edit.
+   */
+  private wallsSwatch(): HTMLElement {
+    const item = document.createElement('div');
+    item.className = 'sw wallsw';
+    item.dataset['walls'] = 'true';
+    const name = document.createElement('span');
+    name.className = 'sw-name';
+    name.textContent = 'Walls';
+    const circle = document.createElement('button');
+    circle.type = 'button';
+    circle.className = 'swb';
+    circle.title = 'Walls: paint walls  ·  right-drag erases walls only  ·  Shift for line tool';
+    circle.setAttribute('aria-label', 'Walls');
+    circle.append(this.icon(TOOL_ICONS.walls));
+    circle.addEventListener('click', () => {
+      if (performance.now() < this.suppressClickUntil) return;
+      this.callbacks.onSelectWalls();
+    });
+    circle.addEventListener('contextmenu', (e) => e.preventDefault());
+    item.append(name, circle);
+    return item;
   }
 
   /**
@@ -902,12 +952,20 @@ export class SandUi {
       this.layoutSwatches();
     }
 
+    let selectedEl: HTMLElement | null = null;
     for (const el of this.swatchesEl.children) {
       if (!(el instanceof HTMLElement)) continue;
+      if (el.dataset['walls'] === 'true') {
+        el.dataset['selected'] = String(state.wallsSelected);
+        if (state.wallsSelected) selectedEl = el;
+        continue;
+      }
       const slot = Number(el.dataset['slot']);
       const entry = palette.at(slot);
       const empty = entry.config === null;
-      el.dataset['selected'] = String(slot === palette.selected);
+      const selected = !state.wallsSelected && slot === palette.selected;
+      el.dataset['selected'] = String(selected);
+      if (selected) selectedEl = el;
       el.dataset['empty'] = String(empty);
       const name = el.firstElementChild;
       const label = empty ? 'empty' : entry.name;
@@ -926,6 +984,14 @@ export class SandUi {
       }
     }
 
+    // A NEW selection scrolls into view -- by key, wheel or a world load. Only
+    // on a change, so a bar the user has scrolled elsewhere stays put.
+    const key = state.wallsSelected ? 'walls' : `${palette.selected}`;
+    if (selectedEl !== null && key !== this.revealed) {
+      this.revealed = key;
+      this.revealSwatch(selectedEl);
+    }
+
     // --- sidebar ---------------------------------------------------------------
     for (const el of this.toolButtons) {
       el.dataset['selected'] = String(el.dataset['tool'] === state.tool);
@@ -933,8 +999,11 @@ export class SandUi {
     for (const el of this.sizeButtons) {
       el.dataset['selected'] = String(Number(el.dataset['size']) === state.brushSize);
     }
-    this.playButton.dataset['selected'] = String(!state.paused);
-    this.pauseButton.dataset['selected'] = String(state.paused);
+    if (this.shownPaused !== state.paused) {
+      this.shownPaused = state.paused;
+      this.playPause.replaceChildren(this.icon(state.paused ? PLAY_ICON : PAUSE_ICON));
+      this.playPause.setAttribute('aria-label', state.paused ? 'Play' : 'Pause');
+    }
     for (const el of this.pushPull) {
       const pull = el.dataset['action'] === 'pull';
       el.dataset['selected'] = String(pull === state.shovePull);
@@ -947,17 +1016,14 @@ export class SandUi {
     }
 
     // --- which bar is up ------------------------------------------------------
-    // Brush: the swatches. Stamp: its own bar, always. Erase/Shove/Walls: their
-    // buttons, in the tool box when it is up (the bar then keeps the swatches)
-    // or else over the bar.
+    // Brush: the swatches. Erase/Shove: their buttons, in the tool box when it
+    // is up (the bar then keeps the swatches) or else over the bar.
     const boxOn = this.shell.dataset['box'] === 'on';
-    let show = 'none';
-    if (state.tool === 'stamp') show = 'stamp';
-    else if (isActionTool(state.tool) && !boxOn) show = state.tool;
+    const show = isActionTool(state.tool) && !boxOn ? state.tool : 'none';
     if (this.bar.dataset['show'] !== show) this.bar.dataset['show'] = show;
 
-    // The tool box shows the armed tool's buttons, or Erase's under Brush and
-    // Stamp, which have none of their own there.
+    // The tool box shows the armed tool's buttons, or Erase's under Brush,
+    // which has none of its own there.
     const boxTool: ActionTool = isActionTool(state.tool) ? state.tool : 'erase';
     if (this.toolbox.dataset['for'] !== boxTool) {
       this.toolbox.dataset['for'] = boxTool;
