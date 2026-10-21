@@ -159,6 +159,8 @@ export interface SandPrefsCallbacks {
   onToggleView(): CameraMode;
   /** The Dev tab's "Export settings as defaults" button. */
   onExportSettings(): void;
+  /** "Restore preference defaults", top of the Prefs tab. Asking first is the callee's. */
+  onRestorePreferenceDefaults(): void;
   /** The Dev tab's "audit after every sweep" switch. */
   onAuditAfterSweep(enabled: boolean): void;
   /** A UI comp was chosen from the Dev tab's dropdown. */
@@ -457,6 +459,15 @@ ${body}`;
   // -------------------------------------------------------------------------
 
   private buildPrefs(page: TabPageApi): void {
+    // FIRST ON THE TAB. The worlds' counterpart is under the World menu's
+    // swatches; between them they are a new visitor's start (`main.ts`).
+    const restore = page.addButton({ title: 'Restore preference defaults' });
+    restore.element.title =
+      'Put every preference and setting back to the defaults: this window, ' +
+      'the look, brush sizes and strengths, the camera. The world buttons, ' +
+      'Custom’s swatches, saved worlds and saved configs are kept. Asks first.';
+    restore.on('click', () => this.callbacks.onRestorePreferenceDefaults());
+
     const folders = new Map<string, FolderApi>();
     for (const setting of SETTINGS) {
       if (setting.source !== PREFS) continue;

@@ -37,7 +37,7 @@ import { BC, makeWorldSettings } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
 import type { Preferences } from '../prefs/preferences.ts';
 import {
-  forgetSandPreferences,
+  SAND_STORAGE_KEY,
   loadSandPreferences as loadPreferences,
   saveSandPreferences as savePreferences,
 } from './sandPreferences.ts';
@@ -45,7 +45,14 @@ import { decodeStamp, encodeStamp } from '../stamp/stampCodec.ts';
 import type { StampData } from '../stamp/stampData.ts';
 import type { StampBox } from '../stamp/stampBox.ts';
 import { activeRegion, placeScene, planFit, trimScene } from './icFit.ts';
-import { readSandDefaults, writeSandDefaults } from './sandDefaults.ts';
+import {
+  SESSION_KEYS,
+  WORLD_SESSION_KEYS,
+  newVisitorSession,
+  readSandDefaults,
+  restoreSessionKeys,
+  writeSandDefaults,
+} from './sandDefaults.ts';
 // BUNDLED, not fetched: the defaults are part of the build, so a new visitor
 // has them on the first frame with no request that could fail. Replace this
 // file with one from the Dev tab's "Export settings" to change them.
@@ -92,7 +99,6 @@ import {
   CUSTOM_WORLD,
   type SandSession,
   type StoredSlot,
-  forgetSession,
   hasStoredSession,
   loadSession,
   readSlotDocument,
@@ -103,6 +109,7 @@ import { SandPrefs } from './sandPrefs.ts';
 import { ConfirmDialog } from './confirmDialog.ts';
 import { Webcam } from '../webcam/webcam.ts';
 import { SAND_CAMERA_STORAGE_KEY } from '../webcam/webcamSettings.ts';
+import { LOADER_COLLAPSED_STORAGE_KEY } from './loaderCollapse.ts';
 import { themeById } from './theme.ts';
 import { readText } from '../ui/clipboard.ts';
 import { decodeShareText } from '../config/shareLink.ts';
@@ -159,14 +166,7 @@ async function main(): Promise<void> {
   // reach them.
   const builtins = await builtinsLoading;
   const session: SandSession =
-    builtins !== null && !hasStoredSession()
-      ? {
-          ...stored,
-          slots: builtins.pack.customSlots,
-          selectedWorld: builtins.pack.selectedWorld,
-          worldIcon: builtins.pack.customIcon,
-        }
-      : stored;
+    builtins !== null && !hasStoredSession() ? newVisitorSession(stored, builtins.pack) : stored;
   /**
    * Whether the Walls swatch is the selected swatch. The palette's own
    * selection is kept underneath it, so picking a palette swatch returns there.
@@ -1029,36 +1029,66 @@ async function main(): Promise<void> {
   };
 
   /**
-   * The World menu's "Reset worlds to defaults": start over as a new visitor.
+   * THE TWO DEFAULT RESETS: the World menu's "Reset worlds to defaults" and
+   * the Prefs tab's "Restore preference defaults".
    *
-   * Sand's stored session and preferences are dropped and the page reloaded,
-   * so startup takes the new-visitor path -- the world pack's buttons, start
-   * world and Custom palette, and `sandDefaults.json`'s settings. Reloading
-   * rather than reapplying in place, because that path is the one a new
-   * visitor really runs. Saved worlds and configs (IndexedDB) are untouched.
+   * Each puts back its own half of a new visitor's start -- the world pack's
+   * half, or `sandDefaults.json`'s (`WORLD_SESSION_KEYS`, `SESSION_KEYS`) --
+   * and reloads. Both together are a private window, less the saved worlds
+   * and configs, which neither touches.
    *
-   * ALWAYS ASKS, whatever Confirm Reset says: it throws away far more than
+   * RELOADED rather than applied in place: startup is the one path that
+   * builds a world from a session, the selected world's own preferences
+   * included, so it is the path a new visitor really runs.
+   *
+   * ALWAYS ASK, whatever Confirm Reset says: each throws away far more than
    * a scene.
    */
+  const freshSession = newVisitorSession(SAND_DEFAULTS.session, builtins?.pack ?? null);
+  const restartWith = (next: SandSession, forgetSettings: boolean): void => {
+    // A pending write would otherwise land on `pagehide`, over this one.
+    if (saveTimer !== null) clearTimeout(saveTimer);
+    saveTimer = null;
+    saveSession(next);
+    if (forgetSettings) {
+      // Each is seeded from its defaults when missing, as for a new visitor.
+      for (const key of [SAND_STORAGE_KEY, LOADER_COLLAPSED_STORAGE_KEY, SAND_CAMERA_STORAGE_KEY]) {
+        try {
+          localStorage.removeItem(key);
+        } catch {
+          // Storage that refuses a delete held nothing the reload relies on.
+        }
+      }
+    }
+    location.reload();
+  };
   const requestWorldsReset = (): void => {
     void confirmDialog
       .ask({
         title: 'Reset worlds',
         text:
-          'Put the worlds, Custom’s swatches and the settings back to the ' +
-          'defaults? Changes to them, and the scene, will be lost. Saved ' +
-          'worlds and configs are kept.',
+          'Put the world buttons and Custom’s swatches back to the defaults? ' +
+          'Changes to them, and the scene, will be lost. Preferences, saved ' +
+          'worlds and saved configs are kept.',
         confirm: 'Reset',
       })
       .then((ok) => {
-        if (!ok) return;
-        // A pending write would otherwise land on `pagehide`, after the
-        // forget, and bring the old session back.
-        if (saveTimer !== null) clearTimeout(saveTimer);
-        saveTimer = null;
-        forgetSession();
-        forgetSandPreferences();
-        location.reload();
+        if (ok) restartWith(restoreSessionKeys(snapshot(), freshSession, WORLD_SESSION_KEYS), false);
+      });
+  };
+  const requestPreferencesReset = (): void => {
+    void confirmDialog
+      .ask({
+        title: 'Restore preference defaults',
+        text:
+          'Put every preference and setting back to the defaults — this ' +
+          'window, the look, brush sizes and strengths, the camera. The scene ' +
+          'will be lost. The world buttons, Custom’s swatches, saved worlds ' +
+          'and saved configs are kept.',
+        confirm: 'Restore',
+      })
+      .then((ok) => {
+        if (ok) restartWith(restoreSessionKeys(snapshot(), freshSession, SESSION_KEYS), true);
       });
   };
 
@@ -1306,6 +1336,7 @@ async function main(): Promise<void> {
     // `src/sand/sandDefaults.json`. See `sandDefaults.ts` for what it holds.
     // `live` rather than `prefs`, and the session as it would be saved, so the
     // file is exactly what this tab is showing.
+    onRestorePreferenceDefaults: () => requestPreferencesReset(),
     onExportSettings: () => {
       const text = writeSandDefaults(live, snapshot());
       downloadBlob(new Blob([text], { type: 'application/json' }), 'sandDefaults.json');

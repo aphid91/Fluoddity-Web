@@ -64,12 +64,3 @@ export function saveSandPreferences(
   if (storage === null) return;
   savePreferences(prefs, redirected(storage));
 }
-
-/** Drop sand's record, so the next load seeds it from the shipped defaults again. */
-export function forgetSandPreferences(): void {
-  try {
-    globalThis.localStorage?.removeItem(SAND_STORAGE_KEY);
-  } catch {
-    // As `forgetSession`.
-  }
-}

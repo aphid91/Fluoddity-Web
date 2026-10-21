@@ -32,6 +32,7 @@ import {
   isPreferenceKey,
 } from '../prefs/preferences.ts';
 import { EMPTY_SESSION, type SandSession, parseSession } from './session.ts';
+import type { WorldPack } from '../worlds/worldPack.ts';
 
 /** Bumped only if the file's shape changes incompatibly. */
 export const SAND_DEFAULTS_VERSION = 1;
@@ -43,8 +44,13 @@ export const SAND_DEFAULTS_VERSION = 1;
  */
 export const FALLBACK_SAND_WORLD_SIZE = 0.15;
 
-/** The session fields the file carries. See the header on why these. */
-const SESSION_KEYS = [
+/**
+ * The session fields the file carries. See the header on why these.
+ *
+ * Also what the Prefs tab's "Restore preference defaults" puts back, beside
+ * the preferences themselves.
+ */
+export const SESSION_KEYS = [
   'theme',
   'visibleCount',
   'colorMode',
@@ -58,6 +64,53 @@ const SESSION_KEYS = [
   'auditAfterSweep',
   'confirmReset',
 ] as const satisfies readonly (keyof SandSession)[];
+
+/**
+ * THE OTHER HALF OF A SESSION: the fields the default world pack decides for a
+ * new visitor (`newVisitorSession`), and so what the World menu's "Reset
+ * worlds to defaults" puts back. `selected` and `wallsSelected` point into
+ * Custom's palette, so they go with it.
+ *
+ * The two lists are DISJOINT AND COVER THE SESSION -- `sandDefaults.test.ts`
+ * holds them to it -- so the two resets together are a new visitor's start:
+ * a private window, less the saved worlds and configs neither touches.
+ */
+export const WORLD_SESSION_KEYS = [
+  'slots',
+  'selected',
+  'wallsSelected',
+  'worldRefs',
+  'selectedWorld',
+  'worldIcon',
+] as const satisfies readonly (keyof SandSession)[];
+
+/**
+ * A new visitor's session: the shipped defaults, on the pack's start world
+ * with its Custom palette. Without a pack, the defaults alone.
+ */
+export function newVisitorSession(
+  defaults: SandSession,
+  pack: Pick<WorldPack, 'customSlots' | 'selectedWorld' | 'customIcon'> | null,
+): SandSession {
+  if (pack === null) return defaults;
+  return {
+    ...defaults,
+    slots: pack.customSlots,
+    selectedWorld: pack.selectedWorld,
+    worldIcon: pack.customIcon,
+  };
+}
+
+/** `current`, with the fields named in `keys` taken from `fresh`. */
+export function restoreSessionKeys(
+  current: SandSession,
+  fresh: SandSession,
+  keys: readonly (keyof SandSession)[],
+): SandSession {
+  const out: Record<string, unknown> = { ...current };
+  for (const key of keys) out[key] = fresh[key];
+  return out as unknown as SandSession;
+}
 
 export interface SandDefaults {
   readonly preferences: Preferences;

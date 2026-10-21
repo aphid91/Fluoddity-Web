@@ -6,7 +6,11 @@ import { DEFAULT_PREFERENCES } from '../prefs/preferences.ts';
 import { EMPTY_SESSION } from './session.ts';
 import {
   FALLBACK_SAND_WORLD_SIZE,
+  SESSION_KEYS,
+  WORLD_SESSION_KEYS,
+  newVisitorSession,
   readSandDefaults,
+  restoreSessionKeys,
   writeSandDefaults,
 } from './sandDefaults.ts';
 
@@ -58,4 +62,47 @@ test('an empty or broken file falls back field by field', () => {
   assert.equal(broken.preferences.brightness, 1.25);
   assert.equal(broken.session.theme, 'blueprint');
   assert.equal(readSandDefaults('not an object').preferences.worldSize, FALLBACK_SAND_WORLD_SIZE);
+});
+
+test('the two resets split the session between them, with nothing shared or missed', () => {
+  const settings = new Set<string>(SESSION_KEYS);
+  const worlds = new Set<string>(WORLD_SESSION_KEYS);
+  for (const key of worlds) assert.ok(!settings.has(key), `${key} is in both`);
+  assert.deepEqual(
+    [...settings, ...worlds].sort(),
+    Object.keys(EMPTY_SESSION).sort(),
+  );
+});
+
+test('both resets, in either order, are a new visitor', () => {
+  const fresh = newVisitorSession(EMPTY_SESSION, {
+    customSlots: [{ name: 'A', document: {} }],
+    selectedWorld: 0,
+    customIcon: 'custom.jpg',
+  });
+  const used = {
+    ...EMPTY_SESSION,
+    theme: 'system7',
+    visibleCount: 12,
+    worldRefs: ['mine', null],
+    selectedWorld: 2,
+    selected: 5,
+    worldIcon: null,
+    confirmReset: false,
+  };
+  const worldsFirst = restoreSessionKeys(
+    restoreSessionKeys(used, fresh, WORLD_SESSION_KEYS),
+    fresh,
+    SESSION_KEYS,
+  );
+  const settingsFirst = restoreSessionKeys(
+    restoreSessionKeys(used, fresh, SESSION_KEYS),
+    fresh,
+    WORLD_SESSION_KEYS,
+  );
+  assert.deepEqual(worldsFirst, fresh);
+  assert.deepEqual(settingsFirst, fresh);
+  // And each alone leaves the other's half as it was.
+  assert.equal(restoreSessionKeys(used, fresh, WORLD_SESSION_KEYS).theme, 'system7');
+  assert.equal(restoreSessionKeys(used, fresh, SESSION_KEYS).selectedWorld, 2);
 });

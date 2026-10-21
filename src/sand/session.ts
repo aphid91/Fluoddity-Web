@@ -475,19 +475,6 @@ export function hasStoredSession(
 }
 
 /**
- * Drop the stored session, so the next load starts as a new visitor's: on the
- * world pack's start world and Custom palette. The World menu's "Reset worlds
- * to defaults", which reloads straight after.
- */
-export function forgetSession(): void {
-  try {
-    globalThis.localStorage?.removeItem(SESSION_KEY);
-  } catch {
-    // Storage that refuses a delete has nothing this reload could rely on.
-  }
-}
-
-/**
  * The stored session, or `fallback` for a visitor with none -- the shipped
  * defaults (`sandDefaults.ts`), where the caller has them.
  */
