@@ -18,7 +18,7 @@
     "drawAngle": 0,
     "wallsStrength": 1,
     "trailsStrength": 1,
-    "fieldOpacity": 0.1,
+    "fieldOpacity": 0.38,
     "fieldAlwaysShow": false,
     "trailsAlwaysShow": false,
     "showReticle": true,
