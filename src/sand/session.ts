@@ -169,6 +169,12 @@ export interface SandSession {
    * carries this into the saved document.
    */
   readonly worldIcon: string | null;
+
+  /**
+   * Whether Reset (its button, and R) asks first. The UI leftovers tab's
+   * checkbox. Off makes Reset act at once.
+   */
+  readonly confirmReset: boolean;
 }
 
 /**
@@ -204,6 +210,7 @@ export const EMPTY_SESSION: SandSession = {
   // The original look, so a fresh install renders as it always did.
   colorMode: DEFAULT_COLOR_MODE,
   worldIcon: null,
+  confirmReset: true,
 };
 
 /** The subset of `localStorage` this needs, so tests can supply their own. */
@@ -404,6 +411,7 @@ export function parseSession(raw: string): SandSession {
     // a mode this one does not have should render rather than fail.
     colorMode: asColorMode(o['colorMode']),
     worldIcon: readSwatchIcon(o['worldIcon']),
+    confirmReset: asBool(o['confirmReset'], EMPTY_SESSION.confirmReset),
   };
 }
 

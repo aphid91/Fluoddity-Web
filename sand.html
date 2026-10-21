@@ -14,7 +14,7 @@
       /* ==================================================================
          LAYOUT TOKENS
 
-         From the layout bench (docs/comps/sandLayout.html), as recorded in
+         From the layout bench (public/sandLayout.html), as recorded in
          docs/comps/ui_controls.txt. Unitless CSS px at UI scale 1: every
          size below is `N * var(--u)`, and `sandUi.relayout` raises --ui on
          big screens so the canvas takes at most 75% of the window.
@@ -934,6 +934,64 @@
         font-size: 11px;
       }
 
+      /* ------------------------------------------------------------------
+         THE CONFIRM DIALOG -- Reset's "are you sure", when the UI leftovers
+         tab asks for one (`confirmDialog.ts`). Unlike the dev menus above it
+         is part of the app, so it is sized in UI units like the shell.
+         ------------------------------------------------------------------ */
+      #confirm {
+        --u: calc(var(--ui) * 1px);
+        --r: calc(var(--corner) * var(--rmul) * var(--u));
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 30;
+      }
+      #confirm[data-open='true'] {
+        display: flex;
+      }
+      .confirm-panel {
+        background: var(--chrome);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--r);
+        width: min(calc(280 * var(--u)), calc(100vw - 32px));
+        box-sizing: border-box;
+        padding: calc(14 * var(--u));
+      }
+      .confirm-title {
+        margin: 0 0 calc(6 * var(--u));
+        font-family: var(--font-label);
+        font-size: calc(var(--label-fs) * var(--u));
+        letter-spacing: var(--label-spacing);
+        text-transform: var(--label-transform);
+        color: var(--ink-dim);
+      }
+      .confirm-text {
+        margin: 0 0 calc(14 * var(--u));
+        font-size: calc(12 * var(--u));
+      }
+      .confirm-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: calc(var(--btn-gap) * var(--u));
+      }
+      .confirm-actions .b {
+        height: calc(32 * var(--u));
+        padding: 0 calc(14 * var(--u));
+        font-size: calc(11 * var(--u));
+      }
+      .confirm-actions .b.primary {
+        background: var(--accent);
+        color: var(--accent-ink);
+        border-color: var(--accent);
+      }
+      .confirm-actions .b.primary:hover {
+        border-color: var(--ink);
+      }
+
       /* THE WORLD LOADER's rows are a name plus an X, because a saved world
          can be deleted and a shipped config cannot. The row is the hit area;
          the X stops propagation so it cannot load what it is deleting. */
@@ -1053,6 +1111,17 @@
         <div class="loader-hint">
           Loading a world replaces the palette and the initial conditions.
           Esc to cancel.
+        </div>
+      </div>
+    </div>
+
+    <div id="confirm" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <div class="confirm-panel">
+        <div class="confirm-title" id="confirm-title"></div>
+        <p class="confirm-text" id="confirm-text"></p>
+        <div class="confirm-actions">
+          <button type="button" class="b" id="confirm-no">Cancel</button>
+          <button type="button" class="b primary" id="confirm-yes"></button>
         </div>
       </div>
     </div>

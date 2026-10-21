@@ -9,8 +9,9 @@
  * ## Hotkeys
  *
  *   1-9, 0   select one of the first ten swatches the bar shows
- *   SPACE    pause / resume. The world starts PAUSED, arranging.
- *   R        restore the initial conditions (does nothing while authoring them)
+ *   SPACE    pause / resume. The page opens running.
+ *   R        restore the initial conditions, asking first if Confirm Reset is
+ *            on (does nothing while authoring them). Keeps the run state.
  *   Shift+V  load a config from the clipboard into the first empty swatch
  *            (the load menu's "Paste from link…" does the same for any swatch)
  *   left     apply the armed tool
@@ -97,6 +98,7 @@ import {
   slotDocument,
 } from './session.ts';
 import { SandPrefs } from './sandPrefs.ts';
+import { ConfirmDialog } from './confirmDialog.ts';
 import { Webcam } from '../webcam/webcam.ts';
 import { SAND_CAMERA_STORAGE_KEY } from '../webcam/webcamSettings.ts';
 import { themeById } from './theme.ts';
@@ -312,11 +314,7 @@ async function main(): Promise<void> {
     },
     onPlay: () => startRunning(),
     onPause: () => stopRunning(),
-    onReset: () => {
-      if (!orch.reset()) {
-        notify('Already editing the initial conditions — nothing to reset to');
-      }
-    },
+    onReset: () => requestReset(),
     onClearParticles: () => {
       arrangementTouched = true;
       orch.clearParticles();
@@ -673,6 +671,7 @@ async function main(): Promise<void> {
     auditAfterSweep,
     colorMode: orch.colorMode,
     worldIcon: customWorldIcon,
+    confirmReset,
   });
 
   /**
@@ -835,6 +834,10 @@ async function main(): Promise<void> {
     }
     if (!orch.hasInitialConditions) return null;
     if (icSource !== null) return icSource;
+    // PAUSED FIRST: a reset keeps the run state, and the read must see the
+    // restored scene, not frames of simulation after it. The rebuild that
+    // follows pauses anyway, and `refitWorld` resumes.
+    orch.setPaused(true);
     orch.reset();
     await nextFrames();
     return fresh();
@@ -855,6 +858,7 @@ async function main(): Promise<void> {
       if (source === null || region === null) {
         await rebuildNow();
         notify(`World ${why} — the scene was cleared`);
+        resumeIfRunning();
         return;
       }
       const plan = planFit(
@@ -874,6 +878,7 @@ async function main(): Promise<void> {
           ? `World ${why} — initial conditions cropped to fit`
           : `World ${why} — initial conditions put back`,
       );
+      resumeIfRunning();
     });
 
   /**
@@ -914,6 +919,7 @@ async function main(): Promise<void> {
    */
   let starting = false;
   const startRunning = (): void => {
+    wantRunning = true;
     if (starting) return;
     // Going from an arrangement the user has changed captures THAT, so the
     // saved scene no longer describes the initial conditions.
@@ -949,8 +955,60 @@ async function main(): Promise<void> {
   };
   /** Pause, cancelling a go that is still waiting on its copy. */
   const stopRunning = (): void => {
+    wantRunning = false;
     starting = false;
     orch.setPaused(true);
+  };
+
+  /**
+   * WHAT THE USER LAST ASKED FOR: running, or paused.
+   *
+   * A world load and a rebuild pause the orchestrator while they work -- no
+   * frame may run on a half-built world -- and put this back when they are
+   * done (`resumeIfRunning`), so neither changes the run state the user chose.
+   * A go then captures the loaded scene as the initial conditions, exactly as
+   * pressing Play would.
+   *
+   * FALSE UNTIL STARTUP HAS LOADED ITS WORLD, which then sets it: the page
+   * opens running, but not on the empty world it builds first.
+   */
+  let wantRunning = false;
+  /** After a load or rebuild: run again if the user had it running. */
+  const resumeIfRunning = (): void => {
+    if (wantRunning && orch.paused) startRunning();
+  };
+
+  /**
+   * Reset: the button and R. Asks first when Confirm Reset is on.
+   *
+   * Refused while the initial conditions are being authored -- the scene on
+   * screen IS the arrangement, and restoring would discard it in favour of an
+   * older one. Saying so beats a key that silently does nothing, and beats
+   * asking a question whose yes would do nothing.
+   */
+  const requestReset = (): void => {
+    const refused = (): void =>
+      notify('Already editing the initial conditions — nothing to reset to');
+    if (orch.editingInitialConditions) {
+      refused();
+      return;
+    }
+    const reset = (): void => {
+      if (!orch.reset()) refused();
+    };
+    if (!confirmReset) {
+      reset();
+      return;
+    }
+    void confirmDialog
+      .ask({
+        title: 'Reset',
+        text: 'Put the initial conditions back? The scene as it is now will be lost.',
+        confirm: 'Reset',
+      })
+      .then((ok) => {
+        if (ok) reset();
+      });
   };
 
   // A drag-resize fires continuously, so the rebuild waits for the canvas to
@@ -1004,6 +1062,9 @@ async function main(): Promise<void> {
   let markBefore: number | null = null;
   /** Dev tab switch: audit the pool every time a sweep ends. Persisted. */
   let auditAfterSweep = session.auditAfterSweep;
+  /** UI leftovers switch: Reset asks first. Persisted. */
+  let confirmReset = session.confirmReset;
+  const confirmDialog = new ConfirmDialog();
 
   const prefsWindow = new SandPrefs(
     prefs,
@@ -1022,9 +1083,15 @@ async function main(): Promise<void> {
       auditAfterSweep,
       colorMode: orch.colorMode,
       strengths: orch.brush.allStrengths(),
+      confirmReset,
       webcam,
     },
     {
+    // The UI leftovers tab's Confirm Reset.
+    onConfirmReset: (on) => {
+      confirmReset = on;
+      persist();
+    },
     // The UI leftovers tab. Each tool keeps its own; see `ToolStrengths`.
     onStrength: (tool, value) => {
       orch.brush.setStrength(tool, value);
@@ -1336,7 +1403,9 @@ async function main(): Promise<void> {
     // Either browser is modal: it would be confusing for the world to keep
     // responding to keys aimed at a list of configs -- or of worlds, where a
     // stray digit would also switch the palette selection behind the dialog.
-    if (ui.loaderOpen || worldLoader.isOpen) return;
+    // The confirm dialog likewise: SPACE or a digit behind it would act on a
+    // world the user is being asked about.
+    if (ui.loaderOpen || worldLoader.isOpen || confirmDialog.isOpen) return;
 
     // Shift+V: adopt a config from the clipboard. Before the digit check, since
     // `V` is not a digit but the modifier makes the ordering worth being
@@ -1362,12 +1431,7 @@ async function main(): Promise<void> {
       if (orch.paused && !starting) startRunning();
       else stopRunning();
     } else if (e.key === 'r' || e.key === 'R') {
-      // Refused while the initial conditions are being authored -- the scene on
-      // screen IS the arrangement, and restoring would discard it in favour of
-      // an older one. Saying so beats a key that silently does nothing.
-      if (!orch.reset()) {
-        notify('Already editing the initial conditions — nothing to reset to');
-      }
+      requestReset();
     }
   });
 
@@ -1505,6 +1569,8 @@ async function main(): Promise<void> {
     ) {
       notify(`Loading "${name}" — rebuilding the world…`);
       await rebuildWorld(null, shape);
+      // No resume here: the run picks up at the end, once the scene is in, so
+      // the go captures it rather than an empty world.
     }
 
     // --- the palette, at its stored slots ---------------------------------
@@ -1577,6 +1643,8 @@ async function main(): Promise<void> {
       );
     }
     persist();
+    // The rebuild and `importScene` paused; the run state comes back.
+    resumeIfRunning();
     return true;
   }
 
@@ -1975,6 +2043,8 @@ async function main(): Promise<void> {
       persist();
     }
   }
+  // THE PAGE OPENS RUNNING, now that its world is in -- see `wantRunning`.
+  startRunning();
 }
 
 /** Hand the user a file. */

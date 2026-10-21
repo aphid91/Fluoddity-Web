@@ -57,6 +57,7 @@
     "maxParticles": null,
     "autoCompact": false,
     "compactionPaused": false,
-    "auditAfterSweep": false
+    "auditAfterSweep": false,
+    "confirmReset": true
   }
 }

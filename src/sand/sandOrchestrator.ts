@@ -142,6 +142,12 @@ export class SandOrchestrator {
    */
   private _paused = true;
   private restorePending = false;
+  /**
+   * A reset pressed while running: the restore lands on a paused frame, like
+   * every other restore, and the run picks up again at the end of it. See
+   * `reset()`.
+   */
+  private resumeAfterRestore = false;
   /** "Restore initial walls", queued for the next frame's encoder. */
   private wallsRestorePending = false;
 
@@ -644,7 +650,8 @@ export class SandOrchestrator {
 
 
   /**
-   * An empty world, paused, ready to be painted.
+   * An empty world, ready to be painted. Paused at creation by `_paused`'s
+   * initializer; a reset leaves the run state as it found it.
    *
    * Frame 1, NOT 0. Zero is the studio's regenerate-everything sentinel: leaving
    * it there would make the first advance fill the world with particles the user
@@ -656,17 +663,18 @@ export class SandOrchestrator {
     // The pool is full again; the readback will confirm it within a frame or
     // two, and until then nothing has been spawned against it.
     this.spawnedSinceRead = 0;
-    this._paused = true;
     // An empty world is a fresh arrangement, so the next go captures it.
     this.captureArmed = true;
   }
 
   togglePause(): void {
+    this.resumeAfterRestore = false;
     this._paused = !this._paused;
   }
 
   /** The Play and Pause buttons. */
   setPaused(paused: boolean): void {
+    this.resumeAfterRestore = false;
     this._paused = paused;
   }
 
@@ -681,7 +689,16 @@ export class SandOrchestrator {
   }
 
   /**
-   * `R` -- restore the scene the user pressed go on, and return to arranging.
+   * `R` -- restore the scene the user pressed go on.
+   *
+   * ## THE RUN STATE IS KEPT
+   *
+   * Paused, it stays paused and returns to arranging (below). Running, it
+   * keeps running from the restored scene: the restore still lands on a paused
+   * frame -- the one path every restore takes, with its mark and readback
+   * bookkeeping -- and `resumeAfterRestore` starts the physics again at the end
+   * of that frame. The capture is NOT re-armed then: nobody is arranging, and
+   * the snapshot already is the scene just restored.
    *
    * Deferred to the top of the next frame rather than acted on here, because the
    * restore is a set of GPU copies and must be recorded onto an encoder. Doing it
@@ -717,8 +734,12 @@ export class SandOrchestrator {
     if (this.editingInitialConditions) return false;
     if (this.initial.hasSnapshot) {
       this.restorePending = true;
-      this._paused = true;
-      this.captureArmed = true;
+      if (this._paused) {
+        this.captureArmed = true;
+      } else {
+        this._paused = true;
+        this.resumeAfterRestore = true;
+      }
       return true;
     }
     this.startEmpty();
@@ -864,6 +885,7 @@ export class SandOrchestrator {
     oldInitial.destroy();
 
     this._paused = true;
+    this.resumeAfterRestore = false;
     this.captureArmed = true;
     // A "set as initial conditions" queued against the old world goes with it.
     this.capturePending = false;
@@ -1281,6 +1303,12 @@ export class SandOrchestrator {
       this.system.dropMarkIfEmpty(this.spawnedSinceRead);
     }
 
+    // A reset while running: the restore has landed, so run on from it.
+    if (this.resumeAfterRestore && !this.restorePending) {
+      this.resumeAfterRestore = false;
+      this._paused = false;
+    }
+
     return true;
   }
 
@@ -1500,10 +1528,10 @@ export class SandOrchestrator {
    *
    * ## The world is left ARRANGING, not running
    *
-   * Loading a world puts the user where its author was when they pressed go:
-   * paused, looking at the arrangement, free to edit it before starting. That is
-   * the same state `R` leaves them in, and it is what makes "click the world
-   * again to reset it" mean something.
+   * Paused, looking at the arrangement, with the capture armed -- the state a
+   * paused `R` leaves. Whether it then runs is the caller's decision: `main.ts`
+   * resumes it if the user had it running, and the next frame captures the
+   * scene as the initial conditions.
    */
   importScene(stamp: StampData): boolean {
     const applied = this.initial.adoptScene(stamp);
@@ -1512,6 +1540,7 @@ export class SandOrchestrator {
     // screen through the same route `R` uses rather than duplicating it.
     this.restorePending = true;
     this._paused = true;
+    this.resumeAfterRestore = false;
     // ARMED, so editing the loaded arrangement and pressing go captures the
     // edit -- the world's own scene is a starting point, not a cage.
     this.captureArmed = true;

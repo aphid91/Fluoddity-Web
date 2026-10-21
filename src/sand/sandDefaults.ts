@@ -11,8 +11,9 @@
  * SETTINGS, not content: every preference, and the session-level choices --
  * look, Custom's swatch count, colour mode, the armed tool, per-tool brush
  * sizes and strengths, the eraser's mode, Max Particles, the compaction
- * switches. NOT the Custom palette or the world buttons: those are content,
- * and ship in the default world pack instead (`worlds/worldPack.ts`).
+ * switches, whether Reset asks first. NOT the Custom palette or the world
+ * buttons: those are content, and ship in the default world pack instead
+ * (`worlds/worldPack.ts`).
  *
  * ## Tolerant
  *
@@ -55,6 +56,7 @@ const SESSION_KEYS = [
   'autoCompact',
   'compactionPaused',
   'auditAfterSweep',
+  'confirmReset',
 ] as const satisfies readonly (keyof SandSession)[];
 
 export interface SandDefaults {

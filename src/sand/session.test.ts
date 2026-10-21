@@ -142,6 +142,12 @@ test('a session predating the compaction switches defaults them off', () => {
   assert.equal(parsed.auditAfterSweep, false, 'auditing must not start on');
 });
 
+test('Confirm Reset defaults on, keeps an off, and accepts booleans only', () => {
+  assert.equal(parseSession(JSON.stringify({ selected: 2 })).confirmReset, true);
+  assert.equal(parseSession(JSON.stringify({ confirmReset: false })).confirmReset, false);
+  assert.equal(parseSession(JSON.stringify({ confirmReset: 'no' })).confirmReset, true);
+});
+
 // ---------------------------------------------------------------------------
 // Swatch colours and the colour mode
 // ---------------------------------------------------------------------------

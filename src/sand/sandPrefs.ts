@@ -108,6 +108,31 @@ const SAND_HELP: Readonly<Record<string, string>> = {
     'may grow the world past this, up to 2.5x. Separate from the studio’s.',
 };
 
+/**
+ * Preferences sand shows that the registry does not carry.
+ *
+ * The studio draws these in its Drawing section (`drawingSection.ts`), which
+ * is not the registry's shape, so the filter in `buildPrefs` never sees them.
+ * Sand's record has its own value regardless -- this is only the control.
+ */
+const SAND_EXTRA_PREFS: readonly {
+  readonly field: keyof Preferences;
+  readonly group: string;
+  readonly label: string;
+  readonly params: Record<string, unknown>;
+  readonly help: string;
+}[] = [
+  {
+    field: 'fieldOpacity',
+    group: 'Display',
+    label: 'Field Opacity',
+    params: { min: 0.0, max: 1.0 },
+    help:
+      'How brightly the painted walls (and painted trails) are drawn on screen. ' +
+      '0 hides them. A world may state its own.',
+  },
+];
+
 export interface SandPrefsCallbacks {
   onChange(prefs: Preferences): void;
   onRestartRequired(prefs: Preferences): void;
@@ -142,6 +167,8 @@ export interface SandPrefsCallbacks {
   onColorMode(mode: ColorMode): void;
   /** The selected swatch's colour picker moved. */
   onSwatchColor(slot: number, color: SwatchColor): void;
+  /** "Confirm reset", on the UI leftovers tab. */
+  onConfirmReset(on: boolean): void;
   /** A tool's strength, on the UI leftovers tab. */
   onStrength(tool: SandTool, value: number): void;
 
@@ -286,6 +313,8 @@ export class SandPrefs {
       colorMode: ColorMode;
       /** Each tool's strength, restored from the session. */
       strengths: Readonly<Record<SandTool, number>>;
+      /** Whether Reset asks first, restored from the session. */
+      confirmReset: boolean;
       /**
        * The camera, for a Camera tab. Null builds none. It belongs to
        * `main.ts`, not to this window: disposing the window leaves it running.
@@ -350,7 +379,7 @@ export class SandPrefs {
 
     this.buildPrefs(prefsPage);
     this.buildDev(devPage);
-    this.buildLeftovers(leftoversPage, initial.strengths);
+    this.buildLeftovers(leftoversPage, initial.strengths, initial.confirmReset);
     if (cameraPage !== undefined && initial.webcam !== null) {
       // Sand's help idiom is the native `title` tooltip, as everywhere else in
       // this window.
@@ -383,15 +412,25 @@ ${body}`;
   /**
    * Controls the old rail and tray had that the layout-bench UI does not.
    *
-   * Per-tool STRENGTH is the one so far: it was a number-drag under the size
-   * buttons, and each tool keeps its own. Only the tools that have a strength
-   * and are built get a row -- Erase is a hard-radius kill with nothing to
-   * scale (see `usesStrength`).
+   * Per-tool STRENGTH is one: it was a number-drag under the size buttons,
+   * and each tool keeps its own. Only the tools that have a strength and are
+   * built get a row -- Erase is a hard-radius kill with nothing to scale (see
+   * `usesStrength`).
+   *
+   * Confirm Reset is the other: whether Reset asks before restoring.
    */
   private buildLeftovers(
     page: TabPageApi,
     strengths: Readonly<Record<SandTool, number>>,
+    confirmReset: boolean,
   ): void {
+    const confirm = { confirmReset };
+    const confirmBlade = page.addBinding(confirm, 'confirmReset', { label: 'Confirm reset' });
+    confirmBlade.element.title =
+      'Ask before Reset (the button, or R) puts the initial conditions back. ' +
+      'Off resets at once.';
+    confirmBlade.on('change', () => this.callbacks.onConfirmReset(confirm.confirmReset));
+
     const values: Record<string, number> = {};
     for (const tool of TOOLS) {
       if (!usesStrength(tool) || !isImplemented(tool)) continue;
@@ -424,28 +463,43 @@ ${body}`;
         folder = page.addFolder({ title: setting.group });
         folders.set(setting.group, folder);
       }
-      this.bindPref(folder, setting);
+      this.bindPref(
+        folder,
+        setting.field,
+        { ...paramsFor(setting), label: SAND_LABELS[setting.field] ?? setting.label },
+        SAND_HELP[setting.field] ?? setting.help,
+        // World Size and Canvas Aspect reallocate the world, so they commit on
+        // the END of a gesture rather than continuously -- `INPUT` is the
+        // registry's marker for exactly that, per its "disruptive settings are
+        // typed inputs".
+        setting.kind === INPUT,
+      );
+    }
+    for (const extra of SAND_EXTRA_PREFS) {
+      let folder = folders.get(extra.group);
+      if (folder === undefined) {
+        folder = page.addFolder({ title: extra.group });
+        folders.set(extra.group, folder);
+      }
+      this.bindPref(folder, extra.field, { ...extra.params, label: extra.label }, extra.help, false);
     }
   }
 
-  private bindPref(folder: FolderApi, setting: Setting): void {
-    const params = paramsFor(setting);
-    const blade = folder.addBinding(this.prefValues, setting.field, {
-      ...params,
-      label: SAND_LABELS[setting.field] ?? setting.label,
-    });
-    blade.element.title = SAND_HELP[setting.field] ?? setting.help;
-
-    // World Size and Canvas Aspect reallocate the world, so they commit on the
-    // END of a gesture rather than continuously -- `INPUT` is the registry's
-    // marker for exactly that, per its "disruptive settings are typed inputs".
-    const disruptive = setting.kind === INPUT;
+  private bindPref(
+    folder: FolderApi,
+    field: string,
+    params: Record<string, unknown>,
+    help: string,
+    disruptive: boolean,
+  ): void {
+    const blade = folder.addBinding(this.prefValues, field, params);
+    blade.element.title = help;
 
     blade.on('change', (ev) => {
       if (disruptive && !ev.last) return;
       const next = {
         ...this.committed,
-        [setting.field]: this.prefValues[setting.field],
+        [field]: this.prefValues[field],
       } as Preferences;
       const restart = requiresRestart(next, this.committed);
       this.committed = next;
