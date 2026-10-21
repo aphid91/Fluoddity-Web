@@ -117,6 +117,25 @@ const SAND_HELP: Readonly<Record<string, string>> = {
  * is not the registry's shape, so the filter in `buildPrefs` never sees them.
  * Sand's record has its own value regardless -- this is only the control.
  */
+/** Whether this window is open. Missing -- a new visitor -- means folded. */
+export const PANE_EXPANDED_STORAGE_KEY = 'fluoddity.sand.paneExpanded';
+
+function loadPaneExpanded(): boolean {
+  try {
+    return localStorage.getItem(PANE_EXPANDED_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function savePaneExpanded(expanded: boolean): void {
+  try {
+    localStorage.setItem(PANE_EXPANDED_STORAGE_KEY, String(expanded));
+  } catch {
+    // A denied store: the window still folds, it just forgets.
+  }
+}
+
 const SAND_EXTRA_PREFS: readonly {
   readonly field: keyof Preferences;
   readonly group: string;
@@ -348,7 +367,10 @@ export class SandPrefs {
     this.worldChoices = initial.worldChoices;
     this.setWorldValues(initial.worlds);
 
-    this.pane = new Pane({ title: 'Fluoddity Sand', expanded: true });
+    // FOLDED FOR A NEW VISITOR: this window is the author's workbench, not the
+    // player's controls. Whoever opens it keeps it open across reloads.
+    this.pane = new Pane({ title: 'Fluoddity Sand', expanded: loadPaneExpanded() });
+    this.pane.on('fold', (ev) => savePaneExpanded(ev.expanded));
     const host = this.pane.element.parentElement;
     if (host !== null) {
       host.style.position = 'fixed';

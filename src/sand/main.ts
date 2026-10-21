@@ -105,7 +105,7 @@ import {
   saveSession,
   slotDocument,
 } from './session.ts';
-import { SandPrefs } from './sandPrefs.ts';
+import { PANE_EXPANDED_STORAGE_KEY, SandPrefs } from './sandPrefs.ts';
 import { ConfirmDialog } from './confirmDialog.ts';
 import { Webcam } from '../webcam/webcam.ts';
 import { SAND_CAMERA_STORAGE_KEY } from '../webcam/webcamSettings.ts';
@@ -1052,7 +1052,12 @@ async function main(): Promise<void> {
     saveSession(next);
     if (forgetSettings) {
       // Each is seeded from its defaults when missing, as for a new visitor.
-      for (const key of [SAND_STORAGE_KEY, LOADER_COLLAPSED_STORAGE_KEY, SAND_CAMERA_STORAGE_KEY]) {
+      for (const key of [
+        SAND_STORAGE_KEY,
+        LOADER_COLLAPSED_STORAGE_KEY,
+        SAND_CAMERA_STORAGE_KEY,
+        PANE_EXPANDED_STORAGE_KEY,
+      ]) {
         try {
           localStorage.removeItem(key);
         } catch {
