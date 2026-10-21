@@ -180,6 +180,8 @@ export interface SandUiCallbacks {
    * to that world's default.
    */
   onSelectWorld(index: number): void;
+  /** The World menu's "Reset worlds to defaults". Asking first is the callee's. */
+  onResetWorlds(): void;
   onPlay(): void;
   onPause(): void;
   onReset(): void;
@@ -321,6 +323,10 @@ export class SandUi {
     this.wireSwatchScroll(byId('sw-left'), byId('sw-right'));
 
     byId('wtrig').addEventListener('click', () => this.setWorldMenu(!this.worldMenuOpen));
+    byId('wreset').addEventListener('click', () => {
+      this.setWorldMenu(false);
+      this.callbacks.onResetWorlds();
+    });
 
     // A PRESS OUTSIDE THE WORLD MENU CLOSES IT. Capture phase, so it is seen
     // before anything else handles the press. A press on another control

@@ -37,6 +37,7 @@ import { BC, makeWorldSettings } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
 import type { Preferences } from '../prefs/preferences.ts';
 import {
+  forgetSandPreferences,
   loadSandPreferences as loadPreferences,
   saveSandPreferences as savePreferences,
 } from './sandPreferences.ts';
@@ -91,6 +92,7 @@ import {
   CUSTOM_WORLD,
   type SandSession,
   type StoredSlot,
+  forgetSession,
   hasStoredSession,
   loadSession,
   readSlotDocument,
@@ -300,6 +302,7 @@ async function main(): Promise<void> {
     onSelectWorld: (index) => {
       void selectWorld(index);
     },
+    onResetWorlds: () => requestWorldsReset(),
     onLoad: (slot, entry) => {
       void (async () => {
         try {
@@ -1022,6 +1025,40 @@ async function main(): Promise<void> {
       })
       .then((ok) => {
         if (ok) reset();
+      });
+  };
+
+  /**
+   * The World menu's "Reset worlds to defaults": start over as a new visitor.
+   *
+   * Sand's stored session and preferences are dropped and the page reloaded,
+   * so startup takes the new-visitor path -- the world pack's buttons, start
+   * world and Custom palette, and `sandDefaults.json`'s settings. Reloading
+   * rather than reapplying in place, because that path is the one a new
+   * visitor really runs. Saved worlds and configs (IndexedDB) are untouched.
+   *
+   * ALWAYS ASKS, whatever Confirm Reset says: it throws away far more than
+   * a scene.
+   */
+  const requestWorldsReset = (): void => {
+    void confirmDialog
+      .ask({
+        title: 'Reset worlds',
+        text:
+          'Put the worlds, Custom’s swatches and the settings back to the ' +
+          'defaults? Changes to them, and the scene, will be lost. Saved ' +
+          'worlds and configs are kept.',
+        confirm: 'Reset',
+      })
+      .then((ok) => {
+        if (!ok) return;
+        // A pending write would otherwise land on `pagehide`, after the
+        // forget, and bring the old session back.
+        if (saveTimer !== null) clearTimeout(saveTimer);
+        saveTimer = null;
+        forgetSession();
+        forgetSandPreferences();
+        location.reload();
       });
   };
 

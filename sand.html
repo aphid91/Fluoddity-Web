@@ -363,6 +363,31 @@
       #wpick[data-open='true'] #wgrid {
         display: grid;
       }
+      /* Under the swatches, only while the menu is open. Small and quiet:
+         it is a way back, not a choice of world. */
+      #wreset {
+        display: none;
+        appearance: none;
+        margin-top: calc(8 * var(--u));
+        padding: calc(4 * var(--u)) calc(10 * var(--u));
+        background: var(--chrome-2);
+        color: var(--ink);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--r);
+        font-family: var(--font-label);
+        font-size: calc(9 * var(--u));
+        letter-spacing: var(--label-spacing);
+        text-transform: var(--label-transform);
+        white-space: nowrap;
+        cursor: pointer;
+        opacity: 0.8;
+      }
+      #wreset:hover {
+        opacity: 1;
+      }
+      #wpick[data-open='true'] #wreset {
+        display: block;
+      }
       .wsw {
         position: relative;
         width: calc((var(--wsw-d) + 12) * var(--u));
@@ -1096,6 +1121,7 @@
               <span class="wtab"><svg viewBox="0 0 24 14" aria-hidden="true"><path d="M6 4l6 6 6-6" /></svg></span>
             </button>
             <div id="wgrid"></div>
+            <button type="button" id="wreset" title="Put the world buttons, Custom’s swatches and the settings back to how a new visitor gets them">Reset worlds to defaults</button>
           </div>
         </div>
         <div id="ic-banner">Editing Initial Conditions</div>
