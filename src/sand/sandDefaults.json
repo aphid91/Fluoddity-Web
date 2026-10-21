@@ -35,7 +35,7 @@
   },
   "session": {
     "theme": "darkroom",
-    "visibleCount": 6,
+    "visibleCount": 7,
     "colorMode": "behavior",
     "brushSizes": {
       "brush": 2,
@@ -53,7 +53,7 @@
       "trails": 1,
       "stamp": 1
     },
-    "eraseMode": "walls",
+    "eraseMode": "walls+particles",
     "maxParticles": 400000,
     "autoCompact": true,
     "compactionPaused": false,
