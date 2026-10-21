@@ -25,7 +25,7 @@
     "resetOnBehaviorChange": true,
     "oneClickSelection": false,
     "strongLogging": false,
-    "worldSize": 0.15,
+    "worldSize": 0.16,
     "canvasAspect": 1,
     "advancedProject": false,
     "advancedPreferences": false,
@@ -35,27 +35,27 @@
   },
   "session": {
     "theme": "darkroom",
-    "visibleCount": 30,
+    "visibleCount": 6,
     "colorMode": "behavior",
-    "tool": "brush",
-    "strengths": {
-      "brush": 1,
-      "erase": 1,
-      "shove": 1,
-      "walls": 1,
-      "trails": 1,
-      "stamp": 1
-    },
     "brushSizes": {
       "brush": 2,
       "erase": 2,
       "shove": 2,
-      "walls": 2,
+      "walls": 0,
       "trails": 2
     },
-    "eraseMode": "walls+particles",
-    "maxParticles": null,
-    "autoCompact": false,
+    "tool": "brush",
+    "strengths": {
+      "brush": 3.133816774680755,
+      "erase": 1,
+      "shove": 2,
+      "walls": 15,
+      "trails": 1,
+      "stamp": 1
+    },
+    "eraseMode": "walls",
+    "maxParticles": 400000,
+    "autoCompact": true,
     "compactionPaused": false,
     "auditAfterSweep": false,
     "confirmReset": true
