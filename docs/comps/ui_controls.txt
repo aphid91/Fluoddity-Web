@@ -1,38 +1,40 @@
-/* Fluoddity Sand layout, from the layout bench.
-   Sizes are CSS px at UI scale 1; multiply by --ui. /
+/* sand.html :root -- layout tokens from the layout bench.
+   Unitless CSS px at UI scale 1. */
 :root {
-  --ui: 1.25;
+  --ui-base: 1.15;
   --pad: 5;
-  --radius: 0;
+  --corner: 5;
   --sw-d: 44;
   --sw-gap: 5;
-  --sw-fill: 50;
-  --sw-gap-max: 35;
   --sw-name-fs: 9;
   --bar-pad: 0;
   --side-w: 150;
   --sec-pad: 10;
   --btn-gap: 4;
   --label-fs: 9;
-  --world-h: 35;
-  --world-cols: 2;
   --tool-h: 44;
   --tool-cols: 2;
   --size-h: 44;
   --sim-d: 44;
   --reset-h: 44;
   --box-h: 170;
-  --band-world-cols: 2;
   --band-tool-cols: 3;
-  --drawer-w: 230;
+  --size-w: 37;
   --wbtn-h: 30;
   --wsw-d: 56;
   --wsw-gap: 9;
   --wsw-fs: 10;
   --wl-bg: 0.5;
-  --size-w: 37;
-  --swatch-count: 7;
-  --min-target: 44;
-  --canvas-max-share: 75;
 }
-/ portrait: band · sidebar too tall: scroll · swatches: spread · band sizes in one row · world swatch · world names in the middle · sidebar tool box when it fits */
+
+// sandUi.ts
+const CANVAS_MAX_SHARE = 0.75;
+const SWATCH_FILL = 0.5;
+const SWATCH_GAP_MAX = 45;
+
+// sandDefaults.json, session
+"visibleCount": 30
+
+/* portrait: band · sidebar too tall: scroll · swatches: center · sidebar tool box when it fits · scale-up keeps the sidebar whole · band sizes in two columns · look: darkroom */
+
+/* Same as the app. */

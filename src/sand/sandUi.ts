@@ -1,7 +1,7 @@
 /**
  * The sand shell: sidebar, swatch bar, World menu and the load menu.
  *
- * The layout is the layout bench's (`docs/comps/sandLayout.html`), with the
+ * The layout is the layout bench's (`public/sandLayout.html`), with the
  * choices recorded in `docs/comps/ui_controls.txt`. Plain DOM rather than
  * Tweakpane: this is a few dozen buttons that want to look like a paint
  * program. The settings window is the opposite case and does use the shared

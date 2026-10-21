@@ -9,7 +9,7 @@
  * rebuild and no reflow logic.
  *
  * The layout itself (sidebar, band, swatch bar) is the layout bench's and is
- * the same under every look -- see `docs/comps/sandLayout.html`.
+ * the same under every look -- see `public/sandLayout.html`.
  *
  * ## Why this is a module and not three stylesheets
  *
